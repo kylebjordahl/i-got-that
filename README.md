@@ -62,8 +62,14 @@ pnpm nx run @igt/api:db-migrate-local   # apply migrations to local D1
   Google REST). Email send wiring to Cloudflare Email Service + live CalDAV/
   Google verification are the remaining production hookups.
 
-31 tests passing across 6 projects; all 6 typecheck. Next: Phase 5 (Flutter
-client — needs the Flutter SDK).
+- **Phase 5 (Flutter client):** ⚠️ authored, **not yet verified** — no Flutter
+  SDK in the build env. API client (`dio`), Riverpod auth state, magic-link login,
+  and an unowned-task dashboard (claim + feed refresh) are in `apps/mobile/lib`.
+  Run `flutter create . --platforms=ios,web && flutter pub get && flutter analyze`
+  to validate (see `apps/mobile/README.md`).
+
+Backend: 31 tests passing across 6 projects; all 6 typecheck. The Flutter client
+compiles/runs pending a local Flutter SDK.
 
 > Note: the Flutter SDK and Terraform CLI are not provisioned by the Node
 > toolchain; install them to run `apps/mobile` and `infra/terraform` locally.

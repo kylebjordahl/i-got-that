@@ -1,38 +1,29 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'screens/dashboard_screen.dart';
+import 'screens/login_screen.dart';
+import 'state/auth.dart';
 
-/// Phase 0 shell. Real screens (feeds, rules, unowned dashboard, claim/swap,
-/// calendar-connect onboarding) land in Phase 5. The OpenAPI-generated API
-/// client will live under lib/api/generated/ (see /tools).
+/// Phase 5 client (iOS + web). Authored without a local Flutter SDK — not yet
+/// compiled/analyzed; run `flutter pub get && flutter analyze` after installing
+/// the SDK (see README).
 void main() {
-  runApp(const CaretakerApp());
+  runApp(const ProviderScope(child: CaretakerApp()));
 }
 
-class CaretakerApp extends StatelessWidget {
+class CaretakerApp extends ConsumerWidget {
   const CaretakerApp({super.key});
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final authed = ref.watch(authControllerProvider).isAuthed;
     return MaterialApp(
       title: 'Caretaker',
       theme: ThemeData(
         colorSchemeSeed: const Color(0xFF3A7D5D),
         useMaterial3: true,
       ),
-      home: const _HomePlaceholder(),
-    );
-  }
-}
-
-class _HomePlaceholder extends StatelessWidget {
-  const _HomePlaceholder();
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('Caretaker')),
-      body: const Center(
-        child: Text('Family logistics — coming soon'),
-      ),
+      home: authed ? const DashboardScreen() : const LoginScreen(),
     );
   }
 }
