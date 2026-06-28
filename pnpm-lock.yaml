@@ -92,6 +92,10 @@ importers:
       '@igt/ical':
         specifier: workspace:*
         version: link:../ical
+    devDependencies:
+      '@cloudflare/workers-types':
+        specifier: ^4.20240909.0
+        version: 4.20260628.1
 
   libs/domain:
     dependencies:

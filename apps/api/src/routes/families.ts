@@ -8,6 +8,7 @@ import {
   requireFamilyMember,
 } from '../middleware/auth.js';
 import { feedRoutes } from './feeds.js';
+import { targetRoutes } from './targets.js';
 import { taskRoutes } from './tasks.js';
 
 export const familyRoutes = new Hono<HonoEnv>();
@@ -20,6 +21,9 @@ familyRoutes.route('/:familyId/feeds', feedRoutes);
 
 // Classification rules + tasks live under /families/:familyId/...
 familyRoutes.route('/:familyId', taskRoutes);
+
+// Calendar targets (delivery destinations) under /families/:familyId/...
+familyRoutes.route('/:familyId', targetRoutes);
 
 /**
  * Create a family and seed the creator as an admin caretaker. (Prototype:

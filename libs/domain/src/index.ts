@@ -179,6 +179,18 @@ export const CreateCalendarTargetInput = z.object({
   providerHint: ProviderHint.optional(),
   addressOrUrl: z.string().min(1),
   externalCalendarId: z.string().optional(),
+  /**
+   * Credential material (encrypted server-side into a `secret`). For caldav:
+   * username + password (e.g. iCloud app-specific password). For google:
+   * accessToken (OAuth). Omit for email targets.
+   */
+  credential: z
+    .object({
+      username: z.string().optional(),
+      password: z.string().optional(),
+      accessToken: z.string().optional(),
+    })
+    .optional(),
 });
 export type CreateCalendarTargetInput = z.infer<
   typeof CreateCalendarTargetInput

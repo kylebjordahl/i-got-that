@@ -11,5 +11,8 @@
   "dependencies": {
     "@igt/domain": "workspace:*",
     "@igt/ical": "workspace:*"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20240909.0"
   }
 }

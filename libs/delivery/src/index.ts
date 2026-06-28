@@ -1,5 +1,10 @@
 import type { DeliveryMethod, RsvpStatus } from '@igt/domain';
 
+export { CalDavProvider } from './caldav.js';
+export { EmailImipProvider, type EmailSender } from './email.js';
+export { GoogleCalendarProvider } from './google.js';
+export { buildInviteEmailMime } from './mime.js';
+
 /**
  * Delivery abstraction. v1 ships three full-detail providers (email/iMIP via
  * Cloudflare Email Service, CalDAV via tsdav, Google via the Calendar REST

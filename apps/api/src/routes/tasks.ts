@@ -11,6 +11,11 @@ import { AssignTaskInput, CreateClassificationRuleInput } from '@igt/domain';
 import { Hono } from 'hono';
 import type { HonoEnv } from '../env.js';
 import { requireAdmin, requireFamilyMember } from '../middleware/auth.js';
+import {
+  cancelTaskDeliveries,
+  deliverTask,
+  getProductionRegistry,
+} from '../services/delivery.js';
 
 /** Mounted under /families/:familyId (auth applied by parent router). */
 export const taskRoutes = new Hono<HonoEnv>();
@@ -126,6 +131,13 @@ taskRoutes.post('/tasks/:taskId/assign', async (c) => {
       .where(eq(tasks.id, task.id))
       .returning()
   )[0]!;
+
+  // Best-effort: push to the owner's calendars. Assignment succeeds regardless.
+  try {
+    await deliverTask(db, getProductionRegistry(c.env), c.env.KEK, updated.id);
+  } catch (err) {
+    console.error('deliverTask failed', err);
+  }
   return c.json({ task: updated });
 });
 
@@ -142,6 +154,12 @@ taskRoutes.post('/tasks/:taskId/unassign', async (c) => {
       .limit(1)
   )[0];
   if (!task) return c.json({ error: 'task_not_found' }, 404);
+
+  try {
+    await cancelTaskDeliveries(db, getProductionRegistry(c.env), c.env.KEK, task.id);
+  } catch (err) {
+    console.error('cancelTaskDeliveries failed', err);
+  }
 
   const updated = (
     await db

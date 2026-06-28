@@ -14,7 +14,11 @@
     "crons": ["*/15 * * * *"]
   },
   "vars": {
-    "ENVIRONMENT": "development"
+    "ENVIRONMENT": "development",
+    "ORGANIZER_EMAIL": "noreply@igt.local",
+    // DEV ONLY KEK (envelope-encryption key-encryption key). Production sets a
+    // real secret via `wrangler secret put KEK` / Terraform — never commit prod keys.
+    "KEK": "2OmcakKhoLtzTqOq5ZrXq/e/7mXa8Gmav+dtCe/2ThM="
   },
   "d1_databases": [
     {

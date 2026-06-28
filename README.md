@@ -50,12 +50,20 @@ pnpm nx run @igt/api:db-migrate-local   # apply migrations to local D1
   skeleton, CI pipeline.
 - **Phase 1 (identity & tenancy):** ✅ magic-link auth + sessions, unified
   `family_member` model, `family_id` tenant-guard middleware, families/members
-  endpoints. (Sign in with Apple verifier scaffolded; outbound email via a
-  DevMailer until Phase 4 wires Cloudflare Email Service.)
+  endpoints. (Sign in with Apple verifier scaffolded.)
+- **Phase 2 (feed ingest):** ✅ feed + `family_member_feed` CRUD, ICS
+  parse/RRULE + idempotent `source_event` upsert, force-refresh endpoints, Cron
+  scheduled ingest.
+- **Phase 3 (classify & assign):** ✅ classification-rule CRUD, task generation
+  (explicit create + exception baseline cancel/shift/ignore), unowned dashboard,
+  claim/release with idempotent rebuilds.
+- **Phase 4 (delivery):** ✅ calendar-target CRUD, envelope-encrypted secrets
+  (AES-256-GCM), delivery orchestration + providers (Email iMIP, CalDAV/tsdav,
+  Google REST). Email send wiring to Cloudflare Email Service + live CalDAV/
+  Google verification are the remaining production hookups.
 
-22 tests passing across 4 projects; all 6 projects typecheck. Next: Phase 2
-(feed ingest — `feed`/`family_member_feed` CRUD, Cron + Queue, ICS parse,
-force-refresh).
+31 tests passing across 6 projects; all 6 typecheck. Next: Phase 5 (Flutter
+client — needs the Flutter SDK).
 
 > Note: the Flutter SDK and Terraform CLI are not provisioned by the Node
 > toolchain; install them to run `apps/mobile` and `infra/terraform` locally.
