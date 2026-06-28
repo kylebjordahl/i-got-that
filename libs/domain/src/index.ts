@@ -92,6 +92,23 @@ export const Id = z.string().min(1);
 
 // --- API input schemas (v1 subset) --------------------------------------
 
+export const MagicLinkRequestInput = z.object({
+  email: z.string().email(),
+});
+export type MagicLinkRequestInput = z.infer<typeof MagicLinkRequestInput>;
+
+export const MagicLinkVerifyInput = z.object({
+  token: z.string().min(1),
+});
+export type MagicLinkVerifyInput = z.infer<typeof MagicLinkVerifyInput>;
+
+export const CreateFamilyInput = z.object({
+  name: z.string().min(1).max(120),
+  /** The creator's relation label within the new family (e.g. "mom"). */
+  relationName: z.string().min(1).max(64).default('parent'),
+});
+export type CreateFamilyInput = z.infer<typeof CreateFamilyInput>;
+
 export const CreateFeedInput = z.object({
   url: z.string().url(),
   kind: FeedKind.default('ics'),

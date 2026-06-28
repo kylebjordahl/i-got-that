@@ -390,6 +390,46 @@ export const invites = sqliteTable(
   }),
 );
 
+// --- Auth: magic-link tokens + sessions ----------------------------------
+
+export const authTokens = sqliteTable(
+  'auth_tokens',
+  {
+    id: id(),
+    purpose: text('purpose', { enum: ['magic_link'] })
+      .notNull()
+      .default('magic_link'),
+    // The login email this token authorizes (becomes an identity.provider_ref).
+    email: text('email').notNull(),
+    // Only the hash of the one-time token is stored.
+    tokenHash: text('token_hash').notNull().unique(),
+    expiresAt: integer('expires_at', { mode: 'timestamp_ms' }).notNull(),
+    consumedAt: integer('consumed_at', { mode: 'timestamp_ms' }),
+    createdAt: createdAt(),
+  },
+  (t) => ({
+    emailIdx: index('auth_tokens_email_idx').on(t.email),
+  }),
+);
+
+export const sessions = sqliteTable(
+  'sessions',
+  {
+    id: id(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    // Only the hash of the session token is stored; the raw token is returned
+    // to the client once and never persisted.
+    tokenHash: text('token_hash').notNull().unique(),
+    expiresAt: integer('expires_at', { mode: 'timestamp_ms' }).notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => ({
+    userIdx: index('sessions_user_idx').on(t.userId),
+  }),
+);
+
 // --- Ownership rules (modeled now; auto-assign engine lands in v1.1) ------
 
 export const ownershipRules = sqliteTable(
@@ -427,6 +467,8 @@ export const schema = {
   calendarTargets,
   deliveries,
   invites,
+  authTokens,
+  sessions,
   ownershipRules,
 };
 

@@ -6,6 +6,23 @@ import { schema } from './schema.js';
 export * from './schema.js';
 export { schema } from './schema.js';
 
+// Re-export the common query operators so API/services depend only on @igt/db.
+export {
+  and,
+  asc,
+  desc,
+  eq,
+  gt,
+  gte,
+  inArray,
+  isNull,
+  lt,
+  lte,
+  ne,
+  or,
+  sql,
+} from 'drizzle-orm';
+
 /** Construct a Drizzle client bound to a Cloudflare D1 database. */
 export function getDb(d1: D1Database) {
   return drizzle(d1, { schema });

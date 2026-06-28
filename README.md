@@ -45,10 +45,17 @@ pnpm nx run @igt/api:db-migrate-local   # apply migrations to local D1
 
 ## Status
 
-**Phase 0 (scaffold & platform) complete and verified:** monorepo, API worker +
-D1/Drizzle, classification engine, OSS-lib workerd spike, Flutter shell,
-Terraform skeleton, CI pipeline. 18 tests passing across 4 projects; all 6
-projects typecheck. Next: Phase 1 (identity & tenancy).
+- **Phase 0 (scaffold & platform):** ✅ monorepo, API worker + D1/Drizzle,
+  classification engine, OSS-lib workerd spike, Flutter shell, Terraform
+  skeleton, CI pipeline.
+- **Phase 1 (identity & tenancy):** ✅ magic-link auth + sessions, unified
+  `family_member` model, `family_id` tenant-guard middleware, families/members
+  endpoints. (Sign in with Apple verifier scaffolded; outbound email via a
+  DevMailer until Phase 4 wires Cloudflare Email Service.)
+
+22 tests passing across 4 projects; all 6 projects typecheck. Next: Phase 2
+(feed ingest — `feed`/`family_member_feed` CRUD, Cron + Queue, ICS parse,
+force-refresh).
 
 > Note: the Flutter SDK and Terraform CLI are not provisioned by the Node
 > toolchain; install them to run `apps/mobile` and `infra/terraform` locally.
