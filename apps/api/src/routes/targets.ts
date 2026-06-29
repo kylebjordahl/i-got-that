@@ -86,18 +86,30 @@ targetRoutes.post('/calendar-targets', async (c) => {
   return c.json({ target: safe }, 201);
 });
 
-/** List calendar targets (own; admins see the whole family). */
+/** List calendar targets (own; admins see the whole family). Credentials are never returned. */
 targetRoutes.get('/calendar-targets', async (c) => {
   const db = getDb(c.env.DB);
   const me = c.get('member');
 
+  const projection = {
+    id: calendarTargets.id,
+    memberId: calendarTargets.memberId,
+    memberRelation: familyMembers.relationName,
+    name: calendarTargets.name,
+    method: calendarTargets.method,
+    providerHint: calendarTargets.providerHint,
+    addressOrUrl: calendarTargets.addressOrUrl,
+    externalCalendarId: calendarTargets.externalCalendarId,
+    active: calendarTargets.active,
+  };
+  const base = db
+    .select(projection)
+    .from(calendarTargets)
+    .innerJoin(familyMembers, eq(familyMembers.id, calendarTargets.memberId));
+
   const rows = me.isAdmin
-    ? await db
-        .select()
-        .from(calendarTargets)
-        .innerJoin(familyMembers, eq(familyMembers.id, calendarTargets.memberId))
-        .where(eq(familyMembers.familyId, me.familyId))
-    : await db.select().from(calendarTargets).where(eq(calendarTargets.memberId, me.id));
+    ? await base.where(eq(familyMembers.familyId, me.familyId))
+    : await base.where(eq(calendarTargets.memberId, me.id));
 
   return c.json({ targets: rows });
 });

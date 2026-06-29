@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'screens/dashboard_screen.dart';
+import 'screens/home_screen.dart';
 import 'screens/login_screen.dart';
 import 'state/auth.dart';
 
@@ -23,7 +23,7 @@ class CaretakerApp extends ConsumerWidget {
         colorSchemeSeed: const Color(0xFF3A7D5D),
         useMaterial3: true,
       ),
-      home: authed ? const DashboardScreen() : const LoginScreen(),
+      home: authed ? const HomeScreen() : const LoginScreen(),
     );
   }
 }

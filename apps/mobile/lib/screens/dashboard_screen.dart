@@ -1,80 +1,40 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../models.dart';
 import '../state/auth.dart';
+import '../state/family.dart';
+import '../util/format.dart';
 
-/// Loads the caller's first family, then shows its unowned tasks with a "Claim"
-/// action — the core daily-driver screen. (Family switching, per-child grouping,
-/// and create-family onboarding are follow-ups.)
-class DashboardScreen extends ConsumerStatefulWidget {
+/// Unowned-task dashboard: tasks grouped by day (Today/Tomorrow/date) with the
+/// child's name and a friendly time, each claimable.
+class DashboardScreen extends ConsumerWidget {
   const DashboardScreen({super.key});
 
-  @override
-  ConsumerState<DashboardScreen> createState() => _DashboardScreenState();
-}
-
-class _DashboardScreenState extends ConsumerState<DashboardScreen> {
-  bool _loading = true;
-  String? _familyId;
-  List<dynamic> _tasks = const [];
-  String? _error;
-
-  @override
-  void initState() {
-    super.initState();
-    _load();
+  Future<void> _refreshFeeds(WidgetRef ref) async {
+    final familyId = await ref.read(familyProvider.future);
+    await ref.read(apiClientProvider).refreshAllFeeds(familyId);
+    ref.invalidate(unownedTasksProvider);
   }
 
-  Future<void> _load() async {
-    setState(() {
-      _loading = true;
-      _error = null;
-    });
-    try {
-      final api = ref.read(apiClientProvider);
-      final me = await api.me();
-      final families = me['families'] as List<dynamic>;
-      if (families.isEmpty) {
-        final created = await api.createFamily('My Family');
-        _familyId = (created['family'] as Map<String, dynamic>)['id'] as String;
-      } else {
-        final first = families.first as Map<String, dynamic>;
-        _familyId = (first['family'] as Map<String, dynamic>)['id'] as String;
-      }
-      await _reloadTasks();
-    } catch (e) {
-      setState(() => _error = '$e');
-    } finally {
-      if (mounted) setState(() => _loading = false);
-    }
-  }
-
-  Future<void> _reloadTasks() async {
-    final api = ref.read(apiClientProvider);
-    final tasks = await api.listTasks(_familyId!, status: 'unowned');
-    if (mounted) setState(() => _tasks = tasks);
-  }
-
-  Future<void> _claim(String taskId) async {
-    final api = ref.read(apiClientProvider);
-    await api.assignTask(_familyId!, taskId);
-    await _reloadTasks();
-  }
-
-  Future<void> _refreshFeeds() async {
-    final api = ref.read(apiClientProvider);
-    await api.refreshAllFeeds(_familyId!);
-    await _reloadTasks();
+  Future<void> _claim(WidgetRef ref, String taskId) async {
+    final familyId = await ref.read(familyProvider.future);
+    await ref.read(apiClientProvider).assignTask(familyId, taskId);
+    ref.invalidate(unownedTasksProvider);
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final tasksAsync = ref.watch(unownedTasksProvider);
+    final members = ref.watch(membersProvider).valueOrNull ?? const <Member>[];
+    final names = {for (final m in members) m.id: m.relationName};
+
     return Scaffold(
       appBar: AppBar(
         title: const Text('Unowned tasks'),
         actions: [
           IconButton(
             tooltip: 'Refresh feeds',
-            onPressed: _loading ? null : _refreshFeeds,
+            onPressed: () => _refreshFeeds(ref),
             icon: const Icon(Icons.sync),
           ),
           IconButton(
@@ -84,48 +44,86 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
           ),
         ],
       ),
-      body: _buildBody(),
-    );
-  }
-
-  Widget _buildBody() {
-    if (_loading) return const Center(child: CircularProgressIndicator());
-    if (_error != null) return Center(child: Text(_error!));
-    if (_tasks.isEmpty) {
-      return const Center(child: Text('Nothing unowned — all covered 🎉'));
-    }
-    return RefreshIndicator(
-      onRefresh: _reloadTasks,
-      child: ListView.separated(
-        itemCount: _tasks.length,
-        separatorBuilder: (_, __) => const Divider(height: 1),
-        itemBuilder: (context, i) {
-          final t = _tasks[i] as Map<String, dynamic>;
-          final type = t['type'] as String;
-          final start = _parseTimestamp(t['dtstart']);
-          return ListTile(
-            title: Text(_label(type)),
-            subtitle: Text(start.toLocal().toString()),
-            trailing: FilledButton(
-              onPressed: () => _claim(t['id'] as String),
-              child: const Text('Claim'),
-            ),
-          );
-        },
+      body: tasksAsync.when(
+        loading: () => const Center(child: CircularProgressIndicator()),
+        error: (e, _) => Center(child: Text('$e')),
+        data: (tasks) => RefreshIndicator(
+          onRefresh: () async {
+            ref.invalidate(unownedTasksProvider);
+            await ref.read(unownedTasksProvider.future);
+          },
+          child: tasks.isEmpty
+              ? ListView(
+                  children: const [
+                    SizedBox(height: 160),
+                    Center(child: Text('Nothing unowned — all covered 🎉')),
+                  ],
+                )
+              : _GroupedTaskList(tasks: tasks, names: names, onClaim: (id) => _claim(ref, id)),
+        ),
       ),
     );
   }
+}
 
-  String _label(String type) => switch (type) {
-        'pickup' => 'Pickup',
-        'dropoff' => 'Drop-off',
-        _ => 'Attendance',
-      };
+class _GroupedTaskList extends StatelessWidget {
+  const _GroupedTaskList({
+    required this.tasks,
+    required this.names,
+    required this.onClaim,
+  });
 
-  /// The API serializes timestamps as ISO-8601 strings (Drizzle Date ->
-  /// JSON.stringify). Accept epoch millis too, for safety.
-  DateTime _parseTimestamp(Object? value) {
-    if (value is int) return DateTime.fromMillisecondsSinceEpoch(value);
-    return DateTime.parse(value as String);
+  final List<TaskItem> tasks;
+  final Map<String, String> names;
+  final void Function(String taskId) onClaim;
+
+  @override
+  Widget build(BuildContext context) {
+    final now = DateTime.now();
+    final sorted = [...tasks]..sort((a, b) => a.start.compareTo(b.start));
+
+    final groups = <DateTime, List<TaskItem>>{};
+    for (final t in sorted) {
+      (groups[dayKey(t.start)] ??= []).add(t);
+    }
+    final days = groups.keys.toList()..sort();
+
+    final theme = Theme.of(context);
+    final children = <Widget>[];
+    for (final day in days) {
+      children.add(
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 20, 16, 6),
+          child: Text(
+            dayHeading(day, now),
+            style: theme.textTheme.titleSmall?.copyWith(
+              color: theme.colorScheme.primary,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ),
+      );
+      for (final t in groups[day]!) {
+        final child = names[t.familyMemberId] ?? 'child';
+        children.add(
+          ListTile(
+            leading: CircleAvatar(child: Icon(_iconFor(t.type))),
+            title: Text('${t.typeLabel} · $child'),
+            subtitle: Text(friendlyTime(t.start)),
+            trailing: FilledButton(
+              onPressed: () => onClaim(t.id),
+              child: const Text('Claim'),
+            ),
+          ),
+        );
+      }
+    }
+    return ListView(children: children);
   }
+
+  IconData _iconFor(String type) => switch (type) {
+        'pickup' => Icons.directions_car,
+        'dropoff' => Icons.login,
+        _ => Icons.event,
+      };
 }
