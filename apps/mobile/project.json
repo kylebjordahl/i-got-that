@@ -1,0 +1,50 @@
+{
+  "name": "mobile",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "projectType": "application",
+  "sourceRoot": "apps/mobile/lib",
+  "tags": ["language:dart", "framework:flutter"],
+  "targets": {
+    "pub-get": {
+      "executor": "nx:run-commands",
+      "options": { "command": "fvm flutter pub get", "cwd": "apps/mobile" },
+      "configurations": { "ci": { "command": "flutter pub get" } }
+    },
+    "analyze": {
+      "executor": "nx:run-commands",
+      "options": { "command": "fvm flutter analyze", "cwd": "apps/mobile" },
+      "configurations": { "ci": { "command": "flutter analyze" } }
+    },
+    "format": {
+      "executor": "nx:run-commands",
+      "options": { "command": "fvm dart format lib test", "cwd": "apps/mobile" },
+      "configurations": { "ci": { "command": "dart format --set-exit-if-changed lib test" } }
+    },
+    "test": {
+      "executor": "nx:run-commands",
+      "options": { "command": "fvm flutter test", "cwd": "apps/mobile" },
+      "configurations": { "ci": { "command": "flutter test" } }
+    },
+    "run": {
+      "executor": "nx:run-commands",
+      "options": { "command": "fvm flutter run", "cwd": "apps/mobile" }
+    },
+    "build-web": {
+      "executor": "nx:run-commands",
+      "options": { "command": "fvm flutter build web", "cwd": "apps/mobile" },
+      "configurations": { "ci": { "command": "flutter build web" } }
+    },
+    "build-ios": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "fvm flutter build ios --no-codesign",
+        "cwd": "apps/mobile"
+      },
+      "configurations": { "ci": { "command": "flutter build ios --no-codesign" } }
+    },
+    "clean": {
+      "executor": "nx:run-commands",
+      "options": { "command": "fvm flutter clean", "cwd": "apps/mobile" }
+    }
+  }
+}

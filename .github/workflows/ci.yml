@@ -25,27 +25,32 @@ jobs:
         run: corepack enable && corepack prepare pnpm@9 --activate
       - run: pnpm install --frozen-lockfile
       - name: Typecheck
-        run: pnpm nx run-many -t typecheck
+        run: pnpm nx run-many -t typecheck --projects=tag:language:typescript
       # Integration tests run inside workerd via @cloudflare/vitest-pool-workers
-      # (real D1/KV/Queue bindings) — no live Cloudflare account needed.
+      # (real D1/KV/Queue bindings) — no live Cloudflare account needed. The
+      # Flutter app runs in the dedicated flutter job below (selected by tag).
       - name: Unit + integration tests
-        run: pnpm nx run-many -t test
+        run: pnpm nx run-many -t test --projects=tag:language:typescript
 
   flutter:
-    name: Flutter (analyze)
+    name: Flutter (analyze + test)
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: apps/mobile
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - run: corepack enable && corepack prepare pnpm@9 --activate
+      - run: pnpm install --frozen-lockfile
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
+      # Generate platform runners (ios/, web/) which aren't committed.
       - run: flutter create . --platforms=ios,web --project-name caretaker_app
-      - run: flutter pub get
-      - run: flutter analyze
-      # - run: flutter test   # enabled once widget tests exist (Phase 5)
+        working-directory: apps/mobile
+      # Drive Flutter through Nx with the `ci` configuration (plain `flutter`,
+      # no fvm), selected abstractly by language tag.
+      - run: pnpm nx run-many -t pub-get analyze test --configuration=ci --projects=tag:language:dart
 
   deploy-staging:
     name: Deploy → staging + E2E (validation gate)
