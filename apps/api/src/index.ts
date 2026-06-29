@@ -1,5 +1,6 @@
 import { eq, families, familyMembers, getDb } from '@igt/db';
 import { Hono } from 'hono';
+import { cors } from 'hono/cors';
 import type { HonoEnv } from './env.js';
 import { authMiddleware } from './middleware/auth.js';
 import { authRoutes } from './routes/auth.js';
@@ -12,6 +13,11 @@ import { scheduled } from './scheduled.js';
  * delivery routes are filled in across Phases 2–4.
  */
 const app = new Hono<HonoEnv>();
+
+// Allow the Flutter web client (and other origins) to call the API. We use
+// bearer tokens (no cookies), so permissive CORS is safe here; restrict
+// `origin` for production if desired.
+app.use('*', cors());
 
 app.get('/health', (c) =>
   c.json({
