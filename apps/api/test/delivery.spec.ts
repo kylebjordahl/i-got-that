@@ -217,3 +217,38 @@ describe('calendar targets', () => {
     expect(secretGone).toHaveLength(0);
   });
 });
+
+describe('resync deliveries', () => {
+  it('reports owned tasks and delivers to none when there are no targets', async () => {
+    const { admin, familyId, memberId } = await adminFamily('resync-admin@example.com');
+    const db = getDb(env.DB);
+
+    const childRes = await call(
+      `/families/${familyId}/members`,
+      authed(admin.token, { relationName: 'child', requiresCaretaker: true }),
+    );
+    const childId = ((await childRes.json()) as { member: { id: string } }).member.id;
+
+    await db.insert(tasks).values({
+      familyId,
+      familyMemberId: childId,
+      type: 'pickup',
+      dtstart: new Date('2026-03-10T15:00:00Z'),
+      dtend: null,
+      status: 'owned',
+      ownerMemberId: memberId,
+      createdVia: 'manual',
+    });
+
+    const res = await call(`/families/${familyId}/tasks/resync-deliveries`, authed(admin.token));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      ownedTasks: number;
+      delivered: number;
+      errors: unknown[];
+    };
+    expect(body.ownedTasks).toBeGreaterThanOrEqual(1);
+    expect(body.delivered).toBe(0);
+    expect(body.errors).toHaveLength(0);
+  });
+});

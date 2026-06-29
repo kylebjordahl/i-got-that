@@ -170,3 +170,29 @@ taskRoutes.post('/tasks/:taskId/unassign', async (c) => {
   )[0]!;
   return c.json({ task: updated });
 });
+
+/**
+ * Re-deliver every owned task to its owner's calendars. Use after connecting a
+ * calendar (tasks claimed earlier were never delivered) — there is no automatic
+ * backfill. Returns counts + any per-task errors so failures are visible.
+ */
+taskRoutes.post('/tasks/resync-deliveries', async (c) => {
+  const db = getDb(c.env.DB);
+  const me = c.get('member');
+  const owned = await db
+    .select()
+    .from(tasks)
+    .where(and(eq(tasks.familyId, me.familyId), eq(tasks.status, 'owned')));
+
+  const registry = getProductionRegistry(c.env);
+  let delivered = 0;
+  const errors: { taskId: string; error: string }[] = [];
+  for (const t of owned) {
+    try {
+      delivered += await deliverTask(db, registry, c.env.KEK, t.id);
+    } catch (err) {
+      errors.push({ taskId: t.id, error: String(err) });
+    }
+  }
+  return c.json({ ownedTasks: owned.length, delivered, errors });
+});

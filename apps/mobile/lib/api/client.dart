@@ -141,6 +141,12 @@ class ApiClient {
         data: <String, dynamic>{}, options: _auth);
   }
 
+  /// Re-deliver all owned tasks to their owners' calendars. Returns
+  /// `{ ownedTasks, delivered, errors }`.
+  Future<Map<String, dynamic>> resyncDeliveries(String familyId) async => _obj(
+      await _dio.post('/families/$familyId/tasks/resync-deliveries',
+          data: <String, dynamic>{}, options: _auth));
+
   // --- Calendar targets (delivery destinations) --------------------------
 
   Future<List<dynamic>> listCalendarTargets(String familyId) async => _list(

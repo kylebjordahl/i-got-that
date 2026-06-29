@@ -41,6 +41,14 @@ final unownedTasksProvider = FutureProvider<List<TaskItem>>((ref) async {
   return rows.map((e) => TaskItem.fromJson(e as Map<String, dynamic>)).toList();
 });
 
+/// Every task (owned + unowned) — the oversight view.
+final allTasksProvider = FutureProvider<List<TaskItem>>((ref) async {
+  final api = ref.watch(apiClientProvider);
+  final familyId = await ref.watch(familyProvider.future);
+  final rows = await api.listTasks(familyId);
+  return rows.map((e) => TaskItem.fromJson(e as Map<String, dynamic>)).toList();
+});
+
 final feedsProvider = FutureProvider<List<Map<String, dynamic>>>((ref) async {
   final api = ref.watch(apiClientProvider);
   final familyId = await ref.watch(familyProvider.future);
