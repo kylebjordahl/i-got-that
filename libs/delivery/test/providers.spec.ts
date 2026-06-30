@@ -116,6 +116,36 @@ describe('GoogleCalendarProvider', () => {
       provider.upsert(event, { method: 'google', addressOrUrl: '' }),
     ).rejects.toThrow();
   });
+
+  it('refreshes a refresh-token credential into an access token', async () => {
+    let captured: { headers: Record<string, string> } | null = null;
+    const provider = new GoogleCalendarProvider(
+      async (_url, init) => {
+        captured = { headers: init!.headers as Record<string, string> };
+        return new Response(JSON.stringify({ id: 'g-evt-1' }), { status: 200 });
+      },
+      async (refreshToken) => (refreshToken === 'rt-1' ? 'fresh-access' : 'wrong'),
+    );
+    const res = await provider.upsert(event, {
+      method: 'google',
+      addressOrUrl: '',
+      externalCalendarId: 'cal',
+      credential: { kind: 'oauth', refreshToken: 'rt-1' },
+    });
+    expect(res.externalRef).toBe('g-evt-1');
+    expect(captured!.headers.Authorization).toBe('Bearer fresh-access');
+  });
+
+  it('rejects a refresh-token credential with no refresher available', async () => {
+    const provider = new GoogleCalendarProvider(); // no refresher
+    await expect(
+      provider.upsert(event, {
+        method: 'google',
+        addressOrUrl: '',
+        credential: { kind: 'oauth', refreshToken: 'rt-1' },
+      }),
+    ).rejects.toThrow();
+  });
 });
 
 describe('CalDavProvider (against a fake CalDAV server)', () => {

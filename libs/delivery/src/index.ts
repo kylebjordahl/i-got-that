@@ -37,7 +37,12 @@ export interface DeliveryTarget {
 
 export type DeliveryCredential =
   | { kind: 'basic'; username: string; password: string }
-  | { kind: 'oauth'; accessToken: string };
+  // accessToken (short-lived, e.g. a paste) and/or refreshToken (exchanged for
+  // an access token at delivery time via an injected refresher).
+  | { kind: 'oauth'; accessToken?: string; refreshToken?: string };
+
+/** Exchange a stored refresh token for a fresh access token (provided by the host). */
+export type AccessTokenRefresher = (refreshToken: string) => Promise<string>;
 
 export interface DeliveryResult {
   externalRef?: string;

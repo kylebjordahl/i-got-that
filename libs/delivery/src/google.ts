@@ -1,4 +1,5 @@
 import type {
+  AccessTokenRefresher,
   DeliveryEvent,
   DeliveryProvider,
   DeliveryResult,
@@ -7,18 +8,32 @@ import type {
 
 /**
  * Google Calendar via the REST API (the Node `googleapis` SDK is too heavy for
- * Workers). Assumes a valid access token on the target credential; OAuth refresh
- * is handled upstream. `fetchImpl` is injectable for tests.
+ * Workers). The credential carries an access token and/or a refresh token; when
+ * only a refresh token is present we exchange it for an access token via the
+ * injected `refresh` callback (the host holds the OAuth client secret).
+ * `fetchImpl` is injectable for tests.
  */
 export class GoogleCalendarProvider implements DeliveryProvider {
   readonly method = 'google' as const;
 
-  constructor(private readonly fetchImpl: typeof fetch = fetch) {}
+  constructor(
+    private readonly fetchImpl: typeof fetch = fetch,
+    private readonly refresh?: AccessTokenRefresher,
+  ) {}
 
-  async upsert(event: DeliveryEvent, target: DeliveryTarget): Promise<DeliveryResult> {
-    if (target.credential?.kind !== 'oauth') {
+  /** Resolve a usable access token from the credential (refreshing if needed). */
+  private async accessToken(target: DeliveryTarget): Promise<string> {
+    const cred = target.credential;
+    if (cred?.kind !== 'oauth') {
       throw new Error('google target requires an oauth credential');
     }
+    if (cred.accessToken) return cred.accessToken;
+    if (cred.refreshToken && this.refresh) return this.refresh(cred.refreshToken);
+    throw new Error('google credential has no usable access token');
+  }
+
+  async upsert(event: DeliveryEvent, target: DeliveryTarget): Promise<DeliveryResult> {
+    const accessToken = await this.accessToken(target);
     const calId = target.externalCalendarId ?? 'primary';
     const body = {
       iCalUID: event.uid,
@@ -44,7 +59,7 @@ export class GoogleCalendarProvider implements DeliveryProvider {
       {
         method: 'POST',
         headers: {
-          Authorization: `Bearer ${target.credential.accessToken}`,
+          Authorization: `Bearer ${accessToken}`,
           'content-type': 'application/json',
         },
         body: JSON.stringify(body),
@@ -57,12 +72,13 @@ export class GoogleCalendarProvider implements DeliveryProvider {
 
   async cancel(event: DeliveryEvent, target: DeliveryTarget): Promise<void> {
     if (target.credential?.kind !== 'oauth') return;
+    const accessToken = await this.accessToken(target);
     const calId = target.externalCalendarId ?? 'primary';
     await this.fetchImpl(
       `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calId)}/events/${encodeURIComponent(event.uid)}`,
       {
         method: 'DELETE',
-        headers: { Authorization: `Bearer ${target.credential.accessToken}` },
+        headers: { Authorization: `Bearer ${accessToken}` },
       },
     );
   }

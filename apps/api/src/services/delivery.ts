@@ -20,6 +20,7 @@ import {
 } from '@igt/delivery';
 import { EmailMessage } from 'cloudflare:email';
 import type { Bindings } from '../env.js';
+import { googleOAuthConfigured, refreshGoogleAccessToken } from '../lib/google-oauth.js';
 import { loadSecret } from './../lib/secrets.js';
 
 type TaskRow = typeof tasks.$inferSelect;
@@ -362,9 +363,14 @@ export async function purgeTargetRemote(
  * When unavailable, email targets are skipped by the reconciler.
  */
 export function getProductionRegistry(env: Bindings): DeliveryProviderRegistry {
+  // Google provider can refresh a stored refresh token into an access token
+  // (the OAuth client secret lives here, not in libs/delivery).
+  const googleRefresher = googleOAuthConfigured(env)
+    ? (refreshToken: string) => refreshGoogleAccessToken(env, refreshToken)
+    : undefined;
   const registry = new DeliveryProviderRegistry()
     .register(new CalDavProvider())
-    .register(new GoogleCalendarProvider());
+    .register(new GoogleCalendarProvider(fetch, googleRefresher));
 
   if (env.EMAIL) {
     const organizer = env.ORGANIZER_EMAIL ?? 'noreply@example.com';

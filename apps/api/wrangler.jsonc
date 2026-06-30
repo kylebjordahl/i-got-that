@@ -22,7 +22,11 @@
     // Allowed Apple `aud` values for Sign in with Apple (comma-separated: the
     // iOS bundle id and/or web Services ID). Empty ⇒ Apple login disabled.
     // Set per env (or via secret). See docs/AUTH.md.
-    "APPLE_CLIENT_IDS": ""
+    "APPLE_CLIENT_IDS": "",
+    // Google OAuth client for the Calendar provider. ID can be a var; set the
+    // SECRET via `wrangler secret put GOOGLE_OAUTH_CLIENT_SECRET`. Empty ⇒ the
+    // Google OAuth flow is disabled (paste-token still works). See docs/AUTH.md.
+    "GOOGLE_OAUTH_CLIENT_ID": ""
   },
   "d1_databases": [
     {

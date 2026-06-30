@@ -284,6 +284,17 @@ class ApiClient {
     return _obj(res);
   }
 
+  /// Build a Google OAuth consent URL for `redirectUri` (the client opens it,
+  /// then sends back the resulting authorization code on the target).
+  Future<String> googleAuthorizeUrl(String familyId, String redirectUri) async {
+    final res = await _dio.post(
+      '/families/$familyId/google/authorize-url',
+      data: {'redirectUri': redirectUri},
+      options: _auth,
+    );
+    return (res.data as Map<String, dynamic>)['url'] as String;
+  }
+
   /// Discover the calendars available for a set of CalDAV credentials.
   /// Returns a list of `{ url, displayName }`.
   Future<List<dynamic>> discoverCalDavCalendars(

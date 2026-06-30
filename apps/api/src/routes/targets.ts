@@ -10,12 +10,18 @@ import {
 import {
   CalDavDiscoverInput,
   CreateCalendarTargetInput,
+  GoogleAuthorizeUrlInput,
   UpdateCalendarTargetInput,
 } from '@igt/domain';
 import { createCalDavClient } from '@igt/ical';
 import { Hono } from 'hono';
-import type { HonoEnv } from '../env.js';
+import type { Bindings, HonoEnv } from '../env.js';
 import { requireFamilyMember } from '../middleware/auth.js';
+import {
+  buildGoogleAuthorizeUrl,
+  exchangeGoogleCode,
+  googleOAuthConfigured,
+} from '../lib/google-oauth.js';
 import { storeSecret } from '../lib/secrets.js';
 import {
   enqueueReconcile,
@@ -34,9 +40,59 @@ async function loadTarget(db: Db, targetId: string) {
   return rows[0] ?? null;
 }
 
+type Credential =
+  | { username?: string; password?: string; accessToken?: string; authCode?: string; redirectUri?: string }
+  | undefined;
+
+/**
+ * Build the (JSON) credential payload to encrypt for a target, or null if none.
+ * For Google, an authCode + redirectUri is exchanged for a stored refresh token;
+ * a pasted accessToken is still accepted as a fallback.
+ */
+async function buildCredentialPayload(
+  env: Bindings,
+  method: string,
+  cred: Credential,
+): Promise<{ payload: string } | { error: string; status: 400 | 500 } | null> {
+  if (!cred) return null;
+  const hasMaterial = cred.password || cred.accessToken || cred.authCode;
+  if (!hasMaterial) return null;
+
+  if (method === 'google') {
+    if (cred.authCode && cred.redirectUri) {
+      try {
+        const tokens = await exchangeGoogleCode(env, {
+          code: cred.authCode,
+          redirectUri: cred.redirectUri,
+        });
+        if (!tokens.refreshToken) return { error: 'google_no_refresh_token', status: 400 };
+        return { payload: JSON.stringify({ kind: 'oauth', refreshToken: tokens.refreshToken }) };
+      } catch (err) {
+        console.error('google code exchange failed', err);
+        return { error: 'google_exchange_failed', status: 400 };
+      }
+    }
+    if (cred.accessToken) {
+      return { payload: JSON.stringify({ kind: 'oauth', accessToken: cred.accessToken }) };
+    }
+    return null;
+  }
+  return {
+    payload: JSON.stringify({ kind: 'basic', username: cred.username, password: cred.password }),
+  };
+}
+
 /** Mounted under /families/:familyId (auth applied by parent router). */
 export const targetRoutes = new Hono<HonoEnv>();
 targetRoutes.use('*', requireFamilyMember);
+
+/** Build a Google OAuth consent URL (the client opens it, then sends us the code). */
+targetRoutes.post('/google/authorize-url', async (c) => {
+  if (!googleOAuthConfigured(c.env)) return c.json({ error: 'google_oauth_not_configured' }, 501);
+  const parsed = GoogleAuthorizeUrlInput.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) return c.json({ error: 'invalid', issues: parsed.error.issues }, 400);
+  return c.json({ url: buildGoogleAuthorizeUrl(c.env, { redirectUri: parsed.data.redirectUri }) });
+});
 
 /**
  * Create a calendar target for a caretaker. A member manages their own targets;
@@ -72,21 +128,13 @@ targetRoutes.post('/calendar-targets', async (c) => {
   )[0];
   if (!target) return c.json({ error: 'member_not_found' }, 404);
 
-  // Encrypt any provided credential.
+  // Encrypt any provided credential (Google: exchange the auth code first).
   let credentialsRef: string | null = null;
-  const cred = parsed.data.credential;
-  if (cred && (cred.password || cred.accessToken)) {
+  const built = await buildCredentialPayload(c.env, parsed.data.method, parsed.data.credential);
+  if (built && 'error' in built) return c.json({ error: built.error }, built.status);
+  if (built) {
     if (!c.env.KEK) return c.json({ error: 'kek_unconfigured' }, 500);
-    const payload =
-      parsed.data.method === 'google'
-        ? { kind: 'oauth', accessToken: cred.accessToken }
-        : { kind: 'basic', username: cred.username, password: cred.password };
-    credentialsRef = await storeSecret(
-      db,
-      c.env.KEK,
-      me.familyId,
-      JSON.stringify(payload),
-    );
+    credentialsRef = await storeSecret(db, c.env.KEK, me.familyId, built.payload);
   }
 
   const row = (
@@ -194,13 +242,11 @@ targetRoutes.patch('/calendar-targets/:targetId', async (c) => {
   if (d.providerHint !== undefined) set.providerHint = d.providerHint;
   if (d.alertMinutes !== undefined) set.alertMinutes = d.alertMinutes;
 
-  if (d.credential && (d.credential.password || d.credential.accessToken)) {
+  const built = await buildCredentialPayload(c.env, found.target.method, d.credential);
+  if (built && 'error' in built) return c.json({ error: built.error }, built.status);
+  if (built) {
     if (!c.env.KEK) return c.json({ error: 'kek_unconfigured' }, 500);
-    const payload =
-      found.target.method === 'google'
-        ? { kind: 'oauth', accessToken: d.credential.accessToken }
-        : { kind: 'basic', username: d.credential.username, password: d.credential.password };
-    set.credentialsRef = await storeSecret(db, c.env.KEK, me.familyId, JSON.stringify(payload));
+    set.credentialsRef = await storeSecret(db, c.env.KEK, me.familyId, built.payload);
     if (found.target.credentialsRef) {
       await db.delete(secrets).where(eq(secrets.id, found.target.credentialsRef));
     }

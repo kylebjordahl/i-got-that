@@ -22,6 +22,9 @@ export interface Bindings {
      * iOS bundle id and/or web Services ID. Unset ⇒ Apple login disabled.
      */
     APPLE_CLIENT_IDS?: string;
+    /** Google OAuth client for the Calendar provider. Unset ⇒ Google OAuth off. */
+    GOOGLE_OAUTH_CLIENT_ID?: string;
+    GOOGLE_OAUTH_CLIENT_SECRET?: string;
 }
 
 /** Per-request context set by middleware. */

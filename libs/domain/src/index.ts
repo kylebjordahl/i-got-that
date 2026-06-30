@@ -219,7 +219,17 @@ const TargetCredential = z.object({
   username: z.string().optional(),
   password: z.string().optional(),
   accessToken: z.string().optional(),
+  // Google OAuth: the consent authorization code + the redirect URI it was
+  // issued for; the server exchanges these for a stored refresh token.
+  authCode: z.string().optional(),
+  redirectUri: z.string().optional(),
 });
+
+/** Build a Google OAuth consent URL for the given redirect URI. */
+export const GoogleAuthorizeUrlInput = z.object({
+  redirectUri: z.string().url(),
+});
+export type GoogleAuthorizeUrlInput = z.infer<typeof GoogleAuthorizeUrlInput>;
 
 /**
  * Default alerts for a calendar target: minutes before the event start, at most
@@ -251,16 +261,11 @@ export const CreateCalendarTargetInput = z.object({
   alertMinutes: AlertMinutes.optional(),
   /**
    * Credential material (encrypted server-side into a `secret`). For caldav:
-   * username + password (e.g. iCloud app-specific password). For google:
-   * accessToken (OAuth). Omit for email targets.
+   * username + password (e.g. iCloud app-specific password). For google: an
+   * OAuth `authCode` + `redirectUri` (exchanged for a refresh token), or a
+   * pasted `accessToken`. Omit for email targets.
    */
-  credential: z
-    .object({
-      username: z.string().optional(),
-      password: z.string().optional(),
-      accessToken: z.string().optional(),
-    })
-    .optional(),
+  credential: TargetCredential.optional(),
 });
 export type CreateCalendarTargetInput = z.infer<
   typeof CreateCalendarTargetInput

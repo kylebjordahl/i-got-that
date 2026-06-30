@@ -139,6 +139,10 @@ class _ConnectCalendarPageState extends ConsumerState<ConnectCalendarPage> {
   final _password = TextEditingController();
   final _calendarId = TextEditingController(text: 'primary');
   final _accessToken = TextEditingController();
+  // Google OAuth: redirect URI (must match the Google client) + the auth code.
+  final _redirectUri = TextEditingController();
+  final _authCode = TextEditingController();
+  String? _googleAuthUrl;
   // Up to two default reminders, in minutes before the event start.
   final _alert1 = TextEditingController();
   final _alert2 = TextEditingController();
@@ -204,6 +208,8 @@ class _ConnectCalendarPageState extends ConsumerState<ConnectCalendarPage> {
       _password,
       _calendarId,
       _accessToken,
+      _redirectUri,
+      _authCode,
       _alert1,
       _alert2,
     ]) {
@@ -267,10 +273,29 @@ class _ConnectCalendarPageState extends ConsumerState<ConnectCalendarPage> {
           }
           return _discovered.isEmpty ? 'Tap "Fetch calendars" to continue' : null;
         case _Provider.google:
-          return _accessToken.text.trim().isEmpty ? 'Paste an access token' : null;
+          final hasCode = _authCode.text.trim().isNotEmpty && _redirectUri.text.trim().isNotEmpty;
+          return hasCode || _accessToken.text.trim().isNotEmpty
+              ? null
+              : 'Authorize with Google (or paste an access token)';
       }
     }
     return null; // step 2 validated in _save
+  }
+
+  Future<void> _getGoogleAuthUrl() async {
+    if (_redirectUri.text.trim().isEmpty) {
+      return setState(() => _error = 'Enter your OAuth redirect URI first');
+    }
+    setState(() => _error = null);
+    try {
+      final familyId = await ref.read(familyProvider.future);
+      final url = await ref
+          .read(apiClientProvider)
+          .googleAuthorizeUrl(familyId, _redirectUri.text.trim());
+      setState(() => _googleAuthUrl = url);
+    } catch (e) {
+      setState(() => _error = '$e');
+    }
   }
 
   void _onContinue() {
@@ -327,7 +352,11 @@ class _ConnectCalendarPageState extends ConsumerState<ConnectCalendarPage> {
           providerHint = 'google';
           externalCalendarId = _calendarId.text.trim();
           addressOrUrl = _calendarId.text.trim();
-          if (!_editing || hasToken) {
+          final code = _authCode.text.trim();
+          final redirect = _redirectUri.text.trim();
+          if (code.isNotEmpty && redirect.isNotEmpty) {
+            credential = {'authCode': code, 'redirectUri': redirect};
+          } else if (hasToken) {
             credential = {'accessToken': _accessToken.text.trim()};
           }
       }
@@ -565,13 +594,7 @@ class _ConnectCalendarPageState extends ConsumerState<ConnectCalendarPage> {
         return [
           _googleCalendarIdField(),
           const SizedBox(height: 12),
-          TextField(
-            controller: _accessToken,
-            decoration: const InputDecoration(
-              labelText: 'OAuth access token',
-              hintText: 'Leave blank to keep current',
-            ),
-          ),
+          ..._credentialFields(), // re-authorize (or leave blank to keep)
         ];
       case _Provider.icloud:
       case _Provider.genericCaldav:
@@ -713,14 +736,47 @@ class _ConnectCalendarPageState extends ConsumerState<ConnectCalendarPage> {
       case _Provider.google:
         return [
           TextField(
-            controller: _accessToken,
+            controller: _redirectUri,
+            decoration: const InputDecoration(
+              labelText: 'OAuth redirect URI',
+              hintText: 'must match a URI on your Google OAuth client',
+            ),
+          ),
+          const SizedBox(height: 8),
+          OutlinedButton.icon(
+            onPressed: _getGoogleAuthUrl,
+            icon: const Icon(Icons.link),
+            label: const Text('Get authorization link'),
+          ),
+          if (_googleAuthUrl != null) ...[
+            const SizedBox(height: 8),
+            const _Hint('Open this link, approve access, then copy the "code" value '
+                'from the redirect URL into the field below.'),
+            SelectableText(_googleAuthUrl!, style: Theme.of(context).textTheme.bodySmall),
+          ],
+          const SizedBox(height: 12),
+          TextField(
+            controller: _authCode,
             decoration: InputDecoration(
-              labelText: 'OAuth access token',
+              labelText: 'Authorization code',
               hintText: _editing ? 'Leave blank to keep current' : null,
             ),
           ),
-          const _Hint('A proper Google sign-in flow is coming; for now paste an OAuth '
-              'access token with the calendar.events scope.'),
+          const SizedBox(height: 8),
+          ExpansionTile(
+            tilePadding: EdgeInsets.zero,
+            title: const Text('Advanced: paste an access token instead'),
+            children: [
+              TextField(
+                controller: _accessToken,
+                decoration: const InputDecoration(
+                  labelText: 'OAuth access token (expires ~1h)',
+                ),
+              ),
+              const _Hint('A short-lived token — prefer the authorization code above, '
+                  'which is exchanged for a refresh token that keeps working.'),
+            ],
+          ),
         ];
     }
   }
