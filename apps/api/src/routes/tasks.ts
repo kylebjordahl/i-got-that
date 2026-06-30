@@ -5,6 +5,7 @@ import {
   eq,
   familyMembers,
   getDb,
+  sourceEvents,
   tasks,
 } from '@igt/db';
 import { AssignTaskInput, CreateClassificationRuleInput } from '@igt/domain';
@@ -174,6 +175,83 @@ taskRoutes.post('/tasks/:taskId/unassign', async (c) => {
     );
   }
   return c.json({ task: updated });
+});
+
+/** Mark a task as unneeded — drops it from the queue + the owner's calendar. */
+taskRoutes.post('/tasks/:taskId/dismiss', async (c) => {
+  const db = getDb(c.env.DB);
+  const me = c.get('member');
+  const task = (
+    await db
+      .select()
+      .from(tasks)
+      .where(and(eq(tasks.id, c.req.param('taskId')), eq(tasks.familyId, me.familyId)))
+      .limit(1)
+  )[0];
+  if (!task) return c.json({ error: 'task_not_found' }, 404);
+
+  const formerOwner = task.ownerMemberId;
+  const updated = (
+    await db
+      .update(tasks)
+      .set({ status: 'dismissed', ownerMemberId: null })
+      .where(eq(tasks.id, task.id))
+      .returning()
+  )[0]!;
+  if (formerOwner) {
+    deferSync(
+      c.executionCtx,
+      syncMember(db, getProductionRegistry(c.env), c.env.KEK, formerOwner),
+    );
+  }
+  return c.json({ task: updated });
+});
+
+/** Restore a dismissed task back to the unowned pool. */
+taskRoutes.post('/tasks/:taskId/restore', async (c) => {
+  const db = getDb(c.env.DB);
+  const me = c.get('member');
+  const task = (
+    await db
+      .select()
+      .from(tasks)
+      .where(and(eq(tasks.id, c.req.param('taskId')), eq(tasks.familyId, me.familyId)))
+      .limit(1)
+  )[0];
+  if (!task) return c.json({ error: 'task_not_found' }, 404);
+
+  const updated = (
+    await db
+      .update(tasks)
+      .set({ status: 'unowned', ownerMemberId: null })
+      .where(eq(tasks.id, task.id))
+      .returning()
+  )[0]!;
+  return c.json({ task: updated });
+});
+
+/**
+ * Source feed events for oversight — the raw calendar events behind the tasks,
+ * so the All view can show generated tasks alongside their originating event.
+ * Unbounded, mirroring the tasks endpoint; the client relates by event id.
+ */
+taskRoutes.get('/source-events', async (c) => {
+  const db = getDb(c.env.DB);
+  const familyId = c.get('member').familyId;
+  const rows = await db
+    .select({
+      id: sourceEvents.id,
+      feedId: sourceEvents.feedId,
+      dtstart: sourceEvents.dtstart,
+      dtend: sourceEvents.dtend,
+      summary: sourceEvents.summary,
+      location: sourceEvents.location,
+      dismissedAt: sourceEvents.dismissedAt,
+    })
+    .from(sourceEvents)
+    .where(eq(sourceEvents.familyId, familyId))
+    .orderBy(asc(sourceEvents.dtstart));
+  return c.json({ events: rows });
 });
 
 /**

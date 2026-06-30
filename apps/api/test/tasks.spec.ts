@@ -409,3 +409,152 @@ describe('baseline timezone handling', () => {
     expect(healed.dtend!.getTime() - healed.dtstart.getTime()).toBe(45 * 60_000);
   });
 });
+
+describe('task & event dismissal', () => {
+  it('dismisses a task and restores it (survives rebuild)', async () => {
+    const admin = await login('dismiss-admin@example.com');
+    const familyId = await createFamily(admin.token, 'Dismiss Fam');
+    const db = getDb(env.DB);
+
+    const feedRes = await call(
+      `/families/${familyId}/feeds`,
+      authed(admin.token, { url: 'https://x/soccer.ics', mode: 'explicit' }),
+    );
+    const { feed } = (await feedRes.json()) as { feed: { id: string } };
+    const childRes = await call(
+      `/families/${familyId}/members`,
+      authed(admin.token, { relationName: 'kid', requiresCaretaker: true }),
+    );
+    const { member } = (await childRes.json()) as { member: { id: string } };
+    await call(
+      `/families/${familyId}/feeds/${feed.id}/member-links`,
+      authed(admin.token, { familyMemberId: member.id }),
+    );
+    await call(
+      `/families/${familyId}/classification-rules`,
+      authed(admin.token, {
+        feedId: feed.id,
+        matchField: 'summary',
+        matchOp: 'contains',
+        matchValue: 'Soccer',
+        effect: 'create',
+        producesTypes: ['pickup'],
+      }),
+    );
+    await seedEvent({
+      feedId: feed.id,
+      familyId,
+      uid: 'soccer-d',
+      start: new Date(Date.UTC(2026, 2, 10, 17)),
+      summary: 'Soccer practice',
+    });
+    await buildFeedTasks(db, await feedRow(feed.id));
+
+    const taskId = (await db.select().from(tasks).where(eq(tasks.feedId, feed.id)))[0]!.id;
+
+    // Dismiss → out of the unowned queue, marked dismissed.
+    const dis = await call(`/families/${familyId}/tasks/${taskId}/dismiss`, authed(admin.token));
+    expect(dis.status).toBe(200);
+    const unowned = await call(`/families/${familyId}/tasks?status=unowned`, bearer(admin.token));
+    expect(((await unowned.json()) as { tasks: unknown[] }).tasks).toHaveLength(0);
+    expect((await db.select().from(tasks).where(eq(tasks.id, taskId)))[0]!.status).toBe('dismissed');
+
+    // A rebuild does not resurrect it.
+    await buildFeedTasks(db, await feedRow(feed.id));
+    expect((await db.select().from(tasks).where(eq(tasks.id, taskId)))[0]!.status).toBe('dismissed');
+
+    // Restore → back in the queue.
+    const res = await call(`/families/${familyId}/tasks/${taskId}/restore`, authed(admin.token));
+    expect(res.status).toBe(200);
+    const back = await call(`/families/${familyId}/tasks?status=unowned`, bearer(admin.token));
+    expect(((await back.json()) as { tasks: unknown[] }).tasks).toHaveLength(1);
+  });
+
+  it('dismissing a closure event restores the baseline; source-events lists it', async () => {
+    const admin = await login('evt-dismiss@example.com');
+    const familyId = await createFamily(admin.token, 'Evt Fam');
+    const db = getDb(env.DB);
+
+    const feedRes = await call(
+      `/families/${familyId}/feeds`,
+      authed(admin.token, { url: 'https://x/cal.ics', mode: 'exception' }),
+    );
+    const { feed } = (await feedRes.json()) as { feed: { id: string } };
+    const childRes = await call(
+      `/families/${familyId}/members`,
+      authed(admin.token, { relationName: 'kid', requiresCaretaker: true }),
+    );
+    const { member } = (await childRes.json()) as { member: { id: string } };
+    await call(
+      `/families/${familyId}/feeds/${feed.id}/member-links`,
+      authed(admin.token, {
+        familyMemberId: member.id,
+        weekdayMask: 31,
+        dayStart: '08:00',
+        dayEnd: '15:00',
+        generatesTypes: ['dropoff', 'pickup'],
+        defaultAttendance: 'any',
+      }),
+    );
+    await call(
+      `/families/${familyId}/classification-rules`,
+      authed(admin.token, {
+        feedId: feed.id,
+        priority: 10,
+        matchField: 'summary',
+        matchOp: 'contains',
+        matchValue: 'Closed',
+        effect: 'cancel',
+      }),
+    );
+
+    const ws = nextMonday(new Date(Date.UTC(2026, 0, 1)));
+    const we = new Date(ws.getTime() + 7 * DAY_MS);
+    const wed = new Date(ws.getTime() + 2 * DAY_MS);
+    await seedEvent({
+      feedId: feed.id,
+      familyId,
+      uid: 'closed-wed',
+      start: new Date(wed.getTime() + 10 * 60 * 60 * 1000),
+      summary: 'MCH Closed - Holiday',
+    });
+
+    const win = { windowStart: ws, windowEnd: we };
+    await buildFeedTasks(db, await feedRow(feed.id), win);
+    const wedCount = () =>
+      db
+        .select()
+        .from(tasks)
+        .where(eq(tasks.feedId, feed.id))
+        .then((rows) =>
+          rows.filter((t) => startOfUtcDay(t.dtstart).getTime() === wed.getTime()).length,
+        );
+    expect(await wedCount()).toBe(0); // Wednesday cancelled by the closure
+
+    const eventId = (await db.select().from(sourceEvents).where(eq(sourceEvents.icalUid, 'closed-wed')))[0]!.id;
+
+    // Dismiss the erroneous closure (admin), then rebuild → baseline restored.
+    const dis = await call(
+      `/families/${familyId}/feeds/${feed.id}/events/${eventId}/dismiss`,
+      authed(admin.token),
+    );
+    expect(dis.status).toBe(200);
+    await buildFeedTasks(db, await feedRow(feed.id), win);
+    expect(await wedCount()).toBe(2);
+
+    // It surfaces in source-events with dismissedAt set.
+    const evRes = await call(`/families/${familyId}/source-events`, bearer(admin.token));
+    const { events } = (await evRes.json()) as {
+      events: { id: string; dismissedAt: number | null }[];
+    };
+    expect(events.find((e) => e.id === eventId)?.dismissedAt).toBeTruthy();
+
+    // Restore → the closure cancels Wednesday again.
+    await call(
+      `/families/${familyId}/feeds/${feed.id}/events/${eventId}/restore`,
+      authed(admin.token),
+    );
+    await buildFeedTasks(db, await feedRow(feed.id), win);
+    expect(await wedCount()).toBe(0);
+  });
+});

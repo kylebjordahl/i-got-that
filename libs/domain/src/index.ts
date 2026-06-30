@@ -25,7 +25,8 @@ export type TaskType = z.infer<typeof TaskType>;
 export const AttendanceRequirement = z.enum(['specific', 'any', 'both']);
 export type AttendanceRequirement = z.infer<typeof AttendanceRequirement>;
 
-export const TaskStatus = z.enum(['unowned', 'owned']);
+/** `dismissed` = manually marked unneeded (e.g. a bad feed event); not delivered. */
+export const TaskStatus = z.enum(['unowned', 'owned', 'dismissed']);
 export type TaskStatus = z.infer<typeof TaskStatus>;
 
 export const TaskCreatedVia = z.enum(['rule', 'baseline', 'manual']);

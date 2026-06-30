@@ -43,6 +43,13 @@
       "when": 1782787031150,
       "tag": "0005_exclusion_block_and_alerts",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1782788887211,
+      "tag": "0006_source_event_dismissed",
+      "breakpoints": true
     }
   ]
 }

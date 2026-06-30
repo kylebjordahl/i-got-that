@@ -170,6 +170,7 @@ async function buildExplicit(
     .where(
       and(
         eq(sourceEvents.feedId, feed.id),
+        isNull(sourceEvents.dismissedAt), // skip events manually marked unneeded
         or(
           isNull(sourceEvents.tasksBuiltHash),
           ne(sourceEvents.tasksBuiltHash, sourceEvents.contentHash),
@@ -251,13 +252,16 @@ async function buildException(
   const windowEnd = opts.windowEnd ?? new Date(windowStart.getTime() + 30 * DAY_MS);
   const tz = feed.timezone ?? 'UTC';
 
-  // All feed events in the window, grouped by UTC day — these are the exceptions.
+  // All feed events in the window, grouped by UTC day — these are the
+  // exceptions. Dismissed events are ignored so an erroneous closure no longer
+  // cancels the baseline.
   const events = await db
     .select()
     .from(sourceEvents)
     .where(
       and(
         eq(sourceEvents.feedId, feed.id),
+        isNull(sourceEvents.dismissedAt),
         gte(sourceEvents.dtstart, windowStart),
         lt(sourceEvents.dtstart, windowEnd),
       ),

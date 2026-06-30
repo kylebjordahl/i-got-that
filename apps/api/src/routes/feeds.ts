@@ -223,6 +223,80 @@ feedRoutes.delete('/:feedId/member-links/:linkId', requireAdmin, async (c) => {
   return c.json({ ok: true });
 });
 
+/** Load a source event scoped to its feed + family. */
+async function loadEvent(
+  db: ReturnType<typeof getDb>,
+  familyId: string,
+  feedId: string,
+  eventId: string,
+) {
+  return (
+    await db
+      .select()
+      .from(sourceEvents)
+      .where(
+        and(
+          eq(sourceEvents.id, eventId),
+          eq(sourceEvents.feedId, feedId),
+          eq(sourceEvents.familyId, familyId),
+        ),
+      )
+      .limit(1)
+  )[0];
+}
+
+/**
+ * Mark a feed event unneeded (admin) — e.g. an erroneous closure. Its generated
+ * tasks are dismissed and the feed is rebuilt so the event no longer creates
+ * tasks (explicit) or cancels the baseline (exception).
+ */
+feedRoutes.post('/:feedId/events/:eventId/dismiss', requireAdmin, async (c) => {
+  const db = getDb(c.env.DB);
+  const familyId = c.get('member').familyId;
+  const feedId = c.req.param('feedId');
+  const eventId = c.req.param('eventId');
+  const event = await loadEvent(db, familyId, feedId, eventId);
+  if (!event) return c.json({ error: 'not_found' }, 404);
+
+  await db.update(sourceEvents).set({ dismissedAt: new Date() }).where(eq(sourceEvents.id, eventId));
+  // Explicit feeds: drop this event's tasks from queues + calendars. (Exception
+  // feeds have no event-linked tasks; the rebuild restores the baseline.)
+  await db
+    .update(tasks)
+    .set({ status: 'dismissed', ownerMemberId: null })
+    .where(eq(tasks.sourceEventId, eventId));
+
+  const feed = (await db.select().from(feeds).where(eq(feeds.id, feedId)).limit(1))[0];
+  if (feed) await buildFeedTasks(db, feed);
+  deferSync(c.executionCtx, syncFamily(db, getProductionRegistry(c.env), c.env.KEK, familyId));
+  return c.json({ ok: true });
+});
+
+/** Restore a previously-dismissed feed event (admin) + rebuild. */
+feedRoutes.post('/:feedId/events/:eventId/restore', requireAdmin, async (c) => {
+  const db = getDb(c.env.DB);
+  const familyId = c.get('member').familyId;
+  const feedId = c.req.param('feedId');
+  const eventId = c.req.param('eventId');
+  const event = await loadEvent(db, familyId, feedId, eventId);
+  if (!event) return c.json({ error: 'not_found' }, 404);
+
+  await db
+    .update(sourceEvents)
+    .set({ dismissedAt: null, tasksBuiltHash: null })
+    .where(eq(sourceEvents.id, eventId));
+  // Un-dismiss its tasks so the rebuild can refresh them (explicit feeds).
+  await db
+    .update(tasks)
+    .set({ status: 'unowned' })
+    .where(and(eq(tasks.sourceEventId, eventId), eq(tasks.status, 'dismissed')));
+
+  const feed = (await db.select().from(feeds).where(eq(feeds.id, feedId)).limit(1))[0];
+  if (feed) await buildFeedTasks(db, feed);
+  deferSync(c.executionCtx, syncFamily(db, getProductionRegistry(c.env), c.env.KEK, familyId));
+  return c.json({ ok: true });
+});
+
 /** Force-refresh a single feed now. */
 feedRoutes.post('/:feedId/refresh', async (c) => {
   const db = getDb(c.env.DB);

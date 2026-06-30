@@ -215,6 +215,9 @@ export const sourceEvents = sqliteTable(
     // The content_hash tasks were last generated from. Needs (re)processing
     // iff tasksBuiltHash != contentHash.
     tasksBuiltHash: text('tasks_built_hash'),
+    // Manually marked unneeded (e.g. a bad feed event): excluded from task
+    // generation and the exception resolver. Null ⇒ active.
+    dismissedAt: integer('dismissed_at', { mode: 'timestamp_ms' }),
     createdAt: createdAt(),
   },
   (t) => ({

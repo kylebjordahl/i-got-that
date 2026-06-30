@@ -35,6 +35,7 @@ class TaskItem {
     required this.start,
     required this.status,
     this.ownerMemberId,
+    this.sourceEventId,
   });
 
   final String id;
@@ -44,6 +45,11 @@ class TaskItem {
   final String status;
   final String? ownerMemberId;
 
+  /// The feed event this task was generated from (null for baseline/manual).
+  final String? sourceEventId;
+
+  bool get isDismissed => status == 'dismissed';
+
   factory TaskItem.fromJson(Map<String, dynamic> j) => TaskItem(
         id: j['id'] as String,
         familyMemberId: j['familyMemberId'] as String,
@@ -51,6 +57,7 @@ class TaskItem {
         start: parseTimestamp(j['dtstart']),
         status: j['status'] as String,
         ownerMemberId: j['ownerMemberId'] as String?,
+        sourceEventId: j['sourceEventId'] as String?,
       );
 
   String get typeLabel => switch (type) {
@@ -58,4 +65,32 @@ class TaskItem {
         'dropoff' => 'Drop-off',
         _ => 'Attendance',
       };
+}
+
+/// A raw event from a calendar feed (shown in the oversight "All" view).
+class SourceEventItem {
+  SourceEventItem({
+    required this.id,
+    required this.feedId,
+    required this.start,
+    required this.dismissed,
+    this.summary,
+    this.location,
+  });
+
+  final String id;
+  final String feedId;
+  final DateTime start;
+  final bool dismissed;
+  final String? summary;
+  final String? location;
+
+  factory SourceEventItem.fromJson(Map<String, dynamic> j) => SourceEventItem(
+        id: j['id'] as String,
+        feedId: j['feedId'] as String,
+        start: parseTimestamp(j['dtstart']),
+        dismissed: j['dismissedAt'] != null,
+        summary: j['summary'] as String?,
+        location: j['location'] as String?,
+      );
 }

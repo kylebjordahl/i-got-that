@@ -55,12 +55,20 @@ final unownedTasksProvider = FutureProvider<List<TaskItem>>((ref) async {
   return rows.map((e) => TaskItem.fromJson(e as Map<String, dynamic>)).toList();
 });
 
-/// Every task (owned + unowned) — the oversight view.
+/// Every task (owned + unowned + dismissed) — the oversight view.
 final allTasksProvider = FutureProvider<List<TaskItem>>((ref) async {
   final api = ref.watch(apiClientProvider);
   final familyId = await ref.watch(familyProvider.future);
   final rows = await api.listTasks(familyId);
   return rows.map((e) => TaskItem.fromJson(e as Map<String, dynamic>)).toList();
+});
+
+/// Raw feed events behind the tasks — for the oversight view's event grouping.
+final sourceEventsProvider = FutureProvider<List<SourceEventItem>>((ref) async {
+  final api = ref.watch(apiClientProvider);
+  final familyId = await ref.watch(familyProvider.future);
+  final rows = await api.listSourceEvents(familyId);
+  return rows.map((e) => SourceEventItem.fromJson(e as Map<String, dynamic>)).toList();
 });
 
 final feedsProvider = FutureProvider<List<Map<String, dynamic>>>((ref) async {

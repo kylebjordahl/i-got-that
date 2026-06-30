@@ -202,6 +202,34 @@ class ApiClient {
         data: <String, dynamic>{}, options: _auth);
   }
 
+  /// Mark a task unneeded (drops it from the queue + the owner's calendar).
+  Future<void> dismissTask(String familyId, String taskId) async {
+    await _dio.post('/families/$familyId/tasks/$taskId/dismiss',
+        data: <String, dynamic>{}, options: _auth);
+  }
+
+  /// Restore a dismissed task back to the unowned pool.
+  Future<void> restoreTask(String familyId, String taskId) async {
+    await _dio.post('/families/$familyId/tasks/$taskId/restore',
+        data: <String, dynamic>{}, options: _auth);
+  }
+
+  /// The raw feed events behind the tasks (for the oversight view).
+  Future<List<dynamic>> listSourceEvents(String familyId) async =>
+      _list(await _dio.get('/families/$familyId/source-events', options: _auth), 'events');
+
+  /// Mark a feed event unneeded (admin) — e.g. an erroneous closure.
+  Future<void> dismissEvent(String familyId, String feedId, String eventId) async {
+    await _dio.post('/families/$familyId/feeds/$feedId/events/$eventId/dismiss',
+        data: <String, dynamic>{}, options: _auth);
+  }
+
+  /// Restore a previously-dismissed feed event (admin).
+  Future<void> restoreEvent(String familyId, String feedId, String eventId) async {
+    await _dio.post('/families/$familyId/feeds/$feedId/events/$eventId/restore',
+        data: <String, dynamic>{}, options: _auth);
+  }
+
   /// Re-deliver all owned tasks to their owners' calendars. Returns
   /// `{ ownedTasks, delivered, errors }`.
   Future<Map<String, dynamic>> resyncDeliveries(String familyId) async => _obj(
