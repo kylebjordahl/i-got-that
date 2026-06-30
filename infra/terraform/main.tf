@@ -17,6 +17,9 @@ locals {
 resource "cloudflare_d1_database" "primary" {
   account_id = var.cloudflare_account_id
   name       = "${var.name_prefix}-${local.suffix}"
+  read_replication = {
+    mode = "disabled"
+  }
 }
 
 # --- Delivery queue (durable, retry-backed calendar reconcile) -----------
