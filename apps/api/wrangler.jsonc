@@ -18,7 +18,11 @@
     "ORGANIZER_EMAIL": "noreply@igt.local",
     // DEV ONLY KEK (envelope-encryption key-encryption key). Production sets a
     // real secret via `wrangler secret put KEK` / Terraform — never commit prod keys.
-    "KEK": "2OmcakKhoLtzTqOq5ZrXq/e/7mXa8Gmav+dtCe/2ThM="
+    "KEK": "2OmcakKhoLtzTqOq5ZrXq/e/7mXa8Gmav+dtCe/2ThM=",
+    // Allowed Apple `aud` values for Sign in with Apple (comma-separated: the
+    // iOS bundle id and/or web Services ID). Empty ⇒ Apple login disabled.
+    // Set per env (or via secret). See docs/AUTH.md.
+    "APPLE_CLIENT_IDS": ""
   },
   "d1_databases": [
     {

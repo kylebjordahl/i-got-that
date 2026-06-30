@@ -11,6 +11,11 @@ export interface Bindings {
     ORGANIZER_EMAIL?: string;
     /** Cloudflare Email Service `send_email` binding (outbound iMIP). */
     EMAIL?: SendEmail;
+    /**
+     * Comma-separated allowed Apple `aud` values for Sign in with Apple — your
+     * iOS bundle id and/or web Services ID. Unset ⇒ Apple login disabled.
+     */
+    APPLE_CLIENT_IDS?: string;
 }
 
 /** Per-request context set by middleware. */

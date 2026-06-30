@@ -104,6 +104,12 @@ export const MagicLinkVerifyInput = z.object({
 });
 export type MagicLinkVerifyInput = z.infer<typeof MagicLinkVerifyInput>;
 
+/** Sign in with Apple: the identity token the native/web flow returns. */
+export const AppleSignInInput = z.object({
+  identityToken: z.string().min(1),
+});
+export type AppleSignInInput = z.infer<typeof AppleSignInInput>;
+
 export const CreateFamilyInput = z.object({
   name: z.string().min(1).max(120),
   /** The creator's relation label within the new family (e.g. "mom"). */

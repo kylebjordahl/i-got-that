@@ -56,6 +56,32 @@ async function findOrCreateUserByEmail(
   return user;
 }
 
+/** Find or create the user behind an Apple `sub` (provider_ref). */
+export async function findOrCreateUserByApple(
+  db: Db,
+  sub: string,
+  email?: string,
+): Promise<SessionUser> {
+  const existing = await db
+    .select({ user: users })
+    .from(identities)
+    .innerJoin(users, eq(users.id, identities.userId))
+    .where(and(eq(identities.provider, 'apple'), eq(identities.providerRef, sub)))
+    .limit(1);
+  if (existing[0]) return existing[0].user;
+
+  const username = email ?? `apple:${sub}`;
+  const inserted = await db
+    .insert(users)
+    .values({ username, displayName: email?.split('@')[0] ?? 'Apple user' })
+    .returning();
+  const user = inserted[0]!;
+  await db
+    .insert(identities)
+    .values({ userId: user.id, provider: 'apple', providerRef: sub });
+  return user;
+}
+
 /** Create a session for a user; returns the raw session token. */
 export async function createSession(db: Db, userId: string): Promise<string> {
   const rawToken = randomToken();
