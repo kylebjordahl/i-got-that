@@ -1,4 +1,4 @@
-import { buildStoredEventICalendar, createCalDavClient } from '@igt/ical';
+import { buildStoredEventICalendar } from '@igt/ical';
 import type {
   DeliveryEvent,
   DeliveryProvider,
@@ -7,34 +7,34 @@ import type {
 } from './index.js';
 
 /**
- * Direct CalDAV write (iCloud + generic) via tsdav — full-detail stored events,
- * no invite/RSVP semantics. Requires a basic credential (e.g. iCloud
- * app-specific password). Network-dependent; verified against a live server
- * rather than in unit tests.
+ * Direct CalDAV write (iCloud + generic) — full-detail stored events, no
+ * invite/RSVP semantics. We talk to the collection URL directly (the one the
+ * caretaker picked during discovery) with a single authenticated PUT/DELETE per
+ * event, rather than going through tsdav's account discovery + create-only
+ * helper. This gives true upsert semantics (a plain PUT overwrites) and keeps
+ * the create/cancel URLs identical. `fetchImpl` is injectable for tests.
  */
-/** The account/server root for a calendar collection URL (for client discovery). */
-function serverRoot(collectionUrl: string): string {
-  try {
-    return new URL(collectionUrl).origin;
-  } catch {
-    return collectionUrl;
-  }
-}
-
 export class CalDavProvider implements DeliveryProvider {
   readonly method = 'caldav' as const;
 
-  async upsert(event: DeliveryEvent, target: DeliveryTarget): Promise<DeliveryResult> {
+  constructor(private readonly fetchImpl: typeof fetch = fetch) {}
+
+  /** The object URL for an event within a collection (trailing slash enforced). */
+  private objectUrl(collectionUrl: string, uid: string): string {
+    const base = collectionUrl.endsWith('/') ? collectionUrl : `${collectionUrl}/`;
+    return new URL(`${encodeURIComponent(uid)}.ics`, base).href;
+  }
+
+  private authHeader(target: DeliveryTarget): string {
     if (target.credential?.kind !== 'basic') {
       throw new Error('caldav target requires a basic credential');
     }
-    // addressOrUrl is the specific calendar collection; the client connects to
-    // the server root and writes the event into that collection.
-    const client = await createCalDavClient({
-      serverUrl: serverRoot(target.addressOrUrl),
-      username: target.credential.username,
-      password: target.credential.password,
-    });
+    const { username, password } = target.credential;
+    return `Basic ${btoa(`${username}:${password}`)}`;
+  }
+
+  async upsert(event: DeliveryEvent, target: DeliveryTarget): Promise<DeliveryResult> {
+    const authorization = this.authHeader(target);
     const iCalString = buildStoredEventICalendar({
       uid: event.uid,
       sequence: event.sequence,
@@ -45,26 +45,34 @@ export class CalDavProvider implements DeliveryProvider {
       location: event.location,
       alertMinutes: event.alertMinutes,
     });
-    await client.createCalendarObject({
-      calendar: { url: target.addressOrUrl } as never,
-      filename: `${event.uid}.ics`,
-      iCalString,
+    const url = this.objectUrl(target.addressOrUrl, event.uid);
+    // Unconditional PUT = upsert: creates on first write, overwrites on update.
+    const res = await this.fetchImpl(url, {
+      method: 'PUT',
+      headers: {
+        authorization,
+        'content-type': 'text/calendar; charset=utf-8',
+      },
+      body: iCalString,
     });
+    if (!res.ok) {
+      const detail = await res.text().catch(() => '');
+      throw new Error(`caldav PUT ${res.status} for ${url}${detail ? `: ${detail.slice(0, 200)}` : ''}`);
+    }
     return { externalRef: event.uid, sequence: event.sequence };
   }
 
   async cancel(event: DeliveryEvent, target: DeliveryTarget): Promise<void> {
-    if (target.credential?.kind !== 'basic') return;
-    const client = await createCalDavClient({
-      serverUrl: serverRoot(target.addressOrUrl),
-      username: target.credential.username,
-      password: target.credential.password,
+    const authorization = this.authHeader(target);
+    const url = this.objectUrl(target.addressOrUrl, event.uid);
+    const res = await this.fetchImpl(url, {
+      method: 'DELETE',
+      headers: { authorization },
     });
-    await client.deleteCalendarObject({
-      calendarObject: {
-        url: `${target.addressOrUrl}/${event.uid}.ics`,
-        etag: '',
-      } as never,
-    });
+    // 404/410 = already gone; anything else non-2xx is a real failure.
+    if (!res.ok && res.status !== 404 && res.status !== 410) {
+      const detail = await res.text().catch(() => '');
+      throw new Error(`caldav DELETE ${res.status} for ${url}${detail ? `: ${detail.slice(0, 200)}` : ''}`);
+    }
   }
 }
