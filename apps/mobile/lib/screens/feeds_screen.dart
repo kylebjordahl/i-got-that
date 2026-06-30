@@ -132,7 +132,13 @@ class _FeedTile extends ConsumerWidget {
         .map((t) => t == 'dropoff' ? 'drop-off' : t)
         .join('/');
     final times = '${link['dayStart'] ?? '?'}–${link['dayEnd'] ?? '?'}';
-    return '${days.isEmpty ? '—' : days} · $times · $types';
+    final dur = link['durationMinutes'] as int?;
+    final loc = link['location'] as String?;
+    final extras = [
+      if (dur != null) '${dur}m block',
+      if (loc != null && loc.isNotEmpty) loc,
+    ].join(' · ');
+    return '${days.isEmpty ? '—' : days} · $times · $types${extras.isEmpty ? '' : ' · $extras'}';
   }
 
   Future<void> _refresh(BuildContext context, WidgetRef ref, String feedId) async {
@@ -313,6 +319,8 @@ class _LinkChildDialogState extends ConsumerState<_LinkChildDialog> {
   final Set<String> _types = {'dropoff', 'pickup'};
   final _dayStart = TextEditingController(text: '08:00');
   final _dayEnd = TextEditingController(text: '15:00');
+  final _duration = TextEditingController();
+  final _location = TextEditingController();
   bool _busy = false;
   String? _error;
 
@@ -333,6 +341,9 @@ class _LinkChildDialogState extends ConsumerState<_LinkChildDialog> {
         ..addAll(((ex['generatesTypes'] as List?)?.cast<String>() ?? const ['dropoff', 'pickup']));
       _dayStart.text = ex['dayStart'] as String? ?? '08:00';
       _dayEnd.text = ex['dayEnd'] as String? ?? '15:00';
+      final dur = ex['durationMinutes'] as int?;
+      _duration.text = dur != null ? '$dur' : '';
+      _location.text = ex['location'] as String? ?? '';
     }
   }
 
@@ -340,6 +351,8 @@ class _LinkChildDialogState extends ConsumerState<_LinkChildDialog> {
   void dispose() {
     _dayStart.dispose();
     _dayEnd.dispose();
+    _duration.dispose();
+    _location.dispose();
     super.dispose();
   }
 
@@ -357,6 +370,9 @@ class _LinkChildDialogState extends ConsumerState<_LinkChildDialog> {
     try {
       final familyId = await ref.read(familyProvider.future);
       final api = ref.read(apiClientProvider);
+      final duration =
+          widget.isException ? int.tryParse(_duration.text.trim()) : null;
+      final location = widget.isException ? _location.text.trim() : null;
       if (_editing) {
         await api.updateMemberLink(
           familyId,
@@ -365,6 +381,8 @@ class _LinkChildDialogState extends ConsumerState<_LinkChildDialog> {
           weekdayMask: widget.isException ? _weekdayMask : null,
           dayStart: widget.isException ? _dayStart.text.trim() : null,
           dayEnd: widget.isException ? _dayEnd.text.trim() : null,
+          durationMinutes: duration,
+          location: location,
           generatesTypes: widget.isException ? _types.toList() : null,
         );
       } else {
@@ -375,6 +393,8 @@ class _LinkChildDialogState extends ConsumerState<_LinkChildDialog> {
           weekdayMask: widget.isException ? _weekdayMask : null,
           dayStart: widget.isException ? _dayStart.text.trim() : null,
           dayEnd: widget.isException ? _dayEnd.text.trim() : null,
+          durationMinutes: duration,
+          location: location,
           generatesTypes: widget.isException ? _types.toList() : null,
           defaultAttendance: widget.isException ? 'any' : null,
         );
@@ -447,6 +467,32 @@ class _LinkChildDialogState extends ConsumerState<_LinkChildDialog> {
                         child: TextField(
                           controller: _dayEnd,
                           decoration: const InputDecoration(labelText: 'Pickup (HH:MM)'),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          controller: _duration,
+                          keyboardType: TextInputType.number,
+                          decoration: const InputDecoration(
+                            labelText: 'Block length (min)',
+                            hintText: 'blank = 1h',
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        flex: 2,
+                        child: TextField(
+                          controller: _location,
+                          decoration: const InputDecoration(
+                            labelText: 'Location',
+                            hintText: 'e.g. school',
+                          ),
                         ),
                       ),
                     ],

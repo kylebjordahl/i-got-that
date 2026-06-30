@@ -29,6 +29,15 @@ export class GoogleCalendarProvider implements DeliveryProvider {
       end: {
         dateTime: (event.end ?? new Date(event.start.getTime() + 3_600_000)).toISOString(),
       },
+      // Default popup reminders from the target config; useDefault:false so an
+      // empty list explicitly means "no reminders" rather than the calendar's.
+      reminders: {
+        useDefault: false,
+        overrides: (event.alertMinutes ?? []).map((minutes) => ({
+          method: 'popup',
+          minutes,
+        })),
+      },
     };
     const res = await this.fetchImpl(
       `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calId)}/events`,

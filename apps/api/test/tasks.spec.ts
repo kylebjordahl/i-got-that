@@ -1,5 +1,13 @@
 import { env } from 'cloudflare:test';
-import { and, eq, feeds, getDb, sourceEvents, tasks } from '@igt/db';
+import {
+  and,
+  eq,
+  familyMemberFeeds,
+  feeds,
+  getDb,
+  sourceEvents,
+  tasks,
+} from '@igt/db';
 import { describe, expect, it } from 'vitest';
 import { buildFeedTasks } from '../src/services/tasks.js';
 import { authed, bearer, call, createFamily, login } from './helpers.js';
@@ -318,6 +326,8 @@ describe('baseline timezone handling', () => {
         weekdayMask: 31,
         dayStart: '08:00',
         dayEnd: '15:00',
+        durationMinutes: 20,
+        location: "Children's House",
         generatesTypes: ['dropoff', 'pickup'],
         defaultAttendance: 'any',
       }),
@@ -339,5 +349,63 @@ describe('baseline timezone handling', () => {
     const pickup = built.find((t) => t.type === 'pickup')!;
     expect(dropoff.dtstart.getUTCHours()).toBe(15); // 08:00 PDT
     expect(pickup.dtstart.getUTCHours()).toBe(22); // 15:00 PDT
+    // The configured block length + location land on every baseline task.
+    expect(dropoff.location).toBe("Children's House");
+    expect(dropoff.dtend!.getTime() - dropoff.dtstart.getTime()).toBe(20 * 60_000);
+    expect(pickup.dtend!.getTime() - pickup.dtstart.getTime()).toBe(20 * 60_000);
+  });
+
+  it('heals block length + location when the baseline changes', async () => {
+    const admin = await login('tz-heal@example.com');
+    const familyId = await createFamily(admin.token, 'Heal Fam');
+    const db = getDb(env.DB);
+
+    const feedRes = await call(
+      `/families/${familyId}/feeds`,
+      authed(admin.token, { url: 'https://x/heal.ics', mode: 'exception' }),
+    );
+    const { feed } = (await feedRes.json()) as { feed: { id: string } };
+
+    const childRes = await call(
+      `/families/${familyId}/members`,
+      authed(admin.token, { relationName: 'Kid', requiresCaretaker: true }),
+    );
+    const { member } = (await childRes.json()) as { member: { id: string } };
+    const linkRes = await call(
+      `/families/${familyId}/feeds/${feed.id}/member-links`,
+      authed(admin.token, {
+        familyMemberId: member.id,
+        weekdayMask: 31,
+        dayStart: '08:00',
+        dayEnd: '15:00',
+        durationMinutes: 15,
+        generatesTypes: ['pickup'],
+        defaultAttendance: 'any',
+      }),
+    );
+    const { link } = (await linkRes.json()) as { link: { id: string } };
+
+    const monday = nextMonday(new Date(Date.UTC(2026, 6, 1)));
+    const window = { windowStart: monday, windowEnd: new Date(monday.getTime() + DAY_MS) };
+    const feedRowVal = (await db.select().from(feeds).where(eq(feeds.id, feed.id)).limit(1))[0]!;
+    await buildFeedTasks(db, feedRowVal, window);
+    const before = (
+      await db.select().from(tasks).where(eq(tasks.feedId, feed.id))
+    ).find((t) => t.type === 'pickup')!;
+
+    // Widen the block + add a location on the link, then rebuild in place — the
+    // existing (same id) baseline task is healed, not recreated.
+    await db
+      .update(familyMemberFeeds)
+      .set({ durationMinutes: 45, location: 'Gym' })
+      .where(eq(familyMemberFeeds.id, link.id));
+    await buildFeedTasks(db, feedRowVal, window);
+
+    const healed = (
+      await db.select().from(tasks).where(eq(tasks.feedId, feed.id))
+    ).find((t) => t.type === 'pickup')!;
+    expect(healed.id).toBe(before.id); // same row, healed in place
+    expect(healed.location).toBe('Gym');
+    expect(healed.dtend!.getTime() - healed.dtstart.getTime()).toBe(45 * 60_000);
   });
 });

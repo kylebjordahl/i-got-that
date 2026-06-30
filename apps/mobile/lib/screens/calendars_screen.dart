@@ -36,6 +36,7 @@ class CalendarsScreen extends ConsumerWidget {
                       title: Text(t['name'] as String),
                       subtitle: Text(
                         '${_methodLabel(t)} · ${t['memberRelation']} · ${t['addressOrUrl']}'
+                        '${_alertsLabel(t)}'
                         '${(t['active'] as bool? ?? true) ? '' : ' · paused'}',
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
@@ -85,6 +86,12 @@ class CalendarsScreen extends ConsumerWidget {
     }
   }
 
+  String _alertsLabel(Map<String, dynamic> t) {
+    final alerts = (t['alertMinutes'] as List?)?.cast<num>() ?? const [];
+    if (alerts.isEmpty) return '';
+    return ' · ⏰ ${alerts.map((m) => '${m.toInt()}m').join(', ')}';
+  }
+
   IconData _iconFor(String method) => switch (method) {
         'email' => Icons.mail_outline,
         'google' => Icons.calendar_month,
@@ -129,6 +136,9 @@ class _ConnectCalendarPageState extends ConsumerState<ConnectCalendarPage> {
   final _password = TextEditingController();
   final _calendarId = TextEditingController(text: 'primary');
   final _accessToken = TextEditingController();
+  // Up to two default reminders, in minutes before the event start.
+  final _alert1 = TextEditingController();
+  final _alert2 = TextEditingController();
 
   // CalDAV discovery.
   List<Map<String, dynamic>> _discovered = const [];
@@ -151,6 +161,9 @@ class _ConnectCalendarPageState extends ConsumerState<ConnectCalendarPage> {
       _memberId = ex['memberId'] as String?;
       _name.text = ex['name'] as String? ?? '';
       _active = ex['active'] as bool? ?? true;
+      final alerts = (ex['alertMinutes'] as List?)?.cast<num>() ?? const [];
+      if (alerts.isNotEmpty) _alert1.text = '${alerts[0].toInt()}';
+      if (alerts.length > 1) _alert2.text = '${alerts[1].toInt()}';
       switch (_provider) {
         case _Provider.email:
           _address.text = ex['addressOrUrl'] as String? ?? '';
@@ -179,7 +192,16 @@ class _ConnectCalendarPageState extends ConsumerState<ConnectCalendarPage> {
 
   @override
   void dispose() {
-    for (final c in [_name, _address, _username, _password, _calendarId, _accessToken]) {
+    for (final c in [
+      _name,
+      _address,
+      _username,
+      _password,
+      _calendarId,
+      _accessToken,
+      _alert1,
+      _alert2,
+    ]) {
       c.dispose();
     }
     super.dispose();
@@ -240,6 +262,10 @@ class _ConnectCalendarPageState extends ConsumerState<ConnectCalendarPage> {
       final api = ref.read(apiClientProvider);
       final hasPassword = _password.text.isNotEmpty;
       final hasToken = _accessToken.text.trim().isNotEmpty;
+      final alertMinutes = <int>[
+        for (final c in [_alert1, _alert2])
+          if (int.tryParse(c.text.trim()) != null) int.parse(c.text.trim()),
+      ];
 
       String? providerHint;
       String addressOrUrl;
@@ -273,6 +299,7 @@ class _ConnectCalendarPageState extends ConsumerState<ConnectCalendarPage> {
           active: _active,
           addressOrUrl: addressOrUrl,
           externalCalendarId: externalCalendarId,
+          alertMinutes: alertMinutes,
           credential: credential,
         );
       } else {
@@ -288,6 +315,7 @@ class _ConnectCalendarPageState extends ConsumerState<ConnectCalendarPage> {
           providerHint: providerHint,
           addressOrUrl: addressOrUrl,
           externalCalendarId: externalCalendarId,
+          alertMinutes: alertMinutes,
           credential: credential,
         );
       }
@@ -357,6 +385,35 @@ class _ConnectCalendarPageState extends ConsumerState<ConnectCalendarPage> {
                   subtitle: const Text('Deliver tasks to this calendar'),
                   contentPadding: EdgeInsets.zero,
                 ),
+              const SizedBox(height: 16),
+              Text('Default reminders', style: Theme.of(context).textTheme.labelLarge),
+              const _Hint('Minutes before each event to alert (up to two). Leave blank for none.'),
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: _alert1,
+                      keyboardType: TextInputType.number,
+                      decoration: const InputDecoration(
+                        labelText: 'Alert 1 (min)',
+                        hintText: 'e.g. 30',
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: TextField(
+                      controller: _alert2,
+                      keyboardType: TextInputType.number,
+                      decoration: const InputDecoration(
+                        labelText: 'Alert 2 (min)',
+                        hintText: 'e.g. 10',
+                      ),
+                    ),
+                  ),
+                ],
+              ),
               const SizedBox(height: 8),
               ..._providerFields(),
               if (_error != null)

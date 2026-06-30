@@ -311,13 +311,27 @@ async function buildException(
           type === 'pickup'
             ? wallTimeToUtc(day, resolved.pickupTime ?? link.dayEnd, 15, tz)
             : wallTimeToUtc(day, link.dayStart, 8, tz);
+        // Block length + location are configured on the exclusion pattern (the
+        // link); a null duration leaves dtend null (delivery falls back to 1h).
+        const end =
+          link.durationMinutes != null
+            ? new Date(start.getTime() + link.durationMinutes * 60_000)
+            : null;
+        const location = link.location ?? null;
 
-        // Heal an existing baseline task whose time drifted (e.g. tz/config
-        // change); otherwise leave it (preserves ownership).
+        // Heal an existing baseline task whose start/block/location drifted
+        // (e.g. tz/config change); otherwise leave it (preserves ownership).
         const priorTask = existingByType.get(type);
         if (priorTask) {
-          if (priorTask.dtstart.getTime() !== start.getTime()) {
-            await db.update(tasks).set({ dtstart: start }).where(eq(tasks.id, priorTask.id));
+          if (
+            priorTask.dtstart.getTime() !== start.getTime() ||
+            (priorTask.dtend?.getTime() ?? null) !== (end?.getTime() ?? null) ||
+            (priorTask.location ?? null) !== location
+          ) {
+            await db
+              .update(tasks)
+              .set({ dtstart: start, dtend: end, location })
+              .where(eq(tasks.id, priorTask.id));
           }
           continue;
         }
@@ -330,8 +344,8 @@ async function buildException(
           type: type as never,
           attendanceRequirement: link.defaultAttendance ?? null,
           dtstart: start,
-          dtend: null,
-          location: null,
+          dtend: end,
+          location,
           status: 'unowned',
           createdVia: 'baseline',
         });

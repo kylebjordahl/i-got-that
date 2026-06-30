@@ -43,6 +43,7 @@ export class CalDavProvider implements DeliveryProvider {
       summary: event.summary,
       description: event.description,
       location: event.location,
+      alertMinutes: event.alertMinutes,
     });
     await client.createCalendarObject({
       calendar: { url: target.addressOrUrl } as never,

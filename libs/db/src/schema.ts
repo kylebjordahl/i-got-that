@@ -168,6 +168,11 @@ export const familyMemberFeeds = sqliteTable(
     weekdayMask: integer('weekday_mask'),
     dayStart: text('day_start'),
     dayEnd: text('day_end'),
+    // Block length (minutes) for generated baseline events. Null ⇒ a point in
+    // time (the delivery layer falls back to a 1h block).
+    durationMinutes: integer('duration_minutes'),
+    // Location stamped on generated baseline events (e.g. the school). Null ⇒ none.
+    location: text('location'),
     // JSON array of TaskType, e.g. ["pickup","dropoff"].
     generatesTypes: text('generates_types', { mode: 'json' }).$type<
       string[]
@@ -326,6 +331,8 @@ export const calendarTargets = sqliteTable(
       onDelete: 'set null',
     }),
     externalCalendarId: text('external_calendar_id'),
+    // JSON array of minutes-before-start for default alerts (max 2), e.g. [30,10].
+    alertMinutes: text('alert_minutes', { mode: 'json' }).$type<number[]>(),
     active: integer('active', { mode: 'boolean' }).notNull().default(true),
     createdAt: createdAt(),
   },

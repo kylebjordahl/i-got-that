@@ -54,12 +54,13 @@ function taskSummary(task: TaskRow, childName: string): string {
 }
 
 /** djb2 over the meaningful event fields; cheap + synchronous. */
-function hashEvent(summary: string, task: TaskRow): string {
+function hashEvent(summary: string, task: TaskRow, alertMinutes: number[]): string {
   const parts = [
     summary,
     task.dtstart.toISOString(),
     task.dtend ? task.dtend.toISOString() : '',
     task.location ?? '',
+    alertMinutes.join(','),
   ].join('|');
   let h = 5381;
   for (let i = 0; i < parts.length; i++) h = ((h << 5) + h) ^ parts.charCodeAt(i);
@@ -144,9 +145,10 @@ async function syncTarget(
   }
 
   // Create/update desired events (skip unchanged via payloadHash).
+  const alertMinutes = target.alertMinutes ?? [];
   for (const task of desired) {
     const summary = taskSummary(task, childNames.get(task.familyMemberId) ?? 'child');
-    const hash = hashEvent(summary, task);
+    const hash = hashEvent(summary, task, alertMinutes);
     const prior = existingByTask.get(task.id);
     if (prior && prior.payloadHash === hash) continue;
 
@@ -159,6 +161,7 @@ async function syncTarget(
       end: task.dtend,
       summary,
       location: task.location ?? undefined,
+      alertMinutes: alertMinutes.length > 0 ? alertMinutes : undefined,
     };
     try {
       const res = await provider.upsert(event, deliveryTarget);

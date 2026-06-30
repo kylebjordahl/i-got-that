@@ -99,6 +99,7 @@ targetRoutes.post('/calendar-targets', async (c) => {
         providerHint: parsed.data.providerHint ?? null,
         addressOrUrl: parsed.data.addressOrUrl,
         externalCalendarId: parsed.data.externalCalendarId ?? null,
+        alertMinutes: parsed.data.alertMinutes ?? null,
         credentialsRef,
       })
       .returning()
@@ -130,6 +131,7 @@ targetRoutes.get('/calendar-targets', async (c) => {
     providerHint: calendarTargets.providerHint,
     addressOrUrl: calendarTargets.addressOrUrl,
     externalCalendarId: calendarTargets.externalCalendarId,
+    alertMinutes: calendarTargets.alertMinutes,
     active: calendarTargets.active,
   };
   const base = db
@@ -194,6 +196,7 @@ targetRoutes.patch('/calendar-targets/:targetId', async (c) => {
   if (d.addressOrUrl !== undefined) set.addressOrUrl = d.addressOrUrl;
   if (d.externalCalendarId !== undefined) set.externalCalendarId = d.externalCalendarId;
   if (d.providerHint !== undefined) set.providerHint = d.providerHint;
+  if (d.alertMinutes !== undefined) set.alertMinutes = d.alertMinutes;
 
   if (d.credential && (d.credential.password || d.credential.accessToken)) {
     if (!c.env.KEK) return c.json({ error: 'kek_unconfigured' }, 500);

@@ -22,6 +22,8 @@ export interface DeliveryEvent {
   summary: string;
   description?: string;
   location?: string;
+  /** Default reminders: minutes before start, from the target config. */
+  alertMinutes?: number[];
 }
 
 export interface DeliveryTarget {

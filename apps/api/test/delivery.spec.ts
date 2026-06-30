@@ -64,9 +64,11 @@ describe('calendar reconcile (syncMember)', () => {
         name: 'Personal',
         method: 'email',
         addressOrUrl: 'del-admin@example.com',
+        alertMinutes: [30, 10],
       }),
     );
     expect(targetRes.status).toBe(201);
+    const targetId = ((await targetRes.json()) as { target: { id: string } }).target.id;
 
     // A task owned by the admin.
     const task = (
@@ -94,6 +96,8 @@ describe('calendar reconcile (syncMember)', () => {
     expect(fake.upserts).toHaveLength(1);
     expect(fake.upserts[0]!.target.addressOrUrl).toBe('del-admin@example.com');
     expect(fake.upserts[0]!.event.summary).toBe('Pickup — child');
+    // The target's default alerts are threaded onto the delivered event.
+    expect(fake.upserts[0]!.event.alertMinutes).toEqual([30, 10]);
     const d1 = (await db.select().from(deliveries).where(eq(deliveries.taskId, task.id)))[0]!;
     expect(d1.status).toBe('sent');
     expect(d1.sequence).toBe(0);
@@ -104,14 +108,24 @@ describe('calendar reconcile (syncMember)', () => {
     expect(r2.updated).toBe(0);
     expect(fake.upserts).toHaveLength(1);
 
+    // 2b) Changing the target's alerts re-syncs the event.
+    await db
+      .update(calendarTargets)
+      .set({ alertMinutes: [60] })
+      .where(eq(calendarTargets.id, targetId));
+    const r2b = await syncMember(db, registry, env.KEK, memberId);
+    expect(r2b.updated).toBe(1);
+    expect(fake.upserts).toHaveLength(2);
+    expect(fake.upserts[1]!.event.alertMinutes).toEqual([60]);
+
     // 3) Changing the task updates the event + bumps sequence.
     await db.update(tasks).set({ location: 'New School' }).where(eq(tasks.id, task.id));
     const r3 = await syncMember(db, registry, env.KEK, memberId);
     expect(r3.updated).toBe(1);
-    expect(fake.upserts).toHaveLength(2);
+    expect(fake.upserts).toHaveLength(3);
     const d3 = (await db.select().from(deliveries).where(eq(deliveries.taskId, task.id)))[0]!;
     expect(d3.status).toBe('updated');
-    expect(d3.sequence).toBe(1);
+    expect(d3.sequence).toBe(2);
 
     // 4) Unassigning removes the event from the calendar.
     await db

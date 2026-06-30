@@ -111,6 +111,8 @@ class ApiClient {
     int? weekdayMask,
     String? dayStart,
     String? dayEnd,
+    int? durationMinutes,
+    String? location,
     List<String>? generatesTypes,
     String? defaultAttendance,
   }) async {
@@ -121,6 +123,8 @@ class ApiClient {
         if (weekdayMask != null) 'weekdayMask': weekdayMask,
         if (dayStart != null) 'dayStart': dayStart,
         if (dayEnd != null) 'dayEnd': dayEnd,
+        if (durationMinutes != null) 'durationMinutes': durationMinutes,
+        if (location != null) 'location': location,
         if (generatesTypes != null) 'generatesTypes': generatesTypes,
         if (defaultAttendance != null) 'defaultAttendance': defaultAttendance,
       },
@@ -140,6 +144,8 @@ class ApiClient {
     int? weekdayMask,
     String? dayStart,
     String? dayEnd,
+    int? durationMinutes,
+    String? location,
     List<String>? generatesTypes,
     String? defaultAttendance,
     bool? active,
@@ -150,6 +156,8 @@ class ApiClient {
         if (weekdayMask != null) 'weekdayMask': weekdayMask,
         if (dayStart != null) 'dayStart': dayStart,
         if (dayEnd != null) 'dayEnd': dayEnd,
+        if (durationMinutes != null) 'durationMinutes': durationMinutes,
+        if (location != null) 'location': location,
         if (generatesTypes != null) 'generatesTypes': generatesTypes,
         if (defaultAttendance != null) 'defaultAttendance': defaultAttendance,
         if (active != null) 'active': active,
@@ -213,6 +221,7 @@ class ApiClient {
     String? providerHint,
     required String addressOrUrl,
     String? externalCalendarId,
+    List<int>? alertMinutes,
     Map<String, String>? credential,
   }) async {
     final res = await _dio.post(
@@ -224,6 +233,7 @@ class ApiClient {
         if (providerHint != null) 'providerHint': providerHint,
         'addressOrUrl': addressOrUrl,
         if (externalCalendarId != null) 'externalCalendarId': externalCalendarId,
+        if (alertMinutes != null) 'alertMinutes': alertMinutes,
         if (credential != null) 'credential': credential,
       },
       options: _auth,
@@ -255,6 +265,7 @@ class ApiClient {
     String? addressOrUrl,
     String? externalCalendarId,
     String? providerHint,
+    List<int>? alertMinutes,
     Map<String, String>? credential,
   }) async {
     await _dio.patch(
@@ -265,6 +276,7 @@ class ApiClient {
         if (addressOrUrl != null) 'addressOrUrl': addressOrUrl,
         if (externalCalendarId != null) 'externalCalendarId': externalCalendarId,
         if (providerHint != null) 'providerHint': providerHint,
+        if (alertMinutes != null) 'alertMinutes': alertMinutes,
         if (credential != null) 'credential': credential,
       },
       options: _auth,

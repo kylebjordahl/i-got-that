@@ -96,6 +96,8 @@ feedRoutes.post('/:feedId/member-links', requireAdmin, async (c) => {
         weekdayMask: parsed.data.weekdayMask ?? null,
         dayStart: parsed.data.dayStart ?? null,
         dayEnd: parsed.data.dayEnd ?? null,
+        durationMinutes: parsed.data.durationMinutes ?? null,
+        location: parsed.data.location ?? null,
         generatesTypes: parsed.data.generatesTypes ?? null,
         defaultAttendance: parsed.data.defaultAttendance ?? null,
       })
@@ -115,6 +117,8 @@ feedRoutes.get('/:feedId/member-links', async (c) => {
       weekdayMask: familyMemberFeeds.weekdayMask,
       dayStart: familyMemberFeeds.dayStart,
       dayEnd: familyMemberFeeds.dayEnd,
+      durationMinutes: familyMemberFeeds.durationMinutes,
+      location: familyMemberFeeds.location,
       generatesTypes: familyMemberFeeds.generatesTypes,
       defaultAttendance: familyMemberFeeds.defaultAttendance,
       active: familyMemberFeeds.active,
@@ -169,6 +173,8 @@ feedRoutes.patch('/:feedId/member-links/:linkId', requireAdmin, async (c) => {
   if (d.weekdayMask !== undefined) set.weekdayMask = d.weekdayMask;
   if (d.dayStart !== undefined) set.dayStart = d.dayStart;
   if (d.dayEnd !== undefined) set.dayEnd = d.dayEnd;
+  if (d.durationMinutes !== undefined) set.durationMinutes = d.durationMinutes;
+  if (d.location !== undefined) set.location = d.location;
   if (d.generatesTypes !== undefined) set.generatesTypes = d.generatesTypes;
   if (d.defaultAttendance !== undefined) set.defaultAttendance = d.defaultAttendance;
   if (d.active !== undefined) set.active = d.active;

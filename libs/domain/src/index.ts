@@ -148,12 +148,17 @@ export type FamilyMemberFeedBaselineInput = z.infer<
   typeof FamilyMemberFeedBaselineInput
 >;
 
+/** Block length (minutes) of a generated baseline event; 0 ⇒ point-in-time. */
+export const BlockDurationMinutes = z.number().int().min(0).max(1440);
+
 /** Link a dependent to a feed (+ optional baseline for exception feeds). feedId comes from the path. */
 export const MemberFeedLinkInput = z.object({
   familyMemberId: Id,
   weekdayMask: WeekdayMask.optional(),
   dayStart: TimeOfDay.optional(),
   dayEnd: TimeOfDay.optional(),
+  durationMinutes: BlockDurationMinutes.optional(),
+  location: z.string().max(256).optional(),
   generatesTypes: z.array(TaskType).optional(),
   defaultAttendance: AttendanceRequirement.optional(),
 });
@@ -164,6 +169,8 @@ export const UpdateMemberFeedLinkInput = z.object({
   weekdayMask: WeekdayMask.optional(),
   dayStart: TimeOfDay.optional(),
   dayEnd: TimeOfDay.optional(),
+  durationMinutes: BlockDurationMinutes.optional(),
+  location: z.string().max(256).optional(),
   generatesTypes: z.array(TaskType).optional(),
   defaultAttendance: AttendanceRequirement.optional(),
   active: z.boolean().optional(),
@@ -206,6 +213,13 @@ const TargetCredential = z.object({
   accessToken: z.string().optional(),
 });
 
+/**
+ * Default alerts for a calendar target: minutes before the event start, at most
+ * two. An empty array clears alerts. Capped at 4 weeks (40320 min).
+ */
+export const AlertMinutes = z.array(z.number().int().min(0).max(40320)).max(2);
+export type AlertMinutes = z.infer<typeof AlertMinutes>;
+
 /** Partial update for an existing calendar target. */
 export const UpdateCalendarTargetInput = z.object({
   name: z.string().min(1).max(120).optional(),
@@ -213,6 +227,7 @@ export const UpdateCalendarTargetInput = z.object({
   addressOrUrl: z.string().min(1).optional(),
   externalCalendarId: z.string().optional(),
   providerHint: ProviderHint.optional(),
+  alertMinutes: AlertMinutes.optional(),
   credential: TargetCredential.optional(),
 });
 export type UpdateCalendarTargetInput = z.infer<typeof UpdateCalendarTargetInput>;
@@ -224,6 +239,8 @@ export const CreateCalendarTargetInput = z.object({
   providerHint: ProviderHint.optional(),
   addressOrUrl: z.string().min(1),
   externalCalendarId: z.string().optional(),
+  /** Default alerts (minutes before start), at most two. */
+  alertMinutes: AlertMinutes.optional(),
   /**
    * Credential material (encrypted server-side into a `secret`). For caldav:
    * username + password (e.g. iCloud app-specific password). For google:

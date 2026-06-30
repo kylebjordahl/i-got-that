@@ -64,6 +64,7 @@ describe('ical OSS libs under workerd', () => {
       end: new Date('2026-01-05T15:30:00Z'),
       summary: 'Pickup — School',
       location: "Children's House",
+      alertMinutes: [30, 10],
       organizerEmail: 'noreply@igt.example',
       attendeeEmail: 'parent@example.com',
     };
@@ -71,9 +72,15 @@ describe('ical OSS libs under workerd', () => {
     expect(invite).toContain('METHOD:REQUEST');
     expect(invite).toContain('BEGIN:VEVENT');
     expect(invite).toContain('UID:task-123');
+    // Two display alarms, firing 30 and 10 minutes before start.
+    expect(invite.match(/BEGIN:VALARM/g)).toHaveLength(2);
+    expect(invite).toContain('TRIGGER:-PT30M');
+    expect(invite).toContain('TRIGGER:-PT10M');
 
+    // Cancellations carry no alarms.
     const cancel = buildCancelICalendar({ ...input, sequence: 1 });
     expect(cancel).toContain('METHOD:CANCEL');
+    expect(cancel).not.toContain('BEGIN:VALARM');
   });
 
   it('instantiates a CalDAV client (tsdav importable in workerd)', () => {
