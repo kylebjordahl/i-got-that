@@ -134,3 +134,69 @@ describe('identity & tenancy', () => {
     expect(bobAdd.status).toBe(403);
   });
 });
+
+describe('member editing & permissions', () => {
+  function patch(token: string, body: unknown): RequestInit {
+    return {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    };
+  }
+
+  it('lets self rename, admins change roles, and blocks the rest', async () => {
+    const alice = await login('memedit-alice@example.com');
+    const bob = await login('memedit-bob@example.com');
+
+    const fam = await call('/families', authed(alice.token, { name: 'Edit Fam' }));
+    const familyId = ((await fam.json()) as { family: { id: string } }).family.id;
+
+    // Alice (admin) adds Bob as a non-admin caretaker.
+    const addBob = await call(
+      `/families/${familyId}/members`,
+      authed(alice.token, {
+        relationName: 'uncle',
+        isCaretaker: true,
+        isAdmin: false,
+        userId: bob.userId,
+      }),
+    );
+    const bobMemberId = ((await addBob.json()) as { member: { id: string } }).member.id;
+
+    // Bob renames himself — allowed.
+    const rename = await call(
+      `/families/${familyId}/members/${bobMemberId}`,
+      patch(bob.token, { relationName: 'Uncle Bob' }),
+    );
+    expect(rename.status).toBe(200);
+    expect(((await rename.json()) as { member: { relationName: string } }).member.relationName).toBe('Uncle Bob');
+
+    // Bob cannot grant himself admin.
+    const escalate = await call(
+      `/families/${familyId}/members/${bobMemberId}`,
+      patch(bob.token, { isAdmin: true }),
+    );
+    expect(escalate.status).toBe(403);
+
+    // Find Alice's member id via /me.
+    const aliceMe = await call('/me', { headers: { Authorization: `Bearer ${alice.token}` } });
+    const aliceMemberId = ((await aliceMe.json()) as {
+      families: { member: { id: string } }[];
+    }).families[0]!.member.id;
+
+    // Bob cannot edit Alice.
+    const editOther = await call(
+      `/families/${familyId}/members/${aliceMemberId}`,
+      patch(bob.token, { relationName: 'hacked' }),
+    );
+    expect(editOther.status).toBe(403);
+
+    // Alice (admin) can flip Bob's flags.
+    const adminEdit = await call(
+      `/families/${familyId}/members/${bobMemberId}`,
+      patch(alice.token, { isCaretaker: false }),
+    );
+    expect(adminEdit.status).toBe(200);
+    expect(((await adminEdit.json()) as { member: { isCaretaker: boolean } }).member.isCaretaker).toBe(false);
+  });
+});

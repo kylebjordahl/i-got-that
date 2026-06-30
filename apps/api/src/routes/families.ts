@@ -1,5 +1,9 @@
-import { eq, families, familyMembers, getDb } from '@igt/db';
-import { CreateFamilyInput, CreateFamilyMemberInput } from '@igt/domain';
+import { and, eq, families, familyMembers, getDb } from '@igt/db';
+import {
+  CreateFamilyInput,
+  CreateFamilyMemberInput,
+  UpdateFamilyMemberInput,
+} from '@igt/domain';
 import { Hono } from 'hono';
 import type { HonoEnv } from '../env.js';
 import {
@@ -7,6 +11,7 @@ import {
   requireAdmin,
   requireFamilyMember,
 } from '../middleware/auth.js';
+import { getProductionRegistry, syncFamily } from '../services/delivery.js';
 import { feedRoutes } from './feeds.js';
 import { targetRoutes } from './targets.js';
 import { taskRoutes } from './tasks.js';
@@ -98,3 +103,56 @@ familyRoutes.post(
     return c.json({ member }, 201);
   },
 );
+
+/**
+ * Update a member. Admins may edit anyone (incl. role flags); a non-admin may
+ * edit only their own display name — role/structure changes are admin-only.
+ */
+familyRoutes.patch('/:familyId/members/:memberId', requireFamilyMember, async (c) => {
+  const parsed = UpdateFamilyMemberInput.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) {
+    return c.json({ error: 'invalid', issues: parsed.error.issues }, 400);
+  }
+  const db = getDb(c.env.DB);
+  const me = c.get('member');
+  const memberId = c.req.param('memberId');
+
+  const target = (
+    await db
+      .select()
+      .from(familyMembers)
+      .where(and(eq(familyMembers.id, memberId), eq(familyMembers.familyId, me.familyId)))
+      .limit(1)
+  )[0];
+  if (!target) return c.json({ error: 'not_found' }, 404);
+
+  const d = parsed.data;
+  const changingFlags =
+    d.isCaretaker !== undefined || d.isAdmin !== undefined || d.requiresCaretaker !== undefined;
+  if (!me.isAdmin) {
+    if (memberId !== me.id) return c.json({ error: 'forbidden' }, 403);
+    if (changingFlags) return c.json({ error: 'forbidden_roles' }, 403);
+  }
+
+  const set: Partial<typeof familyMembers.$inferInsert> = {};
+  if (d.relationName !== undefined) set.relationName = d.relationName;
+  if (me.isAdmin) {
+    if (d.isCaretaker !== undefined) set.isCaretaker = d.isCaretaker;
+    if (d.isAdmin !== undefined) set.isAdmin = d.isAdmin;
+    if (d.requiresCaretaker !== undefined) set.requiresCaretaker = d.requiresCaretaker;
+  }
+  if (Object.keys(set).length > 0) {
+    await db.update(familyMembers).set(set).where(eq(familyMembers.id, memberId));
+  }
+  const updated = (
+    await db.select().from(familyMembers).where(eq(familyMembers.id, memberId)).limit(1)
+  )[0]!;
+
+  // The child's name appears in event titles — refresh calendars best-effort.
+  try {
+    await syncFamily(db, getProductionRegistry(c.env), c.env.KEK, me.familyId);
+  } catch (err) {
+    console.error('syncFamily (member update) failed', err);
+  }
+  return c.json({ member: updated });
+});

@@ -65,6 +65,26 @@ class ApiClient {
     return _obj(res);
   }
 
+  Future<void> updateMember(
+    String familyId,
+    String memberId, {
+    String? relationName,
+    bool? isCaretaker,
+    bool? isAdmin,
+    bool? requiresCaretaker,
+  }) async {
+    await _dio.patch(
+      '/families/$familyId/members/$memberId',
+      data: {
+        if (relationName != null) 'relationName': relationName,
+        if (isCaretaker != null) 'isCaretaker': isCaretaker,
+        if (isAdmin != null) 'isAdmin': isAdmin,
+        if (requiresCaretaker != null) 'requiresCaretaker': requiresCaretaker,
+      },
+      options: _auth,
+    );
+  }
+
   // --- Feeds -------------------------------------------------------------
 
   Future<List<dynamic>> listFeeds(String familyId) async =>

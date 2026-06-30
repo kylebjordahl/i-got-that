@@ -126,6 +126,15 @@ export const CreateFamilyMemberInput = z.object({
 });
 export type CreateFamilyMemberInput = z.infer<typeof CreateFamilyMemberInput>;
 
+/** Partial update for a family member. Flag changes are admin-only (enforced server-side). */
+export const UpdateFamilyMemberInput = z.object({
+  relationName: z.string().min(1).max(64).optional(),
+  isCaretaker: z.boolean().optional(),
+  isAdmin: z.boolean().optional(),
+  requiresCaretaker: z.boolean().optional(),
+});
+export type UpdateFamilyMemberInput = z.infer<typeof UpdateFamilyMemberInput>;
+
 export const FamilyMemberFeedBaselineInput = z.object({
   feedId: Id,
   familyMemberId: Id,

@@ -12,19 +12,22 @@ class FeedsScreen extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final feedsAsync = ref.watch(feedsProvider);
+    final isAdmin = ref.watch(currentMemberProvider).valueOrNull?.isAdmin ?? false;
     return Scaffold(
       appBar: AppBar(title: const Text('Feeds')),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: () async {
-          final added = await showDialog<bool>(
-            context: context,
-            builder: (_) => const _AddFeedDialog(),
-          );
-          if (added == true) ref.invalidate(feedsProvider);
-        },
-        icon: const Icon(Icons.add),
-        label: const Text('Add feed'),
-      ),
+      floatingActionButton: isAdmin
+          ? FloatingActionButton.extended(
+              onPressed: () async {
+                final added = await showDialog<bool>(
+                  context: context,
+                  builder: (_) => const _AddFeedDialog(),
+                );
+                if (added == true) ref.invalidate(feedsProvider);
+              },
+              icon: const Icon(Icons.add),
+              label: const Text('Add feed'),
+            )
+          : null,
       body: feedsAsync.when(
         loading: () => const Center(child: CircularProgressIndicator()),
         error: (e, _) => Center(child: Text('$e')),
@@ -49,6 +52,7 @@ class _FeedTile extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final feedId = feed['id'] as String;
     final isException = feed['mode'] == 'exception';
+    final isAdmin = ref.watch(currentMemberProvider).valueOrNull?.isAdmin ?? false;
     final linksAsync = ref.watch(feedLinksProvider(feedId));
 
     return ExpansionTile(
@@ -75,19 +79,21 @@ class _FeedTile extends ConsumerWidget {
                   leading: const Icon(Icons.child_care),
                   title: Text(link['memberRelation'] as String),
                   subtitle: Text(_baselineSummary(link, isException)),
-                  trailing: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      IconButton(
-                        icon: const Icon(Icons.edit, size: 20),
-                        onPressed: () => _linkDialog(context, ref, feedId, isException, link),
-                      ),
-                      IconButton(
-                        icon: const Icon(Icons.delete_outline, size: 20),
-                        onPressed: () => _removeLink(context, ref, feedId, link),
-                      ),
-                    ],
-                  ),
+                  trailing: isAdmin
+                      ? Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            IconButton(
+                              icon: const Icon(Icons.edit, size: 20),
+                              onPressed: () => _linkDialog(context, ref, feedId, isException, link),
+                            ),
+                            IconButton(
+                              icon: const Icon(Icons.delete_outline, size: 20),
+                              onPressed: () => _removeLink(context, ref, feedId, link),
+                            ),
+                          ],
+                        )
+                      : null,
                 ),
             ],
           ),
@@ -96,11 +102,12 @@ class _FeedTile extends ConsumerWidget {
           padding: const EdgeInsets.symmetric(horizontal: 12),
           child: Row(
             children: [
-              TextButton.icon(
-                onPressed: () => _linkDialog(context, ref, feedId, isException, null),
-                icon: const Icon(Icons.add),
-                label: const Text('Link a child'),
-              ),
+              if (isAdmin)
+                TextButton.icon(
+                  onPressed: () => _linkDialog(context, ref, feedId, isException, null),
+                  icon: const Icon(Icons.add),
+                  label: const Text('Link a child'),
+                ),
               const Spacer(),
               TextButton.icon(
                 onPressed: () => _refresh(context, ref, feedId),

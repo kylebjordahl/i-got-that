@@ -15,6 +15,20 @@ final familyProvider = FutureProvider<String>((ref) async {
   return (created['family'] as Map<String, dynamic>)['id'] as String;
 });
 
+/// The caller's own member record in the current family (for permission gating).
+final currentMemberProvider = FutureProvider<Member?>((ref) async {
+  final api = ref.watch(apiClientProvider);
+  final familyId = await ref.watch(familyProvider.future);
+  final me = await api.me();
+  for (final f in me['families'] as List<dynamic>) {
+    final fm = f as Map<String, dynamic>;
+    if ((fm['family'] as Map<String, dynamic>)['id'] == familyId) {
+      return Member.fromJson(fm['member'] as Map<String, dynamic>);
+    }
+  }
+  return null;
+});
+
 final membersProvider = FutureProvider<List<Member>>((ref) async {
   final api = ref.watch(apiClientProvider);
   final familyId = await ref.watch(familyProvider.future);
