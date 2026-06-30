@@ -29,12 +29,12 @@ resource "cloudflare_d1_database" "primary" {
 
 resource "cloudflare_queue" "delivery" {
   account_id = var.cloudflare_account_id
-  name       = "${var.name_prefix}-delivery-${local.suffix}"
+  queue_name = "${var.name_prefix}-delivery-${local.suffix}"
 }
 
 resource "cloudflare_queue" "delivery_dlq" {
   account_id = var.cloudflare_account_id
-  name       = "${var.name_prefix}-delivery-${local.suffix}-dlq"
+  queue_name = "${var.name_prefix}-delivery-${local.suffix}-dlq"
 }
 
 # --- Outbound email (Cloudflare Email Service) ---------------------------

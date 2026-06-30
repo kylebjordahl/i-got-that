@@ -1,122 +1,135 @@
 {
-  // Worker code + bindings are owned by Wrangler; durable infra (the actual D1
-  // database, Queues, Email Routing, etc.) is provisioned by Terraform. Keep
-  // binding names in sync between this file and the Terraform config.
-  "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "igt-api",
-  "main": "src/index.ts",
-  "compatibility_date": "2024-09-23",
-  "compatibility_flags": ["nodejs_compat"],
-  "observability": { "enabled": true },
-  "triggers": {
-    // Tick every 15 min; the scheduled handler ingests feeds whose
-    // refresh_minutes has elapsed.
-    "crons": ["*/15 * * * *"]
-  },
-  "vars": {
-    "ENVIRONMENT": "development",
-    "ORGANIZER_EMAIL": "noreply@igt.local",
-    // DEV ONLY KEK (envelope-encryption key-encryption key). Production sets a
-    // real secret via `wrangler secret put KEK` / Terraform — never commit prod keys.
-    "KEK": "2OmcakKhoLtzTqOq5ZrXq/e/7mXa8Gmav+dtCe/2ThM=",
-    // Allowed Apple `aud` values for Sign in with Apple (comma-separated: the
-    // iOS bundle id and/or web Services ID). Empty ⇒ Apple login disabled.
-    // Set per env (or via secret). See docs/AUTH.md.
-    "APPLE_CLIENT_IDS": "",
-    // Google OAuth client for the Calendar provider. ID can be a var; set the
-    // SECRET via `wrangler secret put GOOGLE_OAUTH_CLIENT_SECRET`. Empty ⇒ the
-    // Google OAuth flow is disabled (paste-token still works). See docs/AUTH.md.
-    "GOOGLE_OAUTH_CLIENT_ID": ""
-  },
-  "d1_databases": [
-    {
-      "binding": "DB",
-      "database_name": "igt-dev",
-      "database_id": "00000000-0000-0000-0000-000000000000",
-      "migrations_dir": "../../libs/db/migrations"
-    }
-  ],
-  // Outbound email (Cloudflare Email Service) is DISCONNECTED for now — it needs
-  // a paid plan + verified sending domain. The provider code is opt-in on the
-  // EMAIL binding, so leaving this commented means email targets are skipped.
-  // To enable: uncomment here (+ in each env below), verify a sending domain,
-  // and set ORGANIZER_EMAIL. See README / infra/terraform.
-  // "send_email": [{ "name": "EMAIL", "remote": true }],
-  "env": {
-    "staging": {
-      // Named-env vars do NOT inherit from the top level — list them here.
-      // KEK is set per-env via `wrangler secret put KEK --env staging`.
-      "vars": {
-        "ENVIRONMENT": "staging",
-        "ORGANIZER_EMAIL": "noreply@igt.local",
-        "APPLE_CLIENT_IDS": "",
-        "GOOGLE_OAUTH_CLIENT_ID": ""
-      },
-      // The whole subdomain routes to this Worker (custom_domain provisions DNS
-      // + cert; the parent zone must be on Cloudflare). The Worker serves the
-      // API at /api, the web client at /app, and redirects / → /app.
-      "routes": [
-        { "pattern": "staging.igt.kylebjordahl.com", "custom_domain": true }
-      ],
-      // Flutter web build (CI runs `flutter build web --base-href /app/` into
-      // ./public/app). The Worker serves it via the ASSETS binding under /app.
-      "assets": {
-        "directory": "./public",
-        "binding": "ASSETS",
-        "not_found_handling": "none"
-      },
-      "d1_databases": [
-        {
-          "binding": "DB",
-          "database_name": "igt-staging",
-          "database_id": "REPLACE_WITH_TERRAFORM_OUTPUT",
-          "migrations_dir": "../../libs/db/migrations"
-        }
-      ],
-      // Durable, retry-backed calendar delivery (Terraform creates the queues).
-      "queues": {
-        "producers": [{ "binding": "DELIVERY_QUEUE", "queue": "igt-delivery-staging" }],
-        "consumers": [
-          {
-            "queue": "igt-delivery-staging",
-            "max_batch_size": 10,
-            "max_batch_timeout": 30,
-            "max_retries": 5,
-            "dead_letter_queue": "igt-delivery-staging-dlq"
-          }
-        ]
-      }
-      // "send_email": [{ "name": "EMAIL" }]  // enable with a paid plan
+    // Worker code + bindings are owned by Wrangler; durable infra (the actual D1
+    // database, Queues, Email Routing, etc.) is provisioned by Terraform. Keep
+    // binding names in sync between this file and the Terraform config.
+    "$schema": "node_modules/wrangler/config-schema.json",
+    "name": "igt-api",
+    "main": "src/index.ts",
+    "compatibility_date": "2024-09-23",
+    "compatibility_flags": ["nodejs_compat"],
+    "observability": { "enabled": true },
+    "triggers": {
+        // Tick every 15 min; the scheduled handler ingests feeds whose
+        // refresh_minutes has elapsed.
+        "crons": ["*/15 * * * *"],
     },
-    "production": {
-      // KEK is set per-env via `wrangler secret put KEK --env production`.
-      "vars": {
-        "ENVIRONMENT": "production",
+    "vars": {
+        "ENVIRONMENT": "development",
         "ORGANIZER_EMAIL": "noreply@igt.local",
+        // DEV ONLY KEK (envelope-encryption key-encryption key). Production sets a
+        // real secret via `wrangler secret put KEK` / Terraform — never commit prod keys.
+        "KEK": "2OmcakKhoLtzTqOq5ZrXq/e/7mXa8Gmav+dtCe/2ThM=",
+        // Allowed Apple `aud` values for Sign in with Apple (comma-separated: the
+        // iOS bundle id and/or web Services ID). Empty ⇒ Apple login disabled.
+        // Set per env (or via secret). See docs/AUTH.md.
         "APPLE_CLIENT_IDS": "",
-        "GOOGLE_OAUTH_CLIENT_ID": ""
-      },
-      "d1_databases": [
+        // Google OAuth client for the Calendar provider. ID can be a var; set the
+        // SECRET via `wrangler secret put GOOGLE_OAUTH_CLIENT_SECRET`. Empty ⇒ the
+        // Google OAuth flow is disabled (paste-token still works). See docs/AUTH.md.
+        "GOOGLE_OAUTH_CLIENT_ID": "",
+    },
+    "d1_databases": [
         {
-          "binding": "DB",
-          "database_name": "igt-prod",
-          "database_id": "REPLACE_WITH_TERRAFORM_OUTPUT",
-          "migrations_dir": "../../libs/db/migrations"
-        }
-      ],
-      "queues": {
-        "producers": [{ "binding": "DELIVERY_QUEUE", "queue": "igt-delivery-prod" }],
-        "consumers": [
-          {
-            "queue": "igt-delivery-prod",
-            "max_batch_size": 10,
-            "max_batch_timeout": 30,
-            "max_retries": 5,
-            "dead_letter_queue": "igt-delivery-prod-dlq"
-          }
-        ]
-      }
-      // "send_email": [{ "name": "EMAIL" }]  // enable with a paid plan
-    }
-  }
+            "binding": "DB",
+            "database_name": "igt-dev",
+            "database_id": "00000000-0000-0000-0000-000000000000",
+            "migrations_dir": "../../libs/db/migrations",
+        },
+    ],
+    // Outbound email (Cloudflare Email Service) is DISCONNECTED for now — it needs
+    // a paid plan + verified sending domain. The provider code is opt-in on the
+    // EMAIL binding, so leaving this commented means email targets are skipped.
+    // To enable: uncomment here (+ in each env below), verify a sending domain,
+    // and set ORGANIZER_EMAIL. See README / infra/terraform.
+    // "send_email": [{ "name": "EMAIL", "remote": true }],
+    "env": {
+        "staging": {
+            // Named-env vars do NOT inherit from the top level — list them here.
+            // KEK is set per-env via `wrangler secret put KEK --env staging`.
+            "vars": {
+                "ENVIRONMENT": "staging",
+                "ORGANIZER_EMAIL": "noreply@igt.local",
+                "APPLE_CLIENT_IDS": "",
+                "GOOGLE_OAUTH_CLIENT_ID": "",
+            },
+            // The whole subdomain routes to this Worker (custom_domain provisions DNS
+            // + cert; the parent zone must be on Cloudflare). The Worker serves the
+            // API at /api, the web client at /app, and redirects / → /app.
+            "routes": [
+                {
+                    "pattern": "staging.igt.kylebjordahl.com",
+                    "custom_domain": true,
+                },
+            ],
+            // Flutter web build (CI runs `flutter build web --base-href /app/` into
+            // ./public/app). The Worker serves it via the ASSETS binding under /app.
+            "assets": {
+                "directory": "./public",
+                "binding": "ASSETS",
+                "not_found_handling": "none",
+            },
+            "d1_databases": [
+                {
+                    "binding": "DB",
+                    "database_name": "igt-staging",
+                    "database_id": "2351a913-a45d-4b8c-8733-9d38022df798",
+                    "migrations_dir": "../../libs/db/migrations",
+                },
+            ],
+            // Durable, retry-backed calendar delivery (Terraform creates the queues).
+            "queues": {
+                "producers": [
+                    {
+                        "binding": "DELIVERY_QUEUE",
+                        "queue": "igt-delivery-staging",
+                    },
+                ],
+                "consumers": [
+                    {
+                        "queue": "igt-delivery-staging",
+                        "max_batch_size": 10,
+                        "max_batch_timeout": 30,
+                        "max_retries": 5,
+                        "dead_letter_queue": "igt-delivery-staging-dlq",
+                    },
+                ],
+            },
+            // "send_email": [{ "name": "EMAIL" }]  // enable with a paid plan
+        },
+        "production": {
+            // KEK is set per-env via `wrangler secret put KEK --env production`.
+            "vars": {
+                "ENVIRONMENT": "production",
+                "ORGANIZER_EMAIL": "noreply@igt.local",
+                "APPLE_CLIENT_IDS": "",
+                "GOOGLE_OAUTH_CLIENT_ID": "",
+            },
+            "d1_databases": [
+                {
+                    "binding": "DB",
+                    "database_name": "igt-prod",
+                    "database_id": "REPLACE_WITH_TERRAFORM_OUTPUT",
+                    "migrations_dir": "../../libs/db/migrations",
+                },
+            ],
+            "queues": {
+                "producers": [
+                    {
+                        "binding": "DELIVERY_QUEUE",
+                        "queue": "igt-delivery-prod",
+                    },
+                ],
+                "consumers": [
+                    {
+                        "queue": "igt-delivery-prod",
+                        "max_batch_size": 10,
+                        "max_batch_timeout": 30,
+                        "max_retries": 5,
+                        "dead_letter_queue": "igt-delivery-prod-dlq",
+                    },
+                ],
+            },
+            // "send_email": [{ "name": "EMAIL" }]  // enable with a paid plan
+        },
+    },
 }

@@ -3,28 +3,15 @@ name: Deploy (reusable)
 # Reusable deployment: provision durable infra (Terraform), apply D1 migrations,
 # and deploy the Worker (Wrangler) for a given environment. Called by
 # deploy-staging.yml (push → main) and deploy-production.yml (release published).
+#
+# The only input is `environment` (staging | production); every other value
+# (wrangler env key, D1 name, tfvars, TF backend) is derived from it.
 
 on:
   workflow_call:
     inputs:
       environment:
-        description: GitHub Environment name (staging | production)
-        required: true
-        type: string
-      wrangler_env:
-        description: wrangler.jsonc env key (staging | production)
-        required: true
-        type: string
-      d1_database:
-        description: D1 database name (igt-staging | igt-prod)
-        required: true
-        type: string
-      tfvars:
-        description: Terraform var-file (staging.tfvars | production.tfvars)
-        required: true
-        type: string
-      tf_backend:
-        description: Terraform backend config (backend.staging.hcl | backend.production.hcl)
+        description: Target environment — "staging" or "production"
         required: true
         type: string
     secrets:
@@ -53,7 +40,20 @@ jobs:
     # Binds to the GitHub Environment — add required reviewers there to gate
     # production behind a manual approval.
     environment: ${{ inputs.environment }}
+    # Everything else is derived from `environment` (staging | production).
+    env:
+      WRANGLER_ENV: "${{ inputs.environment }}"
+      D1_DATABASE: "igt-${{ inputs.environment == 'production' && 'prod' || 'staging' }}"
+      TFVARS: "${{ inputs.environment }}.tfvars"
+      TF_BACKEND: "backend.${{ inputs.environment }}.hcl"
     steps:
+      - name: Validate environment
+        run: |
+          if [ "$WRANGLER_ENV" != "staging" ] && [ "$WRANGLER_ENV" != "production" ]; then
+            echo "::error::environment must be 'staging' or 'production' (got '$WRANGLER_ENV')."
+            exit 1
+          fi
+
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
@@ -78,6 +78,15 @@ jobs:
           rm -rf apps/api/public/app
           mkdir -p apps/api/public
           cp -r apps/mobile/build/web apps/api/public/app
+      - name: Verify web assets were built
+        run: |
+          if [ ! -f apps/api/public/app/index.html ]; then
+            echo "::error::Web assets missing: apps/api/public/app/index.html not found." \
+                 "The 'Build web client' / 'Stage web assets' step produced no output —" \
+                 "the Worker would deploy without the web app. Failing early."
+            exit 1
+          fi
+          echo "Staged $(find apps/api/public/app -type f | wc -l) web asset file(s)."
 
       - uses: hashicorp/setup-terraform@v3
       - name: Terraform apply (${{ inputs.environment }} infra)
@@ -86,8 +95,8 @@ jobs:
           TF_VAR_cloudflare_api_token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           TF_VAR_cloudflare_account_id: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
-          terraform init -backend-config=${{ inputs.tf_backend }}
-          terraform apply -auto-approve -var-file=${{ inputs.tfvars }}
+          terraform init -backend-config="$TF_BACKEND"
+          terraform apply -auto-approve -var-file="$TFVARS"
 
       - name: Apply D1 migrations + deploy Worker
         working-directory: apps/api
@@ -95,5 +104,5 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
-          pnpm wrangler d1 migrations apply ${{ inputs.d1_database }} --env ${{ inputs.wrangler_env }} --remote
-          pnpm wrangler deploy --env ${{ inputs.wrangler_env }}
+          pnpm wrangler d1 migrations apply "$D1_DATABASE" --env "$WRANGLER_ENV" --remote
+          pnpm wrangler deploy --env "$WRANGLER_ENV"

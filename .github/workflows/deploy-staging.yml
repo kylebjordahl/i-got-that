@@ -14,10 +14,6 @@ jobs:
     uses: ./.github/workflows/deploy.yml
     with:
       environment: staging
-      wrangler_env: staging
-      d1_database: igt-staging
-      tfvars: staging.tfvars
-      tf_backend: backend.staging.hcl
     secrets:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
