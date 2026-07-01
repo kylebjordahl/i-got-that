@@ -370,7 +370,9 @@ export function getProductionRegistry(env: Bindings): DeliveryProviderRegistry {
     : undefined;
   const registry = new DeliveryProviderRegistry()
     .register(new CalDavProvider())
-    .register(new GoogleCalendarProvider(fetch, googleRefresher));
+    // Bind fetch to the global scope — a bare `fetch` reference throws "Illegal
+    // invocation" when the provider calls it as `this.fetchImpl(...)` on Workers.
+    .register(new GoogleCalendarProvider(fetch.bind(globalThis), googleRefresher));
 
   if (env.EMAIL) {
     const organizer = env.ORGANIZER_EMAIL ?? 'noreply@example.com';

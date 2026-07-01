@@ -56,38 +56,51 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.ref }}
-      - uses: actions/setup-node@v4
-        with:
-          node-version-file: .nvmrc
-      - run: corepack enable && corepack prepare pnpm@9 --activate
-      - run: pnpm install --frozen-lockfile
+      - uses: ./.github/actions/pnpm-install
 
       # Build the Flutter web client and stage it under apps/api/public/app so
       # the Worker serves it (same origin) at /app. API base is the relative
-      # /api on that origin.
+      # /api on that origin. The built bundle is cached and keyed on the mobile
+      # sources: a backend/infra-only deploy restores it and skips the Flutter
+      # SDK download + web build (the slowest part of the deploy). Only a change
+      # under apps/mobile busts the cache and triggers a rebuild.
+      - name: Restore built web client
+        id: web-client-cache
+        uses: actions/cache@v4
+        with:
+          path: apps/api/public/app
+          key: >-
+            web-client-${{ hashFiles('apps/mobile/lib/**', 'apps/mobile/web/**',
+            'apps/mobile/pubspec.yaml', 'apps/mobile/pubspec.lock') }}
       - uses: subosito/flutter-action@v2
+        if: steps.web-client-cache.outputs.cache-hit != 'true'
         with:
           channel: stable
+          cache: true
       - name: Build web client
+        if: steps.web-client-cache.outputs.cache-hit != 'true'
         working-directory: apps/mobile
         run: |
           flutter create . --platforms=web --project-name caretaker_app
           flutter pub get
           flutter build web --base-href /app/ --dart-define=API_BASE_URL=/api
       - name: Stage web assets
+        if: steps.web-client-cache.outputs.cache-hit != 'true'
         run: |
           rm -rf apps/api/public/app
           mkdir -p apps/api/public
           cp -r apps/mobile/build/web apps/api/public/app
-      - name: Verify web assets were built
+      # Runs whether the bundle was rebuilt or restored from cache — the Worker
+      # must never deploy without its web assets.
+      - name: Verify web assets present
         run: |
           if [ ! -f apps/api/public/app/index.html ]; then
             echo "::error::Web assets missing: apps/api/public/app/index.html not found." \
-                 "The 'Build web client' / 'Stage web assets' step produced no output —" \
-                 "the Worker would deploy without the web app. Failing early."
+                 "Neither the cache restore nor the Flutter build produced the web" \
+                 "client — the Worker would deploy without it. Failing early."
             exit 1
           fi
-          echo "Staged $(find apps/api/public/app -type f | wc -l) web asset file(s)."
+          echo "Serving $(find apps/api/public/app -type f | wc -l) web asset file(s)."
 
       - uses: hashicorp/setup-terraform@v3
       - name: Terraform apply (${{ inputs.environment }} infra)

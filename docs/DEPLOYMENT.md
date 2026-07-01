@@ -5,13 +5,18 @@ Actions:
 
 | Trigger | Workflow | Target |
 | --- | --- | --- |
-| Every push to `main` | `.github/workflows/deploy-staging.yml` | **staging** |
+| Every push to `main` (after CI passes; docs-only skipped) | `.github/workflows/deploy-staging.yml` | **staging** |
 | A GitHub **Release** is *published* | `.github/workflows/deploy-production.yml` | **production** |
 | Push / PR | `.github/workflows/ci.yml` | tests only (no deploy) |
 
-Both deploy workflows call the reusable `deploy.yml`, which: runs the backend
-typecheck + tests as a gate, applies Terraform (durable infra), applies the D1
-migrations, then `wrangler deploy`s the Worker for that environment.
+Both deploy workflows call the reusable `deploy.yml`, which builds the Flutter
+web client, applies Terraform (durable infra), applies the D1 migrations, then
+`wrangler deploy`s the Worker for that environment. The **test gate lives
+upstream**, not in `deploy.yml`: staging only runs after the `CI` workflow
+succeeds for the commit (`deploy-staging.yml` keys off `workflow_run` and deploys
+that exact SHA), and production re-verifies that both `CI` **and** the staging
+deploy went green for the release commit before deploying
+(`deploy-production.yml`'s `verify` job).
 
 Wrangler owns the Worker **code + bindings** (`apps/api/wrangler.jsonc`);
 Terraform owns the **durable infra** (the D1 database today; Queues / Email
@@ -156,8 +161,8 @@ tests (no binding) still serve the API directly at the root.
 
 ## Day-to-day flow
 
-- **Staging**: merge to `main` → `Deploy staging` runs automatically (tests →
-  Terraform → migrate → deploy).
+- **Staging**: merge to `main` → once `CI` passes, `Deploy staging` runs
+  automatically (build web → Terraform → migrate → deploy).
 - **Production**: when staging looks good, cut a release:
   ```bash
   git tag v0.2.0 && git push origin v0.2.0
@@ -189,3 +194,15 @@ cd apps/api && pnpm wrangler tail --env staging        # live logs
 - The **web client** is built in CI and served by the same Worker under `/app`
   (see §7) — no separate Pages project. Production gets it once you add the
   `routes` + `assets` blocks under `env.production`.
+- **Docs-only pushes skip deploy**: a push to `main` touching only `**/*.md`,
+  `docs/**`, or `LICENSE` doesn't run `CI`, so the CI-gated staging deploy
+  doesn't fire — a docs edit won't redeploy the Worker. PRs still run full CI.
+  One consequence: don't cut a **release** off a docs-only commit — the
+  production `verify` job requires a successful `CI` run for the tagged SHA and
+  will (safely) refuse it. Tag a commit that went through CI.
+- **Build caching**: CI and deploy share `.github/actions/pnpm-install`, which
+  caches the pnpm store (keyed on `pnpm-lock.yaml`); the Flutter SDK is cached
+  via `subosito/flutter-action`. The deploy additionally caches the built web
+  client, keyed on the `apps/mobile` sources — a backend/infra-only deploy
+  restores the last bundle instead of rebuilding Flutter. Changing anything
+  under `apps/mobile` busts that cache and forces a rebuild.

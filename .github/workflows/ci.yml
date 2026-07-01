@@ -3,6 +3,14 @@ name: CI
 on:
   push:
     branches: [main]
+    # Docs-only pushes to main don't change the Worker or the web client, so skip
+    # CI. Because the staging deploy is gated on CI (workflow_run), skipping CI
+    # also skips the redundant staging deploy for a docs edit. PRs are left
+    # unfiltered so their checks always report (never a stuck "expected" check).
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
+      - "LICENSE"
   pull_request:
 
 concurrency:
@@ -18,12 +26,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version-file: .nvmrc
-      - name: Enable pnpm
-        run: corepack enable && corepack prepare pnpm@9 --activate
-      - run: pnpm install --frozen-lockfile
+      - uses: ./.github/actions/pnpm-install
       - name: Typecheck
         run: pnpm nx run-many -t typecheck --projects=tag:language:typescript
       # Integration tests run inside workerd via @cloudflare/vitest-pool-workers
@@ -36,14 +39,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version-file: .nvmrc
-      - run: corepack enable && corepack prepare pnpm@9 --activate
-      - run: pnpm install --frozen-lockfile
+      - uses: ./.github/actions/pnpm-install
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
+          # Cache the Flutter SDK between runs (the download is the slow part).
+          cache: true
       # Generate platform runners (ios/, web/) which aren't committed.
       - run: flutter create . --platforms=ios,web --project-name caretaker_app
         working-directory: apps/mobile

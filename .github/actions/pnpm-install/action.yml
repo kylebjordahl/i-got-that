@@ -1,0 +1,30 @@
+name: Setup Node + pnpm
+description: >-
+  Set up Node (from .nvmrc), enable pnpm 9 via corepack, restore the pnpm
+  store cache (keyed on pnpm-lock.yaml), and install with a frozen lockfile.
+  Shared by CI and deploy so the toolchain setup lives in one place. Assumes
+  the repo is already checked out.
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@v4
+      with:
+        node-version-file: .nvmrc
+    - name: Enable pnpm
+      shell: bash
+      run: corepack enable && corepack prepare pnpm@9 --activate
+    # Resolve the store path from pnpm itself rather than hard-coding it, so the
+    # cache keeps working if pnpm's default store location changes.
+    - name: Locate pnpm store
+      shell: bash
+      run: echo "PNPM_STORE=$(pnpm store path --silent)" >> "$GITHUB_ENV"
+    - name: Cache pnpm store
+      uses: actions/cache@v4
+      with:
+        path: ${{ env.PNPM_STORE }}
+        key: pnpm-store-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+        restore-keys: pnpm-store-${{ runner.os }}-
+    - name: Install dependencies
+      shell: bash
+      run: pnpm install --frozen-lockfile
