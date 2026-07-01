@@ -43,6 +43,44 @@ describe('ical OSS libs under workerd', () => {
     expect(single[0]?.summary).toBe('Dentist');
   });
 
+  it('anchors all-day (VALUE=DATE) events to UTC midnight, tz-independently', () => {
+    const ics = `BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//test//test//EN
+BEGIN:VEVENT
+UID:holiday-1
+DTSTART;VALUE=DATE:20260703
+DTEND;VALUE=DATE:20260704
+SUMMARY:MCH Closed - US Holiday
+END:VEVENT
+END:VCALENDAR`;
+    const [occ] = parseAndExpand(ics, {
+      windowStart: new Date('2026-07-01T00:00:00Z'),
+      windowEnd: new Date('2026-07-10T00:00:00Z'),
+    });
+    expect(occ).toBeDefined();
+    expect(occ!.allDay).toBe(true);
+    // Friday July 3 at UTC midnight — never the prior evening in a negative
+    // offset, regardless of the runtime timezone that runs this test.
+    expect(occ!.start.toISOString()).toBe('2026-07-03T00:00:00.000Z');
+    expect(occ!.end?.toISOString()).toBe('2026-07-04T00:00:00.000Z');
+    // Timed events keep allDay=false.
+    const [timed] = parseAndExpand(SAMPLE_ICS, {
+      windowStart: new Date('2026-01-10T00:00:00Z'),
+      windowEnd: new Date('2026-01-11T00:00:00Z'),
+    });
+    expect(timed?.allDay).toBe(false);
+  });
+
+  it('folds all-day into the content hash', () => {
+    const [a] = parseAndExpand(SAMPLE_ICS, {
+      windowStart: new Date('2026-01-10T00:00:00Z'),
+      windowEnd: new Date('2026-01-11T00:00:00Z'),
+    });
+    expect(a).toBeDefined();
+    expect(hashOccurrence(a!)).not.toBe(hashOccurrence({ ...a!, allDay: true }));
+  });
+
   it('produces stable, change-sensitive content hashes', () => {
     const [a] = parseAndExpand(SAMPLE_ICS, {
       windowStart: new Date('2026-01-01T00:00:00Z'),

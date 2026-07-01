@@ -110,6 +110,56 @@ describe('feed ingest', () => {
     expect(countRow?.n).toBe(2);
   });
 
+  it('ingests all-day (VALUE=DATE) events and exposes them via /source-events', async () => {
+    // Relative to now (within the default 90-day window), so the test doesn't
+    // expire. All-day = a bare YYYYMMDD date; expect it anchored to UTC midnight.
+    const day = new Date();
+    day.setUTCDate(day.getUTCDate() + 5);
+    day.setUTCHours(0, 0, 0, 0);
+    const next = new Date(day.getTime() + 24 * 60 * 60 * 1000);
+    const ymd = (d: Date) => d.toISOString().slice(0, 10).replace(/-/g, '');
+    const allDayIcs = [
+      'BEGIN:VCALENDAR',
+      'VERSION:2.0',
+      'PRODID:-//mch//test//EN',
+      'BEGIN:VEVENT',
+      'UID:evt-allday-holiday',
+      `DTSTART;VALUE=DATE:${ymd(day)}`,
+      `DTEND;VALUE=DATE:${ymd(next)}`,
+      'SUMMARY:MCH Closed - US Holiday',
+      'END:VEVENT',
+      'END:VCALENDAR',
+    ].join('\r\n');
+    fetchMock
+      .get(FEED_ORIGIN)
+      .intercept({ path: '/allday.ics', method: 'GET' })
+      .reply(200, allDayIcs, { headers: { 'content-type': 'text/calendar' } });
+
+    const admin = await login('allday-admin@example.com');
+    const familyId = await createFamily(admin.token, 'AllDay Fam');
+    const feedRes = await call(
+      `/families/${familyId}/feeds`,
+      authed(admin.token, {
+        url: `${FEED_ORIGIN}/allday.ics`,
+        mode: 'exception',
+      }),
+    );
+    const { feed } = (await feedRes.json()) as { feed: { id: string } };
+
+    await call(`/families/${familyId}/feeds/${feed.id}/refresh`, authed(admin.token));
+
+    const res = await call(`/families/${familyId}/source-events`, bearer(admin.token));
+    expect(res.status).toBe(200);
+    const { events } = (await res.json()) as {
+      events: { summary: string; dtstart: number; allDay: boolean }[];
+    };
+    const holiday = events.find((e) => e.summary === 'MCH Closed - US Holiday');
+    expect(holiday).toBeDefined();
+    expect(holiday!.allDay).toBe(true);
+    // UTC midnight of the calendar date — not the prior evening in a -offset tz.
+    expect(new Date(holiday!.dtstart).toISOString()).toBe(day.toISOString());
+  });
+
   it('forbids non-admins from creating feeds and non-members from refreshing', async () => {
     const alice = await login('owner2@example.com');
     const bob = await login('outsider@example.com');

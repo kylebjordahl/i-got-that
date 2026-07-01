@@ -66,6 +66,7 @@ export async function ingestFeed(
         recurrenceId: occ.recurrenceId ?? '',
         dtstart: occ.start,
         dtend: occ.end ?? null,
+        allDay: occ.allDay,
         summary: occ.summary,
         location: occ.location,
         raw: null,
@@ -80,6 +81,7 @@ export async function ingestFeed(
         set: {
           dtstart: occ.start,
           dtend: occ.end ?? null,
+          allDay: occ.allDay,
           summary: occ.summary,
           location: occ.location,
           contentHash,
