@@ -5,6 +5,7 @@ import {
   eq,
   familyMemberFeeds,
   feeds,
+  gt,
   gte,
   isNull,
   lt,
@@ -60,6 +61,24 @@ function toOccurrence(e: EventRow): OccurrenceLike {
 
 function startOfUtcDay(d: Date): Date {
   return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+}
+
+/**
+ * Every UTC-day key (midnight ms) an exception event covers, so a multi-day
+ * span (e.g. a week-long closure) cancels the baseline on *all* its days, not
+ * just the first. All-day `dtend` is exclusive (the midnight after the last
+ * covered day); a timed event covers through the day its end instant falls in.
+ * A missing or non-positive-length end covers only the start day.
+ */
+function coveredUtcDays(e: EventRow): number[] {
+  const first = startOfUtcDay(e.dtstart).getTime();
+  if (!e.dtend || e.dtend.getTime() <= e.dtstart.getTime()) return [first];
+  const endExclusive = e.allDay
+    ? startOfUtcDay(e.dtend).getTime()
+    : startOfUtcDay(new Date(e.dtend.getTime() - 1)).getTime() + DAY_MS;
+  const days: number[] = [];
+  for (let d = first; d < endExclusive; d += DAY_MS) days.push(d);
+  return days.length > 0 ? days : [first];
 }
 
 /** Mon=bit0 … Sun=bit6. */
@@ -252,9 +271,11 @@ async function buildException(
   const windowEnd = opts.windowEnd ?? new Date(windowStart.getTime() + 30 * DAY_MS);
   const tz = feed.timezone ?? 'UTC';
 
-  // All feed events in the window, grouped by UTC day — these are the
-  // exceptions. Dismissed events are ignored so an erroneous closure no longer
-  // cancels the baseline.
+  // Feed events overlapping the window, grouped by every UTC day they cover —
+  // these are the exceptions. A multi-day span (e.g. a week-long break) lands in
+  // each of its days' buckets, and a span that started before the window still
+  // counts for the days it reaches into it (dtend > windowStart). Dismissed
+  // events are ignored so an erroneous closure no longer cancels the baseline.
   const events = await db
     .select()
     .from(sourceEvents)
@@ -262,14 +283,18 @@ async function buildException(
       and(
         eq(sourceEvents.feedId, feed.id),
         isNull(sourceEvents.dismissedAt),
-        gte(sourceEvents.dtstart, windowStart),
         lt(sourceEvents.dtstart, windowEnd),
+        or(
+          gte(sourceEvents.dtstart, windowStart),
+          gt(sourceEvents.dtend, windowStart),
+        ),
       ),
     );
   const eventsByDay = new Map<number, EventRow[]>();
   for (const e of events) {
-    const key = startOfUtcDay(e.dtstart).getTime();
-    (eventsByDay.get(key) ?? eventsByDay.set(key, []).get(key)!).push(e);
+    for (const key of coveredUtcDays(e)) {
+      (eventsByDay.get(key) ?? eventsByDay.set(key, []).get(key)!).push(e);
+    }
   }
 
   for (const link of links) {

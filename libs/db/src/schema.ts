@@ -208,6 +208,9 @@ export const sourceEvents = sqliteTable(
     recurrenceId: text('recurrence_id'),
     dtstart: integer('dtstart', { mode: 'timestamp_ms' }).notNull(),
     dtend: integer('dtend', { mode: 'timestamp_ms' }),
+    // All-day (VALUE=DATE) event: dtstart/dtend are anchored to UTC midnight of
+    // the calendar date; render as a bare date, never tz-converted.
+    allDay: integer('all_day', { mode: 'boolean' }).notNull().default(false),
     summary: text('summary'),
     location: text('location'),
     raw: text('raw'),

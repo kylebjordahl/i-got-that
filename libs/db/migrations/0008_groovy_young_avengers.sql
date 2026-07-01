@@ -1,0 +1,1 @@
+ALTER TABLE `source_events` ADD `all_day` integer DEFAULT false NOT NULL;

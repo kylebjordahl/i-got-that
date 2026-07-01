@@ -57,6 +57,13 @@
       "when": 1782805784527,
       "tag": "0007_invite_member_claim",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1782879169024,
+      "tag": "0008_groovy_young_avengers",
+      "breakpoints": true
     }
   ]
 }

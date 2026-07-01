@@ -3,6 +3,17 @@
 DateTime parseTimestamp(Object? v) =>
     v is int ? DateTime.fromMillisecondsSinceEpoch(v) : DateTime.parse(v as String);
 
+/// All-day events are anchored to UTC midnight of their calendar date by the
+/// backend. Read the UTC date parts and rebuild them as a *local* midnight so
+/// day-grouping/headings land on the right day and never shift by the device's
+/// timezone offset (which was turning a Friday holiday into Thursday 5 PM).
+DateTime parseAllDayDate(Object? v) {
+  final utc = v is int
+      ? DateTime.fromMillisecondsSinceEpoch(v, isUtc: true)
+      : DateTime.parse(v as String).toUtc();
+  return DateTime(utc.year, utc.month, utc.day);
+}
+
 class Member {
   Member({
     required this.id,
@@ -80,6 +91,7 @@ class SourceEventItem {
     required this.id,
     required this.feedId,
     required this.start,
+    required this.allDay,
     required this.dismissed,
     this.summary,
     this.location,
@@ -88,16 +100,23 @@ class SourceEventItem {
   final String id;
   final String feedId;
   final DateTime start;
+
+  /// True for all-day events: render as a bare date, not a clock time.
+  final bool allDay;
   final bool dismissed;
   final String? summary;
   final String? location;
 
-  factory SourceEventItem.fromJson(Map<String, dynamic> j) => SourceEventItem(
-        id: j['id'] as String,
-        feedId: j['feedId'] as String,
-        start: parseTimestamp(j['dtstart']),
-        dismissed: j['dismissedAt'] != null,
-        summary: j['summary'] as String?,
-        location: j['location'] as String?,
-      );
+  factory SourceEventItem.fromJson(Map<String, dynamic> j) {
+    final allDay = j['allDay'] as bool? ?? false;
+    return SourceEventItem(
+      id: j['id'] as String,
+      feedId: j['feedId'] as String,
+      allDay: allDay,
+      start: allDay ? parseAllDayDate(j['dtstart']) : parseTimestamp(j['dtstart']),
+      dismissed: j['dismissedAt'] != null,
+      summary: j['summary'] as String?,
+      location: j['location'] as String?,
+    );
+  }
 }

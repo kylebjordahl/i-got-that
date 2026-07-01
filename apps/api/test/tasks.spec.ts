@@ -33,6 +33,8 @@ async function seedEvent(opts: {
   familyId: string;
   uid: string;
   start: Date;
+  end?: Date;
+  allDay?: boolean;
   summary: string;
 }) {
   await getDb(env.DB)
@@ -43,7 +45,8 @@ async function seedEvent(opts: {
       icalUid: opts.uid,
       recurrenceId: '',
       dtstart: opts.start,
-      dtend: null,
+      dtend: opts.end ?? null,
+      allDay: opts.allDay ?? false,
       summary: opts.summary,
       location: null,
       raw: null,
@@ -146,6 +149,77 @@ describe('exception/inverted task generation', () => {
       windowEnd: we,
     });
     expect(again.tasksCreated).toBe(0);
+  });
+
+  it('cancels every day of a multi-day all-day closure, not just the first', async () => {
+    const admin = await login('span-admin@example.com');
+    const familyId = await createFamily(admin.token, 'Break Fam');
+
+    const feedRes = await call(
+      `/families/${familyId}/feeds`,
+      authed(admin.token, { url: 'https://x/break.ics', mode: 'exception' }),
+    );
+    const { feed } = (await feedRes.json()) as { feed: { id: string } };
+
+    const childRes = await call(
+      `/families/${familyId}/members`,
+      authed(admin.token, { relationName: 'child', requiresCaretaker: true }),
+    );
+    const { member } = (await childRes.json()) as { member: { id: string } };
+
+    await call(
+      `/families/${familyId}/feeds/${feed.id}/member-links`,
+      authed(admin.token, {
+        familyMemberId: member.id,
+        weekdayMask: 31, // Mon–Fri
+        dayStart: '08:00',
+        dayEnd: '15:00',
+        generatesTypes: ['dropoff', 'pickup'],
+        defaultAttendance: 'any',
+      }),
+    );
+    await call(
+      `/families/${familyId}/classification-rules`,
+      authed(admin.token, {
+        feedId: feed.id,
+        priority: 10,
+        matchField: 'summary',
+        matchOp: 'contains',
+        matchValue: 'Closed',
+        effect: 'cancel',
+      }),
+    );
+
+    const ws = nextMonday(new Date(Date.UTC(2026, 0, 1)));
+    const we = new Date(ws.getTime() + 7 * DAY_MS);
+
+    // All-day span covering Wed–Fri: DTSTART=Wed 00:00Z, DTEND=Sat 00:00Z
+    // (exclusive). All three weekdays should be cancelled.
+    await seedEvent({
+      feedId: feed.id,
+      familyId,
+      uid: 'winter-break',
+      start: new Date(ws.getTime() + 2 * DAY_MS),
+      end: new Date(ws.getTime() + 5 * DAY_MS),
+      allDay: true,
+      summary: 'MCH Closed - Winter Break',
+    });
+
+    const db = getDb(env.DB);
+    const result = await buildFeedTasks(db, await feedRow(feed.id), {
+      windowStart: ws,
+      windowEnd: we,
+    });
+    // Only Mon,Tue survive × 2 types = 4 (Wed,Thu,Fri all cancelled).
+    expect(result.tasksCreated).toBe(4);
+
+    const list = await call(`/families/${familyId}/tasks`, bearer(admin.token));
+    const { tasks } = (await list.json()) as { tasks: { dtstart: number }[] };
+    expect(tasks).toHaveLength(4);
+    const cancelledDays = [2, 3, 4].map((n) => ws.getTime() + n * DAY_MS);
+    for (const t of tasks) {
+      expect(cancelledDays).not.toContain(startOfUtcDay(new Date(t.dtstart)).getTime());
+    }
   });
 });
 

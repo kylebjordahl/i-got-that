@@ -323,7 +323,7 @@ class _EventCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final subtitleParts = [
-      friendlyTime(event.start),
+      event.allDay ? 'All day' : friendlyTime(event.start),
       if (event.location != null && event.location!.isNotEmpty) event.location!,
     ];
     return Card(

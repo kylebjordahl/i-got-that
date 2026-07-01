@@ -236,6 +236,7 @@ taskRoutes.get('/source-events', async (c) => {
       feedId: sourceEvents.feedId,
       dtstart: sourceEvents.dtstart,
       dtend: sourceEvents.dtend,
+      allDay: sourceEvents.allDay,
       summary: sourceEvents.summary,
       location: sourceEvents.location,
       dismissedAt: sourceEvents.dismissedAt,
