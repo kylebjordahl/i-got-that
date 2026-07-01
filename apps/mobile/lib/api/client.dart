@@ -1,5 +1,9 @@
 import 'package:dio/dio.dart';
 
+/// Sentinel that distinguishes "omit this PATCH field" from "set to null".
+/// Used by [ApiClient.updateClassificationRule] for clearable nullable columns.
+const Object _unset = Object();
+
 /// Thin typed wrapper over the backend HTTP API. Replaced by an OpenAPI-
 /// generated client once the spec is emitted from libs/domain (see /tools).
 class ApiClient {
@@ -339,5 +343,83 @@ class ApiClient {
 
   Future<void> deleteCalendarTarget(String familyId, String targetId) async {
     await _dio.delete('/families/$familyId/calendar-targets/$targetId', options: _auth);
+  }
+
+  // --- Classification rules -----------------------------------------------
+
+  Future<List<dynamic>> listClassificationRules(String familyId) async => _list(
+      await _dio.get('/families/$familyId/classification-rules', options: _auth), 'rules');
+
+  Future<Map<String, dynamic>> createClassificationRule(
+    String familyId, {
+    String? feedId,
+    int priority = 100,
+    required String matchField,
+    required String matchOp,
+    required String matchValue,
+    required String effect,
+    List<String>? producesTypes,
+    String? defaultAttendance,
+    String? shiftToTime,
+    String? defaultOwnerMemberId,
+  }) async {
+    final res = await _dio.post(
+      '/families/$familyId/classification-rules',
+      data: {
+        if (feedId != null) 'feedId': feedId,
+        'priority': priority,
+        'matchField': matchField,
+        'matchOp': matchOp,
+        'matchValue': matchValue,
+        'effect': effect,
+        if (producesTypes != null) 'producesTypes': producesTypes,
+        if (defaultAttendance != null) 'defaultAttendance': defaultAttendance,
+        if (shiftToTime != null) 'shiftToTime': shiftToTime,
+        if (defaultOwnerMemberId != null) 'defaultOwnerMemberId': defaultOwnerMemberId,
+      },
+      options: _auth,
+    );
+    return _obj(res);
+  }
+
+  /// Update a classification rule. Clearable params (`feedId`, `producesTypes`,
+  /// `defaultAttendance`, `shiftToTime`, `defaultOwnerMemberId`) accept an
+  /// explicit `null` to clear the DB column (e.g. on effect change). Omitting a
+  /// param entirely leaves the column unchanged. Non-clearable params use the
+  /// standard `if (x != null)` pattern and cannot be cleared.
+  Future<void> updateClassificationRule(
+    String familyId,
+    String ruleId, {
+    Object? feedId = _unset,
+    int? priority,
+    String? matchField,
+    String? matchOp,
+    String? matchValue,
+    String? effect,
+    Object? producesTypes = _unset,
+    Object? defaultAttendance = _unset,
+    Object? shiftToTime = _unset,
+    Object? defaultOwnerMemberId = _unset,
+  }) async {
+    await _dio.patch(
+      '/families/$familyId/classification-rules/$ruleId',
+      data: {
+        if (feedId != _unset) 'feedId': feedId,
+        if (priority != null) 'priority': priority,
+        if (matchField != null) 'matchField': matchField,
+        if (matchOp != null) 'matchOp': matchOp,
+        if (matchValue != null) 'matchValue': matchValue,
+        if (effect != null) 'effect': effect,
+        if (producesTypes != _unset) 'producesTypes': producesTypes,
+        if (defaultAttendance != _unset) 'defaultAttendance': defaultAttendance,
+        if (shiftToTime != _unset) 'shiftToTime': shiftToTime,
+        if (defaultOwnerMemberId != _unset) 'defaultOwnerMemberId': defaultOwnerMemberId,
+      },
+      options: _auth,
+    );
+  }
+
+  Future<void> deleteClassificationRule(String familyId, String ruleId) async {
+    await _dio.delete('/families/$familyId/classification-rules/$ruleId', options: _auth);
   }
 }

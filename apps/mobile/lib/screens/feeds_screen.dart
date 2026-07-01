@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../state/auth.dart';
 import '../state/family.dart';
+import 'rules_screen.dart';
 
 const _weekdayLabels = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
@@ -55,6 +56,7 @@ class _FeedTile extends ConsumerWidget {
     final isException = feed['mode'] == 'exception';
     final isAdmin = ref.watch(currentMemberProvider).valueOrNull?.isAdmin ?? false;
     final linksAsync = ref.watch(feedLinksProvider(feedId));
+    final rulesAsync = ref.watch(classificationRulesProvider);
 
     return ExpansionTile(
       leading: const CircleAvatar(child: Icon(Icons.rss_feed)),
@@ -117,6 +119,62 @@ class _FeedTile extends ConsumerWidget {
               ),
             ],
           ),
+        ),
+        const Divider(height: 1),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 8, 12, 0),
+          child: Row(
+            children: [
+              Text('Feed rules', style: Theme.of(context).textTheme.titleSmall),
+              const Spacer(),
+              if (isAdmin)
+                TextButton.icon(
+                  onPressed: () => openRuleDialog(context, ref,
+                      initialFeedId: feedId, lockFeedScope: true),
+                  icon: const Icon(Icons.add),
+                  label: const Text('Add rule'),
+                ),
+            ],
+          ),
+        ),
+        rulesAsync.when(
+          loading: () => const Padding(
+            padding: EdgeInsets.all(12),
+            child: LinearProgressIndicator(),
+          ),
+          error: (e, _) => Padding(padding: const EdgeInsets.all(12), child: Text('$e')),
+          data: (rules) {
+            final scoped = rules.where((r) => r.feedId == feedId).toList();
+            if (scoped.isEmpty) {
+              return const ListTile(dense: true, title: Text('No feed-specific rules yet'));
+            }
+            return Column(
+              children: [
+                for (final r in scoped)
+                  ListTile(
+                    dense: true,
+                    leading: const Icon(Icons.rule, size: 20),
+                    title: Text(describeRule(r)),
+                    subtitle: Text(ruleDetail(r)),
+                    trailing: isAdmin
+                        ? Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              IconButton(
+                                icon: const Icon(Icons.edit, size: 20),
+                                onPressed: () => openRuleDialog(context, ref, existing: r),
+                              ),
+                              IconButton(
+                                icon: const Icon(Icons.delete_outline, size: 20),
+                                onPressed: () => confirmDeleteRule(context, ref, r),
+                              ),
+                            ],
+                          )
+                        : null,
+                  ),
+              ],
+            );
+          },
         ),
       ],
     );

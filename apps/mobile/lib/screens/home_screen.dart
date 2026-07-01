@@ -4,6 +4,7 @@ import 'calendars_screen.dart';
 import 'dashboard_screen.dart';
 import 'feeds_screen.dart';
 import 'members_screen.dart';
+import 'rules_screen.dart';
 
 /// Bottom-nav shell. Each tab is a full screen (its own AppBar); this provides
 /// the persistent NavigationBar.
@@ -21,6 +22,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     DashboardScreen(),
     MembersScreen(),
     FeedsScreen(),
+    RulesScreen(),
     CalendarsScreen(),
   ];
 
@@ -35,6 +37,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           NavigationDestination(icon: Icon(Icons.checklist), label: 'Tasks'),
           NavigationDestination(icon: Icon(Icons.child_care), label: 'Family'),
           NavigationDestination(icon: Icon(Icons.rss_feed), label: 'Feeds'),
+          NavigationDestination(icon: Icon(Icons.rule), label: 'Rules'),
           NavigationDestination(icon: Icon(Icons.event), label: 'Calendars'),
         ],
       ),

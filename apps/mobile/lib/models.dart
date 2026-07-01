@@ -85,6 +85,56 @@ class TaskItem {
       };
 }
 
+class ClassificationRule {
+  ClassificationRule({
+    required this.id,
+    required this.priority,
+    required this.matchField,
+    required this.matchOp,
+    required this.matchValue,
+    required this.effect,
+    required this.producesTypes,
+    this.feedId,
+    this.defaultAttendance,
+    this.shiftToTime,
+    this.defaultOwnerMemberId,
+  });
+
+  final String id;
+
+  /// Null when this is a family-global rule (not scoped to a specific feed).
+  final String? feedId;
+
+  final int priority;
+  final String matchField;        // summary | location | description
+  final String matchOp;           // contains | equals | regex
+  final String matchValue;
+  final String effect;            // create | cancel | shift | ignore
+  final List<String> producesTypes;
+  final String? defaultAttendance;
+
+  /// Shift-to time in "HH:MM" format; only meaningful when effect == 'shift'.
+  final String? shiftToTime;
+
+  final String? defaultOwnerMemberId;
+
+  bool get isGlobal => feedId == null;
+
+  factory ClassificationRule.fromJson(Map<String, dynamic> j) => ClassificationRule(
+        id: j['id'] as String,
+        feedId: j['feedId'] as String?,
+        priority: j['priority'] as int,
+        matchField: j['matchField'] as String,
+        matchOp: j['matchOp'] as String,
+        matchValue: j['matchValue'] as String,
+        effect: j['effect'] as String,
+        producesTypes: (j['producesTypes'] as List?)?.cast<String>() ?? const [],
+        defaultAttendance: j['defaultAttendance'] as String?,
+        shiftToTime: j['shiftToTime'] as String?,
+        defaultOwnerMemberId: j['defaultOwnerMemberId'] as String?,
+      );
+}
+
 /// A raw event from a calendar feed (shown in the oversight "All" view).
 class SourceEventItem {
   SourceEventItem({

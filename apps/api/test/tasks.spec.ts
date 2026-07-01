@@ -10,7 +10,7 @@ import {
 } from '@igt/db';
 import { describe, expect, it } from 'vitest';
 import { buildFeedTasks } from '../src/services/tasks.js';
-import { authed, bearer, call, createFamily, login } from './helpers.js';
+import { authed, bearer, call, createFamily, login, patched } from './helpers.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -482,6 +482,180 @@ describe('baseline timezone handling', () => {
     expect(healed.location).toBe('Gym');
     expect(healed.dtend!.getTime() - healed.dtstart.getTime()).toBe(45 * 60_000);
   });
+});
+
+describe('classification rules CRUD', () => {
+  // Helper: create a rule and return its id.
+  async function createRule(
+    token: string,
+    familyId: string,
+    overrides: Record<string, unknown> = {},
+  ): Promise<string> {
+    const res = await call(
+      `/families/${familyId}/classification-rules`,
+      authed(token, {
+        matchField: 'summary',
+        matchOp: 'contains',
+        matchValue: 'Soccer',
+        effect: 'create',
+        producesTypes: ['pickup'],
+        priority: 100,
+        ...overrides,
+      }),
+    );
+    expect(res.status).toBe(201);
+    const { rule } = (await res.json()) as { rule: { id: string } };
+    return rule.id;
+  }
+
+  it('creates → patches priority and matchValue → GET reflects changes', async () => {
+    const admin = await login('crud-rules-admin@example.com');
+    const familyId = await createFamily(admin.token, 'Rules Fam A');
+
+    const ruleId = await createRule(admin.token, familyId);
+
+    // Patch priority and matchValue; leave other fields untouched.
+    const patchRes = await call(
+      `/families/${familyId}/classification-rules/${ruleId}`,
+      patched(admin.token, { priority: 5, matchValue: 'Practice' }),
+    );
+    expect(patchRes.status).toBe(200);
+    const { rule: patchedRule } = (await patchRes.json()) as { rule: { id: string; priority: number; matchValue: string; effect: string } };
+    expect(patchedRule.priority).toBe(5);
+    expect(patchedRule.matchValue).toBe('Practice');
+    expect(patchedRule.effect).toBe('create'); // untouched
+
+    // GET list must reflect the change.
+    const listRes = await call(`/families/${familyId}/classification-rules`, bearer(admin.token));
+    expect(listRes.status).toBe(200);
+    const { rules } = (await listRes.json()) as { rules: { id: string; priority: number; matchValue: string }[] };
+    const found = rules.find((r) => r.id === ruleId);
+    expect(found?.priority).toBe(5);
+    expect(found?.matchValue).toBe('Practice');
+  });
+
+  it('effect change to cancel clears producesTypes and defaultAttendance', async () => {
+    const admin = await login('crud-rules-cancel@example.com');
+    const familyId = await createFamily(admin.token, 'Rules Fam B');
+
+    const ruleId = await createRule(admin.token, familyId, {
+      effect: 'create',
+      producesTypes: ['pickup'],
+      defaultAttendance: 'any',
+    });
+
+    const patchRes = await call(
+      `/families/${familyId}/classification-rules/${ruleId}`,
+      patched(admin.token, {
+        effect: 'cancel',
+        producesTypes: null,
+        defaultAttendance: null,
+        defaultOwnerMemberId: null,
+      }),
+    );
+    expect(patchRes.status).toBe(200);
+    const { rule } = (await patchRes.json()) as {
+      rule: { effect: string; producesTypes: unknown; defaultAttendance: unknown };
+    };
+    expect(rule.effect).toBe('cancel');
+    expect(rule.producesTypes).toBeNull();
+    expect(rule.defaultAttendance).toBeNull();
+  });
+
+  it('partial patch preserves untouched fields', async () => {
+    const admin = await login('crud-rules-partial@example.com');
+    const familyId = await createFamily(admin.token, 'Rules Fam C');
+
+    const ruleId = await createRule(admin.token, familyId, {
+      matchValue: 'Original',
+      effect: 'create',
+      producesTypes: ['dropoff'],
+    });
+
+    // Only patch priority — everything else must be unchanged.
+    const patchRes = await call(
+      `/families/${familyId}/classification-rules/${ruleId}`,
+      patched(admin.token, { priority: 42 }),
+    );
+    expect(patchRes.status).toBe(200);
+    const { rule } = (await patchRes.json()) as {
+      rule: { priority: number; matchValue: string; effect: string; producesTypes: string[] | null };
+    };
+    expect(rule.priority).toBe(42);
+    expect(rule.matchValue).toBe('Original');
+    expect(rule.effect).toBe('create');
+    expect(rule.producesTypes).toEqual(['dropoff']);
+  });
+
+  it('delete removes the rule from the list', async () => {
+    const admin = await login('crud-rules-delete@example.com');
+    const familyId = await createFamily(admin.token, 'Rules Fam D');
+
+    const ruleId = await createRule(admin.token, familyId);
+
+    const delRes = await call(
+      `/families/${familyId}/classification-rules/${ruleId}`,
+      { method: 'DELETE', headers: { Authorization: `Bearer ${admin.token}` } },
+    );
+    expect(delRes.status).toBe(200);
+    expect(((await delRes.json()) as { ok: boolean }).ok).toBe(true);
+
+    const listRes = await call(`/families/${familyId}/classification-rules`, bearer(admin.token));
+    const { rules } = (await listRes.json()) as { rules: { id: string }[] };
+    expect(rules.find((r) => r.id === ruleId)).toBeUndefined();
+  });
+
+  it('PATCH with unknown ruleId returns 404', async () => {
+    const admin = await login('crud-rules-404-patch@example.com');
+    const familyId = await createFamily(admin.token, 'Rules Fam E');
+
+    const res = await call(
+      `/families/${familyId}/classification-rules/00000000-0000-0000-0000-000000000000`,
+      patched(admin.token, { priority: 1 }),
+    );
+    expect(res.status).toBe(404);
+    expect(((await res.json()) as { error: string }).error).toBe('rule_not_found');
+  });
+
+  it('DELETE with unknown ruleId returns 404', async () => {
+    const admin = await login('crud-rules-404-delete@example.com');
+    const familyId = await createFamily(admin.token, 'Rules Fam F');
+
+    const res = await call(
+      `/families/${familyId}/classification-rules/00000000-0000-0000-0000-000000000000`,
+      { method: 'DELETE', headers: { Authorization: `Bearer ${admin.token}` } },
+    );
+    expect(res.status).toBe(404);
+    expect(((await res.json()) as { error: string }).error).toBe('rule_not_found');
+  });
+
+  it('cross-family PATCH and DELETE return 404 (tenant isolation)', async () => {
+    // Family A creates a rule; Family B admin must not be able to touch it.
+    const adminA = await login('crud-rules-tenant-a@example.com');
+    const familyIdA = await createFamily(adminA.token, 'Tenant Fam A');
+    const ruleId = await createRule(adminA.token, familyIdA);
+
+    const adminB = await login('crud-rules-tenant-b@example.com');
+    await createFamily(adminB.token, 'Tenant Fam B');
+
+    const patchRes = await call(
+      `/families/${familyIdA}/classification-rules/${ruleId}`,
+      patched(adminB.token, { priority: 1 }),
+    );
+    // adminB is not a member of familyA → requireFamilyMember returns 403
+    // before even reaching the tenant check.
+    expect(patchRes.status === 403 || patchRes.status === 404).toBe(true);
+
+    const delRes = await call(
+      `/families/${familyIdA}/classification-rules/${ruleId}`,
+      { method: 'DELETE', headers: { Authorization: `Bearer ${adminB.token}` } },
+    );
+    expect(delRes.status === 403 || delRes.status === 404).toBe(true);
+  });
+
+  // Note: admin-gating (403 for non-admin members on PATCH/DELETE) is covered
+  // by requireAdmin's own middleware tests. No non-admin session helper exists
+  // in helpers.ts to wire up a second test here without significant scaffolding.
 });
 
 describe('task & event dismissal', () => {

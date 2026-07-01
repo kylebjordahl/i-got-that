@@ -28,6 +28,17 @@ export function bearer(token: string): RequestInit {
   return { headers: { Authorization: `Bearer ${token}` } };
 }
 
+export function patched(token: string, body?: unknown): RequestInit {
+  return {
+    method: 'PATCH',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'content-type': 'application/json',
+    },
+    ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+  };
+}
+
 /** Complete the magic-link flow; returns a session token + user id. */
 export async function login(
   email: string,

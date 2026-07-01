@@ -207,6 +207,22 @@ export type CreateClassificationRuleInput = z.infer<
   typeof CreateClassificationRuleInput
 >;
 
+/** Partial update for a classification rule. Fields are optional; nullable-optional on the four
+ *  nullable columns so an effect change can explicitly clear stale data by sending `null`. */
+export const UpdateClassificationRuleInput = z.object({
+  feedId: Id.nullable().optional(),
+  priority: z.number().int().optional(),
+  matchField: RuleMatchField.optional(),
+  matchOp: RuleMatchOp.optional(),
+  matchValue: z.string().min(1).optional(),
+  effect: RuleEffect.optional(),
+  producesTypes: z.array(TaskType).nullable().optional(),
+  defaultAttendance: AttendanceRequirement.nullable().optional(),
+  shiftToTime: TimeOfDay.nullable().optional(),
+  defaultOwnerMemberId: Id.nullable().optional(),
+});
+export type UpdateClassificationRuleInput = z.infer<typeof UpdateClassificationRuleInput>;
+
 /** Discover the CalDAV calendars available for a set of credentials. */
 export const CalDavDiscoverInput = z.object({
   serverUrl: z.string().url(),
