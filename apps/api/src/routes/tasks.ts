@@ -8,7 +8,7 @@ import {
   sourceEvents,
   tasks,
 } from '@igt/db';
-import { AssignTaskInput, CreateClassificationRuleInput } from '@igt/domain';
+import { AssignTaskInput, CreateClassificationRuleInput, UpdateClassificationRuleInput } from '@igt/domain';
 import { Hono } from 'hono';
 import type { HonoEnv } from '../env.js';
 import { requireAdmin, requireFamilyMember } from '../middleware/auth.js';
@@ -58,6 +58,90 @@ taskRoutes.get('/classification-rules', async (c) => {
     .from(classificationRules)
     .where(eq(classificationRules.familyId, c.get('member').familyId));
   return c.json({ rules: rows });
+});
+
+taskRoutes.patch('/classification-rules/:ruleId', requireAdmin, async (c) => {
+  const me = c.get('member');
+  const ruleId = c.req.param('ruleId');
+  const parsed = UpdateClassificationRuleInput.safeParse(
+    await c.req.json().catch(() => null),
+  );
+  if (!parsed.success) {
+    return c.json({ error: 'invalid', issues: parsed.error.issues }, 400);
+  }
+
+  const data = parsed.data;
+  // Build the update set with only the keys the client explicitly sent.
+  // Checking 'key in data' distinguishes "omitted" (leave unchanged) from an
+  // explicit null (clear the nullable column). Do NOT use ?? null coalescing
+  // for omitted keys — that would silently erase fields the caller didn't touch.
+  const set: Record<string, unknown> = {};
+  if ('feedId' in data) set.feedId = data.feedId ?? null;
+  if ('priority' in data) set.priority = data.priority;
+  if ('matchField' in data) set.matchField = data.matchField;
+  if ('matchOp' in data) set.matchOp = data.matchOp;
+  if ('matchValue' in data) set.matchValue = data.matchValue;
+  if ('effect' in data) set.effect = data.effect;
+  if ('producesTypes' in data) set.producesTypes = data.producesTypes ?? null;
+  if ('defaultAttendance' in data) set.defaultAttendance = data.defaultAttendance ?? null;
+  if ('shiftToTime' in data) set.shiftToTime = data.shiftToTime ?? null;
+  if ('defaultOwnerMemberId' in data) set.defaultOwnerMemberId = data.defaultOwnerMemberId ?? null;
+
+  const db = getDb(c.env.DB);
+
+  // Empty body (no recognized keys) → return current row unchanged (idempotent).
+  // Avoids a Drizzle error from an empty SET clause.
+  if (Object.keys(set).length === 0) {
+    const existing = (
+      await db
+        .select()
+        .from(classificationRules)
+        .where(
+          and(
+            eq(classificationRules.id, ruleId),
+            eq(classificationRules.familyId, me.familyId),
+          ),
+        )
+        .limit(1)
+    )[0];
+    if (!existing) return c.json({ error: 'rule_not_found' }, 404);
+    return c.json({ rule: existing });
+  }
+
+  const updated = (
+    await db
+      .update(classificationRules)
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      .set(set as any)
+      .where(
+        and(
+          eq(classificationRules.id, ruleId),
+          eq(classificationRules.familyId, me.familyId),
+        ),
+      )
+      .returning()
+  )[0];
+
+  if (!updated) return c.json({ error: 'rule_not_found' }, 404);
+  return c.json({ rule: updated });
+});
+
+taskRoutes.delete('/classification-rules/:ruleId', requireAdmin, async (c) => {
+  const me = c.get('member');
+  const ruleId = c.req.param('ruleId');
+  const deleted = (
+    await getDb(c.env.DB)
+      .delete(classificationRules)
+      .where(
+        and(
+          eq(classificationRules.id, ruleId),
+          eq(classificationRules.familyId, me.familyId),
+        ),
+      )
+      .returning()
+  )[0];
+  if (!deleted) return c.json({ error: 'rule_not_found' }, 404);
+  return c.json({ ok: true });
 });
 
 // --- Tasks (unowned dashboard + assignment) ------------------------------

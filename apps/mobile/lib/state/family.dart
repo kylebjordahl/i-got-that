@@ -77,6 +77,15 @@ final feedsProvider = FutureProvider<List<Map<String, dynamic>>>((ref) async {
   return (await api.listFeeds(familyId)).cast<Map<String, dynamic>>();
 });
 
+/// All classification rules for the family (global + feed-scoped combined).
+/// Group client-side by [ClassificationRule.feedId] for display.
+final classificationRulesProvider = FutureProvider<List<ClassificationRule>>((ref) async {
+  final api = ref.watch(apiClientProvider);
+  final familyId = await ref.watch(familyProvider.future);
+  final rows = await api.listClassificationRules(familyId);
+  return rows.map((e) => ClassificationRule.fromJson(e as Map<String, dynamic>)).toList();
+});
+
 /// Member links (with baselines) for a specific feed.
 final feedLinksProvider =
     FutureProvider.family<List<Map<String, dynamic>>, String>((ref, feedId) async {
