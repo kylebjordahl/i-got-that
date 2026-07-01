@@ -17,7 +17,11 @@ import type {
 export class CalDavProvider implements DeliveryProvider {
   readonly method = 'caldav' as const;
 
-  constructor(private readonly fetchImpl: typeof fetch = fetch) {}
+  // Default to the global fetch bound to the global scope: on Cloudflare
+  // Workers a bare `fetch` reference called as a method (`this.fetchImpl(...)`)
+  // throws "Illegal invocation" because it loses its global `this`. Tests inject
+  // their own fetch, so this only bites in the deployed Worker.
+  constructor(private readonly fetchImpl: typeof fetch = fetch.bind(globalThis)) {}
 
   /** The object URL for an event within a collection (trailing slash enforced). */
   private objectUrl(collectionUrl: string, uid: string): string {
