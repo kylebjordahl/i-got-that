@@ -17,7 +17,9 @@ export class GoogleCalendarProvider implements DeliveryProvider {
   readonly method = 'google' as const;
 
   constructor(
-    private readonly fetchImpl: typeof fetch = fetch,
+    // Bound to the global scope so a bare global `fetch` doesn't throw "Illegal
+    // invocation" when invoked as `this.fetchImpl(...)` on Cloudflare Workers.
+    private readonly fetchImpl: typeof fetch = fetch.bind(globalThis),
     private readonly refresh?: AccessTokenRefresher,
   ) {}
 
