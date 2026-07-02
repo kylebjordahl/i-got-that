@@ -1,5 +1,7 @@
-/// Web implementation — see web_auth.dart.
-// ignore: deprecated_member_use, avoid_web_libraries_in_flutter
+// Web implementation — see web_auth.dart. `dart:html` is the pragmatic choice
+// for this tiny redirect/fragment glue; migrate to package:web + dart:js_interop
+// if this grows.
+// ignore_for_file: deprecated_member_use, avoid_web_libraries_in_flutter
 import 'dart:html' as html;
 
 /// Navigate the whole page to [url] to begin the Apple redirect flow.

@@ -1,7 +1,18 @@
+import { and, eq, getDb, identities, users } from '@igt/db';
 import { createExecutionContext, env, waitOnExecutionContext } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 import app from '../src/index.js';
-import { type AppleJwk, verifyAppleIdentityToken } from '../src/lib/apple.js';
+import {
+  type AppleJwk,
+  verifyAppleIdentityToken,
+  verifyAppleNotificationToken,
+} from '../src/lib/apple.js';
+import {
+  createSession,
+  findOrCreateUserByApple,
+  getUserBySessionToken,
+  handleAppleAccountEvent,
+} from '../src/services/auth.js';
 
 const ISSUER = 'https://appleid.apple.com';
 const AUD = 'com.example.caretaker';
@@ -203,5 +214,117 @@ describe('Web Sign in with Apple redirect flow', () => {
     expect(res.headers.get('location')).toBe(
       'https://app.test/app/#auth_error=state_mismatch',
     );
+  });
+});
+
+describe('Apple server-to-server notifications', () => {
+  const AUD = 'com.example.caretaker';
+
+  async function signNotification(
+    privateKey: CryptoKey,
+    kid: string,
+    eventPayload: Record<string, unknown>,
+  ): Promise<string> {
+    // Apple nests the event as a JSON *string* in the `events` claim.
+    return signToken(privateKey, kid, {
+      iss: ISSUER,
+      aud: AUD,
+      iat: Math.floor(Date.now() / 1000),
+      events: JSON.stringify(eventPayload),
+    });
+  }
+
+  it('verifies a notification and decodes its event', async () => {
+    const { privateKey, jwks } = await makeKeyAndJwks(KID);
+    const token = await signNotification(privateKey, KID, {
+      type: 'consent-revoked',
+      sub: 'apple-sub-revoke',
+      event_time: 1700000000000,
+    });
+    const event = await verifyAppleNotificationToken(token, { audience: AUD, jwks });
+    expect(event.type).toBe('consent-revoked');
+    expect(event.sub).toBe('apple-sub-revoke');
+  });
+
+  it('rejects a notification for a wrong audience', async () => {
+    const { privateKey, jwks } = await makeKeyAndJwks(KID);
+    const token = await signNotification(privateKey, KID, {
+      type: 'account-delete',
+      sub: 's',
+    });
+    await expect(
+      verifyAppleNotificationToken(token, { audience: 'other.app', jwks }),
+    ).rejects.toThrow(/audience/);
+  });
+
+  it('consent-revoked signs the user out and drops the Apple identity', async () => {
+    const db = getDb(env.DB);
+    const sub = `sub-revoke-${crypto.randomUUID()}`;
+    const user = await findOrCreateUserByApple(db, sub, 'revoke@relay.test');
+    const session = await createSession(db, user.id);
+
+    await handleAppleAccountEvent(db, { type: 'consent-revoked', sub });
+
+    // Session invalidated…
+    expect(await getUserBySessionToken(db, session)).toBeNull();
+    // …and the Apple identity is gone (a fresh sign-in mints a new user).
+    const stillLinked = await db
+      .select({ id: identities.id })
+      .from(identities)
+      .where(and(eq(identities.provider, 'apple'), eq(identities.providerRef, sub)));
+    expect(stillLinked).toHaveLength(0);
+    // The user row itself survives (they may have other identities).
+    const userRow = await db.select({ id: users.id }).from(users).where(eq(users.id, user.id));
+    expect(userRow).toHaveLength(1);
+  });
+
+  it('account-delete removes the user (cascading identities + sessions)', async () => {
+    const db = getDb(env.DB);
+    const sub = `sub-delete-${crypto.randomUUID()}`;
+    const user = await findOrCreateUserByApple(db, sub, 'delete@relay.test');
+    const session = await createSession(db, user.id);
+
+    await handleAppleAccountEvent(db, { type: 'account-delete', sub });
+
+    expect(await getUserBySessionToken(db, session)).toBeNull();
+    const userRow = await db.select({ id: users.id }).from(users).where(eq(users.id, user.id));
+    expect(userRow).toHaveLength(0);
+  });
+
+  it('no-ops for an unknown subject', async () => {
+    const db = getDb(env.DB);
+    await expect(
+      handleAppleAccountEvent(db, { type: 'account-delete', sub: 'never-seen' }),
+    ).resolves.toBeUndefined();
+  });
+
+  it('POST /auth/apple/notifications → 501 when Apple is unconfigured', async () => {
+    const ctx = createExecutionContext();
+    const res = await app.fetch(
+      new Request('https://api.test/auth/apple/notifications', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ payload: 'x.y.z' }),
+      }),
+      env,
+      ctx,
+    );
+    await waitOnExecutionContext(ctx);
+    expect(res.status).toBe(501);
+  });
+
+  it('POST /auth/apple/notifications → 400 on a malformed body', async () => {
+    const ctx = createExecutionContext();
+    const res = await app.fetch(
+      new Request('https://api.test/auth/apple/notifications', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ nope: true }),
+      }),
+      { ...env, APPLE_CLIENT_IDS: AUD },
+      ctx,
+    );
+    await waitOnExecutionContext(ctx);
+    expect(res.status).toBe(400);
   });
 });

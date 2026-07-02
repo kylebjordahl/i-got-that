@@ -7,12 +7,13 @@ import {
 import { Hono } from 'hono';
 import { deleteCookie, getSignedCookie, setSignedCookie } from 'hono/cookie';
 import type { HonoEnv } from '../env.js';
-import { verifyAppleIdentityToken } from '../lib/apple.js';
+import { verifyAppleIdentityToken, verifyAppleNotificationToken } from '../lib/apple.js';
 import { randomToken } from '../lib/crypto.js';
 import { getMailer } from '../lib/mailer.js';
 import {
   createSession,
   findOrCreateUserByApple,
+  handleAppleAccountEvent,
   requestMagicLink,
   verifyMagicLink,
 } from '../services/auth.js';
@@ -196,6 +197,37 @@ authRoutes.post('/apple/callback', async (c) => {
   const user = await findOrCreateUserByApple(db, identity.sub, identity.email);
   const sessionToken = await createSession(db, user.id);
   return back(`session=${encodeURIComponent(sessionToken)}`);
+});
+
+/**
+ * Apple **server-to-server notifications** (configured on the primary App ID).
+ * Apple POSTs `{ payload: <JWS> }` out-of-band when a user disables their relay
+ * email, revokes our app's access, or deletes their Apple ID. We verify the JWS
+ * (signature + issuer + audience) and apply the event to our identity/session
+ * tables. Trust is the signature, not the caller — the endpoint is public.
+ *
+ * Always answer 200 on a valid (or unknown-subject) event so Apple doesn't retry;
+ * only signature/shape failures return 4xx.
+ */
+authRoutes.post('/apple/notifications', async (c) => {
+  const audience = appleAudience(c.env);
+  if (audience.length === 0) {
+    return c.json({ error: 'apple_not_configured' }, 501);
+  }
+  const body = (await c.req.json().catch(() => null)) as { payload?: unknown } | null;
+  if (!body || typeof body.payload !== 'string') {
+    return c.json({ error: 'invalid' }, 400);
+  }
+
+  let event;
+  try {
+    event = await verifyAppleNotificationToken(body.payload, { audience });
+  } catch (err) {
+    return c.json({ error: 'invalid_notification', message: String(err) }, 401);
+  }
+
+  await handleAppleAccountEvent(getDb(c.env.DB), event);
+  return c.body(null, 200);
 });
 
 authRoutes.post('/magic-link/verify', async (c) => {

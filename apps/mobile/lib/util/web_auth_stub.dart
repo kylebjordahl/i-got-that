@@ -1,4 +1,4 @@
-/// Native (non-web) stubs — see web_auth.dart.
+// Native (non-web) stubs — see web_auth.dart.
 
 /// Navigate the whole page to [url] to begin the Apple redirect flow. No-op off
 /// the web.

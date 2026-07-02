@@ -22,3 +22,23 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+
+# Per-environment app identity. Only the iOS bundle id differs today (there's no
+# Android target yet); the Dart-side per-env config is threaded via --dart-define
+# (see state/auth.dart). The generated iOS build configs + schemes are committed
+# under ios/; regenerate after editing flavors with flutter_flavorizr (not a
+# project dependency — activate it on demand):
+#   dart pub global activate flutter_flavorizr
+#   dart pub global run flutter_flavorizr -p ios:xcconfig,ios:buildTargets,ios:schema
+flavorizr:
+  flavors:
+    staging:
+      app:
+        name: "IGT Staging"
+      ios:
+        bundleId: "com.kylebjordahl.igt.staging"
+    prod:
+      app:
+        name: "IGT"
+      ios:
+        bundleId: "com.kylebjordahl.igt"

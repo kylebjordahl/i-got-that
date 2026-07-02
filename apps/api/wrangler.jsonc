@@ -60,7 +60,8 @@
                 "ENVIRONMENT": "staging",
                 "PUBLIC_ORIGIN": "https://staging.igt.kylebjordahl.com",
                 "ORGANIZER_EMAIL": "noreply@igt.local",
-                "APPLE_CLIENT_IDS": "",
+                // Allowed Apple `aud`s: the native iOS bundle id + the web Services ID.
+                "APPLE_CLIENT_IDS": "com.kylebjordahl.igt.staging,com.kylebjordahl.igt.web.staging",
                 "APPLE_WEB_CLIENT_ID": "com.kylebjordahl.igt.web.staging",
                 "GOOGLE_OAUTH_CLIENT_ID": "",
             },
@@ -115,7 +116,8 @@
                 // Set to the production custom domain once provisioned (Terraform).
                 "PUBLIC_ORIGIN": "https://igt.kylebjordahl.com",
                 "ORGANIZER_EMAIL": "noreply@igt.local",
-                "APPLE_CLIENT_IDS": "",
+                // Allowed Apple `aud`s: the native iOS bundle id + the web Services ID.
+                "APPLE_CLIENT_IDS": "com.kylebjordahl.igt,com.kylebjordahl.igt.web",
                 "APPLE_WEB_CLIENT_ID": "com.kylebjordahl.igt.web",
                 "GOOGLE_OAUTH_CLIENT_ID": "",
             },
