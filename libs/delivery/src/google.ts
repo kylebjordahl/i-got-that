@@ -42,9 +42,12 @@ export class GoogleCalendarProvider implements DeliveryProvider {
       summary: event.summary,
       location: event.location,
       description: event.description,
-      start: { dateTime: event.start.toISOString() },
+      // timeZone tags the (UTC) instant with the source zone so Google renders it
+      // there rather than the account's default; omitted ⇒ Google uses the offset.
+      start: { dateTime: event.start.toISOString(), timeZone: event.timezone },
       end: {
         dateTime: (event.end ?? new Date(event.start.getTime() + 3_600_000)).toISOString(),
+        timeZone: event.timezone,
       },
       // Default popup reminders from the target config; useDefault:false so an
       // empty list explicitly means "no reminders" rather than the calendar's.

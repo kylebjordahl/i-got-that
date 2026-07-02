@@ -159,6 +159,54 @@ function addAlarms(event: ICalEvent, alertMinutes: number[] | undefined): void {
   }
 }
 
+/**
+ * A Date whose *local* getters (`getHours()` …) equal `instant`'s wall-clock time
+ * in `tz`. This is the only host-independent way to drive ical-generator's
+ * Date+TZID path: given a timezone it formats a JS Date with the runtime's local
+ * getters (not the absolute instant), so we hand it a Date built from the zoned
+ * wall-clock parts. Returns null for an unknown/unresolvable zone.
+ */
+function toZonedLocal(instant: Date, tz: string): Date | null {
+  try {
+    const dtf = new Intl.DateTimeFormat('en-US', {
+      timeZone: tz,
+      hourCycle: 'h23',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    });
+    const p: Record<string, number> = {};
+    for (const part of dtf.formatToParts(instant)) {
+      if (part.type !== 'literal') p[part.type] = Number(part.value);
+    }
+    return new Date(p.year!, p.month! - 1, p.day!, p.hour!, p.minute!, p.second!);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolve the start/end/timezone to hand ical-generator. With a usable IANA zone
+ * we tag the VEVENT with its TZID (so iCloud/Apple render it in that zone instead
+ * of "GMT") and pass wall-clock-anchored Dates; otherwise we fall back to bare
+ * UTC (`Z`) output. `endInstant` is the caller's end or a 1-hour default.
+ */
+function timedFields(
+  startInstant: Date,
+  endInstant: Date,
+  tz: string | undefined,
+): { start: Date; end: Date; timezone?: string } {
+  if (tz && tz !== 'UTC') {
+    const start = toZonedLocal(startInstant, tz);
+    const end = toZonedLocal(endInstant, tz);
+    if (start && end) return { start, end, timezone: tz };
+  }
+  return { start: startInstant, end: endInstant };
+}
+
 export interface InviteEventInput {
   uid: string;
   sequence: number;
@@ -169,6 +217,8 @@ export interface InviteEventInput {
   location?: string;
   /** Minutes before start for display alarms (VALARM). */
   alertMinutes?: number[];
+  /** IANA timezone (from the source feed) to render DTSTART/DTEND in; UTC if absent. */
+  timezone?: string;
   organizerEmail: string;
   organizerName?: string;
   attendeeEmail: string;
@@ -192,11 +242,14 @@ function buildICalendar(
 ): string {
   const cal = ical({ prodId: { company: 'igt', product: 'caretaker' } });
   cal.method(method);
+  const endInstant = input.end ?? new Date(input.start.getTime() + 60 * 60 * 1000);
+  const { start, end, timezone } = timedFields(input.start, endInstant, input.timezone);
   const event = cal.createEvent({
     id: input.uid,
     sequence: input.sequence,
-    start: input.start,
-    end: input.end ?? new Date(input.start.getTime() + 60 * 60 * 1000),
+    start,
+    end,
+    timezone,
     summary: input.summary,
     status,
   });
@@ -229,18 +282,29 @@ export function buildStoredEventICalendar(input: {
   location?: string;
   /** Minutes before start for display alarms (VALARM). */
   alertMinutes?: number[];
+  /** IANA timezone (from the source feed) to render DTSTART/DTEND in; UTC if absent. */
+  timezone?: string;
 }): string {
   const cal = ical({ prodId: { company: 'igt', product: 'caretaker' } });
+  const endInstant = input.end ?? new Date(input.start.getTime() + 60 * 60 * 1000);
+  const { start, end, timezone } = timedFields(input.start, endInstant, input.timezone);
   const event = cal.createEvent({
     id: input.uid,
     sequence: input.sequence,
-    start: input.start,
-    end: input.end ?? new Date(input.start.getTime() + 60 * 60 * 1000),
+    start,
+    end,
+    timezone,
     summary: input.summary,
     status: ICalEventStatus.CONFIRMED,
   });
   if (input.description) event.description(input.description);
-  if (input.location) event.location(input.location);
+  if (input.location) {
+    event.location(input.location);
+    // Opt the event into Apple Calendar's automatic travel time. Apple only
+    // computes it once it geocodes the LOCATION, but without this flag it never
+    // tries. Harmless on Google/other clients, which ignore X-APPLE-* props.
+    event.x('X-APPLE-TRAVEL-ADVISORY-BEHAVIOR', 'AUTOMATIC');
+  }
   addAlarms(event, input.alertMinutes);
   return cal.toString();
 }

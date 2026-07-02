@@ -195,6 +195,20 @@ describe('CalDavProvider (against a fake CalDAV server)', () => {
     expect(server.store.get(objectUrl)).toContain('SUMMARY:Pickup — updated');
   });
 
+  it('renders DTSTART in the event timezone + Apple travel-time opt-in', async () => {
+    const server = new FakeCalDavServer();
+    const provider = new CalDavProvider(server.fetch);
+    // 17:00 UTC == 10:00 in Los Angeles (PDT).
+    await provider.upsert(
+      { ...alarmEvent, timezone: 'America/Los_Angeles' },
+      target,
+    );
+    expect(server.last.body).toContain(
+      'DTSTART;TZID=America/Los_Angeles:20260310T100000',
+    );
+    expect(server.last.body).toContain('X-APPLE-TRAVEL-ADVISORY-BEHAVIOR:AUTOMATIC');
+  });
+
   it('cancel DELETEs the same object URL', async () => {
     const server = new FakeCalDavServer();
     const provider = new CalDavProvider(server.fetch);
