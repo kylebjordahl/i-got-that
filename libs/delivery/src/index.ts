@@ -24,6 +24,8 @@ export interface DeliveryEvent {
   location?: string;
   /** Default reminders: minutes before start, from the target config. */
   alertMinutes?: number[];
+  /** IANA timezone of the source event so the delivered event isn't shown in GMT. */
+  timezone?: string;
 }
 
 export interface DeliveryTarget {

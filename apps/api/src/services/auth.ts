@@ -7,6 +7,7 @@ import {
   sessions,
   users,
 } from '@igt/db';
+import type { AppleNotificationEvent } from '../lib/apple.js';
 import { randomToken, sha256hex } from '../lib/crypto.js';
 
 const MAGIC_LINK_TTL_MS = 15 * 60 * 1000; // 15 minutes
@@ -80,6 +81,42 @@ export async function findOrCreateUserByApple(
     .insert(identities)
     .values({ userId: user.id, provider: 'apple', providerRef: sub });
   return user;
+}
+
+/**
+ * Apply an Apple server-to-server account event. Idempotent and safe for unknown
+ * subjects (Apple may notify about accounts we've never seen — we just no-op):
+ *   - `consent-revoked` → sign the user out everywhere and drop the Apple
+ *     identity (they must re-authorize to link again).
+ *   - `account-delete`  → delete the user; the FK cascade removes their
+ *     identities + sessions and nulls their family_member links.
+ *   - `email-*`         → a relay-address toggle; nothing we persist depends on
+ *     it today, so it's a no-op (logged by the caller if desired).
+ */
+export async function handleAppleAccountEvent(
+  db: Db,
+  event: AppleNotificationEvent,
+): Promise<void> {
+  const rows = await db
+    .select({ userId: identities.userId, id: identities.id })
+    .from(identities)
+    .where(and(eq(identities.provider, 'apple'), eq(identities.providerRef, event.sub)))
+    .limit(1);
+  const identity = rows[0];
+  if (!identity) return;
+
+  switch (event.type) {
+    case 'consent-revoked':
+      await db.delete(sessions).where(eq(sessions.userId, identity.userId));
+      await db.delete(identities).where(eq(identities.id, identity.id));
+      break;
+    case 'account-delete':
+      await db.delete(users).where(eq(users.id, identity.userId));
+      break;
+    case 'email-disabled':
+    case 'email-enabled':
+      break;
+  }
 }
 
 /** Create a session for a user; returns the raw session token. */

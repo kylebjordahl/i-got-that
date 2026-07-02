@@ -15,6 +15,10 @@
     },
     "vars": {
         "ENVIRONMENT": "development",
+        // Public-facing origin (scheme + host) this deployment is served on; used
+        // to build absolute public URLs (e.g. the Apple web Return URL). Empty
+        // locally — the Apple web redirect flow only runs on a deployed HTTPS host.
+        "PUBLIC_ORIGIN": "",
         "ORGANIZER_EMAIL": "noreply@igt.local",
         // DEV ONLY KEK (envelope-encryption key-encryption key). Production sets a
         // real secret via `wrangler secret put KEK` / Terraform — never commit prod keys.
@@ -23,6 +27,12 @@
         // iOS bundle id and/or web Services ID). Empty ⇒ Apple login disabled.
         // Set per env (or via secret). See docs/AUTH.md.
         "APPLE_CLIENT_IDS": "",
+        // Web Sign in with Apple (browser redirect flow). WEB_CLIENT_ID is the
+        // Services ID (also list it in APPLE_CLIENT_IDS). The Return URL is derived
+        // from PUBLIC_ORIGIN (`<origin>/api/auth/apple/callback`) — register that
+        // exact URL on the Services ID. Empty (or PUBLIC_ORIGIN empty) ⇒ the web
+        // redirect flow is disabled. See docs/AUTH.md.
+        "APPLE_WEB_CLIENT_ID": "",
         // Google OAuth client for the Calendar provider. ID can be a var; set the
         // SECRET via `wrangler secret put GOOGLE_OAUTH_CLIENT_SECRET`. Empty ⇒ the
         // Google OAuth flow is disabled (paste-token still works). See docs/AUTH.md.
@@ -48,8 +58,11 @@
             // KEK is set per-env via `wrangler secret put KEK --env staging`.
             "vars": {
                 "ENVIRONMENT": "staging",
+                "PUBLIC_ORIGIN": "https://staging.igt.kylebjordahl.com",
                 "ORGANIZER_EMAIL": "noreply@igt.local",
-                "APPLE_CLIENT_IDS": "",
+                // Allowed Apple `aud`s: the native iOS bundle id + the web Services ID.
+                "APPLE_CLIENT_IDS": "com.kylebjordahl.igt.staging,com.kylebjordahl.igt.web.staging",
+                "APPLE_WEB_CLIENT_ID": "com.kylebjordahl.igt.web.staging",
                 "GOOGLE_OAUTH_CLIENT_ID": "",
             },
             // The whole subdomain routes to this Worker (custom_domain provisions DNS
@@ -100,8 +113,12 @@
             // KEK is set per-env via `wrangler secret put KEK --env production`.
             "vars": {
                 "ENVIRONMENT": "production",
+                // Set to the production custom domain once provisioned (Terraform).
+                "PUBLIC_ORIGIN": "https://igt.kylebjordahl.com",
                 "ORGANIZER_EMAIL": "noreply@igt.local",
-                "APPLE_CLIENT_IDS": "",
+                // Allowed Apple `aud`s: the native iOS bundle id + the web Services ID.
+                "APPLE_CLIENT_IDS": "com.kylebjordahl.igt,com.kylebjordahl.igt.web",
+                "APPLE_WEB_CLIENT_ID": "com.kylebjordahl.igt.web",
                 "GOOGLE_OAUTH_CLIENT_ID": "",
             },
             "d1_databases": [

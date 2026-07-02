@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildCancelICalendar,
   buildInviteICalendar,
+  buildStoredEventICalendar,
   createCalDavClient,
   fetchGoogleOccurrences,
   hashOccurrence,
@@ -120,6 +121,58 @@ END:VCALENDAR`;
     const cancel = buildCancelICalendar({ ...input, sequence: 1 });
     expect(cancel).toContain('METHOD:CANCEL');
     expect(cancel).not.toContain('BEGIN:VALARM');
+  });
+
+  it('renders a stored event in its source timezone (not GMT), host-independently', () => {
+    // 22:30 UTC == 15:30 in Los Angeles (PDT). The wall-clock + TZID must be the
+    // same no matter what timezone the test runtime is in — we anchor to the
+    // zoned wall clock rather than trusting ical-generator's local getters.
+    const ics = buildStoredEventICalendar({
+      uid: 'task-tz',
+      sequence: 0,
+      start: new Date('2026-07-02T22:30:00Z'),
+      end: new Date('2026-07-02T23:00:00Z'),
+      summary: 'Pickup — School',
+      location: '123 Main St, Springfield',
+      timezone: 'America/Los_Angeles',
+    });
+    expect(ics).toContain('DTSTART;TZID=America/Los_Angeles:20260702T153000');
+    expect(ics).toContain('DTEND;TZID=America/Los_Angeles:20260702T160000');
+    // No bare-UTC stamp on the timed value (that's the "GMT" bug).
+    expect(ics).not.toMatch(/DTSTART:20260702T\d+Z/);
+  });
+
+  it('falls back to UTC when no timezone is given', () => {
+    const ics = buildStoredEventICalendar({
+      uid: 'task-utc',
+      sequence: 0,
+      start: new Date('2026-07-02T22:30:00Z'),
+      end: new Date('2026-07-02T23:00:00Z'),
+      summary: 'Pickup — School',
+    });
+    expect(ics).toContain('DTSTART:20260702T223000Z');
+    expect(ics).not.toContain('TZID=');
+  });
+
+  it('opts a located stored event into Apple automatic travel time', () => {
+    const withLocation = buildStoredEventICalendar({
+      uid: 'task-loc',
+      sequence: 0,
+      start: new Date('2026-07-02T22:30:00Z'),
+      end: null,
+      summary: 'Pickup — School',
+      location: '123 Main St, Springfield',
+    });
+    expect(withLocation).toContain('X-APPLE-TRAVEL-ADVISORY-BEHAVIOR:AUTOMATIC');
+    // No location ⇒ nothing to route to, so no travel-advisory flag.
+    const noLocation = buildStoredEventICalendar({
+      uid: 'task-noloc',
+      sequence: 0,
+      start: new Date('2026-07-02T22:30:00Z'),
+      end: null,
+      summary: 'Attendance — School',
+    });
+    expect(noLocation).not.toContain('X-APPLE-TRAVEL-ADVISORY-BEHAVIOR');
   });
 
   it('instantiates a CalDAV client (tsdav importable in workerd)', () => {

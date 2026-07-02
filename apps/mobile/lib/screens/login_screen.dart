@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../state/auth.dart';
@@ -36,6 +37,9 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
 
   @override
   Widget build(BuildContext context) {
+    // Errors bubbled up from the Apple redirect callback land in auth state.
+    final redirectError = ref.watch(authControllerProvider).error;
+    final error = _error ?? redirectError;
     return Scaffold(
       appBar: AppBar(title: const Text('Sign in')),
       body: Center(
@@ -66,9 +70,19 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                         )
                       : const Text('Continue with magic link'),
                 ),
-                if (_error != null) ...[
+                if (kIsWeb) ...[
                   const SizedBox(height: 12),
-                  Text(_error!, style: TextStyle(color: Theme.of(context).colorScheme.error)),
+                  OutlinedButton.icon(
+                    onPressed: _busy
+                        ? null
+                        : () => ref.read(authControllerProvider.notifier).loginWithApple(),
+                    icon: const Icon(Icons.apple),
+                    label: const Text('Continue with Apple'),
+                  ),
+                ],
+                if (error != null) ...[
+                  const SizedBox(height: 12),
+                  Text(error, style: TextStyle(color: Theme.of(context).colorScheme.error)),
                 ],
               ],
             ),
