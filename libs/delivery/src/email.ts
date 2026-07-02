@@ -33,6 +33,7 @@ export class EmailImipProvider implements DeliveryProvider {
       description: event.description,
       location: event.location,
       alertMinutes: event.alertMinutes,
+      timezone: event.timezone,
       organizerEmail: this.organizerEmail,
       attendeeEmail: target.addressOrUrl,
     });

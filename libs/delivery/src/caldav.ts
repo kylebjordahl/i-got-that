@@ -48,6 +48,7 @@ export class CalDavProvider implements DeliveryProvider {
       description: event.description,
       location: event.location,
       alertMinutes: event.alertMinutes,
+      timezone: event.timezone,
     });
     const url = this.objectUrl(target.addressOrUrl, event.uid);
     // Unconditional PUT = upsert: creates on first write, overwrites on update.

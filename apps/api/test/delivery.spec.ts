@@ -4,6 +4,7 @@ import {
   deliveries,
   eq,
   externalAccounts,
+  feeds,
   getDb,
   secrets,
   tasks,
@@ -150,6 +151,53 @@ describe('calendar reconcile (syncMember)', () => {
     expect(fake.cancels).toHaveLength(1);
     const after = await db.select().from(deliveries).where(eq(deliveries.taskId, task.id));
     expect(after).toHaveLength(0);
+  });
+
+  it("threads the generating feed's timezone onto the delivered event", async () => {
+    const { admin, familyId, memberId } = await adminFamily('tz-admin@example.com');
+    const db = getDb(env.DB);
+
+    const childRes = await call(
+      `/families/${familyId}/members`,
+      authed(admin.token, { relationName: 'child', requiresCaretaker: true }),
+    );
+    const { member: child } = (await childRes.json()) as { member: { id: string } };
+
+    // A feed carrying an IANA timezone (as ICS X-WR-TIMEZONE would set).
+    const feed = (
+      await db
+        .insert(feeds)
+        .values({ familyId, mode: 'explicit', timezone: 'America/Los_Angeles' })
+        .returning()
+    )[0]!;
+
+    await call(
+      `/families/${familyId}/calendar-targets`,
+      authed(admin.token, {
+        memberId,
+        name: 'Personal',
+        method: 'email',
+        addressOrUrl: 'tz-admin@example.com',
+      }),
+    );
+
+    await db.insert(tasks).values({
+      familyId,
+      feedId: feed.id,
+      familyMemberId: child.id,
+      type: 'pickup',
+      dtstart: new Date('2026-03-10T15:00:00Z'),
+      dtend: null,
+      status: 'owned',
+      ownerMemberId: memberId,
+      createdVia: 'rule',
+    });
+
+    const fake = new FakeProvider('email');
+    const registry = new DeliveryProviderRegistry().register(fake);
+    const res = await syncMember(db, registry, env.KEK, memberId);
+    expect(res.created).toBe(1);
+    expect(fake.upserts[0]!.event.timezone).toBe('America/Los_Angeles');
   });
 });
 

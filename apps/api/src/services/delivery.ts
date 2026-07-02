@@ -5,6 +5,7 @@ import {
   deliveries,
   eq,
   familyMembers,
+  feeds,
   getDb,
   ne,
   tasks,
@@ -129,13 +130,19 @@ function taskSummary(task: TaskRow, childName: string): string {
 }
 
 /** djb2 over the meaningful event fields; cheap + synchronous. */
-function hashEvent(summary: string, task: TaskRow, alertMinutes: number[]): string {
+function hashEvent(
+  summary: string,
+  task: TaskRow,
+  alertMinutes: number[],
+  timezone: string | undefined,
+): string {
   const parts = [
     summary,
     task.dtstart.toISOString(),
     task.dtend ? task.dtend.toISOString() : '',
     task.location ?? '',
     alertMinutes.join(','),
+    timezone ?? '',
   ].join('|');
   let h = 5381;
   for (let i = 0; i < parts.length; i++) h = ((h << 5) + h) ^ parts.charCodeAt(i);
@@ -171,14 +178,21 @@ async function syncTarget(
   };
   const provider = registry.get(target.method);
 
-  // Desired = owner's owned tasks (none when the target is paused).
-  const desired = target.active
+  // Desired = owner's owned tasks (none when the target is paused). Left-join the
+  // generating feed to carry its timezone onto the delivered event (so it renders
+  // in the source zone, not GMT); null for manually-created tasks.
+  const desiredRows = target.active
     ? await db
-        .select()
+        .select({ task: tasks, timezone: feeds.timezone })
         .from(tasks)
+        .leftJoin(feeds, eq(feeds.id, tasks.feedId))
         .where(and(eq(tasks.ownerMemberId, target.memberId), eq(tasks.status, 'owned')))
     : [];
+  const desired = desiredRows.map((r) => r.task);
   const desiredById = new Map(desired.map((t) => [t.id, t]));
+  const timezoneByTask = new Map(
+    desiredRows.map((r) => [r.task.id, r.timezone ?? undefined]),
+  );
 
   const existing = await db
     .select()
@@ -213,7 +227,8 @@ async function syncTarget(
   const alertMinutes = target.alertMinutes ?? [];
   for (const task of desired) {
     const summary = taskSummary(task, childNames.get(task.familyMemberId) ?? 'child');
-    const hash = hashEvent(summary, task, alertMinutes);
+    const timezone = timezoneByTask.get(task.id);
+    const hash = hashEvent(summary, task, alertMinutes, timezone);
     const prior = existingByTask.get(task.id);
     if (prior && prior.payloadHash === hash) continue;
 
@@ -227,6 +242,7 @@ async function syncTarget(
       summary,
       location: task.location ?? undefined,
       alertMinutes: alertMinutes.length > 0 ? alertMinutes : undefined,
+      timezone,
     };
     try {
       const res = await provider.upsert(event, deliveryTarget);
