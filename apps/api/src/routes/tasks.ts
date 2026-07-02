@@ -8,7 +8,12 @@ import {
   sourceEvents,
   tasks,
 } from '@igt/db';
-import { AssignTaskInput, CreateClassificationRuleInput, UpdateClassificationRuleInput } from '@igt/domain';
+import {
+  AssignTaskInput,
+  ConvertTaskInput,
+  CreateClassificationRuleInput,
+  UpdateClassificationRuleInput,
+} from '@igt/domain';
 import { Hono } from 'hono';
 import type { HonoEnv } from '../env.js';
 import { requireAdmin, requireFamilyMember } from '../middleware/auth.js';
@@ -304,6 +309,89 @@ taskRoutes.post('/tasks/:taskId/restore', async (c) => {
       .returning()
   )[0]!;
   return c.json({ task: updated });
+});
+
+/**
+ * Convert a feed-generated task into a chosen set of types (attendance / pickup /
+ * drop-off). Reconciles the whole (source event, dependent) group to exactly the
+ * requested types, marking them `manual` so a feed rebuild won't reclassify them.
+ * Ownership is preserved on a kept type; dropped types are removed and every
+ * former owner in the group is re-synced.
+ */
+taskRoutes.post('/tasks/:taskId/convert', async (c) => {
+  const parsed = ConvertTaskInput.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) return c.json({ error: 'invalid', issues: parsed.error.issues }, 400);
+  const desired = new Set(parsed.data.types);
+
+  const db = getDb(c.env.DB);
+  const me = c.get('member');
+
+  const task = (
+    await db
+      .select()
+      .from(tasks)
+      .where(and(eq(tasks.id, c.req.param('taskId')), eq(tasks.familyId, me.familyId)))
+      .limit(1)
+  )[0];
+  if (!task) return c.json({ error: 'task_not_found' }, 404);
+  // Conversion is a feed-event concept; baseline/manual point-tasks have no event.
+  if (!task.sourceEventId) return c.json({ error: 'not_convertible' }, 400);
+
+  const event = (
+    await db
+      .select()
+      .from(sourceEvents)
+      .where(eq(sourceEvents.id, task.sourceEventId))
+      .limit(1)
+  )[0];
+  if (!event) return c.json({ error: 'task_not_found' }, 404);
+
+  const groupWhere = and(
+    eq(tasks.sourceEventId, task.sourceEventId),
+    eq(tasks.familyMemberId, task.familyMemberId),
+  );
+  const group = await db.select().from(tasks).where(groupWhere);
+
+  // Owners whose calendars must be re-synced: anyone owning a group task before
+  // the change (a dropped type leaves their calendar; a kept type's delivered
+  // title may change with its type).
+  const affectedOwners = new Set(
+    group.map((t) => t.ownerMemberId).filter((id): id is string => id != null),
+  );
+  const existingTypes = new Set(group.map((t) => t.type));
+
+  for (const t of group) {
+    if (desired.has(t.type)) {
+      if (t.createdVia !== 'manual') {
+        await db.update(tasks).set({ createdVia: 'manual' }).where(eq(tasks.id, t.id));
+      }
+    } else {
+      await db.delete(tasks).where(eq(tasks.id, t.id));
+    }
+  }
+  for (const type of desired) {
+    if (existingTypes.has(type)) continue;
+    await db.insert(tasks).values({
+      familyId: task.familyId,
+      feedId: task.feedId,
+      sourceEventId: task.sourceEventId,
+      familyMemberId: task.familyMemberId,
+      type,
+      attendanceRequirement: 'any',
+      dtstart: event.dtstart,
+      dtend: event.dtend,
+      location: event.location,
+      status: 'unowned',
+      createdVia: 'manual',
+    });
+  }
+
+  for (const memberId of affectedOwners) {
+    enqueueReconcile(c, { kind: 'member', memberId });
+  }
+
+  const updated = await db.select().from(tasks).where(groupWhere);
+  return c.json({ tasks: updated });
 });
 
 /**

@@ -297,6 +297,14 @@ class ApiClient {
         data: <String, dynamic>{}, options: _auth);
   }
 
+  /// Convert a feed-generated task into a chosen set of types (attendance /
+  /// pickup / dropoff). The event's tasks for that dependent become exactly
+  /// these types.
+  Future<void> convertTask(String familyId, String taskId, List<String> types) async {
+    await _dio.post('/families/$familyId/tasks/$taskId/convert',
+        data: {'types': types}, options: _auth);
+  }
+
   /// The raw feed events behind the tasks (for the oversight view).
   Future<List<dynamic>> listSourceEvents(String familyId) async =>
       _list(await _dio.get('/families/$familyId/source-events', options: _auth), 'events');
