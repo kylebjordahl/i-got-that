@@ -10,6 +10,7 @@ import '../util/format.dart';
 import '../util/task_visuals.dart';
 import '../widgets/primitives.dart';
 import '../widgets/task_row.dart';
+import 'task_actions_sheet.dart';
 
 /// Home — the claim hub. Surfaces unowned tasks first (any caretaker can claim
 /// them); the caller's own claimed tasks for today sit below.
@@ -163,25 +164,31 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
               color: AppColors.amberHero.withValues(alpha: 0.16),
             ),
           ),
-          ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 210),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text("TODAY'S HANDOFFS",
-                    style: font(kBodyFont, 12, 600,
-                        color: AppColors.amberHero, letterSpacing: 0.5)),
-                const SizedBox(height: 8),
-                Text(headline, style: AppText.heroHeadline),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 210),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text("TODAY'S HANDOFFS",
+                        style: font(kBodyFont, 12, 600,
+                            color: AppColors.amberHero, letterSpacing: 0.5)),
+                    const SizedBox(height: 8),
+                    Text(headline, style: AppText.heroHeadline),
+                  ],
+                ),
+              ),
+              if (n > 0) ...[
                 const SizedBox(height: 14),
-                if (n > 0)
-                  PillButton(
-                    label: _claiming ? 'Claiming…' : 'Claim what I can',
-                    variant: PillVariant.amber,
-                    onPressed: _claiming ? null : () => _claimAll(unowned),
-                  ),
+                PillButton(
+                  label: _claiming ? 'Claiming…' : 'Claim what I can',
+                  variant: PillVariant.amber,
+                  onPressed: _claiming ? null : () => _claimAll(unowned),
+                ),
               ],
-            ),
+            ],
           ),
         ],
       ),
@@ -198,6 +205,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       personName: child?.relationName ?? 'child',
       personColor: color,
       subtitle: '${taskCategory(t.type)} · ${friendlyTime(t.start)}',
+      onLongPress: () => showTaskActions(context, ref, t),
       trailing: PillButton(
         label: 'Claim',
         dense: true,
@@ -218,6 +226,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       personColor: color,
       subtitle: '${taskCategory(t.type)} · ${friendlyTime(t.start)}',
       ownedColor: meColor,
+      onLongPress: () => showTaskActions(context, ref, t),
       trailing: YouChip(initial: initialFor(me?.relationName ?? '?'), color: meColor),
     );
   }

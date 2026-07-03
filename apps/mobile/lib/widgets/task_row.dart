@@ -18,6 +18,7 @@ class TaskRow extends StatelessWidget {
     this.ownedColor,
     this.trailing,
     this.onTap,
+    this.onLongPress,
   });
 
   final IconData icon;
@@ -31,6 +32,7 @@ class TaskRow extends StatelessWidget {
   final Color? ownedColor;
   final Widget? trailing;
   final VoidCallback? onTap;
+  final VoidCallback? onLongPress;
 
   @override
   Widget build(BuildContext context) {
@@ -49,6 +51,7 @@ class TaskRow extends StatelessWidget {
             color: Colors.transparent,
             child: InkWell(
               onTap: onTap,
+              onLongPress: onLongPress,
               child: IntrinsicHeight(
                 child: Row(
                   crossAxisAlignment: CrossAxisAlignment.stretch,

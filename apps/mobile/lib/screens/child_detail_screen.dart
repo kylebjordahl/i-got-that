@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models.dart';
-import '../state/auth.dart';
 import '../state/family.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_text.dart';
@@ -9,7 +8,10 @@ import '../theme/person_colors.dart';
 import '../widgets/primitives.dart';
 import '../widgets/settings.dart';
 import 'dialogs.dart';
+import 'feed_baseline_screen.dart';
 import 'member_sections.dart';
+
+const _weekdayLabels = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
 /// Per-child settings: member color + the feed→child links that generate this
 /// child's tasks (the link lives on the child, not the feed).
@@ -61,8 +63,8 @@ class _LinkedFeeds extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final feeds = ref.watch(feedsProvider).valueOrNull ?? const <Map<String, dynamic>>[];
 
-    // Resolve each feed's link for this child.
-    final linked = <(Map<String, dynamic>, String)>[]; // (feed, linkId)
+    // Resolve each feed's link (with baseline) for this child.
+    final linked = <(Map<String, dynamic>, Map<String, dynamic>)>[]; // (feed, link)
     final unlinked = <Map<String, dynamic>>[];
     for (final feed in feeds) {
       final links = ref.watch(feedLinksProvider(feed['id'] as String)).valueOrNull ?? const [];
@@ -71,7 +73,7 @@ class _LinkedFeeds extends ConsumerWidget {
           .where((l) => l['familyMemberId'] == child.id)
           .firstOrNull;
       if (link != null) {
-        linked.add((feed, link['id'] as String));
+        linked.add((feed, link));
       } else {
         unlinked.add(feed);
       }
@@ -87,8 +89,8 @@ class _LinkedFeeds extends ConsumerWidget {
         ),
         const SizedBox(height: 8),
         Text(
-          "Feeds that generate ${child.relationName}'s tasks — linked here, on the "
-          'child, not on the feed.',
+          "Feeds that generate ${child.relationName}'s tasks. Tap one to set its "
+          'baseline — linked here, on the child, not on the feed.',
           style: AppText.subtitle,
         ),
         const SizedBox(height: 12),
@@ -101,18 +103,21 @@ class _LinkedFeeds extends ConsumerWidget {
                   child: Text('No feeds linked yet', style: AppText.subtitle),
                 )
               else
-                for (final (feed, linkId) in linked) ...[
+                for (final (feed, link) in linked) ...[
                   SettingRow(
                     icon: _feedIcon(feed),
                     iconColor: _feedColor(feed),
                     title: _feedName(feed),
-                    subtitle: _feedSubtitle(feed),
-                    trailing: canEdit
-                        ? GestureDetector(
-                            onTap: () => _unlink(ref, feed['id'] as String, linkId),
-                            child: const TintBadge('Linked', color: AppColors.green),
-                          )
-                        : const TintBadge('Linked', color: AppColors.green),
+                    subtitle: _baselineSummary(feed, link),
+                    trailing: const Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        TintBadge('Linked', color: AppColors.green),
+                        SizedBox(width: 6),
+                        Icon(Icons.chevron_right_rounded, color: AppColors.textMuted),
+                      ],
+                    ),
+                    onTap: () => _openBaseline(context, feed, link),
                   ),
                   const Divider(height: 20),
                 ],
@@ -123,7 +128,7 @@ class _LinkedFeeds extends ConsumerWidget {
                   title: 'Link a feed',
                   onTap: unlinked.isEmpty
                       ? null
-                      : () => _openLinkSheet(context, ref, unlinked),
+                      : () => _openLinkSheet(context, unlinked),
                 ),
             ],
           ),
@@ -132,23 +137,21 @@ class _LinkedFeeds extends ConsumerWidget {
     );
   }
 
-  Future<void> _unlink(WidgetRef ref, String feedId, String linkId) async {
-    final familyId = await ref.read(familyProvider.future);
-    await ref.read(apiClientProvider).deleteMemberLink(familyId, feedId, linkId);
-    ref.invalidate(feedLinksProvider(feedId));
+  void _openBaseline(
+    BuildContext context,
+    Map<String, dynamic> feed, [
+    Map<String, dynamic>? link,
+  ]) {
+    Navigator.of(context).push(MaterialPageRoute(
+      builder: (_) => FeedBaselineScreen(child: child, feed: feed, existingLink: link),
+    ));
   }
 
-  Future<void> _link(WidgetRef ref, String feedId) async {
-    final familyId = await ref.read(familyProvider.future);
-    await ref.read(apiClientProvider).createMemberLink(familyId, feedId, familyMemberId: child.id);
-    ref.invalidate(feedLinksProvider(feedId));
-  }
-
-  void _openLinkSheet(BuildContext context, WidgetRef ref, List<Map<String, dynamic>> unlinked) {
+  void _openLinkSheet(BuildContext context, List<Map<String, dynamic>> unlinked) {
     showModalBottomSheet<void>(
       context: context,
       showDragHandle: true,
-      builder: (_) => Padding(
+      builder: (_) => SingleChildScrollView(
         padding: const EdgeInsets.fromLTRB(22, 4, 22, 28),
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -161,10 +164,10 @@ class _LinkedFeeds extends ConsumerWidget {
                 icon: _feedIcon(feed),
                 iconColor: _feedColor(feed),
                 title: _feedName(feed),
-                subtitle: _feedSubtitle(feed),
+                subtitle: _feedKindLabel(feed),
                 onTap: () {
-                  _link(ref, feed['id'] as String);
                   Navigator.of(context).pop();
+                  _openBaseline(context, feed);
                 },
               ),
           ],
@@ -179,13 +182,28 @@ class _LinkedFeeds extends ConsumerWidget {
       (f['sourceCalendarId'] as String?) ??
       'Calendar feed';
 
-  String _feedSubtitle(Map<String, dynamic> f) {
+  String _feedKindLabel(Map<String, dynamic> f) {
     final kind = f['kind'] as String? ?? 'ics';
     return switch (kind) {
       'google' => 'Family calendar · Google',
       'caldav' => 'Calendar · CalDAV',
       _ => 'School calendar · ICS',
     };
+  }
+
+  /// Baseline one-liner for a linked feed (explicit feeds have no baseline).
+  String _baselineSummary(Map<String, dynamic> feed, Map<String, dynamic> link) {
+    if (feed['mode'] != 'exception') return 'Explicit · generates tasks directly';
+    final mask = link['weekdayMask'] as int? ?? 0;
+    final days = [
+      for (var i = 0; i < 7; i++)
+        if ((mask & (1 << i)) != 0) _weekdayLabels[i],
+    ].join(' ');
+    final times = '${link['dayStart'] ?? '?'}–${link['dayEnd'] ?? '?'}';
+    final types = ((link['generatesTypes'] as List?)?.cast<String>() ?? const [])
+        .map((t) => t == 'dropoff' ? 'drop-off' : t)
+        .join('/');
+    return '${days.isEmpty ? '—' : days} · $times${types.isEmpty ? '' : ' · $types'}';
   }
 
   IconData _feedIcon(Map<String, dynamic> f) =>

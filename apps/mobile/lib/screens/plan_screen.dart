@@ -9,6 +9,7 @@ import '../theme/person_colors.dart';
 import '../util/format.dart';
 import '../util/task_visuals.dart';
 import '../widgets/primitives.dart';
+import 'task_actions_sheet.dart';
 
 const _startHour = 7;
 const _endHour = 18; // 6 PM
@@ -209,6 +210,7 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
                   placed: p,
                   byId: byId,
                   onClaim: () => _claim(p.task.id),
+                  onLongPress: () => showTaskActions(context, ref, p.task),
                 ),
               ),
             // Now-line.
@@ -524,10 +526,16 @@ class _FiltersButton extends StatelessWidget {
 
 /// A single positioned task block (transition pill or attendance block).
 class _TaskBlock extends StatelessWidget {
-  const _TaskBlock({required this.placed, required this.byId, required this.onClaim});
+  const _TaskBlock({
+    required this.placed,
+    required this.byId,
+    required this.onClaim,
+    this.onLongPress,
+  });
   final _Placed placed;
   final Map<String, Member> byId;
   final VoidCallback onClaim;
+  final VoidCallback? onLongPress;
 
   @override
   Widget build(BuildContext context) {
@@ -580,31 +588,36 @@ class _TaskBlock extends StatelessWidget {
             ],
           );
 
-    if (unowned) {
-      return CustomPaint(
-        painter: _DashedBox(color: accent.withValues(alpha: 0.7)),
-        child: Container(
-          padding: EdgeInsets.symmetric(horizontal: 10, vertical: isAtt ? 9 : 4),
-          decoration: BoxDecoration(
-            color: AppColors.tint(accent, 0.06),
-            borderRadius: BorderRadius.circular(12),
-          ),
-          child: content,
-        ),
-      );
-    }
-    return Container(
-      padding: EdgeInsets.symmetric(horizontal: 10, vertical: isAtt ? 9 : 6),
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment.centerLeft,
-          end: Alignment.centerRight,
-          colors: [AppColors.tint(accent, 0.22), AppColors.tint(accent, 0.10)],
-        ),
-        borderRadius: BorderRadius.circular(12),
-        border: Border(left: BorderSide(color: accent, width: 3)),
-      ),
-      child: content,
+    final Widget box = unowned
+        ? CustomPaint(
+            painter: _DashedBox(color: accent.withValues(alpha: 0.7)),
+            child: Container(
+              padding: EdgeInsets.symmetric(horizontal: 10, vertical: isAtt ? 9 : 4),
+              decoration: BoxDecoration(
+                color: AppColors.tint(accent, 0.06),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: content,
+            ),
+          )
+        : Container(
+            padding: EdgeInsets.symmetric(horizontal: 10, vertical: isAtt ? 9 : 6),
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.centerLeft,
+                end: Alignment.centerRight,
+                colors: [AppColors.tint(accent, 0.22), AppColors.tint(accent, 0.10)],
+              ),
+              borderRadius: BorderRadius.circular(12),
+              border: Border(left: BorderSide(color: accent, width: 3)),
+            ),
+            child: content,
+          );
+
+    return GestureDetector(
+      onLongPress: onLongPress,
+      behavior: HitTestBehavior.opaque,
+      child: box,
     );
   }
 
