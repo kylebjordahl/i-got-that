@@ -76,6 +76,7 @@ class ApiClient {
     bool? isCaretaker,
     bool? isAdmin,
     bool? requiresCaretaker,
+    String? color,
   }) async {
     await _dio.patch(
       '/families/$familyId/members/$memberId',
@@ -84,9 +85,15 @@ class ApiClient {
         if (isCaretaker != null) 'isCaretaker': isCaretaker,
         if (isAdmin != null) 'isAdmin': isAdmin,
         if (requiresCaretaker != null) 'requiresCaretaker': requiresCaretaker,
+        if (color != null) 'color': color,
       },
       options: _auth,
     );
+  }
+
+  /// Remove a member from the family (admin). 204 on success.
+  Future<void> deleteMember(String familyId, String memberId) async {
+    await _dio.delete('/families/$familyId/members/$memberId', options: _auth);
   }
 
   /// Issue a member-claim invite (admin). Returns `{ token, expiresAt }`.

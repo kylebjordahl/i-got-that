@@ -1,10 +1,50 @@
 // Human-friendly date/time helpers (no intl dependency).
 
 const _weekdays = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+const _weekdaysLong = [
+  'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday',
+];
+const _weekdaysShort = ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'];
 const _months = [
   'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
   'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
 ];
+const _monthsLong = [
+  'January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December',
+];
+
+/// e.g. "Tuesday · July 1" — the Home / detail subtitle format.
+String longDate(DateTime dt) {
+  final l = dt.toLocal();
+  return '${_weekdaysLong[l.weekday - 1]} · ${_monthsLong[l.month - 1]} ${l.day}';
+}
+
+/// e.g. "Tuesday, July 1" — the Plan header format.
+String longDateComma(DateTime dt) {
+  final l = dt.toLocal();
+  return '${_weekdaysLong[l.weekday - 1]}, ${_monthsLong[l.month - 1]} ${l.day}';
+}
+
+/// Uppercase 3-letter weekday for the Plan day-scroller ("TUE").
+String weekdayShort(DateTime dt) => _weekdaysShort[dt.toLocal().weekday - 1];
+
+/// A time-of-day greeting ("Good morning" / "afternoon" / "evening").
+String greeting(DateTime now) {
+  final h = now.hour;
+  if (h < 12) return 'Good morning';
+  if (h < 18) return 'Good afternoon';
+  return 'Good evening';
+}
+
+/// e.g. "8:00" / "3:30" — 12-hour clock without the AM/PM suffix (Plan blocks).
+String clockShort(DateTime dt) {
+  final l = dt.toLocal();
+  var h = l.hour % 12;
+  if (h == 0) h = 12;
+  final m = l.minute.toString().padLeft(2, '0');
+  return '$h:$m';
+}
 
 /// Local date with time zeroed — used as a grouping key by day.
 DateTime dayKey(DateTime dt) {

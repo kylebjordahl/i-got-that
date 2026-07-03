@@ -22,6 +22,7 @@ class Member {
     required this.isAdmin,
     required this.requiresCaretaker,
     this.userId,
+    this.color,
   });
 
   final String id;
@@ -33,6 +34,10 @@ class Member {
   /// The linked login account, if any. Null ⇒ can be invited to claim this slot.
   final String? userId;
 
+  /// Persistent accent color as a `#RRGGBB` hex string. Null ⇒ derived from id
+  /// (see `theme/person_colors.dart`).
+  final String? color;
+
   bool get hasLogin => userId != null;
 
   factory Member.fromJson(Map<String, dynamic> j) => Member(
@@ -42,6 +47,7 @@ class Member {
         isAdmin: j['isAdmin'] as bool? ?? false,
         requiresCaretaker: j['requiresCaretaker'] as bool? ?? false,
         userId: j['userId'] as String?,
+        color: j['color'] as String?,
       );
 }
 

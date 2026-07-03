@@ -22,6 +22,18 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+  # Round-5 redesign fonts. These are variable TTFs (one file per family with a
+  # `wght` axis); the app theme picks weights via FontVariation('wght', …).
+  fonts:
+    - family: Hanken Grotesk
+      fonts:
+        - asset: assets/fonts/HankenGrotesk.ttf
+    - family: Schibsted Grotesk
+      fonts:
+        - asset: assets/fonts/SchibstedGrotesk.ttf
+    - family: Caveat
+      fonts:
+        - asset: assets/fonts/Caveat.ttf
 
 # Per-environment app identity. Only the iOS bundle id differs today (there's no
 # Android target yet); the Dart-side per-env config is threaded via --dart-define

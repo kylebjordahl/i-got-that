@@ -97,6 +97,7 @@ familyRoutes.post(
           isCaretaker: parsed.data.isCaretaker,
           isAdmin: parsed.data.isAdmin,
           requiresCaretaker: parsed.data.requiresCaretaker,
+          color: parsed.data.color ?? null,
         })
         .returning()
     )[0]!;
@@ -167,6 +168,8 @@ familyRoutes.patch('/:familyId/members/:memberId', requireFamilyMember, async (c
 
   const set: Partial<typeof familyMembers.$inferInsert> = {};
   if (d.relationName !== undefined) set.relationName = d.relationName;
+  // Accent color isn't a role flag — the member (or an admin) may set their own.
+  if (d.color !== undefined) set.color = d.color;
   if (me.isAdmin) {
     if (d.isCaretaker !== undefined) set.isCaretaker = d.isCaretaker;
     if (d.isAdmin !== undefined) set.isAdmin = d.isAdmin;
@@ -184,3 +187,42 @@ familyRoutes.patch('/:familyId/members/:memberId', requireFamilyMember, async (c
   enqueueReconcile(c, { kind: 'family', familyId: me.familyId });
   return c.json({ member: updated });
 });
+
+/**
+ * Remove a member from the family (admin). Member FKs cascade, so their tasks,
+ * calendar targets, and feed links are cleaned up. You can't remove yourself,
+ * and the last remaining admin can't be removed (avoid orphaning the family).
+ */
+familyRoutes.delete(
+  '/:familyId/members/:memberId',
+  requireFamilyMember,
+  requireAdmin,
+  async (c) => {
+    const db = getDb(c.env.DB);
+    const me = c.get('member');
+    const memberId = c.req.param('memberId');
+    if (memberId === me.id) return c.json({ error: 'cannot_remove_self' }, 409);
+
+    const target = (
+      await db
+        .select()
+        .from(familyMembers)
+        .where(and(eq(familyMembers.id, memberId), eq(familyMembers.familyId, me.familyId)))
+        .limit(1)
+    )[0];
+    if (!target) return c.json({ error: 'not_found' }, 404);
+
+    if (target.isAdmin) {
+      const admins = await db
+        .select({ id: familyMembers.id })
+        .from(familyMembers)
+        .where(and(eq(familyMembers.familyId, me.familyId), eq(familyMembers.isAdmin, true)));
+      if (admins.length <= 1) return c.json({ error: 'last_admin' }, 409);
+    }
+
+    await db.delete(familyMembers).where(eq(familyMembers.id, memberId));
+    // Their claimed tasks are gone — reconcile the family's calendars.
+    enqueueReconcile(c, { kind: 'family', familyId: me.familyId });
+    return c.body(null, 204);
+  },
+);

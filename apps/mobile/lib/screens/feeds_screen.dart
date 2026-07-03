@@ -3,6 +3,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models.dart';
 import '../state/auth.dart';
 import '../state/family.dart';
+import '../theme/app_colors.dart';
+import '../widgets/primitives.dart';
 import 'rules_screen.dart';
 
 const _weekdayLabels = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
@@ -71,7 +73,10 @@ class _FeedTile extends ConsumerWidget {
     };
 
     return ExpansionTile(
-      leading: CircleAvatar(child: Icon(kind == 'ics' ? Icons.rss_feed : Icons.link)),
+      leading: IconTile(
+        icon: kind == 'ics' ? Icons.rss_feed : Icons.link,
+        color: kind == 'ics' ? AppColors.feedBlue : AppColors.purple,
+      ),
       title: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis),
       subtitle: Text(
         '$sourceLabel · ${feed['mode']} · ${feed['status']} · ${feed['timezone'] ?? 'UTC'} · every ${feed['refreshMinutes']}m',
