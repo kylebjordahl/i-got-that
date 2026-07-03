@@ -198,7 +198,7 @@ async function buildExplicit(
     );
 
   for (const event of pending) {
-    const intents = classifyExplicit(toOccurrence(event), rules) ?? [];
+    const intents = classifyExplicit(toOccurrence(event), rules);
     const desiredTypes = new Set(intents.map((i) => i.type));
 
     for (const link of links) {
@@ -211,6 +211,29 @@ async function buildExplicit(
             eq(tasks.familyMemberId, link.familyMemberId),
           ),
         );
+
+      // Once the user has curated this event's tasks (e.g. converted the default
+      // attendance into pickup/drop-off), the builder no longer classifies it:
+      // it only heals the manual tasks' start/end/location so a moved event moves
+      // its tasks, and never adds/removes by type. This preserves the conversion
+      // across re-ingestion.
+      const manual = existing.filter((t) => t.createdVia === 'manual');
+      if (manual.length > 0) {
+        for (const t of manual) {
+          if (
+            t.dtstart.getTime() !== event.dtstart.getTime() ||
+            (t.dtend?.getTime() ?? null) !== (event.dtend?.getTime() ?? null) ||
+            (t.location ?? null) !== (event.location ?? null)
+          ) {
+            await db
+              .update(tasks)
+              .set({ dtstart: event.dtstart, dtend: event.dtend, location: event.location })
+              .where(eq(tasks.id, t.id));
+          }
+        }
+        continue;
+      }
+
       const existingByType = new Map(existing.map((t) => [t.type, t]));
 
       // Remove unowned tasks no longer desired.

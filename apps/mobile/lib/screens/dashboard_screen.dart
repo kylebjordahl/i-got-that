@@ -79,6 +79,30 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     _refreshTasks();
   }
 
+  Future<void> _convert(TaskItem task) async {
+    // Prefill from the whole (event) group so opening from any sibling row keeps
+    // the others checked. Prefer the fully-loaded All list; fall back to the
+    // unowned list, then the tapped task's own type.
+    final all = ref.read(allTasksProvider).valueOrNull ??
+        ref.read(unownedTasksProvider).valueOrNull ??
+        const <TaskItem>[];
+    final current = all
+        .where((t) => t.sourceEventId == task.sourceEventId)
+        .map((t) => t.type)
+        .toSet();
+    if (current.isEmpty) current.add(task.type);
+
+    final chosen = await showDialog<List<String>>(
+      context: context,
+      builder: (_) => _ConvertTypeDialog(initial: current),
+    );
+    if (chosen == null || chosen.isEmpty) return;
+
+    final familyId = await ref.read(familyProvider.future);
+    await ref.read(apiClientProvider).convertTask(familyId, task.id, chosen);
+    _refreshTasks();
+  }
+
   Future<void> _dismissEvent(String feedId, String eventId) async {
     final familyId = await ref.read(familyProvider.future);
     await ref.read(apiClientProvider).dismissEvent(familyId, feedId, eventId);
@@ -106,6 +130,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
       onRelease: _release,
       onDismiss: _dismissTask,
       onRestore: _restoreTask,
+      onConvert: _convert,
     );
 
     return Scaffold(
@@ -176,6 +201,7 @@ class _TaskActions {
     required this.onRelease,
     required this.onDismiss,
     required this.onRestore,
+    required this.onConvert,
   });
 
   final List<Member> caretakers;
@@ -185,6 +211,7 @@ class _TaskActions {
   final void Function(String taskId) onRelease;
   final void Function(String taskId) onDismiss;
   final void Function(String taskId) onRestore;
+  final void Function(TaskItem task) onConvert;
 }
 
 /// The unowned queue: a flat list grouped by day.
@@ -433,6 +460,8 @@ class _TaskTile extends StatelessWidget {
           onSelected: (v) {
             if (v == '__dismiss__') {
               actions.onDismiss(task.id);
+            } else if (v == '__convert__') {
+              actions.onConvert(task);
             } else {
               actions.onAssign(task.id, v);
             }
@@ -447,6 +476,9 @@ class _TaskTile extends StatelessWidget {
                 PopupMenuItem<String>(value: m.id, child: Text(m.relationName)),
               const PopupMenuDivider(),
             ],
+            // Type conversion only makes sense for feed-event tasks.
+            if (task.sourceEventId != null)
+              const PopupMenuItem<String>(value: '__convert__', child: Text('Change type…')),
             const PopupMenuItem<String>(value: '__dismiss__', child: Text('Mark unneeded')),
           ],
         ),
@@ -459,6 +491,62 @@ class _TaskTile extends StatelessWidget {
         'dropoff' => Icons.login,
         _ => Icons.event,
       };
+}
+
+/// Multi-select of task types for a feed event. Returns the chosen type ids
+/// (`attendance`/`pickup`/`dropoff`), or null on cancel. At least one is required.
+class _ConvertTypeDialog extends StatefulWidget {
+  const _ConvertTypeDialog({required this.initial});
+  final Set<String> initial;
+
+  @override
+  State<_ConvertTypeDialog> createState() => _ConvertTypeDialogState();
+}
+
+class _ConvertTypeDialogState extends State<_ConvertTypeDialog> {
+  static const _types = [
+    ('attendance', 'Attendance'),
+    ('pickup', 'Pickup'),
+    ('dropoff', 'Drop-off'),
+  ];
+  late final Set<String> _selected = {...widget.initial};
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Change type'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          for (final (id, label) in _types)
+            CheckboxListTile(
+              value: _selected.contains(id),
+              title: Text(label),
+              contentPadding: EdgeInsets.zero,
+              onChanged: (v) => setState(() {
+                if (v ?? false) {
+                  _selected.add(id);
+                } else {
+                  _selected.remove(id);
+                }
+              }),
+            ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: _selected.isEmpty
+              ? null
+              : () => Navigator.pop(context, _selected.toList()),
+          child: const Text('Save'),
+        ),
+      ],
+    );
+  }
 }
 
 class _DayHeading extends StatelessWidget {

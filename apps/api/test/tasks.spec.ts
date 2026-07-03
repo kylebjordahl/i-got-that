@@ -310,6 +310,139 @@ describe('explicit task generation + assignment', () => {
   });
 });
 
+describe('explicit default attendance + conversion', () => {
+  // Stand up an explicit feed linked to one child, with an unclassified event.
+  async function setup(emailSeed: string) {
+    const admin = await login(`${emailSeed}@example.com`);
+    const familyId = await createFamily(admin.token, 'Activity Fam');
+    const feedRes = await call(
+      `/families/${familyId}/feeds`,
+      authed(admin.token, { url: `https://x/${emailSeed}.ics`, mode: 'explicit' }),
+    );
+    const { feed } = (await feedRes.json()) as { feed: { id: string } };
+    const childRes = await call(
+      `/families/${familyId}/members`,
+      authed(admin.token, { relationName: 'child', requiresCaretaker: true }),
+    );
+    const { member } = (await childRes.json()) as { member: { id: string } };
+    await call(
+      `/families/${familyId}/feeds/${feed.id}/member-links`,
+      authed(admin.token, { familyMemberId: member.id }),
+    );
+    await seedEvent({
+      feedId: feed.id,
+      familyId,
+      uid: `${emailSeed}-evt`,
+      start: new Date(Date.UTC(2026, 2, 10, 17)),
+      summary: 'Chess club',
+    });
+    return { admin, familyId, feedId: feed.id, uid: `${emailSeed}-evt` };
+  }
+
+  async function groupTasks(familyId: string) {
+    return getDb(env.DB).select().from(tasks).where(eq(tasks.familyId, familyId));
+  }
+
+  it('creates an any-1 attendance task for an event no rule matches (idempotent)', async () => {
+    const { familyId, feedId } = await setup('attendance-default');
+    const db = getDb(env.DB);
+
+    const built = await buildFeedTasks(db, await feedRow(feedId));
+    expect(built.tasksCreated).toBe(1);
+
+    const rows = await groupTasks(familyId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.type).toBe('attendance');
+    expect(rows[0]!.attendanceRequirement).toBe('any');
+    expect(rows[0]!.status).toBe('unowned');
+
+    const again = await buildFeedTasks(db, await feedRow(feedId));
+    expect(again.tasksCreated).toBe(0);
+  });
+
+  it('converts attendance → pickup + drop-off and survives a rebuild', async () => {
+    const { admin, familyId, feedId, uid } = await setup('attendance-convert');
+    const db = getDb(env.DB);
+    await buildFeedTasks(db, await feedRow(feedId));
+
+    const attendance = (await groupTasks(familyId))[0]!;
+    const res = await call(
+      `/families/${familyId}/tasks/${attendance.id}/convert`,
+      authed(admin.token, { types: ['pickup', 'dropoff'] }),
+    );
+    expect(res.status).toBe(200);
+    const { tasks: converted } = (await res.json()) as { tasks: { type: string }[] };
+    expect(converted.map((t) => t.type).sort()).toEqual(['dropoff', 'pickup']);
+
+    const after = await groupTasks(familyId);
+    expect(after).toHaveLength(2);
+    expect(after.every((t) => t.createdVia === 'manual')).toBe(true);
+    expect(after.some((t) => t.type === 'attendance')).toBe(false);
+
+    // A content change makes the event pending again; the builder must not
+    // reclassify it back to attendance.
+    await db
+      .update(sourceEvents)
+      .set({ contentHash: 'h-changed' })
+      .where(eq(sourceEvents.icalUid, uid));
+    const rebuilt = await buildFeedTasks(db, await feedRow(feedId));
+    expect(rebuilt.tasksCreated).toBe(0);
+    const final = await groupTasks(familyId);
+    expect(final.map((t) => t.type).sort()).toEqual(['dropoff', 'pickup']);
+  });
+
+  it('preserves ownership on a kept type when converting', async () => {
+    const { admin, familyId, feedId } = await setup('attendance-owner');
+    const db = getDb(env.DB);
+    await buildFeedTasks(db, await feedRow(feedId));
+
+    const attendance = (await groupTasks(familyId))[0]!;
+    await call(`/families/${familyId}/tasks/${attendance.id}/assign`, authed(admin.token));
+
+    const res = await call(
+      `/families/${familyId}/tasks/${attendance.id}/convert`,
+      authed(admin.token, { types: ['attendance', 'pickup'] }),
+    );
+    expect(res.status).toBe(200);
+
+    const after = await groupTasks(familyId);
+    const kept = after.find((t) => t.type === 'attendance')!;
+    expect(kept.id).toBe(attendance.id);
+    expect(kept.status).toBe('owned');
+    expect(kept.ownerMemberId).not.toBeNull();
+    expect(kept.createdVia).toBe('manual');
+    const pickup = after.find((t) => t.type === 'pickup')!;
+    expect(pickup.status).toBe('unowned');
+  });
+
+  it('rejects converting a task with no source event', async () => {
+    const { admin, familyId, feedId } = await setup('attendance-nosource');
+    const db = getDb(env.DB);
+    await buildFeedTasks(db, await feedRow(feedId));
+
+    // A baseline/manual point-task has no sourceEventId — not convertible.
+    const built = (await groupTasks(familyId))[0]!;
+    const pointTask = (
+      await db
+        .insert(tasks)
+        .values({
+          familyId,
+          familyMemberId: built.familyMemberId,
+          type: 'attendance',
+          dtstart: new Date(Date.UTC(2026, 2, 11, 17)),
+          status: 'unowned',
+          createdVia: 'manual',
+        })
+        .returning()
+    )[0]!;
+    const res = await call(
+      `/families/${familyId}/tasks/${pointTask.id}/convert`,
+      authed(admin.token, { types: ['pickup'] }),
+    );
+    expect(res.status).toBe(400);
+  });
+});
+
 describe('feed member-links management', () => {
   it('lists links and removes a child + its unowned tasks', async () => {
     const admin = await login('links-admin@example.com');

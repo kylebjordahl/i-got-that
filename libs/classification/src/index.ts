@@ -82,22 +82,25 @@ export interface TaskIntent {
 }
 
 /**
- * Explicit feed: an occurrence becomes 0+ task intents. Returns null when no
- * `create` rule matches (the occurrence is "unclassified" for manual tagging).
+ * Explicit feed: an occurrence becomes task intents. A matching `create` rule
+ * decides the types (an empty `producesTypes` yields none — an admin can
+ * intentionally suppress a match). When no `create` rule matches, the occurrence
+ * falls back to a single "attendance" task requiring any one caretaker; the user
+ * can later convert it to pickup and/or drop-off.
  */
 export function classifyExplicit(
   occ: OccurrenceLike,
   rules: RuleLike[],
-): TaskIntent[] | null {
+): TaskIntent[] {
   const rule = pickRule(occ, rules);
-  if (!rule || rule.effect !== 'create') return null;
-  const types = rule.producesTypes ?? [];
-  if (types.length === 0) return null;
-  return types.map((type) => ({
-    type,
-    attendanceRequirement: rule.defaultAttendance ?? null,
-    defaultOwnerMemberId: rule.defaultOwnerMemberId ?? null,
-  }));
+  if (rule && rule.effect === 'create') {
+    return (rule.producesTypes ?? []).map((type) => ({
+      type,
+      attendanceRequirement: rule.defaultAttendance ?? null,
+      defaultOwnerMemberId: rule.defaultOwnerMemberId ?? null,
+    }));
+  }
+  return [{ type: 'attendance', attendanceRequirement: 'any', defaultOwnerMemberId: null }];
 }
 
 export interface BaselineDay {

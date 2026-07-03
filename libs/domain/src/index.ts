@@ -270,6 +270,16 @@ export const AssignTaskInput = z.object({
 });
 export type AssignTaskInput = z.infer<typeof AssignTaskInput>;
 
+/**
+ * Convert a feed-generated task into a chosen set of types (attendance, pickup,
+ * and/or drop-off). The event's tasks for that dependent become exactly these
+ * types; at least one is required.
+ */
+export const ConvertTaskInput = z.object({
+  types: z.array(TaskType).min(1),
+});
+export type ConvertTaskInput = z.infer<typeof ConvertTaskInput>;
+
 export const CreateClassificationRuleInput = z.object({
   feedId: Id.optional(),
   priority: z.number().int().default(100),

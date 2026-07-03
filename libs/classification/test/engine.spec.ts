@@ -90,7 +90,10 @@ describe('explicit classification', () => {
     expect(intents?.[0]?.attendanceRequirement).toBe('any');
   });
 
-  it('returns null (unclassified) when nothing matches', () => {
-    expect(classifyExplicit({ summary: 'Random', location: null }, [])).toBeNull();
+  it('falls back to an any-1 attendance task when nothing matches', () => {
+    const intents = classifyExplicit({ summary: 'Random', location: null }, []);
+    expect(intents).toEqual([
+      { type: 'attendance', attendanceRequirement: 'any', defaultOwnerMemberId: null },
+    ]);
   });
 });
