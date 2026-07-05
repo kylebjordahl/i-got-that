@@ -90,23 +90,29 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                   ? 'Loading…'
                   : 'Nothing to cover — all clear 🎉')))
           else
-            for (final day in days) ...[
-              SliverPersistentHeader(
-                pinned: true,
-                delegate: _DayHeaderDelegate(
-                  label: homeDayHeader(day, now),
-                  openCount: byDay[day]!.where((t) => t.status == 'unowned').length,
-                ),
+            // Each day is its own SliverMainAxisGroup so its header stays pinned
+            // only within that day — the next day's header pushes it out instead
+            // of the headers stacking at the top.
+            for (final day in days)
+              SliverMainAxisGroup(
+                slivers: [
+                  SliverPersistentHeader(
+                    pinned: true,
+                    delegate: _DayHeaderDelegate(
+                      label: homeDayHeader(day, now),
+                      openCount: byDay[day]!.where((t) => t.status == 'unowned').length,
+                    ),
+                  ),
+                  SliverPadding(
+                    padding: const EdgeInsets.fromLTRB(22, 0, 22, 8),
+                    sliver: SliverList.separated(
+                      itemCount: byDay[day]!.length,
+                      separatorBuilder: (_, __) => const SizedBox(height: 11),
+                      itemBuilder: (_, i) => _row(byDay[day]![i], byId, me),
+                    ),
+                  ),
+                ],
               ),
-              SliverPadding(
-                padding: const EdgeInsets.fromLTRB(22, 0, 22, 8),
-                sliver: SliverList.separated(
-                  itemCount: byDay[day]!.length,
-                  separatorBuilder: (_, __) => const SizedBox(height: 11),
-                  itemBuilder: (_, i) => _row(byDay[day]![i], byId, me),
-                ),
-              ),
-            ],
           const SliverToBoxAdapter(child: SizedBox(height: 120)),
         ],
       ),
