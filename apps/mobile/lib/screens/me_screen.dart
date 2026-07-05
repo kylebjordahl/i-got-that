@@ -9,7 +9,7 @@ import '../theme/app_text.dart';
 import '../theme/person_colors.dart';
 import '../widgets/primitives.dart';
 import '../widgets/settings.dart';
-import 'accounts_screen.dart';
+import 'connect_account_wizard.dart';
 import 'dialogs.dart';
 
 /// Me — the signed-in user's own account (a 4th nav tab). Account-level calendar
@@ -77,7 +77,12 @@ class MeScreen extends ConsumerWidget {
                 icon: Icons.add_rounded,
                 iconColor: AppColors.indigo,
                 title: 'Connect an account',
-                onTap: () => showConnectAccountDialog(context, ref),
+                onTap: () async {
+                  await Navigator.of(context).push<void>(
+                    MaterialPageRoute(builder: (_) => const ConnectAccountWizard()),
+                  );
+                  ref.invalidate(accountsProvider);
+                },
               ),
             ],
           ),

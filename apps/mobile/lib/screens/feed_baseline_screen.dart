@@ -5,29 +5,27 @@ import '../state/auth.dart';
 import '../state/family.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_text.dart';
-import '../theme/person_colors.dart';
 import '../widgets/primitives.dart';
 import '../widgets/settings.dart';
 
 const _weekdayLabels = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
-/// Full-screen baseline configuration for a single feed↔child link. This is the
-/// one place that manages the baseline — reached by linking a feed to a child or
-/// tapping an existing linked feed from the child's detail screen.
-///
-/// For **exception** feeds the baseline (school days, drop-off/pickup times,
-/// block length, generated task types) drives task generation. For **explicit**
-/// feeds no baseline is needed — the screen just links/unlinks.
+/// Add / edit a child's feed link (5q). The feed stays shared; this link scopes
+/// it to the child. Covers the source, a per-child label, which task types it
+/// generates, and — for exception feeds — the schedule baseline. Wired to the
+/// family's member-links.
 class FeedBaselineScreen extends ConsumerStatefulWidget {
   const FeedBaselineScreen({
     super.key,
     required this.child,
-    required this.feed,
+    this.feed,
     this.existingLink,
   });
 
   final Member child;
-  final Map<String, dynamic> feed;
+
+  /// The feed being linked. Null in "Link a feed" mode — pick it in the screen.
+  final Map<String, dynamic>? feed;
 
   /// The current member-link (with baseline), or null to create a new link.
   final Map<String, dynamic>? existingLink;
@@ -37,66 +35,70 @@ class FeedBaselineScreen extends ConsumerStatefulWidget {
 }
 
 class _FeedBaselineScreenState extends ConsumerState<FeedBaselineScreen> {
+  Map<String, dynamic>? _feed;
   final Set<int> _weekdays = {0, 1, 2, 3, 4};
-  final Set<String> _types = {'dropoff', 'pickup'};
+  final _label = TextEditingController();
   final _dayStart = TextEditingController(text: '08:00');
   final _dayEnd = TextEditingController(text: '15:00');
   final _duration = TextEditingController();
-  final _location = TextEditingController();
+  bool _genTransition = true;
+  bool _genAttendance = false;
   bool _busy = false;
   String? _error;
 
-  String get _feedId => widget.feed['id'] as String;
-  bool get _isException => widget.feed['mode'] == 'exception';
   bool get _linked => widget.existingLink != null;
+  bool get _isException => _feed?['mode'] == 'exception';
 
   @override
   void initState() {
     super.initState();
+    _feed = widget.feed;
     final ex = widget.existingLink;
     if (ex != null) {
       final mask = ex['weekdayMask'] as int? ?? 31;
       _weekdays
         ..clear()
         ..addAll([for (var i = 0; i < 7; i++) if ((mask & (1 << i)) != 0) i]);
-      final types = (ex['generatesTypes'] as List?)?.cast<String>();
-      if (types != null && types.isNotEmpty) {
-        _types
-          ..clear()
-          ..addAll(types);
-      }
+      final types = (ex['generatesTypes'] as List?)?.cast<String>() ?? const [];
+      _genTransition = types.contains('dropoff') || types.contains('pickup') || types.isEmpty;
+      _genAttendance = types.contains('attendance');
+      _label.text = ex['location'] as String? ?? '';
       _dayStart.text = ex['dayStart'] as String? ?? '08:00';
       _dayEnd.text = ex['dayEnd'] as String? ?? '15:00';
       final dur = ex['durationMinutes'] as int?;
       _duration.text = dur != null ? '$dur' : '';
-      _location.text = ex['location'] as String? ?? '';
     }
   }
 
   @override
   void dispose() {
-    _dayStart.dispose();
-    _dayEnd.dispose();
-    _duration.dispose();
-    _location.dispose();
+    for (final c in [_label, _dayStart, _dayEnd, _duration]) {
+      c.dispose();
+    }
     super.dispose();
   }
 
   int get _weekdayMask => _weekdays.fold(0, (m, b) => m | (1 << b));
 
-  void _refreshTasks() {
-    ref.invalidate(feedLinksProvider(_feedId));
+  List<String> get _generatesTypes => [
+        if (_genTransition) ...['dropoff', 'pickup'],
+        if (_genAttendance) 'attendance',
+      ];
+
+  void _refresh(String feedId) {
+    ref.invalidate(feedLinksProvider(feedId));
     ref.invalidate(unownedTasksProvider);
     ref.invalidate(allTasksProvider);
   }
 
   Future<void> _save() async {
-    if (_isException && _weekdays.isEmpty) {
-      setState(() => _error = 'Pick at least one school day');
+    final feed = _feed;
+    if (feed == null) {
+      setState(() => _error = 'Pick a feed source');
       return;
     }
-    if (_isException && _types.isEmpty) {
-      setState(() => _error = 'Pick at least one task to generate');
+    if (!_genTransition && !_genAttendance) {
+      setState(() => _error = 'Pick at least one task type to generate');
       return;
     }
     setState(() {
@@ -106,35 +108,36 @@ class _FeedBaselineScreenState extends ConsumerState<FeedBaselineScreen> {
     try {
       final familyId = await ref.read(familyProvider.future);
       final api = ref.read(apiClientProvider);
+      final feedId = feed['id'] as String;
+      final location = _label.text.trim().isEmpty ? null : _label.text.trim();
       final duration = _isException ? int.tryParse(_duration.text.trim()) : null;
-      final location = _isException ? _location.text.trim() : null;
       if (_linked) {
         await api.updateMemberLink(
           familyId,
-          _feedId,
+          feedId,
           widget.existingLink!['id'] as String,
           weekdayMask: _isException ? _weekdayMask : null,
           dayStart: _isException ? _dayStart.text.trim() : null,
           dayEnd: _isException ? _dayEnd.text.trim() : null,
           durationMinutes: duration,
           location: location,
-          generatesTypes: _isException ? _types.toList() : null,
+          generatesTypes: _generatesTypes,
         );
       } else {
         await api.createMemberLink(
           familyId,
-          _feedId,
+          feedId,
           familyMemberId: widget.child.id,
           weekdayMask: _isException ? _weekdayMask : null,
           dayStart: _isException ? _dayStart.text.trim() : null,
           dayEnd: _isException ? _dayEnd.text.trim() : null,
           durationMinutes: duration,
           location: location,
-          generatesTypes: _isException ? _types.toList() : null,
-          defaultAttendance: _isException ? 'any' : null,
+          generatesTypes: _generatesTypes,
+          defaultAttendance: _genAttendance ? 'any' : null,
         );
       }
-      _refreshTasks();
+      _refresh(feedId);
       if (mounted) Navigator.of(context).pop(true);
     } catch (e) {
       setState(() => _error = '$e');
@@ -143,7 +146,8 @@ class _FeedBaselineScreenState extends ConsumerState<FeedBaselineScreen> {
     }
   }
 
-  Future<void> _remove() async {
+  Future<void> _unlink() async {
+    final feedId = _feed!['id'] as String;
     final ok = await showDialog<bool>(
       context: context,
       builder: (_) => AlertDialog(
@@ -165,8 +169,8 @@ class _FeedBaselineScreenState extends ConsumerState<FeedBaselineScreen> {
       final familyId = await ref.read(familyProvider.future);
       await ref
           .read(apiClientProvider)
-          .deleteMemberLink(familyId, _feedId, widget.existingLink!['id'] as String);
-      _refreshTasks();
+          .deleteMemberLink(familyId, feedId, widget.existingLink!['id'] as String);
+      _refresh(feedId);
       if (mounted) Navigator.of(context).pop(true);
     } catch (e) {
       if (mounted) {
@@ -177,75 +181,117 @@ class _FeedBaselineScreenState extends ConsumerState<FeedBaselineScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final feedName = (widget.feed['sourceCalendarName'] as String?) ??
-        (widget.feed['url'] as String?) ??
-        (widget.feed['sourceCalendarId'] as String?) ??
-        'Calendar feed';
-    final childColor = personColor(widget.child);
-
     return Scaffold(
       body: SafeArea(
         child: ListView(
           padding: const EdgeInsets.fromLTRB(22, 12, 22, 40),
           children: [
-            SubPageHeader(title: _linked ? 'Feed baseline' : 'Link feed'),
-            const SizedBox(height: 20),
+            const SubPageHeader(title: 'Linked feed'),
+            const SizedBox(height: 18),
+            Text(
+              'Connect a shared calendar source to ${widget.child.relationName}. The '
+              'feed stays shared; this link says "these events are '
+              '${widget.child.relationName}\'s."',
+              style: AppText.subtitle,
+            ),
+            const SizedBox(height: 22),
+            const SectionEyebrow('Feed source'),
+            const SizedBox(height: 12),
             AppCard(
-              gradient: AppColors.profileGradient,
-              child: Row(
+              padding: EdgeInsets.zero,
+              child: _PickerRow(
+                label: 'Source',
+                value: _feed == null ? 'Choose a feed' : _feedName(_feed!),
+                enabled: !_linked,
+                onTap: _pickSource,
+              ),
+            ),
+            const SizedBox(height: 24),
+            const SectionEyebrow('Label for this child'),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _label,
+              decoration: const InputDecoration(labelText: 'Label', hintText: 'e.g. School calendar'),
+            ),
+            const SizedBox(height: 24),
+            const SectionEyebrow('Generates'),
+            const SizedBox(height: 12),
+            AppCard(
+              child: Column(
                 children: [
-                  IconTile(
-                    icon: (widget.feed['kind'] as String? ?? 'ics') == 'ics'
-                        ? Icons.rss_feed_rounded
-                        : Icons.calendar_month_rounded,
-                    color: (widget.feed['kind'] as String? ?? 'ics') == 'ics'
-                        ? AppColors.feedBlue
-                        : AppColors.purple,
-                    size: 46,
+                  SwitchRow(
+                    icon: Icons.login_rounded,
+                    iconColor: AppColors.green,
+                    title: 'Transition tasks',
+                    subtitle: 'Drop-off & pickup points',
+                    value: _genTransition,
+                    onChanged: (v) => setState(() => _genTransition = v),
                   ),
-                  const SizedBox(width: 14),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(feedName,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: AppText.profileName),
-                        const SizedBox(height: 2),
-                        Row(
-                          children: [
-                            Text('for ', style: AppText.subtitle),
-                            PersonAvatar(
-                                initial: initialFor(widget.child.relationName),
-                                color: childColor,
-                                size: 18),
-                            const SizedBox(width: 5),
-                            Text(widget.child.relationName,
-                                style: font(kBodyFont, 13, 600, color: childColor)),
-                          ],
-                        ),
-                      ],
-                    ),
+                  const Divider(height: 20),
+                  SwitchRow(
+                    icon: Icons.groups_rounded,
+                    iconColor: AppColors.purple,
+                    title: 'Attendance tasks',
+                    subtitle: 'Someone stays for the duration',
+                    value: _genAttendance,
+                    onChanged: (v) => setState(() => _genAttendance = v),
                   ),
                 ],
               ),
             ),
-            const SizedBox(height: 24),
-            if (_isException) ..._baselineForm() else _explicitNote(),
+            if (_isException && _genTransition) ...[
+              const SizedBox(height: 24),
+              const SectionEyebrow('Schedule'),
+              const SizedBox(height: 8),
+              Text('Exception feeds deviate from this weekly baseline.',
+                  style: AppText.subtitle),
+              const SizedBox(height: 12),
+              AppCard(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('School days', style: AppText.eyebrow()),
+                    const SizedBox(height: 10),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: [
+                        for (var i = 0; i < 7; i++)
+                          _DayChip(
+                            label: _weekdayLabels[i],
+                            selected: _weekdays.contains(i),
+                            onTap: () => setState(() =>
+                                _weekdays.contains(i) ? _weekdays.remove(i) : _weekdays.add(i)),
+                          ),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+                    Row(
+                      children: [
+                        Expanded(child: _field(_dayStart, 'Drop-off', 'HH:MM')),
+                        const SizedBox(width: 12),
+                        Expanded(child: _field(_dayEnd, 'Pickup', 'HH:MM')),
+                      ],
+                    ),
+                    const SizedBox(height: 14),
+                    _field(_duration, 'Block length (min)', 'blank = 1h', number: true),
+                  ],
+                ),
+              ),
+            ],
             if (_error != null) ...[
               const SizedBox(height: 16),
               Text(_error!, style: font(kBodyFont, 13, 500, color: AppColors.coral)),
             ],
             const SizedBox(height: 28),
             _PrimaryButton(
-              label: _linked ? 'Save baseline' : 'Link feed',
+              label: _linked ? 'Save linked feed' : 'Link feed',
               busy: _busy,
               onPressed: _busy ? null : _save,
             ),
             if (_linked) ...[
               const SizedBox(height: 12),
-              _RemoveButton(label: 'Unlink feed', onTap: _remove),
+              _RemoveButton(label: 'Unlink feed', onTap: _unlink),
             ],
           ],
         ),
@@ -253,90 +299,58 @@ class _FeedBaselineScreenState extends ConsumerState<FeedBaselineScreen> {
     );
   }
 
-  Widget _explicitNote() {
-    return AppCard(
-      child: Row(
-        children: [
-          const IconTile(icon: Icons.bolt_rounded, color: AppColors.amber),
-          const SizedBox(width: 14),
-          Expanded(
-            child: Text(
-              'This is an explicit feed — its events become tasks directly, so no '
-              'baseline is needed. Linking just attaches this feed to '
-              '${widget.child.relationName}.',
-              style: AppText.subtitle,
-            ),
-          ),
-        ],
+  Future<void> _pickSource() async {
+    if (_linked) return;
+    final feeds = ref.read(feedsProvider).valueOrNull ?? const <Map<String, dynamic>>[];
+    // Offer feeds not already linked to this child.
+    final unlinked = <Map<String, dynamic>>[];
+    for (final f in feeds) {
+      final links = ref.read(feedLinksProvider(f['id'] as String)).valueOrNull ?? const [];
+      final linked = links.cast<Map<String, dynamic>>().any((l) => l['familyMemberId'] == widget.child.id);
+      if (!linked) unlinked.add(f);
+    }
+    if (unlinked.isEmpty) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('No more feeds to link — add one in Input feeds')));
+      return;
+    }
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (sheetCtx) => SingleChildScrollView(
+        padding: const EdgeInsets.fromLTRB(22, 4, 22, 28),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Feed source', style: AppText.subPageTitle),
+            const SizedBox(height: 12),
+            for (final f in unlinked)
+              SettingRow(
+                icon: (f['kind'] as String? ?? 'ics') == 'ics'
+                    ? Icons.rss_feed_rounded
+                    : Icons.calendar_month_rounded,
+                iconColor: (f['kind'] as String? ?? 'ics') == 'ics'
+                    ? AppColors.feedBlue
+                    : AppColors.purple,
+                title: _feedName(f),
+                subtitle: (f['kind'] as String? ?? 'ics') == 'ics' ? 'ICS' : 'Google',
+                onTap: () {
+                  Navigator.of(sheetCtx).pop();
+                  setState(() => _feed = f);
+                },
+              ),
+          ],
+        ),
       ),
     );
   }
 
-  List<Widget> _baselineForm() {
-    return [
-      const SectionEyebrow('School days'),
-      const SizedBox(height: 12),
-      AppCard(
-        child: Wrap(
-          spacing: 8,
-          runSpacing: 8,
-          children: [
-            for (var i = 0; i < 7; i++)
-              _SelectChip(
-                label: _weekdayLabels[i],
-                selected: _weekdays.contains(i),
-                onTap: () => setState(
-                    () => _weekdays.contains(i) ? _weekdays.remove(i) : _weekdays.add(i)),
-              ),
-          ],
-        ),
-      ),
-      const SizedBox(height: 24),
-      const SectionEyebrow('Times'),
-      const SizedBox(height: 12),
-      AppCard(
-        child: Column(
-          children: [
-            Row(
-              children: [
-                Expanded(child: _field(_dayStart, 'Drop-off', 'HH:MM')),
-                const SizedBox(width: 12),
-                Expanded(child: _field(_dayEnd, 'Pickup', 'HH:MM')),
-              ],
-            ),
-            const SizedBox(height: 14),
-            Row(
-              children: [
-                Expanded(
-                    child: _field(_duration, 'Block length (min)', 'blank = 1h',
-                        number: true)),
-                const SizedBox(width: 12),
-                Expanded(flex: 2, child: _field(_location, 'Location', 'e.g. school')),
-              ],
-            ),
-          ],
-        ),
-      ),
-      const SizedBox(height: 24),
-      const SectionEyebrow('Generates'),
-      const SizedBox(height: 12),
-      AppCard(
-        child: Wrap(
-          spacing: 8,
-          runSpacing: 8,
-          children: [
-            for (final t in const ['dropoff', 'pickup'])
-              _SelectChip(
-                label: t == 'dropoff' ? 'Drop-off' : 'Pickup',
-                selected: _types.contains(t),
-                onTap: () =>
-                    setState(() => _types.contains(t) ? _types.remove(t) : _types.add(t)),
-              ),
-          ],
-        ),
-      ),
-    ];
-  }
+  String _feedName(Map<String, dynamic> f) =>
+      (f['sourceCalendarName'] as String?) ??
+      (f['url'] as String?) ??
+      (f['sourceCalendarId'] as String?) ??
+      'Calendar feed';
 
   Widget _field(TextEditingController c, String label, String hint, {bool number = false}) {
     return TextField(
@@ -347,8 +361,49 @@ class _FeedBaselineScreenState extends ConsumerState<FeedBaselineScreen> {
   }
 }
 
-class _SelectChip extends StatelessWidget {
-  const _SelectChip({required this.label, required this.selected, required this.onTap});
+class _PickerRow extends StatelessWidget {
+  const _PickerRow({
+    required this.label,
+    required this.value,
+    required this.onTap,
+    this.enabled = true,
+  });
+  final String label;
+  final String value;
+  final VoidCallback onTap;
+  final bool enabled;
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: enabled ? onTap : null,
+      borderRadius: BorderRadius.circular(20),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+        child: Row(
+          children: [
+            Text(label, style: AppText.sectionItemTitle),
+            const Spacer(),
+            Flexible(
+              child: Text(value,
+                  textAlign: TextAlign.right,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: AppText.subtitle),
+            ),
+            if (enabled) ...[
+              const SizedBox(width: 8),
+              const Icon(Icons.chevron_right_rounded, color: AppColors.textMuted),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _DayChip extends StatelessWidget {
+  const _DayChip({required this.label, required this.selected, required this.onTap});
   final String label;
   final bool selected;
   final VoidCallback onTap;

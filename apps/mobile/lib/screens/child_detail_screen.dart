@@ -126,9 +126,7 @@ class _LinkedFeeds extends ConsumerWidget {
                   icon: Icons.add_rounded,
                   iconColor: AppColors.blue,
                   title: 'Link a feed',
-                  onTap: unlinked.isEmpty
-                      ? null
-                      : () => _openLinkSheet(context, unlinked),
+                  onTap: unlinked.isEmpty ? null : () => _openBaseline(context, null),
                 ),
             ],
           ),
@@ -139,7 +137,7 @@ class _LinkedFeeds extends ConsumerWidget {
 
   void _openBaseline(
     BuildContext context,
-    Map<String, dynamic> feed, [
+    Map<String, dynamic>? feed, [
     Map<String, dynamic>? link,
   ]) {
     Navigator.of(context).push(MaterialPageRoute(
@@ -147,49 +145,11 @@ class _LinkedFeeds extends ConsumerWidget {
     ));
   }
 
-  void _openLinkSheet(BuildContext context, List<Map<String, dynamic>> unlinked) {
-    showModalBottomSheet<void>(
-      context: context,
-      showDragHandle: true,
-      builder: (_) => SingleChildScrollView(
-        padding: const EdgeInsets.fromLTRB(22, 4, 22, 28),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('Link a feed', style: AppText.subPageTitle),
-            const SizedBox(height: 16),
-            for (final feed in unlinked)
-              SettingRow(
-                icon: _feedIcon(feed),
-                iconColor: _feedColor(feed),
-                title: _feedName(feed),
-                subtitle: _feedKindLabel(feed),
-                onTap: () {
-                  Navigator.of(context).pop();
-                  _openBaseline(context, feed);
-                },
-              ),
-          ],
-        ),
-      ),
-    );
-  }
-
   String _feedName(Map<String, dynamic> f) =>
       (f['sourceCalendarName'] as String?) ??
       (f['url'] as String?) ??
       (f['sourceCalendarId'] as String?) ??
       'Calendar feed';
-
-  String _feedKindLabel(Map<String, dynamic> f) {
-    final kind = f['kind'] as String? ?? 'ics';
-    return switch (kind) {
-      'google' => 'Family calendar · Google',
-      'caldav' => 'Calendar · CalDAV',
-      _ => 'School calendar · ICS',
-    };
-  }
 
   /// Baseline one-liner for a linked feed (explicit feeds have no baseline).
   String _baselineSummary(Map<String, dynamic> feed, Map<String, dynamic> link) {
