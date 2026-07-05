@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../app_shell.dart';
 import '../models.dart';
+import '../state/auth.dart';
 import '../state/family.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_text.dart';
@@ -9,10 +11,9 @@ import '../widgets/primitives.dart';
 import '../widgets/settings.dart';
 import 'caretaker_detail_screen.dart';
 import 'child_detail_screen.dart';
-import 'dialogs.dart';
 
-/// People & roles — the members sub-view. Caretakers and children, each tapping
-/// into their detail screen.
+/// People & roles — the members list off the Family hub. Caretakers and children
+/// in their own sections; the nav "+" opens the add-member menu.
 class PeopleScreen extends ConsumerWidget {
   const PeopleScreen({super.key});
 
@@ -25,46 +26,35 @@ class PeopleScreen extends ConsumerWidget {
     final children = members.where((m) => m.requiresCaretaker).toList();
 
     return Scaffold(
+      extendBody: true,
       body: SafeArea(
+        bottom: false,
         child: ListView(
-          padding: const EdgeInsets.fromLTRB(22, 12, 22, 40),
+          padding: const EdgeInsets.fromLTRB(22, 12, 22, 130),
           children: [
-            Row(
-              children: [
-                RoundIconButton(
-                  icon: Icons.chevron_left_rounded,
-                  onTap: () => Navigator.of(context).maybePop(),
-                ),
-                const SizedBox(width: 14),
-                Text('People & roles', style: AppText.subPageTitle),
-                const Spacer(),
-                RoundIconButton(
-                  icon: Icons.vpn_key_outlined,
-                  onTap: () => showRedeemInviteDialog(context, ref),
-                ),
-                if (isAdmin) ...[
-                  const SizedBox(width: 8),
-                  RoundIconButton(
-                    icon: Icons.person_add_alt_1_rounded,
-                    onTap: () => showAddMemberDialog(context, ref),
-                  ),
-                ],
-              ],
-            ),
-            const SizedBox(height: 24),
+            const SubPageHeader(title: 'People & roles'),
+            const SizedBox(height: 22),
             if (caretakers.isNotEmpty) ...[
-              const SectionEyebrow('Caretakers'),
+              SectionEyebrow('Caretakers',
+                  color: AppColors.indigo,
+                  trailing: Text('${caretakers.length}', style: AppText.secondary)),
               const SizedBox(height: 12),
               AppCard(child: Column(children: _rows(context, caretakers, isChild: false))),
               const SizedBox(height: 24),
             ],
             if (children.isNotEmpty) ...[
-              const SectionEyebrow('Children'),
+              SectionEyebrow('Children',
+                  trailing: Text('${children.length}', style: AppText.secondary)),
               const SizedBox(height: 12),
               AppCard(child: Column(children: _rows(context, children, isChild: true))),
             ],
           ],
         ),
+      ),
+      bottomNavigationBar: familyListNav(
+        context,
+        ref,
+        onAdd: isAdmin ? () => _openAddMenu(context, ref) : null,
       ),
     );
   }
@@ -87,6 +77,97 @@ class PeopleScreen extends ConsumerWidget {
     }
     return rows;
   }
+
+  void _openAddMenu(BuildContext context, WidgetRef ref) {
+    showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (sheetCtx) => Padding(
+        padding: const EdgeInsets.fromLTRB(22, 4, 22, 28),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Add a person', style: AppText.subPageTitle),
+            const SizedBox(height: 12),
+            SettingRow(
+              icon: Icons.person_add_alt_1_rounded,
+              iconColor: AppColors.indigo,
+              title: 'Add a caretaker',
+              subtitle: 'Someone who can claim tasks',
+              onTap: () {
+                Navigator.of(sheetCtx).pop();
+                _createAndOpen(context, ref, isChild: false);
+              },
+            ),
+            const Divider(height: 22),
+            SettingRow(
+              icon: Icons.child_care_rounded,
+              iconColor: AppColors.green,
+              title: 'Add a child',
+              subtitle: 'A child whose events need a caretaker',
+              onTap: () {
+                Navigator.of(sheetCtx).pop();
+                _createAndOpen(context, ref, isChild: true);
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _createAndOpen(BuildContext context, WidgetRef ref,
+      {required bool isChild}) async {
+    final name = await _promptName(context, isChild ? 'Add a child' : 'Add a caretaker');
+    if (name == null || name.trim().isEmpty) return;
+    try {
+      final familyId = await ref.read(familyProvider.future);
+      final res = await ref.read(apiClientProvider).createMember(
+            familyId,
+            relationName: name.trim(),
+            isCaretaker: !isChild,
+            requiresCaretaker: isChild,
+          );
+      ref.invalidate(membersProvider);
+      final id = (res['member'] as Map<String, dynamic>)['id'] as String;
+      if (!context.mounted) return;
+      Navigator.of(context).push(MaterialPageRoute(
+        builder: (_) => isChild ? ChildDetailScreen(memberId: id) : CaretakerDetailScreen(memberId: id),
+      ));
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed: $e')));
+      }
+    }
+  }
+
+  Future<String?> _promptName(BuildContext context, String title) {
+    final controller = TextEditingController();
+    return showDialog<String>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: Text(title),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          decoration: const InputDecoration(
+            labelText: 'Name / relation',
+            hintText: 'e.g. Adeline, Grandma',
+          ),
+          onSubmitted: (v) => Navigator.of(context).pop(v),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('Cancel')),
+          PillButton(
+            label: 'Continue',
+            variant: PillVariant.amber,
+            onPressed: () => Navigator.of(context).pop(controller.text),
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 class _PersonRow extends StatelessWidget {
@@ -96,11 +177,9 @@ class _PersonRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final roles = <String>[
-      if (member.isAdmin) 'Admin',
-      if (member.isCaretaker) 'Caretaker',
-      if (member.requiresCaretaker) 'Child',
-    ];
+    final subtitle = member.requiresCaretaker
+        ? 'Child'
+        : '${member.isAdmin ? 'Admin' : 'Caretaker'} · can claim tasks';
     return InkWell(
       onTap: onTap,
       borderRadius: BorderRadius.circular(14),
@@ -116,7 +195,7 @@ class _PersonRow extends StatelessWidget {
                 children: [
                   Text(member.relationName, style: AppText.sectionItemTitle),
                   const SizedBox(height: 2),
-                  Text(roles.isEmpty ? 'Member' : roles.join(' · '), style: AppText.subtitle),
+                  Text(subtitle, style: AppText.subtitle),
                 ],
               ),
             ),

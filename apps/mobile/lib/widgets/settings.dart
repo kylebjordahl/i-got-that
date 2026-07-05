@@ -113,12 +113,16 @@ class DetailProfileCard extends StatelessWidget {
     required this.name,
     required this.subtitle,
     this.onEdit,
+    this.extra,
   });
 
   final Widget avatar;
   final String name;
   final String subtitle;
   final VoidCallback? onEdit;
+
+  /// Optional extra line under the subtitle (e.g. "Member of 2 families").
+  final Widget? extra;
 
   @override
   Widget build(BuildContext context) {
@@ -136,6 +140,7 @@ class DetailProfileCard extends StatelessWidget {
                 Text(name, style: AppText.profileName),
                 const SizedBox(height: 2),
                 Text(subtitle, style: AppText.subtitle),
+                if (extra != null) extra!,
               ],
             ),
           ),

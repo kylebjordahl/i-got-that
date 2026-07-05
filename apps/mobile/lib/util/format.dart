@@ -75,6 +75,19 @@ String relativeDayLower(DateTime day, DateTime now) {
   return 'on ${_months[d.month - 1]} ${d.day}';
 }
 
+/// Uppercase sticky day-header label for Home: "TODAY · TUE JUL 1" /
+/// "TOMORROW · WED JUL 2" / "THU · JUL 3".
+String homeDayHeader(DateTime day, DateTime now) {
+  final d = DateTime(day.year, day.month, day.day);
+  final t = DateTime(now.year, now.month, now.day);
+  final diff = d.difference(t).inDays;
+  final wd = _weekdaysShort[d.weekday - 1];
+  final md = '${_months[d.month - 1].toUpperCase()} ${d.day}';
+  if (diff == 0) return 'TODAY · $wd $md';
+  if (diff == 1) return 'TOMORROW · $wd $md';
+  return '$wd · $md';
+}
+
 /// "Today" / "Tomorrow" / "Yesterday", else "Wed, Jul 8".
 String dayHeading(DateTime day, DateTime now) {
   final d = DateTime(day.year, day.month, day.day);

@@ -97,6 +97,17 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
     );
   }
 
+  void _goToToday() {
+    setState(() => _selected = _today);
+    if (_dayScroll.hasClients) {
+      _dayScroll.animateTo(
+        (_dayAnchor - 2) * _dayTileExtent,
+        duration: const Duration(milliseconds: 300),
+        curve: Curves.easeOutCubic,
+      );
+    }
+  }
+
   Widget _header() {
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -111,6 +122,8 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
             ],
           ),
         ),
+        _PillIconButton(icon: Icons.schedule_rounded, label: 'Today', onTap: _goToToday),
+        const SizedBox(width: 8),
         _FiltersButton(count: _filterCount, onTap: () => _openFilters(caretakersFor())),
       ],
     );
@@ -501,6 +514,41 @@ class _HourLine extends StatelessWidget {
         ),
         Expanded(child: Container(height: 1, color: AppColors.divider)),
       ],
+    );
+  }
+}
+
+/// A compact outlined pill with an icon + label (the Plan "Today" button).
+class _PillIconButton extends StatelessWidget {
+  const _PillIconButton({required this.icon, required this.label, required this.onTap});
+  final IconData icon;
+  final String label;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: AppColors.card,
+      borderRadius: BorderRadius.circular(999),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(999),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(999),
+            border: Border.all(color: AppColors.border),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(icon, size: 16, color: AppColors.textSecondary),
+              const SizedBox(width: 7),
+              Text(label, style: font(kBodyFont, 13.5, 600, color: AppColors.textSecondary)),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }

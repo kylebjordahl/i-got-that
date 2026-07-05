@@ -3,24 +3,26 @@ import 'package:flutter/material.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_text.dart';
 
-/// The shared floating nav: a blurred pill with Home / Plan / Family (active tab
-/// pill-filled indigo) plus a circular "+" quick-add button.
+/// The shared floating nav: a blurred pill with Home / Plan / Family / Me (active
+/// tab pill-filled indigo). The circular "+" quick-add appears **only** when
+/// [onAdd] is provided (the three Family list screens), not globally.
 class AppBottomNav extends StatelessWidget {
   const AppBottomNav({
     super.key,
     required this.currentIndex,
     required this.onSelect,
-    required this.onAdd,
+    this.onAdd,
   });
 
   final int currentIndex;
   final ValueChanged<int> onSelect;
-  final VoidCallback onAdd;
+  final VoidCallback? onAdd;
 
   static const _items = <(IconData, String)>[
     (Icons.home_rounded, 'Home'),
     (Icons.calendar_today_rounded, 'Plan'),
     (Icons.people_alt_rounded, 'Family'),
+    (Icons.person_rounded, 'Me'),
   ];
 
   @override
@@ -32,34 +34,38 @@ class AppBottomNav extends StatelessWidget {
       child: Row(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          ClipRRect(
-            borderRadius: BorderRadius.circular(999),
-            child: BackdropFilter(
-              filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
-              child: Container(
-                padding: const EdgeInsets.all(6),
-                decoration: BoxDecoration(
-                  color: AppColors.navPill,
-                  borderRadius: BorderRadius.circular(999),
-                  border: Border.all(color: AppColors.border),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    for (var i = 0; i < _items.length; i++)
-                      _NavTab(
-                        icon: _items[i].$1,
-                        label: _items[i].$2,
-                        active: i == currentIndex,
-                        onTap: () => onSelect(i),
-                      ),
-                  ],
+          Flexible(
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(999),
+              child: BackdropFilter(
+                filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
+                child: Container(
+                  padding: const EdgeInsets.all(6),
+                  decoration: BoxDecoration(
+                    color: AppColors.navPill,
+                    borderRadius: BorderRadius.circular(999),
+                    border: Border.all(color: AppColors.border),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      for (var i = 0; i < _items.length; i++)
+                        _NavTab(
+                          icon: _items[i].$1,
+                          label: _items[i].$2,
+                          active: i == currentIndex,
+                          onTap: () => onSelect(i),
+                        ),
+                    ],
+                  ),
                 ),
               ),
             ),
           ),
-          const SizedBox(width: 10),
-          _AddButton(onTap: onAdd),
+          if (onAdd != null) ...[
+            const SizedBox(width: 10),
+            _AddButton(onTap: onAdd!),
+          ],
         ],
       ),
     );
@@ -89,7 +95,7 @@ class _NavTab extends StatelessWidget {
         borderRadius: BorderRadius.circular(999),
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 180),
-          padding: EdgeInsets.symmetric(horizontal: active ? 16 : 14, vertical: 11),
+          padding: EdgeInsets.symmetric(horizontal: active ? 15 : 12, vertical: 11),
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -121,10 +127,22 @@ class _AddButton extends StatelessWidget {
       child: InkWell(
         onTap: onTap,
         customBorder: const CircleBorder(),
-        child: const SizedBox(
-          width: 54,
-          height: 54,
-          child: Icon(Icons.add_rounded, color: Color(0xFF17162B), size: 26),
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            boxShadow: [
+              BoxShadow(
+                color: AppColors.indigo.withValues(alpha: 0.4),
+                blurRadius: 16,
+                spreadRadius: 1,
+              ),
+            ],
+          ),
+          child: const SizedBox(
+            width: 54,
+            height: 54,
+            child: Icon(Icons.add_rounded, color: Color(0xFF17162B), size: 26),
+          ),
         ),
       ),
     );

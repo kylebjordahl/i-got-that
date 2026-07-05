@@ -7,13 +7,12 @@ import '../theme/app_text.dart';
 import '../theme/person_colors.dart';
 import '../widgets/primitives.dart';
 import '../widgets/settings.dart';
-import 'accounts_screen.dart';
 import 'feeds_screen.dart';
 import 'people_screen.dart';
 import 'rules_screen.dart';
 
-/// Family — the settings-first hub. People & roles, input feeds, family rules,
-/// and connected accounts. (Delivery methods moved to each caretaker's detail.)
+/// Family — the settings-first hub: People & roles, Input feeds, Family rules.
+/// (Delivery methods live on each caretaker; calendar accounts live on Me.)
 class FamilyScreen extends ConsumerWidget {
   const FamilyScreen({super.key});
 
@@ -83,16 +82,6 @@ class FamilyScreen extends ConsumerWidget {
                 subtitle: 'How events become tasks',
                 onTap: () => Navigator.of(context).push(
                   MaterialPageRoute(builder: (_) => const RulesScreen()),
-                ),
-              ),
-              const Divider(height: 22),
-              SettingRow(
-                icon: Icons.link_rounded,
-                iconColor: AppColors.blue,
-                title: 'Connected accounts',
-                subtitle: 'Google / iCloud / CalDAV',
-                onTap: () => Navigator.of(context).push(
-                  MaterialPageRoute(builder: (_) => const AccountsScreen()),
                 ),
               ),
             ],

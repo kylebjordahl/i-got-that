@@ -9,6 +9,17 @@ import '../widgets/primitives.dart';
 /// External calendar accounts (Google / iCloud / CalDAV) owned by the signed-in
 /// user and reusable across their families. Connect once here, then draw their
 /// calendars into input/output feeds. Credentials never leave the server.
+
+/// Open the connect-account dialog and refresh the list on success. Shared by
+/// the standalone Accounts screen and the Me screen's "Connect an account".
+Future<void> showConnectAccountDialog(BuildContext context, WidgetRef ref) async {
+  final added = await showDialog<bool>(
+    context: context,
+    builder: (_) => const _AddAccountDialog(),
+  );
+  if (added == true) ref.invalidate(accountsProvider);
+}
+
 class AccountsScreen extends ConsumerWidget {
   const AccountsScreen({super.key});
 

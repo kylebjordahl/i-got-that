@@ -10,17 +10,36 @@ import '../util/format.dart';
 import '../util/task_visuals.dart';
 import '../widgets/primitives.dart';
 
-/// Long-press action sheet for a timeline task (Home rows + Plan blocks).
-/// Exposes the oversight actions that don't have a home in the new UI:
-/// change type (feed-event tasks), mark the task unneeded, and — for admins —
-/// mark the whole feed event unneeded.
+/// Long-press quick-actions for a timeline task (Home rows + Plan blocks): change
+/// its type (transition / attendance / both), claim it, or mark it not needed.
 Future<void> showTaskActions(BuildContext context, WidgetRef ref, TaskItem task) async {
   final members = ref.read(membersProvider).valueOrNull ?? const <Member>[];
   final byId = {for (final m in members) m.id: m};
-  final isAdmin = ref.read(currentMemberProvider).valueOrNull?.isAdmin ?? false;
+  final me = ref.read(currentMemberProvider).valueOrNull;
+  final isAdmin = me?.isAdmin ?? false;
+  final canClaim = me?.isCaretaker ?? false;
   final child = byId[task.familyMemberId];
+  final owner = task.ownerMemberId != null ? byId[task.ownerMemberId] : null;
   final color = child != null ? personColor(child) : AppColors.textSecondary;
   final isFeedTask = task.sourceEventId != null;
+  final unowned = task.status == 'unowned';
+
+  // Derive the current change-type segment from the whole feed-event group.
+  final all = ref.read(allTasksProvider).valueOrNull ?? const <TaskItem>[];
+  final group = all.where((t) => t.sourceEventId == task.sourceEventId).toList();
+  final types = (group.isEmpty ? [task] : group).map((t) => t.type).toSet();
+  final hasAtt = types.contains('attendance');
+  final hasTrans = types.contains('pickup') || types.contains('dropoff');
+  final transSub = types.contains('pickup') ? 'pickup' : 'dropoff';
+  final currentSeg = hasAtt && hasTrans ? 'both' : (hasAtt ? 'attendance' : 'transition');
+
+  List<String> targetOf(String seg) => switch (seg) {
+        'attendance' => ['attendance'],
+        'both' => [transSub, 'attendance'],
+        _ => [transSub],
+      };
+
+  final statusText = unowned ? 'unclaimed' : (owner?.relationName ?? 'owned');
 
   await showModalBottomSheet<void>(
     context: context,
@@ -33,7 +52,7 @@ Future<void> showTaskActions(BuildContext context, WidgetRef ref, TaskItem task)
         children: [
           Row(
             children: [
-              IconTile(icon: taskIcon(task.type), color: color, size: 40),
+              IconTile(icon: taskIcon(task.type), color: color, size: 44),
               const SizedBox(width: 12),
               Expanded(
                 child: Column(
@@ -42,77 +61,95 @@ Future<void> showTaskActions(BuildContext context, WidgetRef ref, TaskItem task)
                     Text('${taskTypeLabel(task.type)} · ${child?.relationName ?? 'child'}',
                         style: AppText.sectionItemTitle),
                     const SizedBox(height: 2),
-                    Text('${taskCategory(task.type)} · ${friendlyTime(task.start)}',
+                    Text('${taskCategory(task.type)} · ${friendlyTime(task.start)} · $statusText',
                         style: AppText.subtitle),
                   ],
                 ),
               ),
             ],
           ),
-          const SizedBox(height: 18),
-          if (isFeedTask)
-            _ActionRow(
-              icon: Icons.swap_horiz_rounded,
-              iconColor: AppColors.indigo,
-              label: 'Change type…',
-              subtitle: 'Turn this into a drop-off, pickup, and/or attendance',
-              onTap: () {
-                Navigator.of(sheetCtx).pop();
-                _changeType(context, ref, task);
-              },
+          if (isFeedTask) ...[
+            const SizedBox(height: 20),
+            Text('CHANGE TYPE', style: AppText.eyebrow()),
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                for (final (seg, label, icon) in const [
+                  ('transition', 'Transition', Icons.swap_horiz_rounded),
+                  ('attendance', 'Attendance', Icons.groups_rounded),
+                  ('both', 'Both', Icons.dashboard_customize_rounded),
+                ]) ...[
+                  Expanded(
+                    child: _SegTile(
+                      label: label,
+                      icon: icon,
+                      selected: seg == currentSeg,
+                      onTap: seg == currentSeg
+                          ? null
+                          : () {
+                              Navigator.of(sheetCtx).pop();
+                              _run(context, ref,
+                                  (api, fid) => api.convertTask(fid, task.id, targetOf(seg)),
+                                  'Type updated');
+                            },
+                    ),
+                  ),
+                  if (seg != 'both') const SizedBox(width: 8),
+                ],
+              ],
             ),
-          _ActionRow(
-            icon: Icons.block_rounded,
-            iconColor: AppColors.coral,
-            label: 'Mark task unneeded',
-            subtitle: "Drops it from the queue and the owner's calendar",
-            onTap: () async {
-              Navigator.of(sheetCtx).pop();
-              await _run(context, ref, (api, familyId) => api.dismissTask(familyId, task.id),
-                  'Task marked unneeded');
-            },
+          ],
+          const SizedBox(height: 20),
+          AppCard(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
+            child: Column(
+              children: [
+                if (unowned && canClaim) ...[
+                  _ActionRow(
+                    icon: Icons.check_circle_outline_rounded,
+                    iconColor: AppColors.indigo,
+                    label: 'Claim for myself',
+                    onTap: () {
+                      Navigator.of(sheetCtx).pop();
+                      _run(context, ref, (api, fid) => api.assignTask(fid, task.id),
+                          'Claimed');
+                    },
+                  ),
+                  const Divider(height: 18),
+                ],
+                _ActionRow(
+                  icon: Icons.block_rounded,
+                  iconColor: AppColors.coral,
+                  label: 'Mark as not needed',
+                  destructive: true,
+                  onTap: () {
+                    Navigator.of(sheetCtx).pop();
+                    _run(context, ref, (api, fid) => api.dismissTask(fid, task.id),
+                        'Marked not needed');
+                  },
+                ),
+                if (isAdmin && isFeedTask) ...[
+                  const Divider(height: 18),
+                  _ActionRow(
+                    icon: Icons.event_busy_rounded,
+                    iconColor: AppColors.amber,
+                    label: 'Mark whole event not needed',
+                    onTap: () {
+                      Navigator.of(sheetCtx).pop();
+                      _dismissEvent(context, ref, task);
+                    },
+                  ),
+                ],
+              ],
+            ),
           ),
-          if (isAdmin && isFeedTask)
-            _ActionRow(
-              icon: Icons.event_busy_rounded,
-              iconColor: AppColors.amber,
-              label: 'Mark event unneeded',
-              subtitle: 'Removes every task from this feed event',
-              onTap: () async {
-                Navigator.of(sheetCtx).pop();
-                await _dismissEvent(context, ref, task);
-              },
-            ),
         ],
       ),
     ),
   );
 }
 
-/// Prefill the type picker from the whole feed-event group (so opening from any
-/// sibling keeps the others checked), then convert.
-Future<void> _changeType(BuildContext context, WidgetRef ref, TaskItem task) async {
-  final all = ref.read(allTasksProvider).valueOrNull ??
-      ref.read(unownedTasksProvider).valueOrNull ??
-      const <TaskItem>[];
-  final current = all
-      .where((t) => t.sourceEventId == task.sourceEventId)
-      .map((t) => t.type)
-      .toSet();
-  if (current.isEmpty) current.add(task.type);
-
-  final chosen = await showDialog<List<String>>(
-    context: context,
-    builder: (_) => _ConvertTypeDialog(initial: current),
-  );
-  if (chosen == null || chosen.isEmpty) return;
-  if (!context.mounted) return;
-  await _run(context, ref, (api, familyId) => api.convertTask(familyId, task.id, chosen),
-      'Type updated');
-}
-
 Future<void> _dismissEvent(BuildContext context, WidgetRef ref, TaskItem task) async {
-  // The task carries the source event id but not its feed — resolve it.
   final events = await ref.read(sourceEventsProvider.future);
   final feedId = events.where((e) => e.id == task.sourceEventId).map((e) => e.feedId).firstOrNull;
   if (feedId == null) {
@@ -126,14 +163,13 @@ Future<void> _dismissEvent(BuildContext context, WidgetRef ref, TaskItem task) a
   final ok = await showDialog<bool>(
     context: context,
     builder: (_) => AlertDialog(
-      title: const Text('Mark event unneeded?'),
-      content: const Text(
-          'This removes every task generated from this feed event (e.g. an '
-          'erroneous closure). You can restore it later from the feed.'),
+      title: const Text('Mark event not needed?'),
+      content: const Text('This removes every task generated from this feed event '
+          '(e.g. an erroneous closure). You can restore it later from the feed.'),
       actions: [
         TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Cancel')),
         PillButton(
-          label: 'Mark unneeded',
+          label: 'Mark not needed',
           variant: PillVariant.white,
           onPressed: () => Navigator.of(context).pop(true),
         ),
@@ -142,8 +178,7 @@ Future<void> _dismissEvent(BuildContext context, WidgetRef ref, TaskItem task) a
   );
   if (ok != true || !context.mounted) return;
   await _run(context, ref,
-      (api, familyId) => api.dismissEvent(familyId, feedId, task.sourceEventId!),
-      'Event marked unneeded');
+      (api, fid) => api.dismissEvent(fid, feedId, task.sourceEventId!), 'Event marked not needed');
 }
 
 Future<void> _run(
@@ -168,105 +203,83 @@ Future<void> _run(
   }
 }
 
-class _ActionRow extends StatelessWidget {
-  const _ActionRow({
-    required this.icon,
-    required this.iconColor,
+/// A change-type segment tile.
+class _SegTile extends StatelessWidget {
+  const _SegTile({
     required this.label,
-    required this.subtitle,
+    required this.icon,
+    required this.selected,
     required this.onTap,
   });
 
-  final IconData icon;
-  final Color iconColor;
   final String label;
-  final String subtitle;
-  final VoidCallback onTap;
+  final IconData icon;
+  final bool selected;
+  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(14),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 8),
-        child: Row(
-          children: [
-            IconTile(icon: icon, color: iconColor),
-            const SizedBox(width: 14),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(label, style: AppText.toggleLabel),
-                  const SizedBox(height: 2),
-                  Text(subtitle, style: AppText.subtitle),
-                ],
-              ),
-            ),
-          ],
+    return Material(
+      color: selected ? AppColors.tint(AppColors.indigo, 0.18) : AppColors.card,
+      borderRadius: BorderRadius.circular(15),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(15),
+        child: Container(
+          padding: const EdgeInsets.symmetric(vertical: 14),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(15),
+            border: Border.all(
+                color: selected ? AppColors.indigo : AppColors.border, width: selected ? 1.5 : 1),
+          ),
+          child: Column(
+            children: [
+              Icon(icon,
+                  size: 22, color: selected ? AppColors.indigo : AppColors.textSecondary),
+              const SizedBox(height: 7),
+              Text(label,
+                  style: font(kBodyFont, 12.5, 600,
+                      color: selected ? AppColors.textPrimary : AppColors.textSecondary)),
+            ],
+          ),
         ),
       ),
     );
   }
 }
 
-/// Multi-select of task types for a feed event. Returns the chosen type ids
-/// (`attendance`/`pickup`/`dropoff`), or null on cancel. At least one required.
-class _ConvertTypeDialog extends StatefulWidget {
-  const _ConvertTypeDialog({required this.initial});
-  final Set<String> initial;
+class _ActionRow extends StatelessWidget {
+  const _ActionRow({
+    required this.icon,
+    required this.iconColor,
+    required this.label,
+    required this.onTap,
+    this.destructive = false,
+  });
 
-  @override
-  State<_ConvertTypeDialog> createState() => _ConvertTypeDialogState();
-}
-
-class _ConvertTypeDialogState extends State<_ConvertTypeDialog> {
-  static const _types = [
-    ('dropoff', 'Drop-off', Icons.login_rounded),
-    ('pickup', 'Pickup', Icons.logout_rounded),
-    ('attendance', 'Attendance', Icons.groups_rounded),
-  ];
-  late final Set<String> _selected = {...widget.initial};
+  final IconData icon;
+  final Color iconColor;
+  final String label;
+  final VoidCallback onTap;
+  final bool destructive;
 
   @override
   Widget build(BuildContext context) {
-    return AlertDialog(
-      title: const Text('Change type'),
-      content: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Padding(
-            padding: const EdgeInsets.only(bottom: 8),
-            child: Text('This event can produce more than one task.',
-                style: AppText.subtitle),
-          ),
-          for (final (id, label, icon) in _types)
-            CheckboxListTile(
-              value: _selected.contains(id),
-              title: Text(label, style: AppText.listItemTitle),
-              secondary: Icon(icon, color: AppColors.textSecondary, size: 20),
-              contentPadding: EdgeInsets.zero,
-              controlAffinity: ListTileControlAffinity.trailing,
-              activeColor: AppColors.indigo,
-              onChanged: (v) => setState(() {
-                if (v ?? false) {
-                  _selected.add(id);
-                } else {
-                  _selected.remove(id);
-                }
-              }),
-            ),
-        ],
-      ),
-      actions: [
-        TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
-        PillButton(
-          label: 'Save',
-          variant: PillVariant.amber,
-          onPressed: _selected.isEmpty ? null : () => Navigator.pop(context, _selected.toList()),
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(12),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 10),
+        child: Row(
+          children: [
+            Icon(icon, color: iconColor, size: 22),
+            const SizedBox(width: 14),
+            Text(label,
+                style: font(kBodyFont, 14.5, 600,
+                    color: destructive ? AppColors.coral : AppColors.textPrimary)),
+          ],
         ),
-      ],
+      ),
     );
   }
 }

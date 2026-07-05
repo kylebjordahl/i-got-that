@@ -12,8 +12,9 @@ import '../widgets/primitives.dart';
 import '../widgets/task_row.dart';
 import 'task_actions_sheet.dart';
 
-/// Home — the claim hub. Surfaces unowned tasks first (any caretaker can claim
-/// them); the caller's own claimed tasks for today sit below.
+/// Home — the claim hub. A multi-day list grouped under sticky day headers;
+/// unowned tasks read as dashed "needs an owner" rows any caretaker can claim,
+/// and the caller's own claimed tasks sit inline (solid bar + "You").
 class HomeScreen extends ConsumerStatefulWidget {
   const HomeScreen({super.key});
 
@@ -22,8 +23,6 @@ class HomeScreen extends ConsumerStatefulWidget {
 }
 
 class _HomeScreenState extends ConsumerState<HomeScreen> {
-  bool _claiming = false;
-
   void _refresh() {
     ref.invalidate(unownedTasksProvider);
     ref.invalidate(allTasksProvider);
@@ -35,91 +34,76 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     _refresh();
   }
 
-  Future<void> _claimAll(List<TaskItem> unowned) async {
-    if (unowned.isEmpty || _claiming) return;
-    setState(() => _claiming = true);
-    try {
-      final familyId = await ref.read(familyProvider.future);
-      final api = ref.read(apiClientProvider);
-      for (final t in unowned) {
-        await api.assignTask(familyId, t.id);
-      }
-      _refresh();
-    } finally {
-      if (mounted) setState(() => _claiming = false);
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
-    final unownedAsync = ref.watch(unownedTasksProvider);
     final allAsync = ref.watch(allTasksProvider);
     final members = ref.watch(membersProvider).valueOrNull ?? const <Member>[];
     final me = ref.watch(currentMemberProvider).valueOrNull;
     final byId = {for (final m in members) m.id: m};
-
     final now = DateTime.now();
-    final unowned = [...(unownedAsync.valueOrNull ?? const <TaskItem>[])]
-      ..sort((a, b) => a.start.compareTo(b.start));
-    // Group the unowned queue by day so each day gets its own count subheading.
-    final unownedByDay = <DateTime, List<TaskItem>>{};
-    for (final t in unowned) {
-      (unownedByDay[dayKey(t.start)] ??= []).add(t);
-    }
-    final unownedDays = unownedByDay.keys.toList()..sort();
-    final mine = [
+
+    // Unowned tasks + my own claimed tasks, grouped by day.
+    final visible = [
       for (final t in allAsync.valueOrNull ?? const <TaskItem>[])
-        if (t.status == 'owned' &&
-            t.ownerMemberId == me?.id &&
-            dayKey(t.start) == dayKey(now))
-          t
-    ]..sort((a, b) => a.start.compareTo(b.start));
+        if (!t.isDismissed && (t.status == 'unowned' || t.ownerMemberId == me?.id)) t
+    ];
+    final byDay = <DateTime, List<TaskItem>>{};
+    for (final t in visible) {
+      (byDay[dayKey(t.start)] ??= []).add(t);
+    }
+    for (final list in byDay.values) {
+      list.sort((a, b) => a.start.compareTo(b.start));
+    }
+    final days = byDay.keys.toList()..sort();
 
     return RefreshIndicator(
       onRefresh: () async {
         _refresh();
-        await ref.read(unownedTasksProvider.future);
+        await ref.read(allTasksProvider.future);
       },
-      child: ListView(
+      child: CustomScrollView(
         physics: const AlwaysScrollableScrollPhysics(),
-        padding: const EdgeInsets.fromLTRB(22, 14, 22, 130),
-        children: [
-          _header(me, now),
-          const SizedBox(height: 20),
-          _hero(unowned),
-          const SizedBox(height: 26),
-          if (unownedAsync.hasError)
-            _error('${unownedAsync.error}')
-          else ...[
-            const SectionEyebrow('Needs an owner', color: AppColors.amberHero),
-            const SizedBox(height: 12),
-            if (unowned.isEmpty)
-              _empty('Nothing unowned — all covered 🎉')
-            else
-              for (final day in unownedDays) ...[
-                Padding(
-                  padding: const EdgeInsets.only(left: 2, bottom: 8),
-                  child: Text(
-                    '${unownedByDay[day]!.length} ${relativeDayLower(day, now)}',
-                    style: AppText.secondary,
-                  ),
-                ),
-                for (final t in unownedByDay[day]!) ...[
-                  _unownedRow(t, byId),
-                  const SizedBox(height: 11),
+        slivers: [
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(22, 14, 22, 0),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  _header(me, now),
+                  const SizedBox(height: 18),
+                  const _HintChip(),
+                  const SizedBox(height: 8),
                 ],
-                const SizedBox(height: 6),
-              ],
-          ],
-          if (mine.isNotEmpty) ...[
-            const SizedBox(height: 14),
-            const SectionEyebrow("You're covering today"),
-            const SizedBox(height: 12),
-            for (final t in mine) ...[
-              _mineRow(t, byId, me),
-              const SizedBox(height: 11),
+              ),
+            ),
+          ),
+          if (allAsync.hasError)
+            SliverToBoxAdapter(child: _pad(_error('${allAsync.error}')))
+          else if (days.isEmpty)
+            SliverToBoxAdapter(
+              child: _pad(_empty(allAsync.isLoading
+                  ? 'Loading…'
+                  : 'Nothing to cover — all clear 🎉')))
+          else
+            for (final day in days) ...[
+              SliverPersistentHeader(
+                pinned: true,
+                delegate: _DayHeaderDelegate(
+                  label: homeDayHeader(day, now),
+                  openCount: byDay[day]!.where((t) => t.status == 'unowned').length,
+                ),
+              ),
+              SliverPadding(
+                padding: const EdgeInsets.fromLTRB(22, 0, 22, 8),
+                sliver: SliverList.separated(
+                  itemCount: byDay[day]!.length,
+                  separatorBuilder: (_, __) => const SizedBox(height: 11),
+                  itemBuilder: (_, i) => _row(byDay[day]![i], byId, me),
+                ),
+              ),
             ],
-          ],
+          const SliverToBoxAdapter(child: SizedBox(height: 120)),
         ],
       ),
     );
@@ -146,89 +130,15 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             ],
           ),
         ),
-        PersonAvatar(
-          initial: initialFor(me?.relationName ?? '?'),
-          color: meColor,
-        ),
+        PersonAvatar(initial: initialFor(me?.relationName ?? '?'), color: meColor),
       ],
     );
   }
 
-  Widget _hero(List<TaskItem> unowned) {
-    final n = unowned.length;
-    final headline = n == 0
-        ? "You're all\ncaught up"
-        : '$n task${n == 1 ? '' : 's'} still\nneed an owner';
-    return AppCard(
-      gradient: AppColors.heroGradient,
-      radius: 26,
-      padding: const EdgeInsets.all(20),
-      border: Border.all(color: AppColors.amberHero.withValues(alpha: 0.25)),
-      child: Stack(
-        clipBehavior: Clip.none,
-        children: [
-          Positioned(
-            right: -6,
-            bottom: -10,
-            child: Icon(
-              Icons.wb_sunny_outlined,
-              size: 120,
-              color: AppColors.amberHero.withValues(alpha: 0.16),
-            ),
-          ),
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 210),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text("TODAY'S HANDOFFS",
-                        style: font(kBodyFont, 12, 600,
-                            color: AppColors.amberHero, letterSpacing: 0.5)),
-                    const SizedBox(height: 8),
-                    Text(headline, style: AppText.heroHeadline),
-                  ],
-                ),
-              ),
-              if (n > 0) ...[
-                const SizedBox(height: 14),
-                PillButton(
-                  label: _claiming ? 'Claiming…' : 'Claim what I can',
-                  variant: PillVariant.amber,
-                  onPressed: _claiming ? null : () => _claimAll(unowned),
-                ),
-              ],
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _unownedRow(TaskItem t, Map<String, Member> byId) {
+  Widget _row(TaskItem t, Map<String, Member> byId, Member? me) {
     final child = byId[t.familyMemberId];
     final color = child != null ? personColor(child) : AppColors.textSecondary;
-    return TaskRow(
-      icon: taskIcon(t.type),
-      iconColor: color,
-      typeLabel: taskTypeLabel(t.type),
-      personName: child?.relationName ?? 'child',
-      personColor: color,
-      subtitle: '${taskCategory(t.type)} · ${friendlyTime(t.start)}',
-      onLongPress: () => showTaskActions(context, ref, t),
-      trailing: PillButton(
-        label: 'Claim',
-        dense: true,
-        onPressed: () => _claim(t.id),
-      ),
-    );
-  }
-
-  Widget _mineRow(TaskItem t, Map<String, Member> byId, Member? me) {
-    final child = byId[t.familyMemberId];
-    final color = child != null ? personColor(child) : AppColors.textSecondary;
+    final owned = t.status == 'owned';
     final meColor = me == null ? AppColors.indigo : personColor(me);
     return TaskRow(
       icon: taskIcon(t.type),
@@ -237,14 +147,21 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       personName: child?.relationName ?? 'child',
       personColor: color,
       subtitle: '${taskCategory(t.type)} · ${friendlyTime(t.start)}',
-      ownedColor: meColor,
+      ownedColor: owned ? meColor : null,
       onLongPress: () => showTaskActions(context, ref, t),
-      trailing: YouChip(initial: initialFor(me?.relationName ?? '?'), color: meColor),
+      trailing: owned
+          ? YouChip(initial: initialFor(me?.relationName ?? '?'), color: meColor)
+          : PillButton(label: 'Claim', dense: true, onPressed: () => _claim(t.id)),
     );
   }
 
+  Widget _pad(Widget child) => Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 22),
+        child: child,
+      );
+
   Widget _empty(String msg) => Padding(
-        padding: const EdgeInsets.symmetric(vertical: 24),
+        padding: const EdgeInsets.symmetric(vertical: 40),
         child: Center(child: Text(msg, style: AppText.subtitle)),
       );
 
@@ -252,4 +169,62 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         padding: const EdgeInsets.symmetric(vertical: 24),
         child: Text(msg, style: font(kBodyFont, 13, 500, color: AppColors.coral)),
       );
+}
+
+/// The discoverability hint for the long-press quick-actions.
+class _HintChip extends StatelessWidget {
+  const _HintChip();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      decoration: BoxDecoration(
+        color: AppColors.card,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: AppColors.borderSubtle),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.touch_app_outlined, size: 17, color: AppColors.textTertiary),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text('Long-press a task to change its type or mark it not needed',
+                style: font(kBodyFont, 12.5, 500, color: AppColors.textSecondary)),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Sticky per-day header: "TODAY · TUE JUL 1" with the open (unclaimed) count.
+class _DayHeaderDelegate extends SliverPersistentHeaderDelegate {
+  _DayHeaderDelegate({required this.label, required this.openCount});
+  final String label;
+  final int openCount;
+
+  @override
+  double get minExtent => 42;
+  @override
+  double get maxExtent => 42;
+
+  @override
+  Widget build(BuildContext context, double shrinkOffset, bool overlapsContent) {
+    return Container(
+      color: AppColors.bg,
+      padding: const EdgeInsets.fromLTRB(24, 10, 24, 10),
+      alignment: Alignment.center,
+      child: Row(
+        children: [
+          Expanded(child: Text(label, style: AppText.eyebrow(AppColors.amberHero))),
+          Text('$openCount open', style: AppText.secondary),
+        ],
+      ),
+    );
+  }
+
+  @override
+  bool shouldRebuild(_DayHeaderDelegate old) =>
+      old.label != label || old.openCount != openCount;
 }

@@ -27,7 +27,7 @@ TaskItem _task = TaskItem(
 );
 
 void main() {
-  testWidgets('long-press on a Home task opens the actions sheet and change-type modal',
+  testWidgets('long-press on a Home task opens the quick-actions sheet',
       (tester) async {
     final me = _m('dad', 'Dad', caretaker: true, admin: true);
     await tester.pumpWidget(ProviderScope(
@@ -48,18 +48,14 @@ void main() {
     // The unowned row is rendered.
     expect(find.byType(TaskRow), findsOneWidget);
 
-    // Long-press opens the action sheet with the ported oversight actions.
+    // Long-press opens the quick-actions sheet: change-type segments + actions.
     await tester.longPress(find.byType(TaskRow));
     await tester.pumpAndSettle();
-    expect(find.text('Change type…'), findsOneWidget);
-    expect(find.text('Mark task unneeded'), findsOneWidget);
-    expect(find.text('Mark event unneeded'), findsOneWidget); // admin + feed task
-
-    // Change type opens the multi-select modal.
-    await tester.tap(find.text('Change type…'));
-    await tester.pumpAndSettle();
-    expect(find.text('Change type'), findsOneWidget);
+    expect(find.text('CHANGE TYPE'), findsOneWidget);
+    expect(find.text('Transition'), findsOneWidget); // segment tile
     expect(find.text('Attendance'), findsOneWidget);
-    expect(find.text('Pickup'), findsOneWidget);
+    expect(find.text('Both'), findsOneWidget);
+    expect(find.text('Claim for myself'), findsOneWidget); // unowned + caretaker
+    expect(find.text('Mark as not needed'), findsOneWidget);
   });
 }

@@ -1,85 +1,125 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../app_shell.dart';
 import '../models.dart';
 import '../state/auth.dart';
 import '../state/family.dart';
 import '../theme/app_colors.dart';
+import '../theme/app_text.dart';
 import '../widgets/primitives.dart';
+import '../widgets/settings.dart';
 
-/// Input feeds: the calendars that generate tasks. Add feeds here; link them to
-/// specific children — and configure each baseline — from the child's detail
-/// screen. Each row summarises how many family members the feed is linked to.
+/// Input feeds: the shared calendar sources that generate tasks. Each row shows
+/// how many children it's linked to. Link a feed to a child — and configure its
+/// baseline — from the child's detail screen. The nav "+" adds a feed.
 class FeedsScreen extends ConsumerWidget {
   const FeedsScreen({super.key});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final feedsAsync = ref.watch(feedsProvider);
+    final feeds = ref.watch(feedsProvider).valueOrNull ?? const <Map<String, dynamic>>[];
     final isAdmin = ref.watch(currentMemberProvider).valueOrNull?.isAdmin ?? false;
+
     return Scaffold(
-      appBar: AppBar(title: const Text('Feeds')),
-      floatingActionButton: isAdmin
-          ? FloatingActionButton.extended(
-              heroTag: 'fab-feeds',
-              onPressed: () async {
-                final added = await showDialog<bool>(
-                  context: context,
-                  builder: (_) => const _AddFeedDialog(),
-                );
-                if (added == true) ref.invalidate(feedsProvider);
-              },
-              icon: const Icon(Icons.add),
-              label: const Text('Add feed'),
-            )
-          : null,
-      body: feedsAsync.when(
-        loading: () => const Center(child: CircularProgressIndicator()),
-        error: (e, _) => Center(child: Text('$e')),
-        data: (feeds) => feeds.isEmpty
-            ? const Center(child: Text('No feeds yet — add a school calendar ICS'))
-            : ListView(
-                children: [
-                  for (final f in feeds)
-                    _FeedTile(feed: f),
-                ],
+      extendBody: true,
+      body: SafeArea(
+        bottom: false,
+        child: ListView(
+          padding: const EdgeInsets.fromLTRB(22, 12, 22, 130),
+          children: [
+            const SubPageHeader(title: 'Input feeds'),
+            const SizedBox(height: 18),
+            Text(
+              'Shared calendar sources that generate tasks. Each feed is linked to '
+              'the children it applies to.',
+              style: AppText.subtitle,
+            ),
+            const SizedBox(height: 18),
+            SectionEyebrow('Sources',
+                color: AppColors.feedBlue,
+                trailing: Text('${feeds.length}', style: AppText.secondary)),
+            const SizedBox(height: 12),
+            if (feeds.isEmpty)
+              _empty()
+            else
+              AppCard(
+                child: Column(
+                  children: [
+                    for (var i = 0; i < feeds.length; i++) ...[
+                      _FeedRow(feed: feeds[i]),
+                      if (i < feeds.length - 1) const Divider(height: 20),
+                    ],
+                  ],
+                ),
               ),
+          ],
+        ),
+      ),
+      bottomNavigationBar: familyListNav(
+        context,
+        ref,
+        onAdd: isAdmin ? () => _addFeed(context, ref) : null,
       ),
     );
   }
+
+  Widget _empty() => Padding(
+        padding: const EdgeInsets.symmetric(vertical: 32),
+        child: Center(
+          child: Text('No feeds yet — add a school calendar ICS', style: AppText.subtitle),
+        ),
+      );
+
+  Future<void> _addFeed(BuildContext context, WidgetRef ref) async {
+    final added = await showDialog<bool>(
+      context: context,
+      builder: (_) => const _AddFeedDialog(),
+    );
+    if (added == true) ref.invalidate(feedsProvider);
+  }
 }
 
-class _FeedTile extends ConsumerWidget {
-  const _FeedTile({required this.feed});
+class _FeedRow extends ConsumerWidget {
+  const _FeedRow({required this.feed});
   final Map<String, dynamic> feed;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final feedId = feed['id'] as String;
     final kind = feed['kind'] as String? ?? 'ics';
-    final title = (feed['url'] as String?) ??
-        (feed['sourceCalendarName'] as String?) ??
+    final title = (feed['sourceCalendarName'] as String?) ??
+        (feed['url'] as String?) ??
         (feed['sourceCalendarId'] as String?) ??
         'Account calendar';
-    final sourceLabel = switch (kind) {
+    final protocol = switch (kind) {
       'google' => 'Google',
       'caldav' => 'CalDAV',
       _ => 'ICS',
     };
-    final n = (ref.watch(feedLinksProvider(feedId)).valueOrNull ?? const []).length;
-    final linkedLabel = '$n ${n == 1 ? 'member' : 'members'} linked';
+    final typeLabel = kind == 'ics' ? 'School calendar' : 'Family calendar';
 
-    return ListTile(
-      leading: IconTile(
-        icon: kind == 'ics' ? Icons.rss_feed : Icons.link,
-        color: kind == 'ics' ? AppColors.feedBlue : AppColors.purple,
+    final members = ref.watch(membersProvider).valueOrNull ?? const <Member>[];
+    final byId = {for (final m in members) m.id: m};
+    final links = ref.watch(feedLinksProvider(feedId)).valueOrNull ?? const [];
+    final kids = links
+        .cast<Map<String, dynamic>>()
+        .where((l) => byId[l['familyMemberId']]?.requiresCaretaker ?? true)
+        .length;
+
+    return SettingRow(
+      icon: kind == 'ics' ? Icons.rss_feed_rounded : Icons.calendar_month_rounded,
+      iconColor: kind == 'ics' ? AppColors.feedBlue : AppColors.purple,
+      title: title,
+      subtitle: '$typeLabel · $protocol',
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text('$kids ${kids == 1 ? 'kid' : 'kids'}', style: AppText.secondary),
+          const SizedBox(width: 8),
+          const Icon(Icons.chevron_right_rounded, color: AppColors.textMuted),
+        ],
       ),
-      title: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis),
-      subtitle: Text('$sourceLabel · ${feed['mode']} · $linkedLabel'),
-      trailing: IconButton(
-        icon: const Icon(Icons.sync),
-        tooltip: 'Refresh now',
-        onPressed: () => _refresh(context, ref, feedId),
-      ),
+      onTap: () => _refresh(context, ref, feedId),
     );
   }
 
@@ -89,7 +129,7 @@ class _FeedTile extends ConsumerWidget {
     ref.invalidate(unownedTasksProvider);
     ref.invalidate(allTasksProvider);
     if (context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Refreshed')));
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Feed refreshed')));
     }
   }
 }
