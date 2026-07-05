@@ -140,7 +140,7 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
       (byDay[dayKey(t.start)] ??= []).add(t);
     }
     return SizedBox(
-      height: 74,
+      height: 78,
       child: ListView.builder(
         controller: _dayScroll,
         scrollDirection: Axis.horizontal,
@@ -458,13 +458,14 @@ class _DayChip extends StatelessWidget {
       onTap: onTap,
       child: Container(
         width: 50,
-        padding: const EdgeInsets.symmetric(vertical: 10),
+        padding: const EdgeInsets.symmetric(vertical: 9),
         decoration: BoxDecoration(
           color: active ? AppColors.indigo : AppColors.card,
           borderRadius: BorderRadius.circular(15),
           border: Border.all(color: borderColor),
         ),
         child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
           children: [
             Text(weekday,
                 style: font(kBodyFont, 10.5, 700,
@@ -472,7 +473,7 @@ class _DayChip extends StatelessWidget {
                     letterSpacing: 0.5)),
             const SizedBox(height: 4),
             Text('$day', style: font(kBodyFont, 17, 700, color: dayColor)),
-            const SizedBox(height: 5),
+            const SizedBox(height: 4),
             SizedBox(
               height: 5,
               child: Row(
