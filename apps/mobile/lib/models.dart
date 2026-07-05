@@ -1,7 +1,12 @@
 // Light models over the API's JSON. (Replaced by generated models later.)
 
-DateTime parseTimestamp(Object? v) =>
-    v is int ? DateTime.fromMillisecondsSinceEpoch(v) : DateTime.parse(v as String);
+/// Parse a task/event timestamp to **local** time. The API sends `dtstart` as a
+/// UTC ISO string (a `timestamp_ms` column serialized to JSON), so `DateTime.parse`
+/// yields a UTC instant — normalise to local so `.hour`/positioning line up with
+/// the clock the user sees. (Epoch-int values are already local.)
+DateTime parseTimestamp(Object? v) => v is int
+    ? DateTime.fromMillisecondsSinceEpoch(v)
+    : DateTime.parse(v as String).toLocal();
 
 /// All-day events are anchored to UTC midnight of their calendar date by the
 /// backend. Read the UTC date parts and rebuild them as a *local* midnight so

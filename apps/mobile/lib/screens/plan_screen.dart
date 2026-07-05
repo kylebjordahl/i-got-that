@@ -12,11 +12,13 @@ import '../widgets/primitives.dart';
 import '../widgets/settings.dart';
 import 'task_actions_sheet.dart';
 
-const _startHour = 7;
-const _endHour = 18; // 6 PM
 const _hourPx = 42.0;
 const _labelWidth = 46.0;
-const _gridHeight = (_endHour - _startHour) * _hourPx;
+// The grid always shows at least this window, then expands to fit the day's
+// events (and the now-line) so nothing is clipped — the page scrolls to reveal
+// the extra hours.
+const _defaultStartHour = 7;
+const _defaultEndHour = 19; // 7 PM
 
 /// Plan — an iOS-Calendar-style day view. Shows who's covering what across the
 /// day so caretakers can spot and claim gaps.
@@ -40,6 +42,31 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
   final Set<String> _exTypes = {};
   bool _showCompleted = false;
   bool _onlyMyKids = false;
+
+  // The visible hour window for the current day (computed each build).
+  int _gridStart = _defaultStartHour;
+  int _gridEnd = _defaultEndHour;
+  double get _gridHeight => (_gridEnd - _gridStart) * _hourPx;
+
+  /// Expand the default window to fit every event on the day (+ the now-line),
+  /// so nothing is clipped and the whole day is reachable by scrolling.
+  void _computeRange(List<TaskItem> dayTasks) {
+    var start = _defaultStartHour;
+    var end = _defaultEndHour;
+    for (final t in dayTasks) {
+      final l = t.start.toLocal();
+      if (l.hour < start) start = l.hour;
+      final endH = l.hour + (t.type == 'attendance' ? 2 : 1);
+      if (endH > end) end = endH;
+    }
+    final now = DateTime.now();
+    if (_selected == _dateOnly(now)) {
+      if (now.hour < start) start = now.hour;
+      if (now.hour + 1 > end) end = now.hour + 1;
+    }
+    _gridStart = start.clamp(0, 23);
+    _gridEnd = end.clamp(_gridStart + 1, 24);
+  }
 
   // The day scroller is an effectively-infinite lazy list centred on [_today]:
   // index [_dayAnchor] is today, and it opens scrolled so today sits 3rd.
@@ -98,6 +125,7 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
       for (final t in allTasks)
         if (dayKey(t.start) == _selected && _passesFilter(t, myKids)) t
     ];
+    _computeRange(dayTasks);
     final placed = _layout(dayTasks);
 
     return ListView(
@@ -226,9 +254,9 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
   Widget _grid(List<_Placed> placed, Map<String, Member> byId) {
     final now = DateTime.now();
     final showNow = _selected == _dateOnly(now) &&
-        now.hour >= _startHour &&
-        now.hour < _endHour;
-    final nowY = ((now.hour + now.minute / 60) - _startHour) * _hourPx;
+        now.hour >= _gridStart &&
+        now.hour < _gridEnd;
+    final nowY = ((now.hour + now.minute / 60) - _gridStart) * _hourPx;
 
     return LayoutBuilder(builder: (context, constraints) {
       const laneLeft = _labelWidth + 8;
@@ -238,9 +266,9 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
         child: Stack(
           children: [
             // Hour gridlines + labels.
-            for (var h = _startHour; h <= _endHour; h++)
+            for (var h = _gridStart; h <= _gridEnd; h++)
               Positioned(
-                top: (h - _startHour) * _hourPx,
+                top: (h - _gridStart) * _hourPx,
                 left: 0,
                 right: 0,
                 child: _HourLine(label: _hourLabel(h)),
@@ -279,8 +307,9 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
   }
 
   String _hourLabel(int h) {
-    final period = h < 12 ? 'AM' : 'PM';
-    var hh = h % 12;
+    final h24 = h % 24;
+    final period = h24 < 12 ? 'AM' : 'PM';
+    var hh = h24 % 12;
     if (hh == 0) hh = 12;
     return '$hh $period';
   }
@@ -440,9 +469,9 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
       for (final t in tasks)
         _Ev(
           task: t,
-          start: t.start,
+          start: t.start.toLocal(),
           // No end-time in the model: nominal durations for layout only.
-          end: t.start.add(Duration(minutes: t.type == 'attendance' ? 90 : 30)),
+          end: t.start.toLocal().add(Duration(minutes: t.type == 'attendance' ? 90 : 30)),
         )
     ]..sort((a, b) => a.start.compareTo(b.start));
 
@@ -480,7 +509,7 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
       final colCount = colEnds.length;
       for (var k = 0; k < cluster.length; k++) {
         final ev = cluster[k];
-        final top = (((ev.start.hour + ev.start.minute / 60) - _startHour) * _hourPx)
+        final top = (((ev.start.hour + ev.start.minute / 60) - _gridStart) * _hourPx)
             .clamp(0.0, _gridHeight);
         final isAtt = ev.task.type == 'attendance';
         final height = isAtt
