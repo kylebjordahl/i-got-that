@@ -239,7 +239,7 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
                   placed: p,
                   byId: byId,
                   onClaim: () => _claim(p.task.id),
-                  onLongPress: () => showTaskActions(context, ref, p.task),
+                  onTapBlock: () => showTaskActions(context, ref, p.task),
                 ),
               ),
             // Now-line.
@@ -601,12 +601,12 @@ class _TaskBlock extends StatelessWidget {
     required this.placed,
     required this.byId,
     required this.onClaim,
-    this.onLongPress,
+    this.onTapBlock,
   });
   final _Placed placed;
   final Map<String, Member> byId;
   final VoidCallback onClaim;
-  final VoidCallback? onLongPress;
+  final VoidCallback? onTapBlock;
 
   @override
   Widget build(BuildContext context) {
@@ -686,7 +686,7 @@ class _TaskBlock extends StatelessWidget {
           );
 
     return GestureDetector(
-      onLongPress: onLongPress,
+      onTap: onTapBlock,
       behavior: HitTestBehavior.opaque,
       child: box,
     );

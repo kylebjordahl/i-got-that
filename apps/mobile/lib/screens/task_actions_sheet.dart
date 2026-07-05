@@ -15,9 +15,12 @@ import '../widgets/primitives.dart';
 Future<void> showTaskActions(BuildContext context, WidgetRef ref, TaskItem task) async {
   final members = ref.read(membersProvider).valueOrNull ?? const <Member>[];
   final byId = {for (final m in members) m.id: m};
+  final caretakers = members.where((m) => m.isCaretaker).toList();
   final me = ref.read(currentMemberProvider).valueOrNull;
   final isAdmin = me?.isAdmin ?? false;
   final canClaim = me?.isCaretaker ?? false;
+  // Any caretaker may reassign; a non-caretaker admin can still route work.
+  final canAssign = canClaim || isAdmin;
   final child = byId[task.familyMemberId];
   final owner = task.ownerMemberId != null ? byId[task.ownerMemberId] : null;
   final color = child != null ? personColor(child) : AppColors.textSecondary;
@@ -117,6 +120,31 @@ Future<void> showTaskActions(BuildContext context, WidgetRef ref, TaskItem task)
                   ),
                   const Divider(height: 18),
                 ],
+                if (canAssign && caretakers.length > (unowned ? 0 : 1)) ...[
+                  _ActionRow(
+                    icon: Icons.person_add_alt_1_rounded,
+                    iconColor: AppColors.blue,
+                    label: unowned ? 'Assign to someone…' : 'Reassign to someone…',
+                    onTap: () {
+                      Navigator.of(sheetCtx).pop();
+                      _pickAndAssign(context, ref, task, caretakers);
+                    },
+                  ),
+                  const Divider(height: 18),
+                ],
+                if (!unowned && canAssign) ...[
+                  _ActionRow(
+                    icon: Icons.person_off_outlined,
+                    iconColor: AppColors.textSecondary,
+                    label: 'Unassign',
+                    onTap: () {
+                      Navigator.of(sheetCtx).pop();
+                      _run(context, ref, (api, fid) => api.unassignTask(fid, task.id),
+                          'Returned to the queue');
+                    },
+                  ),
+                  const Divider(height: 18),
+                ],
                 _ActionRow(
                   icon: Icons.block_rounded,
                   iconColor: AppColors.coral,
@@ -143,6 +171,51 @@ Future<void> showTaskActions(BuildContext context, WidgetRef ref, TaskItem task)
               ],
             ),
           ),
+        ],
+      ),
+    ),
+  );
+}
+
+/// Pick a caretaker to (re)assign the task to.
+Future<void> _pickAndAssign(
+  BuildContext context,
+  WidgetRef ref,
+  TaskItem task,
+  List<Member> caretakers,
+) async {
+  final options = caretakers.where((m) => m.id != task.ownerMemberId).toList();
+  await showModalBottomSheet<void>(
+    context: context,
+    showDragHandle: true,
+    builder: (sheetCtx) => SingleChildScrollView(
+      padding: const EdgeInsets.fromLTRB(22, 4, 22, 28),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('Assign to', style: AppText.subPageTitle),
+          const SizedBox(height: 12),
+          for (final m in options)
+            InkWell(
+              onTap: () {
+                Navigator.of(sheetCtx).pop();
+                _run(context, ref, (api, fid) => api.assignTask(fid, task.id, memberId: m.id),
+                    'Assigned to ${m.relationName}');
+              },
+              borderRadius: BorderRadius.circular(14),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 8),
+                child: Row(
+                  children: [
+                    PersonAvatar(
+                        initial: initialFor(m.relationName), color: personColor(m), size: 40),
+                    const SizedBox(width: 14),
+                    Text(m.relationName, style: AppText.sectionItemTitle),
+                  ],
+                ),
+              ),
+            ),
         ],
       ),
     ),

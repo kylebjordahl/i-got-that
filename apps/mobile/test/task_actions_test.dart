@@ -17,18 +17,18 @@ Member _m(String id, String name,
       requiresCaretaker: child,
     );
 
-TaskItem _task = TaskItem(
+// A couple of hours in the future so it survives Home's "hide past tasks" filter.
+final TaskItem _task = TaskItem(
   id: 't1',
   familyMemberId: 'theo',
   type: 'dropoff',
-  start: DateTime(2026, 7, 2, 8),
+  start: DateTime.now().add(const Duration(hours: 2)),
   status: 'unowned',
   sourceEventId: 'e1',
 );
 
 void main() {
-  testWidgets('long-press on a Home task opens the quick-actions sheet',
-      (tester) async {
+  testWidgets('tapping a Home task opens the quick-actions sheet', (tester) async {
     final me = _m('dad', 'Dad', caretaker: true, admin: true);
     await tester.pumpWidget(ProviderScope(
       overrides: [
@@ -48,8 +48,8 @@ void main() {
     // The unowned row is rendered.
     expect(find.byType(TaskRow), findsOneWidget);
 
-    // Long-press opens the quick-actions sheet: change-type segments + actions.
-    await tester.longPress(find.byType(TaskRow));
+    // Tapping opens the quick-actions sheet: change-type segments + actions.
+    await tester.tap(find.byType(TaskRow));
     await tester.pumpAndSettle();
     expect(find.text('CHANGE TYPE'), findsOneWidget);
     expect(find.text('Transition'), findsOneWidget); // segment tile

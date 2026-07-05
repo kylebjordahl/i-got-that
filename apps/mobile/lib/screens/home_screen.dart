@@ -42,10 +42,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final byId = {for (final m in members) m.id: m};
     final now = DateTime.now();
 
-    // Unowned tasks + my own claimed tasks, grouped by day.
+    // Unowned tasks + my own claimed tasks, upcoming only (no past tasks,
+    // regardless of claim state), grouped by day.
     final visible = [
       for (final t in allAsync.valueOrNull ?? const <TaskItem>[])
-        if (!t.isDismissed && (t.status == 'unowned' || t.ownerMemberId == me?.id)) t
+        if (!t.isDismissed &&
+            !t.start.isBefore(now) &&
+            (t.status == 'unowned' || t.ownerMemberId == me?.id))
+          t
     ];
     final byDay = <DateTime, List<TaskItem>>{};
     for (final t in visible) {
@@ -148,7 +152,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       personColor: color,
       subtitle: '${taskCategory(t.type)} · ${friendlyTime(t.start)}',
       ownedColor: owned ? meColor : null,
-      onLongPress: () => showTaskActions(context, ref, t),
+      onTap: () => showTaskActions(context, ref, t),
       trailing: owned
           ? YouChip(initial: initialFor(me?.relationName ?? '?'), color: meColor)
           : PillButton(label: 'Claim', dense: true, onPressed: () => _claim(t.id)),
@@ -189,7 +193,7 @@ class _HintChip extends StatelessWidget {
           const Icon(Icons.touch_app_outlined, size: 17, color: AppColors.textTertiary),
           const SizedBox(width: 10),
           Expanded(
-            child: Text('Long-press a task to change its type or mark it not needed',
+            child: Text('Tap a task to reassign, change its type, or mark it not needed',
                 style: font(kBodyFont, 12.5, 500, color: AppColors.textSecondary)),
           ),
         ],
