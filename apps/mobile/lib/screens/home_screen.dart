@@ -61,6 +61,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final now = DateTime.now();
     final unowned = [...(unownedAsync.valueOrNull ?? const <TaskItem>[])]
       ..sort((a, b) => a.start.compareTo(b.start));
+    // Group the unowned queue by day so each day gets its own count subheading.
+    final unownedByDay = <DateTime, List<TaskItem>>{};
+    for (final t in unowned) {
+      (unownedByDay[dayKey(t.start)] ??= []).add(t);
+    }
+    final unownedDays = unownedByDay.keys.toList()..sort();
     final mine = [
       for (final t in allAsync.valueOrNull ?? const <TaskItem>[])
         if (t.status == 'owned' &&
@@ -85,18 +91,24 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           if (unownedAsync.hasError)
             _error('${unownedAsync.error}')
           else ...[
-            SectionEyebrow(
-              'Needs an owner',
-              color: AppColors.amberHero,
-              trailing: Text('${unowned.length} today', style: AppText.secondary),
-            ),
+            const SectionEyebrow('Needs an owner', color: AppColors.amberHero),
             const SizedBox(height: 12),
             if (unowned.isEmpty)
               _empty('Nothing unowned — all covered 🎉')
             else
-              for (final t in unowned) ...[
-                _unownedRow(t, byId),
-                const SizedBox(height: 11),
+              for (final day in unownedDays) ...[
+                Padding(
+                  padding: const EdgeInsets.only(left: 2, bottom: 8),
+                  child: Text(
+                    '${unownedByDay[day]!.length} ${relativeDayLower(day, now)}',
+                    style: AppText.secondary,
+                  ),
+                ),
+                for (final t in unownedByDay[day]!) ...[
+                  _unownedRow(t, byId),
+                  const SizedBox(height: 11),
+                ],
+                const SizedBox(height: 6),
               ],
           ],
           if (mine.isNotEmpty) ...[

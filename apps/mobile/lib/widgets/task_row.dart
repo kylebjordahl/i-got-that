@@ -39,50 +39,48 @@ class TaskRow extends StatelessWidget {
     final muted = ownedColor != null;
     return Opacity(
       opacity: muted ? 0.94 : 1,
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(18),
-        child: DecoratedBox(
-          decoration: BoxDecoration(
-            color: AppColors.card,
-            borderRadius: BorderRadius.circular(18),
-            border: Border.all(color: AppColors.borderSubtle),
-          ),
-          child: Material(
-            color: Colors.transparent,
-            child: InkWell(
-              onTap: onTap,
-              onLongPress: onLongPress,
-              child: IntrinsicHeight(
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    SizedBox(
-                      width: 3,
-                      child: CustomPaint(
-                        painter: _LeftBarPainter(color: ownedColor),
-                      ),
-                    ),
-                    Expanded(
-                      child: Padding(
-                        padding: const EdgeInsets.fromLTRB(13, 12, 13, 12),
-                        child: Row(
-                          children: [
-                            IconTile(icon: icon, color: iconColor, size: 42),
-                            const SizedBox(width: 12),
-                            Expanded(child: _titleBlock()),
-                            if (trailing != null) ...[
-                              const SizedBox(width: 10),
-                              trailing!,
-                            ],
-                          ],
-                        ),
-                      ),
-                    ),
-                  ],
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: AppColors.card,
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(color: AppColors.borderSubtle),
+        ),
+        child: Stack(
+          children: [
+            // Content sizes the stack; the accent bar is overlaid, inset from the
+            // corners so its rounded ends aren't clipped by the card radius.
+            Material(
+              color: Colors.transparent,
+              child: InkWell(
+                onTap: onTap,
+                onLongPress: onLongPress,
+                borderRadius: BorderRadius.circular(18),
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(19, 12, 14, 12),
+                  child: Row(
+                    children: [
+                      IconTile(icon: icon, color: iconColor, size: 42),
+                      const SizedBox(width: 12),
+                      Expanded(child: _titleBlock()),
+                      if (trailing != null) ...[
+                        const SizedBox(width: 10),
+                        trailing!,
+                      ],
+                    ],
+                  ),
                 ),
               ),
             ),
-          ),
+            Positioned(
+              left: 8,
+              top: 12,
+              bottom: 12,
+              width: 3,
+              child: IgnorePointer(
+                child: CustomPaint(painter: _LeftBarPainter(color: ownedColor)),
+              ),
+            ),
+          ],
         ),
       ),
     );
@@ -130,14 +128,18 @@ class _LeftBarPainter extends CustomPainter {
       ..strokeWidth = size.width
       ..strokeCap = StrokeCap.round;
     final x = size.width / 2;
+    // Keep the round caps inside the box so the bar reads as rounded top/bottom.
+    final r = size.width / 2;
+    final top = r, bottom = size.height - r;
+    if (bottom <= top) return;
     if (color != null) {
-      canvas.drawLine(Offset(x, 0), Offset(x, size.height), paint);
+      canvas.drawLine(Offset(x, top), Offset(x, bottom), paint);
       return;
     }
-    const dash = 5.0, gap = 4.0;
-    var y = 0.0;
-    while (y < size.height) {
-      canvas.drawLine(Offset(x, y), Offset(x, (y + dash).clamp(0, size.height)), paint);
+    const dash = 4.0, gap = 7.0; // wider-spaced dashes
+    var y = top;
+    while (y <= bottom) {
+      canvas.drawLine(Offset(x, y), Offset(x, (y + dash).clamp(top, bottom)), paint);
       y += dash + gap;
     }
   }

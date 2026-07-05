@@ -62,6 +62,19 @@ String friendlyTime(DateTime dt) {
   return '$h:$m $period';
 }
 
+/// Lowercase relative-day suffix for a count subheading: "today" / "tomorrow" /
+/// "on Friday" (within the coming week) / "on Jul 8".
+String relativeDayLower(DateTime day, DateTime now) {
+  final d = DateTime(day.year, day.month, day.day);
+  final t = DateTime(now.year, now.month, now.day);
+  final diff = d.difference(t).inDays;
+  if (diff == 0) return 'today';
+  if (diff == 1) return 'tomorrow';
+  if (diff == -1) return 'yesterday';
+  if (diff > 1 && diff < 7) return 'on ${_weekdaysLong[d.weekday - 1]}';
+  return 'on ${_months[d.month - 1]} ${d.day}';
+}
+
 /// "Today" / "Tomorrow" / "Yesterday", else "Wed, Jul 8".
 String dayHeading(DateTime day, DateTime now) {
   final d = DateTime(day.year, day.month, day.day);

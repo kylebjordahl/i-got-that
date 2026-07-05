@@ -27,14 +27,28 @@ class PlanScreen extends ConsumerStatefulWidget {
 }
 
 class _PlanScreenState extends ConsumerState<PlanScreen> {
-  late DateTime _selected = _dateOnly(DateTime.now());
+  late final DateTime _today = _dateOnly(DateTime.now());
+  late DateTime _selected = _today;
 
   // Active filters (empty ⇒ show all). Types are task types; owners include the
   // sentinel `__unowned__`.
   final Set<String> _typeFilter = {};
   final Set<String> _ownerFilter = {};
 
+  // The day scroller is an effectively-infinite lazy list centred on [_today]:
+  // index [_dayAnchor] is today, and it opens scrolled so today sits 3rd.
+  static const _dayTileExtent = 58.0; // 50px chip + 8px gap
+  static const _dayAnchor = 10000;
+  late final ScrollController _dayScroll =
+      ScrollController(initialScrollOffset: (_dayAnchor - 2) * _dayTileExtent);
+
   static DateTime _dateOnly(DateTime d) => DateTime(d.year, d.month, d.day);
+
+  @override
+  void dispose() {
+    _dayScroll.dispose();
+    super.dispose();
+  }
 
   int get _filterCount => _typeFilter.length + _ownerFilter.length;
 
@@ -108,33 +122,35 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
           .toList();
 
   Widget _dayScroller(List<TaskItem> allTasks, Map<String, Member> byId) {
-    final weekStart = _selected.subtract(Duration(days: _selected.weekday % 7));
-    final days = [for (var i = 0; i < 7; i++) weekStart.add(Duration(days: i))];
     final byDay = <DateTime, List<TaskItem>>{};
     for (final t in allTasks) {
       (byDay[dayKey(t.start)] ??= []).add(t);
     }
     return SizedBox(
       height: 74,
-      child: ListView.separated(
+      child: ListView.builder(
+        controller: _dayScroll,
         scrollDirection: Axis.horizontal,
-        itemCount: days.length,
-        separatorBuilder: (_, __) => const SizedBox(width: 8),
+        itemExtent: _dayTileExtent,
+        itemCount: _dayAnchor * 2, // ±27 years — lazily built, effectively infinite
         itemBuilder: (_, i) {
-          final d = days[i];
-          final active = d == _selected;
+          final d = _today.add(Duration(days: i - _dayAnchor));
           final dots = <Color>[
             for (final t in (byDay[d] ?? const <TaskItem>[]).take(3))
               t.ownerMemberId != null && byId[t.ownerMemberId] != null
                   ? personColor(byId[t.ownerMemberId]!)
                   : AppColors.amberHero,
           ];
-          return _DayChip(
-            weekday: weekdayShort(d),
-            day: d.day,
-            active: active,
-            dots: dots,
-            onTap: () => setState(() => _selected = d),
+          return Padding(
+            padding: const EdgeInsets.only(right: 8),
+            child: _DayChip(
+              weekday: weekdayShort(d),
+              day: d.day,
+              active: d == _selected,
+              isToday: d == _today,
+              dots: dots,
+              onTap: () => setState(() => _selected = d),
+            ),
           );
         },
       ),
@@ -406,17 +422,25 @@ class _DayChip extends StatelessWidget {
     required this.weekday,
     required this.day,
     required this.active,
+    required this.isToday,
     required this.dots,
     required this.onTap,
   });
   final String weekday;
   final int day;
   final bool active;
+  final bool isToday;
   final List<Color> dots;
   final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
+    // Today (when not the selected day) gets an indigo outline + accented number.
+    final borderColor =
+        active ? AppColors.indigo : (isToday ? AppColors.indigo : AppColors.border);
+    final dayColor = active
+        ? const Color(0xFF17162B)
+        : (isToday ? AppColors.indigo : AppColors.textPrimary);
     return GestureDetector(
       onTap: onTap,
       child: Container(
@@ -425,7 +449,7 @@ class _DayChip extends StatelessWidget {
         decoration: BoxDecoration(
           color: active ? AppColors.indigo : AppColors.card,
           borderRadius: BorderRadius.circular(15),
-          border: Border.all(color: active ? AppColors.indigo : AppColors.border),
+          border: Border.all(color: borderColor),
         ),
         child: Column(
           children: [
@@ -434,9 +458,7 @@ class _DayChip extends StatelessWidget {
                     color: active ? const Color(0xCC17162B) : AppColors.textMuted,
                     letterSpacing: 0.5)),
             const SizedBox(height: 4),
-            Text('$day',
-                style: font(kBodyFont, 17, 700,
-                    color: active ? const Color(0xFF17162B) : AppColors.textPrimary)),
+            Text('$day', style: font(kBodyFont, 17, 700, color: dayColor)),
             const SizedBox(height: 5),
             SizedBox(
               height: 5,

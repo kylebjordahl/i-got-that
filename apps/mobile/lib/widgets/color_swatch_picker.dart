@@ -23,8 +23,10 @@ class ColorSwatchPicker extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final selectedHex = selected == null ? null : hexFromColor(selected!);
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+    return Wrap(
+      spacing: 14,
+      runSpacing: 12,
+      crossAxisAlignment: WrapCrossAlignment.center,
       children: [
         for (final color in AppColors.palette)
           _Swatch(
