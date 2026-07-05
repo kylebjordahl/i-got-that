@@ -8,7 +8,7 @@ import '../theme/app_text.dart';
 import '../theme/person_colors.dart';
 import '../widgets/primitives.dart';
 import '../widgets/settings.dart';
-import 'calendars_screen.dart';
+import 'delivery_method_screen.dart';
 import 'dialogs.dart';
 import 'member_sections.dart';
 
@@ -105,13 +105,16 @@ class CaretakerDetailScreen extends ConsumerWidget {
                     )
                   else
                     for (final t in targets) ...[
-                      SwitchRow(
+                      SettingRow(
                         icon: _methodIcon(t['method'] as String),
                         iconColor: _methodColor(t['method'] as String),
                         title: t['name'] as String,
                         subtitle: _deliverySubtitle(t),
-                        value: (t['active'] as bool?) ?? true,
-                        onChanged: (v) => setActive(t, v),
+                        trailing: Switch(
+                          value: (t['active'] as bool?) ?? true,
+                          onChanged: (v) => setActive(t, v),
+                        ),
+                        onTap: () => _openMethod(context, ref, member, existing: t),
                       ),
                       const Divider(height: 20),
                     ],
@@ -119,12 +122,7 @@ class CaretakerDetailScreen extends ConsumerWidget {
                     icon: Icons.add_rounded,
                     iconColor: AppColors.indigo,
                     title: 'Add delivery method',
-                    onTap: () async {
-                      final added = await Navigator.of(context).push<bool>(
-                        MaterialPageRoute(builder: (_) => const OutputFeedPage()),
-                      );
-                      if (added == true) ref.invalidate(targetsProvider);
-                    },
+                    onTap: () => _openMethod(context, ref, member),
                   ),
                 ],
               ),
@@ -139,6 +137,16 @@ class CaretakerDetailScreen extends ConsumerWidget {
         ),
       ),
     );
+  }
+
+  Future<void> _openMethod(BuildContext context, WidgetRef ref, Member caretaker,
+      {Map<String, dynamic>? existing}) async {
+    final changed = await Navigator.of(context).push<bool>(
+      MaterialPageRoute(
+        builder: (_) => DeliveryMethodScreen(caretaker: caretaker, existing: existing),
+      ),
+    );
+    if (changed == true) ref.invalidate(targetsProvider);
   }
 
   Future<void> _setFlag(WidgetRef ref, Member m, {bool? isAdmin, bool? isCaretaker}) async {

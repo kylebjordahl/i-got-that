@@ -9,6 +9,7 @@ import '../theme/person_colors.dart';
 import '../util/format.dart';
 import '../util/task_visuals.dart';
 import '../widgets/primitives.dart';
+import '../widgets/settings.dart';
 import 'task_actions_sheet.dart';
 
 const _startHour = 7;
@@ -30,10 +31,15 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
   late final DateTime _today = _dateOnly(DateTime.now());
   late DateTime _selected = _today;
 
-  // Active filters (empty ⇒ show all). Types are task types; owners include the
-  // sentinel `__unowned__`.
-  final Set<String> _typeFilter = {};
-  final Set<String> _ownerFilter = {};
+  // Filters are stored as *exclusions* (empty ⇒ show all): a chip is selected
+  // when it's NOT in the set, so a category only constrains once you deselect
+  // something. `_exOwners` uses caretaker ids + the sentinel `__unowned__`;
+  // `_exTypes` uses the groups 'transition' / 'attendance'.
+  final Set<String> _exChildren = {};
+  final Set<String> _exOwners = {};
+  final Set<String> _exTypes = {};
+  bool _showCompleted = false;
+  bool _onlyMyKids = false;
 
   // The day scroller is an effectively-infinite lazy list centred on [_today]:
   // index [_dayAnchor] is today, and it opens scrolled so today sits 3rd.
@@ -50,14 +56,18 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
     super.dispose();
   }
 
-  int get _filterCount => _typeFilter.length + _ownerFilter.length;
+  int get _filterCount =>
+      (_exChildren.isNotEmpty ? 1 : 0) +
+      (_exOwners.isNotEmpty ? 1 : 0) +
+      (_exTypes.isNotEmpty ? 1 : 0) +
+      (_onlyMyKids ? 1 : 0);
 
-  bool _passesFilter(TaskItem t) {
-    if (_typeFilter.isNotEmpty && !_typeFilter.contains(t.type)) return false;
-    if (_ownerFilter.isNotEmpty) {
-      final key = t.ownerMemberId ?? '__unowned__';
-      if (!_ownerFilter.contains(key)) return false;
-    }
+  bool _passesFilter(TaskItem t, Set<String> myKids) {
+    if (_exChildren.contains(t.familyMemberId)) return false;
+    if (_exOwners.contains(t.ownerMemberId ?? '__unowned__')) return false;
+    final group = t.type == 'attendance' ? 'attendance' : 'transition';
+    if (_exTypes.contains(group)) return false;
+    if (_onlyMyKids && !myKids.contains(t.familyMemberId)) return false;
     return true;
   }
 
@@ -72,14 +82,21 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
   Widget build(BuildContext context) {
     final members = ref.watch(membersProvider).valueOrNull ?? const <Member>[];
     final byId = {for (final m in members) m.id: m};
+    final me = ref.watch(currentMemberProvider).valueOrNull;
+    final rawTasks = ref.watch(allTasksProvider).valueOrNull ?? const <TaskItem>[];
+    // Children I'm covering (for the "only my kids" filter): kids with a task I own.
+    final myKids = {
+      for (final t in rawTasks)
+        if (t.ownerMemberId == me?.id) t.familyMemberId
+    };
     final allTasks = [
-      for (final t in ref.watch(allTasksProvider).valueOrNull ?? const <TaskItem>[])
-        if (!t.isDismissed) t
+      for (final t in rawTasks)
+        if (_showCompleted || !t.isDismissed) t
     ];
 
     final dayTasks = [
       for (final t in allTasks)
-        if (dayKey(t.start) == _selected && _passesFilter(t)) t
+        if (dayKey(t.start) == _selected && _passesFilter(t, myKids)) t
     ];
     final placed = _layout(dayTasks);
 
@@ -269,65 +286,140 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
   }
 
   void _openFilters(List<Member> caretakers) {
+    final members = ref.read(membersProvider).valueOrNull ?? const <Member>[];
+    final me = ref.read(currentMemberProvider).valueOrNull;
+    final children = members.where((m) => m.requiresCaretaker).toList();
+
     showModalBottomSheet<void>(
       context: context,
       showDragHandle: true,
+      isScrollControlled: true,
       builder: (_) => StatefulBuilder(
         builder: (context, setSheet) {
           void toggle(Set<String> set, String key) => setSheet(() {
                 set.contains(key) ? set.remove(key) : set.add(key);
                 setState(() {});
               });
-          Widget chip(String label, bool on, VoidCallback onTap) => GestureDetector(
-                onTap: onTap,
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
-                  decoration: BoxDecoration(
-                    color: on ? AppColors.indigo : AppColors.bg,
-                    borderRadius: BorderRadius.circular(999),
-                    border: Border.all(color: on ? AppColors.indigo : AppColors.border),
-                  ),
-                  child: Text(label,
-                      style: font(kBodyFont, 13, 600,
-                          color: on ? const Color(0xFF17162B) : AppColors.textSecondary)),
-                ),
-              );
-          return Padding(
-            padding: const EdgeInsets.fromLTRB(22, 4, 22, 28),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
+          return DraggableScrollableSheet(
+            expand: false,
+            initialChildSize: 0.72,
+            maxChildSize: 0.92,
+            builder: (context, scroll) => ListView(
+              controller: scroll,
+              padding: const EdgeInsets.fromLTRB(22, 4, 22, 28),
               children: [
-                Text('Filters', style: AppText.subPageTitle),
-                const SizedBox(height: 16),
+                Row(
+                  children: [
+                    Text('Filters', style: AppText.subPageTitle),
+                    const Spacer(),
+                    TextButton(
+                      onPressed: () => setSheet(() {
+                        _exChildren.clear();
+                        _exOwners.clear();
+                        _exTypes.clear();
+                        _showCompleted = false;
+                        _onlyMyKids = false;
+                        setState(() {});
+                      }),
+                      child: const Text('Reset'),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                Text('Children', style: AppText.eyebrow()),
+                const SizedBox(height: 10),
+                Wrap(spacing: 8, runSpacing: 8, children: [
+                  for (final c in children)
+                    _FilterChip(
+                      label: c.relationName,
+                      dotColor: personColor(c),
+                      selected: !_exChildren.contains(c.id),
+                      onTap: () => toggle(_exChildren, c.id),
+                    ),
+                ]),
+                const SizedBox(height: 18),
+                Text('Caretakers', style: AppText.eyebrow()),
+                const SizedBox(height: 10),
+                Wrap(spacing: 8, runSpacing: 8, children: [
+                  for (final m in caretakers)
+                    _FilterChip(
+                      label: m.id == me?.id ? 'You' : m.relationName,
+                      dotColor: personColor(m),
+                      selected: !_exOwners.contains(m.id),
+                      onTap: () => toggle(_exOwners, m.id),
+                    ),
+                  _FilterChip(
+                    label: 'Unowned',
+                    dotColor: AppColors.textSecondary,
+                    selected: !_exOwners.contains('__unowned__'),
+                    onTap: () => toggle(_exOwners, '__unowned__'),
+                  ),
+                ]),
+                const SizedBox(height: 18),
                 Text('Task type', style: AppText.eyebrow()),
                 const SizedBox(height: 10),
                 Wrap(spacing: 8, runSpacing: 8, children: [
-                  for (final (id, label) in const [('dropoff', 'Drop-off'), ('pickup', 'Pickup'), ('attendance', 'Attendance')])
-                    chip(label, _typeFilter.contains(id), () => toggle(_typeFilter, id)),
+                  _FilterChip(
+                    label: 'Transitions',
+                    selected: !_exTypes.contains('transition'),
+                    onTap: () => toggle(_exTypes, 'transition'),
+                  ),
+                  _FilterChip(
+                    label: 'Attendance',
+                    selected: !_exTypes.contains('attendance'),
+                    onTap: () => toggle(_exTypes, 'attendance'),
+                  ),
                 ]),
-                const SizedBox(height: 18),
-                Text('Owner', style: AppText.eyebrow()),
-                const SizedBox(height: 10),
-                Wrap(spacing: 8, runSpacing: 8, children: [
-                  chip('Needs owner', _ownerFilter.contains('__unowned__'), () => toggle(_ownerFilter, '__unowned__')),
-                  for (final m in caretakers)
-                    chip(m.relationName, _ownerFilter.contains(m.id), () => toggle(_ownerFilter, m.id)),
-                ]),
-                const SizedBox(height: 22),
+                const SizedBox(height: 20),
+                AppCard(
+                  child: Column(
+                    children: [
+                      SwitchRow(
+                        icon: Icons.check_circle_outline_rounded,
+                        iconColor: AppColors.green,
+                        title: 'Show completed',
+                        subtitle: 'Include tasks already done',
+                        value: _showCompleted,
+                        onChanged: (v) => setSheet(() {
+                          _showCompleted = v;
+                          setState(() {});
+                        }),
+                      ),
+                      const Divider(height: 20),
+                      SwitchRow(
+                        icon: Icons.person_outline_rounded,
+                        iconColor: AppColors.indigo,
+                        title: 'Only my kids',
+                        subtitle: "Hide children I don't cover",
+                        value: _onlyMyKids,
+                        onChanged: (v) => setSheet(() {
+                          _onlyMyKids = v;
+                          setState(() {});
+                        }),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 20),
                 Row(
                   children: [
-                    TextButton(
+                    PillButton(
+                      label: 'Clear',
+                      variant: PillVariant.ghost,
                       onPressed: () => setSheet(() {
-                        _typeFilter.clear();
-                        _ownerFilter.clear();
+                        _exChildren.clear();
+                        _exOwners.clear();
+                        _exTypes.clear();
+                        _showCompleted = false;
+                        _onlyMyKids = false;
                         setState(() {});
                       }),
-                      child: const Text('Clear all'),
                     ),
                     const Spacer(),
                     PillButton(
-                      label: 'Done',
+                      label: _filterCount == 0
+                          ? 'Apply'
+                          : 'Apply · $_filterCount filter${_filterCount == 1 ? '' : 's'}',
                       variant: PillVariant.amber,
                       onPressed: () => Navigator.of(context).pop(),
                     ),
@@ -515,6 +607,63 @@ class _HourLine extends StatelessWidget {
         ),
         Expanded(child: Container(height: 1, color: AppColors.divider)),
       ],
+    );
+  }
+}
+
+/// A filter chip. Person chips (with a [dotColor]) tint to that color when
+/// selected and show a colored dot; type chips fill solid indigo.
+class _FilterChip extends StatelessWidget {
+  const _FilterChip({
+    required this.label,
+    required this.selected,
+    required this.onTap,
+    this.dotColor,
+  });
+
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+  final Color? dotColor;
+
+  @override
+  Widget build(BuildContext context) {
+    final person = dotColor != null;
+    final accent = dotColor ?? AppColors.indigo;
+    final Color bg, fg, border;
+    if (selected) {
+      bg = person ? AppColors.tint(accent, 0.18) : AppColors.indigo;
+      fg = person ? AppColors.textPrimary : const Color(0xFF17162B);
+      border = accent;
+    } else {
+      bg = Colors.transparent;
+      fg = AppColors.textSecondary;
+      border = AppColors.border;
+    }
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+        decoration: BoxDecoration(
+          color: bg,
+          borderRadius: BorderRadius.circular(999),
+          border: Border.all(color: border),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (person && selected) ...[
+              Container(
+                width: 7,
+                height: 7,
+                decoration: BoxDecoration(color: accent, shape: BoxShape.circle),
+              ),
+              const SizedBox(width: 7),
+            ],
+            Text(label, style: font(kBodyFont, 13, 600, color: fg)),
+          ],
+        ),
+      ),
     );
   }
 }
