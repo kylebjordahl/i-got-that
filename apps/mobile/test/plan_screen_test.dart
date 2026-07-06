@@ -125,8 +125,10 @@ void main() {
 
     final now = DateTime.now();
     final tasks = [
-      // A 6 AM event pushes the window's start to 6 AM...
-      TaskItem(id: 'a', familyMemberId: 'theo', type: 'dropoff', start: DateTime(now.year, now.month, now.day, 6), status: 'unowned', sourceEventId: 'e1'),
+      // A midnight event pins the window's start to hour 0 deterministically —
+      // regardless of the current time (the now-line can only pull the start
+      // *earlier* than an event, and nothing is earlier than 0).
+      TaskItem(id: 'a', familyMemberId: 'theo', type: 'dropoff', start: DateTime(now.year, now.month, now.day), status: 'unowned', sourceEventId: 'e1'),
       // ...and a late event makes the grid taller than the viewport so it scrolls.
       TaskItem(id: 'b', familyMemberId: 'theo', type: 'pickup', start: DateTime(now.year, now.month, now.day, 20), status: 'unowned', sourceEventId: 'e2'),
     ];
@@ -146,9 +148,9 @@ void main() {
     ));
     await tester.pumpAndSettle();
 
-    // The grid opens scrolled so 7 AM (one hour = 42px past the 6 AM start) is at
-    // the top, rather than showing the expanded 6 AM row.
+    // The grid opens scrolled so 7 AM (seven hours = 7 * 42 = 294px past the
+    // midnight start) is at the top, rather than showing the expanded early hours.
     final position = Scrollable.of(tester.element(find.text('9 AM'))).position;
-    expect(position.pixels, closeTo(42.0, 2.0));
+    expect(position.pixels, closeTo(294.0, 2.0));
   });
 }
