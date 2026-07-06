@@ -389,7 +389,14 @@ class _RuleDialogState extends ConsumerState<RuleDialog> {
                   for (final f in feeds)
                     DropdownMenuItem(
                       value: f['id'] as String,
-                      child: Text(f['url'] as String, overflow: TextOverflow.ellipsis),
+                      // Account-backed feeds (Google/iCloud) have no `url`.
+                      child: Text(
+                        (f['sourceCalendarName'] as String?) ??
+                            (f['url'] as String?) ??
+                            (f['sourceCalendarId'] as String?) ??
+                            'Feed',
+                        overflow: TextOverflow.ellipsis,
+                      ),
                     ),
                 ],
                 onChanged: (v) => setState(() => _feedId = v),

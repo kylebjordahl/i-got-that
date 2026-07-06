@@ -561,7 +561,8 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
             .clamp(0.0, _gridHeight);
         final isAtt = ev.task.type == 'attendance';
         final height = isAtt
-            ? (ev.end.difference(ev.start).inMinutes / 60 * _hourPx).clamp(48.0, _gridHeight)
+            // Tall enough for the title + time + a Claim/avatar footer.
+            ? (ev.end.difference(ev.start).inMinutes / 60 * _hourPx).clamp(76.0, _gridHeight)
             : 34.0;
         placed.add(_Placed(
           task: ev.task,
@@ -907,24 +908,30 @@ class _TaskBlock extends StatelessWidget {
     final label = '${taskTypeLabel(t.type)} · ${child?.relationName ?? 'child'}';
     final time = clockShort(t.start);
 
+    // Title pinned to the top, footer (Claim / avatars) to the bottom. A Stack
+    // (not a Column) so a too-short block can never throw a flex overflow.
     final content = isAtt
-        ? Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+        ? Stack(
+            fit: StackFit.expand,
             children: [
-              Text(label,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: font(kBodyFont, 12.5, 600, color: AppColors.textPrimary)),
-              const SizedBox(height: 2),
-              Text(time, style: font(kBodyFont, 11, 500, color: AppColors.textTertiary)),
-              const Spacer(),
-              if (unowned)
-                Align(
-                  alignment: Alignment.centerLeft,
-                  child: PillButton(label: 'Claim', dense: true, onPressed: onClaim),
-                )
-              else
-                Row(children: _avatars(child, owner)),
+              Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(label,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: font(kBodyFont, 12.5, 600, color: AppColors.textPrimary)),
+                  const SizedBox(height: 2),
+                  Text(time, style: font(kBodyFont, 11, 500, color: AppColors.textTertiary)),
+                ],
+              ),
+              Align(
+                alignment: Alignment.bottomLeft,
+                child: unowned
+                    ? PillButton(label: 'Claim', compact: true, onPressed: onClaim)
+                    : Row(mainAxisSize: MainAxisSize.min, children: _avatars(child, owner)),
+              ),
             ],
           )
         : Row(

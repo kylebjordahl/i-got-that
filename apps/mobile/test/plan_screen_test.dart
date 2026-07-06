@@ -50,6 +50,32 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('attendance blocks (owned + unowned) render without overflow',
+      (tester) async {
+    final now = DateTime.now();
+    final tasks = [
+      TaskItem(id: 'a', familyMemberId: 'mia', type: 'attendance', start: DateTime(now.year, now.month, now.day, 10), status: 'unowned', sourceEventId: 'e1'),
+      TaskItem(id: 'b', familyMemberId: 'theo', type: 'attendance', start: DateTime(now.year, now.month, now.day, 14), status: 'owned', ownerMemberId: 'dad', sourceEventId: 'e2'),
+    ];
+    await tester.pumpWidget(ProviderScope(
+      overrides: [
+        membersProvider.overrideWith((ref) async => [
+              _m('dad', 'Dad', caretaker: true),
+              _m('theo', 'Theo', child: true),
+              _m('mia', 'Mia', child: true),
+            ]),
+        allTasksProvider.overrideWith((ref) async => tasks),
+      ],
+      child: MaterialApp(
+        theme: buildAppTheme(),
+        themeMode: ThemeMode.dark,
+        home: const Scaffold(body: SafeArea(child: PlanScreen())),
+      ),
+    ));
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('grid expands past the default window to fit an evening event',
       (tester) async {
     final now = DateTime.now();
