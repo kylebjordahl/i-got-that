@@ -108,6 +108,8 @@ export const familyMembers = sqliteTable(
     requiresCaretaker: integer('requires_caretaker', { mode: 'boolean' })
       .notNull()
       .default(false),
+    /** Persistent per-person accent color (hex `#RRGGBB`). Null ⇒ derived client-side. */
+    color: text('color'),
     createdAt: createdAt(),
   },
   (t) => ({

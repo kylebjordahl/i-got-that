@@ -1,8 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../app_shell.dart';
 import '../models.dart';
 import '../state/auth.dart';
 import '../state/family.dart';
+import '../theme/app_colors.dart';
+import '../theme/app_text.dart';
+import '../widgets/primitives.dart';
+import '../widgets/settings.dart';
 
 /// Valid HH:MM (24h) matcher for the shift-to time field.
 final _hhmm = RegExp(r'^([01]\d|2[0-3]):[0-5]\d$');
@@ -86,121 +91,133 @@ Future<void> confirmDeleteRule(BuildContext context, WidgetRef ref, Classificati
   }
 }
 
-/// Central management surface for classification rules, grouped by scope:
-/// a "Global rules" section, then one section per feed.
+/// Family rules — the classification-rules list off the Family hub. Global rules
+/// first, then one card per feed. The nav "+" adds a rule; tap a row to edit.
 class RulesScreen extends ConsumerWidget {
   const RulesScreen({super.key});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final rulesAsync = ref.watch(classificationRulesProvider);
+    final rules = ref.watch(classificationRulesProvider).valueOrNull ?? const <ClassificationRule>[];
     final feeds = ref.watch(feedsProvider).valueOrNull ?? const [];
     final caretakers = ref.watch(caretakersProvider).valueOrNull ?? const [];
     final isAdmin = ref.watch(currentMemberProvider).valueOrNull?.isAdmin ?? false;
 
     final ownerNames = {for (final c in caretakers) c.id: c.relationName};
-    final feedLabels = {for (final f in feeds) f['id'] as String: f['url'] as String};
+    final feedNames = {
+      for (final f in feeds)
+        f['id'] as String: (f['sourceCalendarName'] as String?) ??
+            (f['url'] as String?) ??
+            'Feed'
+    };
+
+    final global = rules.where((r) => r.isGlobal).toList();
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Rules')),
-      floatingActionButton: isAdmin
-          ? FloatingActionButton.extended(
-              heroTag: 'fab-rules',
-              onPressed: () => openRuleDialog(context, ref),
-              icon: const Icon(Icons.add),
-              label: const Text('Add rule'),
-            )
-          : null,
-      body: rulesAsync.when(
-        loading: () => const Center(child: CircularProgressIndicator()),
-        error: (e, _) => Center(child: Text('$e')),
-        data: (rules) {
-          if (rules.isEmpty) {
-            return const Center(
-              child: Padding(
-                padding: EdgeInsets.all(24),
-                child: Text(
-                  'No rules yet — add one to classify feed events into tasks, '
-                  'cancellations, or shifts.',
-                  textAlign: TextAlign.center,
-                ),
-              ),
-            );
-          }
-
-          final sections = <Widget>[];
-          final global = rules.where((r) => r.isGlobal).toList();
-          if (global.isNotEmpty) {
-            sections
-              ..add(_header(context, 'Global rules'))
-              ..addAll(global.map((r) => _tile(context, ref, r, isAdmin, ownerNames)));
-          }
-          for (final f in feeds) {
-            final fid = f['id'] as String;
-            final scoped = rules.where((r) => r.feedId == fid).toList();
-            if (scoped.isEmpty) continue;
-            sections
-              ..add(_header(context, f['url'] as String))
-              ..addAll(scoped.map((r) => _tile(context, ref, r, isAdmin, ownerNames)));
-          }
-          // Rules pointing at a feed that no longer exists (defensive).
-          final orphans = rules
-              .where((r) => !r.isGlobal && !feedLabels.containsKey(r.feedId))
-              .toList();
-          if (orphans.isNotEmpty) {
-            sections
-              ..add(_header(context, 'Unknown feed'))
-              ..addAll(orphans.map((r) => _tile(context, ref, r, isAdmin, ownerNames)));
-          }
-
-          return ListView(children: sections);
-        },
+      extendBody: true,
+      body: SafeArea(
+        bottom: false,
+        child: ListView(
+          padding: const EdgeInsets.fromLTRB(22, 12, 22, 130),
+          children: [
+            const SubPageHeader(title: 'Family rules'),
+            const SizedBox(height: 18),
+            Text(
+              'Automations applied when feed events become tasks. Tap a rule to '
+              'configure it.',
+              style: AppText.subtitle,
+            ),
+            const SizedBox(height: 18),
+            if (rules.isEmpty)
+              _empty()
+            else ...[
+              if (global.isNotEmpty)
+                ..._group(context, ref, 'Global rules', AppColors.purple, global, isAdmin, ownerNames),
+              for (final f in feeds)
+                ...() {
+                  final scoped = rules.where((r) => r.feedId == f['id']).toList();
+                  if (scoped.isEmpty) return const <Widget>[];
+                  return _group(context, ref, feedNames[f['id']] ?? 'Feed', null, scoped, isAdmin, ownerNames);
+                }(),
+            ],
+          ],
+        ),
+      ),
+      bottomNavigationBar: familyListNav(
+        context,
+        ref,
+        onAdd: isAdmin ? () => openRuleDialog(context, ref) : null,
       ),
     );
   }
 
-  Widget _header(BuildContext context, String label) => Padding(
-        padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
-        child: Text(
-          label,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: Theme.of(context)
-              .textTheme
-              .titleSmall
-              ?.copyWith(color: Theme.of(context).colorScheme.primary),
+  List<Widget> _group(
+    BuildContext context,
+    WidgetRef ref,
+    String label,
+    Color? eyebrowColor,
+    List<ClassificationRule> rules,
+    bool isAdmin,
+    Map<String, String> ownerNames,
+  ) {
+    return [
+      SectionEyebrow(label,
+          color: eyebrowColor,
+          trailing: Text('${rules.length}', style: AppText.secondary)),
+      const SizedBox(height: 12),
+      AppCard(
+        child: Column(
+          children: [
+            for (var i = 0; i < rules.length; i++) ...[
+              _ruleRow(context, ref, rules[i], isAdmin, ownerNames),
+              if (i < rules.length - 1) const Divider(height: 20),
+            ],
+          ],
         ),
-      );
+      ),
+      const SizedBox(height: 24),
+    ];
+  }
 
-  Widget _tile(
+  Widget _ruleRow(
     BuildContext context,
     WidgetRef ref,
     ClassificationRule r,
     bool isAdmin,
     Map<String, String> ownerNames,
   ) {
-    return ListTile(
-      dense: true,
-      leading: Icon(_effectIcon(r.effect)),
-      title: Text(describeRule(r)),
-      subtitle: Text(ruleDetail(r, ownerName: ownerNames[r.defaultOwnerMemberId])),
+    return SettingRow(
+      icon: _effectIcon(r.effect),
+      iconColor: _effectColor(r.effect),
+      title: describeRule(r),
+      subtitle: ruleDetail(r, ownerName: ownerNames[r.defaultOwnerMemberId]),
       trailing: isAdmin
-          ? Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                IconButton(
-                  icon: const Icon(Icons.edit, size: 20),
-                  onPressed: () => openRuleDialog(context, ref, existing: r),
-                ),
-                IconButton(
-                  icon: const Icon(Icons.delete_outline, size: 20),
-                  onPressed: () => confirmDeleteRule(context, ref, r),
-                ),
+          ? PopupMenuButton<String>(
+              icon: const Icon(Icons.more_horiz_rounded, color: AppColors.textMuted),
+              onSelected: (v) => v == 'edit'
+                  ? openRuleDialog(context, ref, existing: r)
+                  : confirmDeleteRule(context, ref, r),
+              itemBuilder: (_) => const [
+                PopupMenuItem(value: 'edit', child: Text('Edit')),
+                PopupMenuItem(value: 'delete', child: Text('Delete')),
               ],
             )
           : null,
+      onTap: isAdmin ? () => openRuleDialog(context, ref, existing: r) : null,
     );
   }
+
+  Widget _empty() => Padding(
+        padding: const EdgeInsets.symmetric(vertical: 32),
+        child: Center(
+          child: Text(
+            'No rules yet — add one to classify feed events into tasks, '
+            'cancellations, or shifts.',
+            textAlign: TextAlign.center,
+            style: AppText.subtitle,
+          ),
+        ),
+      );
 }
 
 IconData _effectIcon(String effect) => switch (effect) {
@@ -209,6 +226,14 @@ IconData _effectIcon(String effect) => switch (effect) {
       'shift' => Icons.schedule,
       'ignore' => Icons.block,
       _ => Icons.rule,
+    };
+
+Color _effectColor(String effect) => switch (effect) {
+      'create' => AppColors.green,
+      'cancel' => AppColors.coral,
+      'shift' => AppColors.amber,
+      'ignore' => AppColors.textMuted,
+      _ => AppColors.purple,
     };
 
 /// Effect-aware create/edit dialog. Public so the Feeds tab can reuse it for
@@ -364,7 +389,14 @@ class _RuleDialogState extends ConsumerState<RuleDialog> {
                   for (final f in feeds)
                     DropdownMenuItem(
                       value: f['id'] as String,
-                      child: Text(f['url'] as String, overflow: TextOverflow.ellipsis),
+                      // Account-backed feeds (Google/iCloud) have no `url`.
+                      child: Text(
+                        (f['sourceCalendarName'] as String?) ??
+                            (f['url'] as String?) ??
+                            (f['sourceCalendarId'] as String?) ??
+                            'Feed',
+                        overflow: TextOverflow.ellipsis,
+                      ),
                     ),
                 ],
                 onChanged: (v) => setState(() => _feedId = v),

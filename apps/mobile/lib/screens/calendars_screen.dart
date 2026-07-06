@@ -3,6 +3,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models.dart';
 import '../state/auth.dart';
 import '../state/family.dart';
+import '../theme/app_colors.dart';
+import '../widgets/primitives.dart';
 
 /// Output feeds (delivery destinations): an email invite, or a calendar from a
 /// connected account. Created here, editable in place (name/active/alerts only —
@@ -35,7 +37,10 @@ class CalendarsScreen extends ConsumerWidget {
                 children: [
                   for (final t in targets)
                     ListTile(
-                      leading: CircleAvatar(child: Icon(_iconFor(t['method'] as String))),
+                      leading: IconTile(
+                        icon: _iconFor(t['method'] as String),
+                        color: _colorFor(t['method'] as String),
+                      ),
                       title: Text(t['name'] as String),
                       subtitle: Text(
                         '${_methodLabel(t)} · ${t['memberRelation']} · ${t['addressOrUrl']}'
@@ -99,6 +104,12 @@ class CalendarsScreen extends ConsumerWidget {
         'email' => Icons.mail_outline,
         'google' => Icons.calendar_month,
         _ => Icons.cloud_outlined,
+      };
+
+  Color _colorFor(String method) => switch (method) {
+        'email' => AppColors.coral,
+        'google' => AppColors.blue,
+        _ => AppColors.purple,
       };
 
   String _methodLabel(Map<String, dynamic> t) {

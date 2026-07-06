@@ -2,8 +2,15 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models.dart';
 import 'auth.dart';
 
-/// The current family id — the user's first family, or a freshly created one.
+/// The active family, when the user has switched away from their default (first)
+/// family via the Family-screen switcher. Null ⇒ use the default.
+final selectedFamilyIdProvider = StateProvider<String?>((ref) => null);
+
+/// The current family id — the selected family, else the user's first family, or
+/// a freshly created one.
 final familyProvider = FutureProvider<String>((ref) async {
+  final override = ref.watch(selectedFamilyIdProvider);
+  if (override != null) return override;
   final api = ref.watch(apiClientProvider);
   final me = await api.me();
   final families = me['families'] as List<dynamic>;
@@ -13,6 +20,27 @@ final familyProvider = FutureProvider<String>((ref) async {
   }
   final created = await api.createFamily('My Family');
   return (created['family'] as Map<String, dynamic>)['id'] as String;
+});
+
+/// All families the user belongs to (id + name) — for the family switcher.
+final familiesListProvider = FutureProvider<List<({String id, String name})>>((ref) async {
+  final api = ref.watch(apiClientProvider);
+  final me = await api.me();
+  return [
+    for (final f in me['families'] as List<dynamic>)
+      (
+        id: ((f as Map<String, dynamic>)['family'] as Map<String, dynamic>)['id'] as String,
+        name: (f['family'] as Map<String, dynamic>)['name'] as String,
+      ),
+  ];
+});
+
+/// The active family's display name + total family count (Family header).
+final familyInfoProvider = FutureProvider<({String name, int count})>((ref) async {
+  final familyId = await ref.watch(familyProvider.future);
+  final families = await ref.watch(familiesListProvider.future);
+  final name = families.where((f) => f.id == familyId).map((f) => f.name).firstOrNull ?? 'Family';
+  return (name: name, count: families.length);
 });
 
 /// The caller's own member record in the current family (for permission gating).

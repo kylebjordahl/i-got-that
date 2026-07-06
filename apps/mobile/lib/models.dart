@@ -1,7 +1,12 @@
 // Light models over the API's JSON. (Replaced by generated models later.)
 
-DateTime parseTimestamp(Object? v) =>
-    v is int ? DateTime.fromMillisecondsSinceEpoch(v) : DateTime.parse(v as String);
+/// Parse a task/event timestamp to **local** time. The API sends `dtstart` as a
+/// UTC ISO string (a `timestamp_ms` column serialized to JSON), so `DateTime.parse`
+/// yields a UTC instant — normalise to local so `.hour`/positioning line up with
+/// the clock the user sees. (Epoch-int values are already local.)
+DateTime parseTimestamp(Object? v) => v is int
+    ? DateTime.fromMillisecondsSinceEpoch(v)
+    : DateTime.parse(v as String).toLocal();
 
 /// All-day events are anchored to UTC midnight of their calendar date by the
 /// backend. Read the UTC date parts and rebuild them as a *local* midnight so
@@ -22,6 +27,7 @@ class Member {
     required this.isAdmin,
     required this.requiresCaretaker,
     this.userId,
+    this.color,
   });
 
   final String id;
@@ -33,6 +39,10 @@ class Member {
   /// The linked login account, if any. Null ⇒ can be invited to claim this slot.
   final String? userId;
 
+  /// Persistent accent color as a `#RRGGBB` hex string. Null ⇒ derived from id
+  /// (see `theme/person_colors.dart`).
+  final String? color;
+
   bool get hasLogin => userId != null;
 
   factory Member.fromJson(Map<String, dynamic> j) => Member(
@@ -42,6 +52,7 @@ class Member {
         isAdmin: j['isAdmin'] as bool? ?? false,
         requiresCaretaker: j['requiresCaretaker'] as bool? ?? false,
         userId: j['userId'] as String?,
+        color: j['color'] as String?,
       );
 }
 

@@ -3,10 +3,23 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models.dart';
 import '../state/auth.dart';
 import '../state/family.dart';
+import '../theme/app_colors.dart';
+import '../widgets/primitives.dart';
 
 /// External calendar accounts (Google / iCloud / CalDAV) owned by the signed-in
 /// user and reusable across their families. Connect once here, then draw their
 /// calendars into input/output feeds. Credentials never leave the server.
+
+/// Open the connect-account dialog and refresh the list on success. Shared by
+/// the standalone Accounts screen and the Me screen's "Connect an account".
+Future<void> showConnectAccountDialog(BuildContext context, WidgetRef ref) async {
+  final added = await showDialog<bool>(
+    context: context,
+    builder: (_) => const _AddAccountDialog(),
+  );
+  if (added == true) ref.invalidate(accountsProvider);
+}
+
 class AccountsScreen extends ConsumerWidget {
   const AccountsScreen({super.key});
 
@@ -45,7 +58,7 @@ class AccountsScreen extends ConsumerWidget {
                 children: [
                   for (final a in accounts)
                     ListTile(
-                      leading: CircleAvatar(child: Icon(_iconFor(a.kind))),
+                      leading: IconTile(icon: _iconFor(a.kind), color: _colorFor(a.kind)),
                       title: Text(a.name),
                       subtitle: Text([
                         a.kindLabel,
@@ -67,6 +80,12 @@ class AccountsScreen extends ConsumerWidget {
         'google' => Icons.calendar_month,
         'icloud' => Icons.cloud_outlined,
         _ => Icons.dns_outlined,
+      };
+
+  Color _colorFor(String kind) => switch (kind) {
+        'google' => AppColors.blue,
+        'icloud' => AppColors.indigo,
+        _ => AppColors.purple,
       };
 
   Future<void> _delete(BuildContext context, WidgetRef ref, ExternalAccount account) async {

@@ -45,4 +45,23 @@ void main() {
       expect(e.allDay, isFalse);
     });
   });
+
+  group('parseTimestamp', () {
+    test('normalises a UTC ISO string to a local instant', () {
+      // The API serialises `dtstart` (a timestamp_ms column) as a UTC ISO string.
+      final dt = parseTimestamp('2026-07-07T02:00:00.000Z');
+      // Same instant as the UTC time...
+      expect(dt.millisecondsSinceEpoch,
+          DateTime.utc(2026, 7, 7, 2).millisecondsSinceEpoch);
+      // ...but a *local* DateTime, so `.hour` reflects the clock the user sees
+      // (this is what the Plan grid positions against).
+      expect(dt.isUtc, isFalse);
+    });
+
+    test('epoch-int values are treated as local instants', () {
+      final dt = parseTimestamp(1783043200000);
+      expect(dt.isUtc, isFalse);
+      expect(dt.millisecondsSinceEpoch, 1783043200000);
+    });
+  });
 }

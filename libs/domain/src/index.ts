@@ -204,21 +204,30 @@ export const CreateExternalAccountInput = z
   });
 export type CreateExternalAccountInput = z.infer<typeof CreateExternalAccountInput>;
 
+/** A persistent per-person accent color as a hex string (`#RRGGBB`). */
+export const HexColor = z.string().regex(/^#[0-9a-fA-F]{6}$/, 'must be a #RRGGBB hex color');
+export type HexColor = z.infer<typeof HexColor>;
+
 export const CreateFamilyMemberInput = z.object({
   relationName: z.string().min(1).max(64),
   isCaretaker: z.boolean().default(false),
   isAdmin: z.boolean().default(false),
   requiresCaretaker: z.boolean().default(false),
+  color: HexColor.optional(),
   userId: Id.optional(),
 });
 export type CreateFamilyMemberInput = z.infer<typeof CreateFamilyMemberInput>;
 
-/** Partial update for a family member. Flag changes are admin-only (enforced server-side). */
+/**
+ * Partial update for a family member. Flag changes are admin-only (enforced
+ * server-side); `relationName`/`color` may be edited by the member themselves.
+ */
 export const UpdateFamilyMemberInput = z.object({
   relationName: z.string().min(1).max(64).optional(),
   isCaretaker: z.boolean().optional(),
   isAdmin: z.boolean().optional(),
   requiresCaretaker: z.boolean().optional(),
+  color: HexColor.optional(),
 });
 export type UpdateFamilyMemberInput = z.infer<typeof UpdateFamilyMemberInput>;
 

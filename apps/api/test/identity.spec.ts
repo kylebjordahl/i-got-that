@@ -199,6 +199,70 @@ describe('member editing & permissions', () => {
     expect(adminEdit.status).toBe(200);
     expect(((await adminEdit.json()) as { member: { isCaretaker: boolean } }).member.isCaretaker).toBe(false);
   });
+
+  it('lets a member set their own accent color and validates the hex', async () => {
+    const alice = await login('color-alice@example.com');
+    const bob = await login('color-bob@example.com');
+
+    const fam = await call('/families', authed(alice.token, { name: 'Color Fam' }));
+    const familyId = ((await fam.json()) as { family: { id: string } }).family.id;
+
+    const addBob = await call(
+      `/families/${familyId}/members`,
+      authed(alice.token, { relationName: 'uncle', isCaretaker: true, userId: bob.userId }),
+    );
+    const bobMemberId = ((await addBob.json()) as { member: { id: string } }).member.id;
+
+    // Bob sets his own color (not a role flag) — allowed.
+    const setColor = await call(
+      `/families/${familyId}/members/${bobMemberId}`,
+      patch(bob.token, { color: '#C08CFF' }),
+    );
+    expect(setColor.status).toBe(200);
+    expect(((await setColor.json()) as { member: { color: string } }).member.color).toBe('#C08CFF');
+
+    // A malformed hex is rejected.
+    const bad = await call(
+      `/families/${familyId}/members/${bobMemberId}`,
+      patch(bob.token, { color: 'purple' }),
+    );
+    expect(bad.status).toBe(400);
+  });
+
+  it('removes a member (admin), but not self or the last admin', async () => {
+    const alice = await login('rm-alice@example.com');
+    const bob = await login('rm-bob@example.com');
+
+    const fam = await call('/families', authed(alice.token, { name: 'Remove Fam' }));
+    const familyId = ((await fam.json()) as { family: { id: string } }).family.id;
+    const aliceMe = await call('/me', { headers: { Authorization: `Bearer ${alice.token}` } });
+    const aliceMemberId = ((await aliceMe.json()) as {
+      families: { member: { id: string } }[];
+    }).families[0]!.member.id;
+
+    const addBob = await call(
+      `/families/${familyId}/members`,
+      authed(alice.token, { relationName: 'uncle', isCaretaker: true, userId: bob.userId }),
+    );
+    const bobMemberId = ((await addBob.json()) as { member: { id: string } }).member.id;
+
+    const del = (token: string): RequestInit => ({
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+
+    // Bob (non-admin) can't remove anyone.
+    expect((await call(`/families/${familyId}/members/${bobMemberId}`, del(bob.token))).status).toBe(403);
+    // Alice can't remove herself...
+    expect((await call(`/families/${familyId}/members/${aliceMemberId}`, del(alice.token))).status).toBe(409);
+    // ...but can remove Bob.
+    expect((await call(`/families/${familyId}/members/${bobMemberId}`, del(alice.token))).status).toBe(204);
+
+    const list = await call(`/families/${familyId}/members`, {
+      headers: { Authorization: `Bearer ${alice.token}` },
+    });
+    expect(((await list.json()) as { members: unknown[] }).members).toHaveLength(1);
+  });
 });
 
 describe('member-claim invites', () => {

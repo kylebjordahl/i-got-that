@@ -8,7 +8,7 @@ void main() {
     await tester.pumpWidget(const ProviderScope(child: CaretakerApp()));
     await tester.pumpAndSettle();
 
-    expect(find.text('Sign in'), findsOneWidget);
+    expect(find.text('I Got That'), findsOneWidget);
     expect(find.text('Continue with magic link'), findsOneWidget);
   });
 }
