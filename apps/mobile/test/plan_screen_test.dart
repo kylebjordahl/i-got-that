@@ -85,4 +85,44 @@ void main() {
     expect(find.text('9 PM'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets('grid defaults its scroll to 7 AM when an early event expands the window',
+      (tester) async {
+    // Wide (so the header's test-font pills fit) but short, so the grid content
+    // is taller than its viewport and actually scrolls.
+    tester.view.physicalSize = const Size(800, 480);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+
+    final now = DateTime.now();
+    final tasks = [
+      // A 6 AM event pushes the window's start to 6 AM...
+      TaskItem(id: 'a', familyMemberId: 'theo', type: 'dropoff', start: DateTime(now.year, now.month, now.day, 6), status: 'unowned', sourceEventId: 'e1'),
+      // ...and a late event makes the grid taller than the viewport so it scrolls.
+      TaskItem(id: 'b', familyMemberId: 'theo', type: 'pickup', start: DateTime(now.year, now.month, now.day, 20), status: 'unowned', sourceEventId: 'e2'),
+    ];
+    await tester.pumpWidget(ProviderScope(
+      overrides: [
+        membersProvider.overrideWith((ref) async => [
+              _m('dad', 'Dad', caretaker: true),
+              _m('theo', 'Theo', child: true),
+            ]),
+        allTasksProvider.overrideWith((ref) async => tasks),
+      ],
+      child: MaterialApp(
+        theme: buildAppTheme(),
+        themeMode: ThemeMode.dark,
+        home: const Scaffold(body: SafeArea(child: PlanScreen())),
+      ),
+    ));
+    await tester.pumpAndSettle();
+
+    // The grid opens scrolled so 7 AM (one hour = 42px past the 6 AM start) is at
+    // the top, rather than showing the expanded 6 AM row.
+    final position = Scrollable.of(tester.element(find.text('9 AM'))).position;
+    expect(position.pixels, closeTo(42.0, 2.0));
+  });
 }

@@ -48,6 +48,25 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
   int _gridEnd = _defaultEndHour;
   double get _gridHeight => (_gridEnd - _gridStart) * _hourPx;
 
+  // The time grid scrolls internally (the day chips stay put). It opens showing
+  // the default 7 AM–6 PM window even when the grid has expanded to earlier hours.
+  final ScrollController _gridScroll = ScrollController();
+  String? _scrolledKey;
+
+  /// Scroll the grid so [_defaultStartHour] (7 AM) sits at the top of the window.
+  /// Keyed on the day *and* the computed range so it re-defaults once the day's
+  /// tasks finish loading (the first, empty build has no early hours yet).
+  void _scheduleDefaultScroll() {
+    final key = '$_selected|$_gridStart';
+    if (_scrolledKey == key) return;
+    _scrolledKey = key;
+    final target = ((_defaultStartHour - _gridStart).clamp(0, 24)) * _hourPx;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!_gridScroll.hasClients) return;
+      _gridScroll.jumpTo(target.clamp(0.0, _gridScroll.position.maxScrollExtent));
+    });
+  }
+
   /// Expand the default window to fit every event on the day (+ the now-line),
   /// so nothing is clipped and the whole day is reachable by scrolling.
   void _computeRange(List<TaskItem> dayTasks) {
@@ -80,6 +99,7 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
   @override
   void dispose() {
     _dayScroll.dispose();
+    _gridScroll.dispose();
     super.dispose();
   }
 
@@ -127,23 +147,51 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
     ];
     _computeRange(dayTasks);
     final placed = _layout(dayTasks);
+    // Default the grid's scroll to the 7 AM–6 PM window (once per day change).
+    _scheduleDefaultScroll();
 
-    return ListView(
-      padding: const EdgeInsets.fromLTRB(22, 14, 22, 130),
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        _header(),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(22, 14, 22, 0),
+          child: _header(),
+        ),
         const SizedBox(height: 18),
-        _dayScroller(allTasks, byId),
+        Padding(
+          padding: const EdgeInsets.only(left: 22),
+          child: _dayScroller(allTasks, byId),
+        ),
         const SizedBox(height: 18),
-        _legend(),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 22),
+          child: _legend(),
+        ),
         const SizedBox(height: 14),
-        _grid(placed, byId),
+        // The time grid scrolls on its own; the day chips above stay fixed. The
+        // amber edge glows flag events scrolled out of view above/below.
+        Expanded(
+          child: Stack(
+            children: [
+              SingleChildScrollView(
+                controller: _gridScroll,
+                padding: const EdgeInsets.fromLTRB(22, 0, 22, 130),
+                child: _grid(placed, byId),
+              ),
+              _EdgeGlow(controller: _gridScroll, placed: placed, top: true),
+              _EdgeGlow(controller: _gridScroll, placed: placed, top: false),
+            ],
+          ),
+        ),
       ],
     );
   }
 
   void _goToToday() {
-    setState(() => _selected = _today);
+    setState(() {
+      _selected = _today;
+      _scrolledKey = null; // re-default the grid scroll to 7 AM
+    });
     if (_dayScroll.hasClients) {
       _dayScroll.animateTo(
         (_dayAnchor - 2) * _dayTileExtent,
@@ -549,6 +597,65 @@ class _Placed {
   final double height;
   final int colIndex;
   final int colCount;
+}
+
+/// An amber glow at the top or bottom edge of the grid, shown when one or more
+/// task blocks are scrolled out of view in that direction.
+class _EdgeGlow extends StatelessWidget {
+  const _EdgeGlow({required this.controller, required this.placed, required this.top});
+
+  final ScrollController controller;
+  final List<_Placed> placed;
+  final bool top;
+
+  @override
+  Widget build(BuildContext context) {
+    return Positioned(
+      top: top ? 0 : null,
+      bottom: top ? null : 0,
+      left: 0,
+      right: 0,
+      child: IgnorePointer(
+        child: AnimatedBuilder(
+          animation: controller,
+          builder: (context, _) {
+            var hidden = false;
+            if (controller.hasClients && controller.position.hasViewportDimension) {
+              final off = controller.offset;
+              final vp = controller.position.viewportDimension;
+              for (final p in placed) {
+                if (top && p.top + p.height <= off + 6) {
+                  hidden = true;
+                  break;
+                }
+                if (!top && p.top >= off + vp - 6) {
+                  hidden = true;
+                  break;
+                }
+              }
+            }
+            return AnimatedOpacity(
+              duration: const Duration(milliseconds: 200),
+              opacity: hidden ? 1 : 0,
+              child: Container(
+                height: 56,
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: top ? Alignment.topCenter : Alignment.bottomCenter,
+                    end: top ? Alignment.bottomCenter : Alignment.topCenter,
+                    colors: [
+                      AppColors.amberHero.withValues(alpha: 0.30),
+                      AppColors.amberHero.withValues(alpha: 0.0),
+                    ],
+                  ),
+                ),
+              ),
+            );
+          },
+        ),
+      ),
+    );
+  }
 }
 
 class _DayChip extends StatelessWidget {
