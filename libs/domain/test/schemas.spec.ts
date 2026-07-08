@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
-  CreateClassificationRuleInput,
+  CreateLinkRuleInput,
   CreateFeedInput,
+  parseEcmaRegex,
+  ResolvePendingDecisionInput,
   TimeOfDay,
 } from '../src/index.js';
 
@@ -27,14 +29,75 @@ describe('domain schemas', () => {
     expect(TimeOfDay.safeParse('8:00').success).toBe(false);
   });
 
-  it('accepts a no-school exception rule', () => {
-    const rule = CreateClassificationRuleInput.parse({
+  it('accepts a no-school cancel-day override rule', () => {
+    const rule = CreateLinkRuleInput.parse({
       matchField: 'summary',
       matchOp: 'contains',
       matchValue: 'Closed',
-      effect: 'cancel',
+      outcome: 'cancel_day',
     });
-    expect(rule.priority).toBe(100);
-    expect(rule.effect).toBe('cancel');
+    expect(rule.outcome).toBe('cancel_day');
+  });
+
+  it('cross-validates matcher fields, ops, and params per outcome', () => {
+    // Text field with a boolean op → invalid.
+    expect(
+      CreateLinkRuleInput.safeParse({
+        matchField: 'summary',
+        matchOp: 'is_true',
+        outcome: 'cancel_day',
+      }).success,
+    ).toBe(false);
+    // duration needs a numeric matchValue.
+    expect(
+      CreateLinkRuleInput.safeParse({
+        matchField: 'duration',
+        matchOp: 'gte',
+        matchValue: 'ninety',
+        outcome: 'annotate',
+        params: { text: 'Long' },
+      }).success,
+    ).toBe(false);
+    expect(
+      CreateLinkRuleInput.safeParse({
+        matchField: 'duration',
+        matchOp: 'gte',
+        matchValue: '90',
+        outcome: 'annotate',
+        params: { text: 'Long' },
+      }).success,
+    ).toBe(true);
+    // annotate requires its text param.
+    expect(
+      CreateLinkRuleInput.safeParse({
+        matchField: 'summary',
+        matchOp: 'contains',
+        matchValue: 'Photos',
+        outcome: 'annotate',
+        params: {},
+      }).success,
+    ).toBe(false);
+    // Bad regex is rejected up front.
+    expect(
+      CreateLinkRuleInput.safeParse({
+        matchField: 'summary',
+        matchOp: 'regex',
+        matchValue: '(',
+        outcome: 'cancel_day',
+      }).success,
+    ).toBe(false);
+  });
+
+  it('parses ECMAScript regexes in both bare and /pattern/flags forms', () => {
+    expect(parseEcmaRegex('/no school|closed/i').test('No School')).toBe(true);
+    expect(parseEcmaRegex('no school').test('No School')).toBe(false);
+    expect(() => parseEcmaRegex('(')).toThrow();
+  });
+
+  it('requires at least one task type when resolving a pending decision', () => {
+    expect(ResolvePendingDecisionInput.safeParse({ types: [] }).success).toBe(false);
+    expect(
+      ResolvePendingDecisionInput.safeParse({ types: ['attendance'] }).success,
+    ).toBe(true);
   });
 });

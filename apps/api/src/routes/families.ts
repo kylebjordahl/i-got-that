@@ -2,6 +2,7 @@ import { and, eq, families, familyMembers, getDb } from '@igt/db';
 import {
   CreateFamilyInput,
   CreateFamilyMemberInput,
+  UpdateFamilyInput,
   UpdateFamilyMemberInput,
 } from '@igt/domain';
 import { Hono } from 'hono';
@@ -11,10 +12,10 @@ import {
   requireAdmin,
   requireFamilyMember,
 } from '../middleware/auth.js';
-import { enqueueReconcile } from '../services/delivery.js';
+import { enqueueReconcile } from '../services/mirror.js';
 import { createMemberClaimInvite } from '../services/invites.js';
 import { feedRoutes } from './feeds.js';
-import { targetRoutes } from './targets.js';
+import { memberCalendarRoutes } from './member-calendars.js';
 import { taskRoutes } from './tasks.js';
 
 export const familyRoutes = new Hono<HonoEnv>();
@@ -25,11 +26,11 @@ familyRoutes.use('*', authMiddleware);
 // Feed ingest routes live under /families/:familyId/feeds.
 familyRoutes.route('/:familyId/feeds', feedRoutes);
 
-// Classification rules + tasks live under /families/:familyId/...
+// Tasks + pending decisions + calendar events under /families/:familyId/...
 familyRoutes.route('/:familyId', taskRoutes);
 
-// Calendar targets (delivery destinations) under /families/:familyId/...
-familyRoutes.route('/:familyId', targetRoutes);
+// Per-member unified-calendar targets under /families/:familyId/members/...
+familyRoutes.route('/:familyId', memberCalendarRoutes);
 
 /**
  * Create a family and seed the creator as an admin caretaker. (Prototype:
@@ -61,6 +62,42 @@ familyRoutes.post('/', async (c) => {
   )[0]!;
 
   return c.json({ family, member }, 201);
+});
+
+/** Fetch the family row (any member) — carries the threading threshold. */
+familyRoutes.get('/:familyId', requireFamilyMember, async (c) => {
+  const db = getDb(c.env.DB);
+  const family = (
+    await db
+      .select()
+      .from(families)
+      .where(eq(families.id, c.get('member').familyId))
+      .limit(1)
+  )[0];
+  if (!family) return c.json({ error: 'not_found' }, 404);
+  return c.json({ family });
+});
+
+/** Update family settings — name, threading threshold (admin). */
+familyRoutes.patch('/:familyId', requireFamilyMember, requireAdmin, async (c) => {
+  const parsed = UpdateFamilyInput.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) {
+    return c.json({ error: 'invalid', issues: parsed.error.issues }, 400);
+  }
+  const db = getDb(c.env.DB);
+  const familyId = c.get('member').familyId;
+  const set: Partial<typeof families.$inferInsert> = {};
+  if (parsed.data.name !== undefined) set.name = parsed.data.name;
+  if (parsed.data.threadingThresholdMinutes !== undefined) {
+    set.threadingThresholdMinutes = parsed.data.threadingThresholdMinutes;
+  }
+  if (Object.keys(set).length > 0) {
+    await db.update(families).set(set).where(eq(families.id, familyId));
+  }
+  const family = (
+    await db.select().from(families).where(eq(families.id, familyId)).limit(1)
+  )[0]!;
+  return c.json({ family });
 });
 
 /** List members of a family (any member). */

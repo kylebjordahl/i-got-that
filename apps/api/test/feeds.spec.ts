@@ -168,14 +168,14 @@ describe('feed ingest', () => {
     // Bob is not a member → 403 on create.
     const bobCreate = await call(
       `/families/${familyId}/feeds`,
-      authed(bob.token, { url: FEED_URL, mode: 'explicit' }),
+      authed(bob.token, { url: FEED_URL, mode: 'standard' }),
     );
     expect(bobCreate.status).toBe(403);
 
     // Alice (admin) creates a feed.
     const feedRes = await call(
       `/families/${familyId}/feeds`,
-      authed(alice.token, { url: FEED_URL, mode: 'explicit' }),
+      authed(alice.token, { url: FEED_URL, mode: 'standard' }),
     );
     const { feed } = (await feedRes.json()) as { feed: { id: string } };
 

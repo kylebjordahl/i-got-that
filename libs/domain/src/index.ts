@@ -16,8 +16,11 @@ export type FeedKind = z.infer<typeof FeedKind>;
 export const ExternalAccountKind = z.enum(['google', 'icloud', 'caldav']);
 export type ExternalAccountKind = z.infer<typeof ExternalAccountKind>;
 
-/** `explicit` = feed events create tasks; `exception` = deviations from a baseline. */
-export const FeedMode = z.enum(['explicit', 'exception']);
+/**
+ * `standard` = feed events mean what they say; `exception` = the feed is empty
+ * on normal days and only carries deviations from a per-link baseline.
+ */
+export const FeedMode = z.enum(['standard', 'exception']);
 export type FeedMode = z.infer<typeof FeedMode>;
 
 export const FeedStatus = z.enum(['active', 'paused', 'error']);
@@ -34,36 +37,72 @@ export type AttendanceRequirement = z.infer<typeof AttendanceRequirement>;
 export const TaskStatus = z.enum(['unowned', 'owned', 'dismissed']);
 export type TaskStatus = z.infer<typeof TaskStatus>;
 
-export const TaskCreatedVia = z.enum(['rule', 'baseline', 'manual']);
+/** `generated` = produced by synthesis/task-gen; `manual` = user-converted (task-gen heals times only, never reclassifies). */
+export const TaskCreatedVia = z.enum(['generated', 'manual']);
 export type TaskCreatedVia = z.infer<typeof TaskCreatedVia>;
 
-export const RuleMatchField = z.enum(['summary', 'location', 'description']);
-export type RuleMatchField = z.infer<typeof RuleMatchField>;
+/**
+ * Where a unified-calendar event came from: `synthesized` (feed/baseline via the
+ * override pipeline), `human` (read back from the member's target calendar), or
+ * `claimed_task` (the recursion — a claimed task on the claimer's calendar).
+ */
+export const EventProvenance = z.enum(['synthesized', 'human', 'claimed_task']);
+export type EventProvenance = z.infer<typeof EventProvenance>;
 
-export const RuleMatchOp = z.enum(['contains', 'equals', 'regex']);
-export type RuleMatchOp = z.infer<typeof RuleMatchOp>;
+/** Field an override-rule matcher inspects. `any_text` = summary/location/description. */
+export const OverrideMatchField = z.enum([
+  'summary',
+  'location',
+  'description',
+  'any_text',
+  'all_day',
+  'duration',
+]);
+export type OverrideMatchField = z.infer<typeof OverrideMatchField>;
 
 /**
- * `create` for explicit feeds. For exception feeds: `cancel` (no-school),
- * `shift` (early dismissal), `ignore` (informational, e.g. picture day).
+ * Matcher condition. Text ops apply to text fields; `is_true`/`is_false` to
+ * `all_day`; `gte`/`lte` (minutes) to `duration`.
  */
-export const RuleEffect = z.enum(['create', 'cancel', 'shift', 'ignore']);
-export type RuleEffect = z.infer<typeof RuleEffect>;
+export const OverrideMatchOp = z.enum([
+  'contains',
+  'starts_with',
+  'equals',
+  'regex',
+  'is_true',
+  'is_false',
+  'gte',
+  'lte',
+]);
+export type OverrideMatchOp = z.infer<typeof OverrideMatchOp>;
+
+/**
+ * What a matched override rule does. `cancel_day`/`modify_day` apply to the
+ * baseline day an exception event covers (exception feeds only); `annotate`
+ * keeps the event/day and stamps a note; `set_event` patches (or suppresses)
+ * the resulting synthesized event.
+ */
+export const OverrideOutcome = z.enum([
+  'cancel_day',
+  'modify_day',
+  'annotate',
+  'set_event',
+]);
+export type OverrideOutcome = z.infer<typeof OverrideOutcome>;
+
+/** An unmatched exception-feed event awaiting a human decision — never guessed. */
+export const PendingDecisionStatus = z.enum(['pending', 'resolved', 'dismissed']);
+export type PendingDecisionStatus = z.infer<typeof PendingDecisionStatus>;
 
 export const DeliveryMethod = z.enum(['email', 'caldav', 'google']);
 export type DeliveryMethod = z.infer<typeof DeliveryMethod>;
 
-export const ProviderHint = z.enum(['icloud', 'google', 'generic_caldav']);
-export type ProviderHint = z.infer<typeof ProviderHint>;
+/** Writable protocols for a member's unified-calendar mirror target (email is parked). */
+export const MirrorMethod = z.enum(['caldav', 'google']);
+export type MirrorMethod = z.infer<typeof MirrorMethod>;
 
-export const DeliveryStatus = z.enum([
-  'pending',
-  'sent',
-  'updated',
-  'cancelled',
-  'failed',
-]);
-export type DeliveryStatus = z.infer<typeof DeliveryStatus>;
+export const MirrorStatus = z.enum(['sent', 'updated', 'failed']);
+export type MirrorStatus = z.infer<typeof MirrorStatus>;
 
 export const RsvpStatus = z.enum(['none', 'accepted', 'declined']);
 export type RsvpStatus = z.infer<typeof RsvpStatus>;
@@ -231,19 +270,6 @@ export const UpdateFamilyMemberInput = z.object({
 });
 export type UpdateFamilyMemberInput = z.infer<typeof UpdateFamilyMemberInput>;
 
-export const FamilyMemberFeedBaselineInput = z.object({
-  feedId: Id,
-  familyMemberId: Id,
-  weekdayMask: WeekdayMask.optional(),
-  dayStart: TimeOfDay.optional(),
-  dayEnd: TimeOfDay.optional(),
-  generatesTypes: z.array(TaskType).optional(),
-  defaultAttendance: AttendanceRequirement.optional(),
-});
-export type FamilyMemberFeedBaselineInput = z.infer<
-  typeof FamilyMemberFeedBaselineInput
->;
-
 /** Block length (minutes) of a generated baseline event; 0 ⇒ point-in-time. */
 export const BlockDurationMinutes = z.number().int().min(0).max(1440);
 
@@ -289,37 +315,187 @@ export const ConvertTaskInput = z.object({
 });
 export type ConvertTaskInput = z.infer<typeof ConvertTaskInput>;
 
-export const CreateClassificationRuleInput = z.object({
-  feedId: Id.optional(),
-  priority: z.number().int().default(100),
-  matchField: RuleMatchField,
-  matchOp: RuleMatchOp,
-  matchValue: z.string().min(1),
-  effect: RuleEffect,
-  producesTypes: z.array(TaskType).optional(),
-  defaultAttendance: AttendanceRequirement.optional(),
-  shiftToTime: TimeOfDay.optional(),
-  defaultOwnerMemberId: Id.optional(),
-});
-export type CreateClassificationRuleInput = z.infer<
-  typeof CreateClassificationRuleInput
->;
+// --- Override rules (the per-link event pipeline) -------------------------
 
-/** Partial update for a classification rule. Fields are optional; nullable-optional on the four
- *  nullable columns so an effect change can explicitly clear stale data by sending `null`. */
-export const UpdateClassificationRuleInput = z.object({
-  feedId: Id.nullable().optional(),
-  priority: z.number().int().optional(),
-  matchField: RuleMatchField.optional(),
-  matchOp: RuleMatchOp.optional(),
-  matchValue: z.string().min(1).optional(),
-  effect: RuleEffect.optional(),
-  producesTypes: z.array(TaskType).nullable().optional(),
-  defaultAttendance: AttendanceRequirement.nullable().optional(),
-  shiftToTime: TimeOfDay.nullable().optional(),
-  defaultOwnerMemberId: Id.nullable().optional(),
+/** `cancel_day`: the covered baseline day is suppressed entirely. */
+export const CancelDayParams = z.object({}).strict();
+export type CancelDayParams = z.infer<typeof CancelDayParams>;
+
+/** `modify_day`: patch the covered baseline day (e.g. early release). */
+export const ModifyDayParams = z
+  .object({
+    dayStart: TimeOfDay.optional(),
+    dayEnd: TimeOfDay.optional(),
+    durationMinutes: z.number().int().min(0).max(1440).optional(),
+    location: z.string().max(256).optional(),
+  })
+  .strict();
+export type ModifyDayParams = z.infer<typeof ModifyDayParams>;
+
+/** `annotate`: keep the event/day, stamp a note (e.g. "Photo Day"). */
+export const AnnotateParams = z.object({ text: z.string().min(1).max(256) }).strict();
+export type AnnotateParams = z.infer<typeof AnnotateParams>;
+
+/** `set_event`: patch the resulting synthesized event, or suppress it. */
+export const SetEventParams = z
+  .object({
+    summary: z.string().min(1).max(256).optional(),
+    startTime: TimeOfDay.optional(),
+    durationMinutes: z.number().int().min(0).max(1440).optional(),
+    location: z.string().max(256).optional(),
+    /** Drop the event from the unified calendar entirely. */
+    suppress: z.boolean().optional(),
+  })
+  .strict();
+export type SetEventParams = z.infer<typeof SetEventParams>;
+
+export const OverrideRuleParams = z.union([
+  CancelDayParams,
+  ModifyDayParams,
+  AnnotateParams,
+  SetEventParams,
+]);
+export type OverrideRuleParams = z.infer<typeof OverrideRuleParams>;
+
+const paramsSchemaFor: Record<OverrideOutcome, z.ZodTypeAny> = {
+  cancel_day: CancelDayParams,
+  modify_day: ModifyDayParams,
+  annotate: AnnotateParams,
+  set_event: SetEventParams,
+};
+
+/**
+ * Parse an ECMAScript regex matcher value: either `/pattern/flags` (the form
+ * the rule editor documents — flags after the closing slash) or a bare,
+ * flagless pattern. Throws on invalid patterns/flags.
+ */
+export function parseEcmaRegex(value: string): RegExp {
+  const slashForm = /^\/(.*)\/([a-z]*)$/s.exec(value);
+  if (slashForm) return new RegExp(slashForm[1]!, slashForm[2]);
+  return new RegExp(value);
+}
+
+const TEXT_FIELDS = new Set<OverrideMatchField>([
+  'summary',
+  'location',
+  'description',
+  'any_text',
+]);
+const TEXT_OPS = new Set<OverrideMatchOp>(['contains', 'starts_with', 'equals', 'regex']);
+const BOOL_OPS = new Set<OverrideMatchOp>(['is_true', 'is_false']);
+const NUM_OPS = new Set<OverrideMatchOp>(['gte', 'lte']);
+
+/** Cross-field checks shared by create/update once a full rule shape is known. */
+function refineOverrideRule(
+  v: {
+    matchField: OverrideMatchField;
+    matchOp: OverrideMatchOp;
+    matchValue?: string | null;
+    outcome: OverrideOutcome;
+    params?: unknown;
+  },
+  ctx: z.RefinementCtx,
+) {
+  if (TEXT_FIELDS.has(v.matchField)) {
+    if (!TEXT_OPS.has(v.matchOp)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['matchOp'], message: `text fields require one of: contains, starts_with, equals, regex` });
+    }
+    if (!v.matchValue) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['matchValue'], message: 'matchValue is required for text matchers' });
+    }
+  } else if (v.matchField === 'all_day') {
+    if (!BOOL_OPS.has(v.matchOp)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['matchOp'], message: 'all_day requires is_true or is_false' });
+    }
+  } else if (v.matchField === 'duration') {
+    if (!NUM_OPS.has(v.matchOp)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['matchOp'], message: 'duration requires gte or lte' });
+    }
+    if (!v.matchValue || !/^\d+$/.test(v.matchValue)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['matchValue'], message: 'matchValue must be a whole number of minutes' });
+    }
+  }
+  if (v.matchOp === 'regex' && v.matchValue) {
+    try {
+      // ECMAScript flavor, same as the client help copy.
+      parseEcmaRegex(v.matchValue);
+    } catch {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['matchValue'], message: 'invalid ECMAScript regular expression' });
+    }
+  }
+  const parsed = paramsSchemaFor[v.outcome].safeParse(v.params ?? {});
+  if (!parsed.success) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['params'], message: `invalid params for outcome '${v.outcome}': ${parsed.error.issues[0]?.message ?? 'invalid'}` });
+  }
+}
+
+/**
+ * Create an override rule on a feed↔member link. Rules run in `position` order,
+ * first match wins. `cancel_day`/`modify_day` are only valid on exception-feed
+ * links (enforced server-side where the feed mode is known). `generatesTypes` /
+ * `defaultAttendance` stamp task-generation config onto the synthesized event.
+ */
+export const CreateLinkRuleInput = z
+  .object({
+    /** Insert position (0-based); appended when omitted. */
+    position: z.number().int().min(0).optional(),
+    matchField: OverrideMatchField,
+    matchOp: OverrideMatchOp,
+    matchValue: z.string().min(1).optional(),
+    outcome: OverrideOutcome,
+    params: OverrideRuleParams.optional(),
+    generatesTypes: z.array(TaskType).optional(),
+    defaultAttendance: AttendanceRequirement.optional(),
+  })
+  .superRefine(refineOverrideRule);
+export type CreateLinkRuleInput = z.infer<typeof CreateLinkRuleInput>;
+
+/** Partial update for an override rule; nullable fields clear with `null`. */
+export const UpdateLinkRuleInput = z
+  .object({
+    matchField: OverrideMatchField.optional(),
+    matchOp: OverrideMatchOp.optional(),
+    matchValue: z.string().min(1).nullable().optional(),
+    outcome: OverrideOutcome.optional(),
+    params: OverrideRuleParams.nullable().optional(),
+    generatesTypes: z.array(TaskType).nullable().optional(),
+    defaultAttendance: AttendanceRequirement.nullable().optional(),
+  })
+  .refine((v) => Object.keys(v).length > 0, { message: 'no fields to update' });
+export type UpdateLinkRuleInput = z.infer<typeof UpdateLinkRuleInput>;
+
+/** Full ordering of a link's rules — every rule id exactly once, new order. */
+export const ReorderLinkRulesInput = z.object({
+  ruleIds: z.array(Id).min(1),
 });
-export type UpdateClassificationRuleInput = z.infer<typeof UpdateClassificationRuleInput>;
+export type ReorderLinkRulesInput = z.infer<typeof ReorderLinkRulesInput>;
+
+/** The rule-shape validator, exported so routes can re-check merged updates. */
+export const validateOverrideRuleShape = refineOverrideRule;
+
+// --- Pending decisions -----------------------------------------------------
+
+/**
+ * Resolve a pending decision: what the unmatched exception event should become.
+ * Creates a synthesized event with these task types; optional time adjustments
+ * override the source event's own times.
+ */
+export const ResolvePendingDecisionInput = z.object({
+  types: z.array(TaskType).min(1),
+  defaultAttendance: AttendanceRequirement.optional(),
+  startTime: TimeOfDay.optional(),
+  durationMinutes: z.number().int().min(0).max(1440).optional(),
+});
+export type ResolvePendingDecisionInput = z.infer<typeof ResolvePendingDecisionInput>;
+
+// --- Family settings -------------------------------------------------------
+
+/** Partial family update; threading threshold governs client-side task stitching. */
+export const UpdateFamilyInput = z.object({
+  name: z.string().min(1).max(120).optional(),
+  threadingThresholdMinutes: z.number().int().min(0).max(240).optional(),
+});
+export type UpdateFamilyInput = z.infer<typeof UpdateFamilyInput>;
 
 /** Build a Google OAuth consent URL for the given redirect URI. */
 export const GoogleAuthorizeUrlInput = z.object({
@@ -328,52 +504,23 @@ export const GoogleAuthorizeUrlInput = z.object({
 export type GoogleAuthorizeUrlInput = z.infer<typeof GoogleAuthorizeUrlInput>;
 
 /**
- * Default alerts for a calendar target: minutes before the event start, at most
+ * Default alerts for a mirror target: minutes before the event start, at most
  * two. An empty array clears alerts. Capped at 4 weeks (40320 min).
  */
 export const AlertMinutes = z.array(z.number().int().min(0).max(40320)).max(2);
 export type AlertMinutes = z.infer<typeof AlertMinutes>;
 
 /**
- * Partial update for an existing output feed (calendar target). Editable by the
- * owner or any family admin. The delivery method, the linked account, and the
- * target calendar are immutable — recreate the feed to change them.
+ * Designate a member's unified-calendar target: one writable calendar drawn
+ * from a connected external account. Synthesized + claimed events are mirrored
+ * there and human events on it are read back. Only the account owner may attach
+ * it, and only to a member linked to their own user (enforced server-side).
+ * `targetCalendarId` is the CalDAV collection URL or the Google calendar id.
  */
-export const UpdateCalendarTargetInput = z.object({
-  name: z.string().min(1).max(120).optional(),
-  active: z.boolean().optional(),
+export const SetMemberCalendarTargetInput = z.object({
+  externalAccountId: Id,
+  targetCalendarId: z.string().min(1),
+  targetCalendarName: z.string().max(256).optional(),
   alertMinutes: AlertMinutes.optional(),
 });
-export type UpdateCalendarTargetInput = z.infer<typeof UpdateCalendarTargetInput>;
-
-/**
- * Create an output feed (calendar target) for a caretaker member. `email`
- * targets stand alone (no account). `caldav`/`google` targets draw their
- * credential from a connected `externalAccountId`; `addressOrUrl` (CalDAV
- * collection URL / Google calendar id) + `externalCalendarId` name the immutable
- * target calendar. Only the account owner may attach it, and only to their own
- * caretaker member (enforced server-side).
- */
-export const CreateCalendarTargetInput = z
-  .object({
-    memberId: Id,
-    name: z.string().min(1).max(120),
-    method: DeliveryMethod,
-    externalAccountId: Id.optional(),
-    addressOrUrl: z.string().min(1),
-    externalCalendarId: z.string().optional(),
-    /** Default alerts (minutes before start), at most two. */
-    alertMinutes: AlertMinutes.optional(),
-  })
-  .superRefine((v, ctx) => {
-    if (v.method === 'email') {
-      if (v.externalAccountId) {
-        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['externalAccountId'], message: 'email targets are not backed by an account' });
-      }
-    } else if (!v.externalAccountId) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['externalAccountId'], message: 'externalAccountId is required for caldav/google targets' });
-    }
-  });
-export type CreateCalendarTargetInput = z.infer<
-  typeof CreateCalendarTargetInput
->;
+export type SetMemberCalendarTargetInput = z.infer<typeof SetMemberCalendarTargetInput>;

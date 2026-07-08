@@ -1,31 +1,51 @@
 import {
   and,
+  asc,
+  calendarEvents,
   eq,
   externalAccounts,
   familyMemberFeeds,
   familyMembers,
   feeds,
   getDb,
+  inArray,
+  linkRules,
   sourceEvents,
   tasks,
 } from '@igt/db';
 import {
   CreateFeedInput,
+  CreateLinkRuleInput,
   MemberFeedLinkInput,
+  OverrideMatchField,
+  OverrideMatchOp,
+  OverrideOutcome,
+  ReorderLinkRulesInput,
   UpdateFeedInput,
+  UpdateLinkRuleInput,
   UpdateMemberFeedLinkInput,
+  validateOverrideRuleShape,
 } from '@igt/domain';
+import { z } from 'zod';
+
+/** Cross-field validation of a merged (PATCHed) rule shape. */
+const MergedRuleShape = z
+  .object({
+    matchField: OverrideMatchField,
+    matchOp: OverrideMatchOp,
+    matchValue: z.string().nullable().optional(),
+    outcome: OverrideOutcome,
+    params: z.unknown().optional(),
+  })
+  .superRefine(validateOverrideRuleShape);
 import { Hono } from 'hono';
 import type { Bindings, HonoEnv } from '../env.js';
 import { googleRefresherFor } from '../lib/google-oauth.js';
 import { requireAdmin, requireFamilyMember } from '../middleware/auth.js';
 import { ingestFamilyFeeds, ingestFeed } from '../services/ingest.js';
-import { buildFeedTasks } from '../services/tasks.js';
-import {
-  enqueueReconcile,
-  getProductionRegistry,
-  syncMember,
-} from '../services/delivery.js';
+import { enqueueReconcile } from '../services/mirror.js';
+import { synthesizeFeed } from '../services/synthesis.js';
+import { buildFamilyTasks, buildMemberTasks } from '../services/task-gen.js';
 
 /** Ingest secrets (KEK + Google refresher) needed to read account-backed feeds. */
 function ingestSecrets(env: Bindings) {
@@ -90,11 +110,28 @@ feedRoutes.post('/', requireAdmin, async (c) => {
   return c.json({ feed }, 201);
 });
 
+/** Resynthesize a feed and regenerate its linked members' tasks, then mirror. */
+async function resynthesize(
+  c: { env: Bindings; executionCtx: { waitUntil(p: Promise<unknown>): void } },
+  db: ReturnType<typeof getDb>,
+  feed: typeof feeds.$inferSelect,
+): Promise<void> {
+  await synthesizeFeed(db, feed);
+  const links = await db
+    .select({ familyMemberId: familyMemberFeeds.familyMemberId })
+    .from(familyMemberFeeds)
+    .where(eq(familyMemberFeeds.feedId, feed.id));
+  for (const familyMemberId of new Set(links.map((l) => l.familyMemberId))) {
+    await buildMemberTasks(db, familyMemberId);
+  }
+  enqueueReconcile(c, { kind: 'family', familyId: feed.familyId });
+}
+
 /**
  * Update an input feed's config (admin). Only `mode` / `refreshMinutes` /
  * `status` are editable — the source (ICS url or the account's target calendar)
  * is immutable; change it by deleting and recreating the feed. A mode change
- * rebuilds the feed's tasks (mode drives task generation).
+ * resynthesizes the feed (mode drives the whole pipeline shape).
  */
 feedRoutes.patch('/:feedId', requireAdmin, async (c) => {
   const parsed = UpdateFeedInput.safeParse(await c.req.json().catch(() => null));
@@ -122,16 +159,13 @@ feedRoutes.patch('/:feedId', requireAdmin, async (c) => {
     await db.update(feeds).set(set).where(eq(feeds.id, feed.id));
   }
 
-  const modeChanged = d.mode !== undefined && d.mode !== feed.mode;
-  if (modeChanged) {
-    await db.delete(tasks).where(and(eq(tasks.feedId, feed.id), eq(tasks.status, 'unowned')));
-    await db.update(sourceEvents).set({ tasksBuiltHash: null }).where(eq(sourceEvents.feedId, feed.id));
-  }
-
   const updated = (await db.select().from(feeds).where(eq(feeds.id, feed.id)).limit(1))[0]!;
-  if (modeChanged) {
-    await buildFeedTasks(db, updated);
-    enqueueReconcile(c, { kind: 'family', familyId });
+  if (d.mode !== undefined && d.mode !== feed.mode) {
+    await db
+      .update(sourceEvents)
+      .set({ synthesizedHash: null })
+      .where(eq(sourceEvents.feedId, feed.id));
+    await resynthesize(c, db, updated);
   }
   return c.json({ feed: updated });
 });
@@ -145,7 +179,7 @@ feedRoutes.get('/', async (c) => {
   return c.json({ feeds: rows });
 });
 
-/** Link a dependent to a feed, with an optional baseline for exception feeds (admin). */
+/** Link a member to a feed, with an optional baseline for exception feeds (admin). */
 feedRoutes.post('/:feedId/member-links', requireAdmin, async (c) => {
   const parsed = MemberFeedLinkInput.safeParse(await c.req.json().catch(() => null));
   if (!parsed.success) {
@@ -194,10 +228,13 @@ feedRoutes.post('/:feedId/member-links', requireAdmin, async (c) => {
       })
       .returning()
   )[0]!;
+
+  // Synthesize the new link's events right away (its rules can refine later).
+  await resynthesize(c, db, feed);
   return c.json({ link }, 201);
 });
 
-/** List a feed's member links (with each child's name). */
+/** List a feed's member links (with each member's name). */
 feedRoutes.get('/:feedId/member-links', async (c) => {
   const db = getDb(c.env.DB);
   const rows = await db
@@ -247,7 +284,7 @@ async function loadLink(
   )[0];
 }
 
-/** Update a link's baseline (admin), then rebuild that child's tasks. */
+/** Update a link's baseline/config (admin), then resynthesize. */
 feedRoutes.patch('/:feedId/member-links/:linkId', requireAdmin, async (c) => {
   const parsed = UpdateMemberFeedLinkInput.safeParse(await c.req.json().catch(() => null));
   if (!parsed.success) {
@@ -273,26 +310,30 @@ feedRoutes.patch('/:feedId/member-links/:linkId', requireAdmin, async (c) => {
     await db.update(familyMemberFeeds).set(set).where(eq(familyMemberFeeds.id, link.id));
   }
 
-  // Drop this child's unowned tasks for the feed and rebuild from scratch.
-  await db
-    .delete(tasks)
-    .where(
-      and(
-        eq(tasks.feedId, feedId),
-        eq(tasks.familyMemberId, link.familyMemberId),
-        eq(tasks.status, 'unowned'),
-      ),
-    );
-  await db.update(sourceEvents).set({ tasksBuiltHash: null }).where(eq(sourceEvents.feedId, feedId));
+  // A deactivated link's synthesized events are no longer desired.
+  if (d.active === false) {
+    await db
+      .delete(calendarEvents)
+      .where(
+        and(
+          eq(calendarEvents.linkId, link.id),
+          eq(calendarEvents.provenance, 'synthesized'),
+        ),
+      );
+  }
+
   const feed = (await db.select().from(feeds).where(eq(feeds.id, feedId)).limit(1))[0];
-  if (feed) await buildFeedTasks(db, feed);
-  enqueueReconcile(c, { kind: 'family', familyId });
+  if (feed) await resynthesize(c, db, feed);
 
   const updated = await loadLink(db, familyId, feedId, link.id);
   return c.json({ link: updated });
 });
 
-/** Remove a link (admin) + ALL of that child's tasks generated by the feed. */
+/**
+ * Remove a link (admin). Its synthesized events + pending decisions cascade;
+ * that member's event-derived tasks (any status) are removed explicitly, and
+ * the family mirror reconcile cancels the remote copies.
+ */
 feedRoutes.delete('/:feedId/member-links/:linkId', requireAdmin, async (c) => {
   const db = getDb(c.env.DB);
   const familyId = c.get('member').familyId;
@@ -300,32 +341,238 @@ feedRoutes.delete('/:feedId/member-links/:linkId', requireAdmin, async (c) => {
   const link = await loadLink(db, familyId, feedId, c.req.param('linkId'));
   if (!link) return c.json({ error: 'not_found' }, 404);
 
-  await db.delete(familyMemberFeeds).where(eq(familyMemberFeeds.id, link.id));
+  // Collect the link's event ids before the cascade removes them.
+  const linkEvents = await db
+    .select({ id: calendarEvents.id })
+    .from(calendarEvents)
+    .where(eq(calendarEvents.linkId, link.id));
+  const eventIds = linkEvents.map((e) => e.id);
 
-  const childTasks = and(
-    eq(tasks.feedId, feedId),
-    eq(tasks.familyMemberId, link.familyMemberId),
-  );
-  // Owners with delivered events for this child: release the tasks so the
-  // reconcile cancels those calendar events (delivery rows still exist), sync
-  // just those owners, then delete every task for the child on this feed.
-  const owners = [
-    ...new Set(
-      (await db.select().from(tasks).where(and(childTasks, eq(tasks.status, 'owned'))))
-        .map((t) => t.ownerMemberId)
-        .filter((id): id is string => id != null),
-    ),
-  ];
-  if (owners.length > 0) {
-    await db.update(tasks).set({ status: 'unowned', ownerMemberId: null }).where(childTasks);
-    const registry = getProductionRegistry(c.env);
-    for (const owner of owners) {
-      await syncMember(db, registry, c.env.KEK, owner);
-    }
+  await db.delete(familyMemberFeeds).where(eq(familyMemberFeeds.id, link.id));
+  if (eventIds.length > 0) {
+    // Deleting the tasks also cascades their claimed events off the owners'
+    // calendars; the family reconcile then cancels every remote copy.
+    await db.delete(tasks).where(inArray(tasks.calendarEventId, eventIds));
   }
-  await db.delete(tasks).where(childTasks);
+  enqueueReconcile(c, { kind: 'family', familyId });
   return c.json({ ok: true });
 });
+
+// --- Override rules (the link's event pipeline) ------------------------------
+
+/** Baseline-day outcomes only make sense against an exception feed's baseline. */
+function outcomeAllowed(feedMode: string, outcome: string): boolean {
+  if (outcome === 'cancel_day' || outcome === 'modify_day') {
+    return feedMode === 'exception';
+  }
+  return true;
+}
+
+/** List a link's rules in pipeline order. */
+feedRoutes.get('/:feedId/member-links/:linkId/rules', async (c) => {
+  const db = getDb(c.env.DB);
+  const link = await loadLink(
+    db,
+    c.get('member').familyId,
+    c.req.param('feedId'),
+    c.req.param('linkId'),
+  );
+  if (!link) return c.json({ error: 'not_found' }, 404);
+  const rows = await db
+    .select()
+    .from(linkRules)
+    .where(eq(linkRules.linkId, link.id))
+    .orderBy(asc(linkRules.position));
+  return c.json({ rules: rows });
+});
+
+/** Insert a rule into the pipeline (admin); omitted position appends. */
+feedRoutes.post('/:feedId/member-links/:linkId/rules', requireAdmin, async (c) => {
+  const parsed = CreateLinkRuleInput.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) {
+    return c.json({ error: 'invalid', issues: parsed.error.issues }, 400);
+  }
+  const db = getDb(c.env.DB);
+  const familyId = c.get('member').familyId;
+  const feedId = c.req.param('feedId');
+  const link = await loadLink(db, familyId, feedId, c.req.param('linkId'));
+  if (!link) return c.json({ error: 'not_found' }, 404);
+  const feed = (await db.select().from(feeds).where(eq(feeds.id, feedId)).limit(1))[0]!;
+
+  const d = parsed.data;
+  if (!outcomeAllowed(feed.mode, d.outcome)) {
+    return c.json({ error: 'outcome_requires_exception_feed' }, 400);
+  }
+
+  const existing = await db
+    .select()
+    .from(linkRules)
+    .where(eq(linkRules.linkId, link.id))
+    .orderBy(asc(linkRules.position));
+  const position = Math.min(d.position ?? existing.length, existing.length);
+
+  // Shift everything at/after the insert position down one.
+  for (let i = existing.length - 1; i >= position; i--) {
+    await db
+      .update(linkRules)
+      .set({ position: i + 1 })
+      .where(eq(linkRules.id, existing[i]!.id));
+  }
+  const rule = (
+    await db
+      .insert(linkRules)
+      .values({
+        familyId,
+        linkId: link.id,
+        position,
+        matchField: d.matchField,
+        matchOp: d.matchOp,
+        matchValue: d.matchValue ?? null,
+        outcome: d.outcome,
+        params: (d.params as Record<string, unknown> | undefined) ?? null,
+        generatesTypes: d.generatesTypes ?? null,
+        defaultAttendance: d.defaultAttendance ?? null,
+      })
+      .returning()
+  )[0]!;
+
+  await resynthesize(c, db, feed);
+  return c.json({ rule }, 201);
+});
+
+/** Update a rule (admin); the merged shape is re-validated. */
+feedRoutes.patch('/:feedId/member-links/:linkId/rules/:ruleId', requireAdmin, async (c) => {
+  const parsed = UpdateLinkRuleInput.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) {
+    return c.json({ error: 'invalid', issues: parsed.error.issues }, 400);
+  }
+  const db = getDb(c.env.DB);
+  const familyId = c.get('member').familyId;
+  const feedId = c.req.param('feedId');
+  const link = await loadLink(db, familyId, feedId, c.req.param('linkId'));
+  if (!link) return c.json({ error: 'not_found' }, 404);
+  const feed = (await db.select().from(feeds).where(eq(feeds.id, feedId)).limit(1))[0]!;
+
+  const rule = (
+    await db
+      .select()
+      .from(linkRules)
+      .where(
+        and(eq(linkRules.id, c.req.param('ruleId')), eq(linkRules.linkId, link.id)),
+      )
+      .limit(1)
+  )[0];
+  if (!rule) return c.json({ error: 'rule_not_found' }, 404);
+
+  const d = parsed.data;
+  const merged = {
+    matchField: d.matchField ?? rule.matchField,
+    matchOp: d.matchOp ?? rule.matchOp,
+    matchValue: 'matchValue' in d ? (d.matchValue ?? null) : rule.matchValue,
+    outcome: d.outcome ?? rule.outcome,
+    params: 'params' in d ? (d.params ?? undefined) : (rule.params ?? undefined),
+  };
+  if (!outcomeAllowed(feed.mode, merged.outcome)) {
+    return c.json({ error: 'outcome_requires_exception_feed' }, 400);
+  }
+  // Re-run the cross-field checks against the merged rule shape.
+  const mergedCheck = MergedRuleShape.safeParse(merged);
+  if (!mergedCheck.success) {
+    return c.json({ error: 'invalid', issues: mergedCheck.error.issues }, 400);
+  }
+
+  const set: Partial<typeof linkRules.$inferInsert> = {};
+  if ('matchField' in d) set.matchField = d.matchField;
+  if ('matchOp' in d) set.matchOp = d.matchOp;
+  if ('matchValue' in d) set.matchValue = d.matchValue ?? null;
+  if ('outcome' in d) set.outcome = d.outcome;
+  if ('params' in d) set.params = (d.params as Record<string, unknown> | null) ?? null;
+  if ('generatesTypes' in d) set.generatesTypes = d.generatesTypes ?? null;
+  if ('defaultAttendance' in d) set.defaultAttendance = d.defaultAttendance ?? null;
+  const updated = (
+    await db.update(linkRules).set(set).where(eq(linkRules.id, rule.id)).returning()
+  )[0]!;
+
+  await resynthesize(c, db, feed);
+  return c.json({ rule: updated });
+});
+
+/** Delete a rule (admin) and close the pipeline gap. */
+feedRoutes.delete('/:feedId/member-links/:linkId/rules/:ruleId', requireAdmin, async (c) => {
+  const db = getDb(c.env.DB);
+  const familyId = c.get('member').familyId;
+  const feedId = c.req.param('feedId');
+  const link = await loadLink(db, familyId, feedId, c.req.param('linkId'));
+  if (!link) return c.json({ error: 'not_found' }, 404);
+
+  const deleted = (
+    await db
+      .delete(linkRules)
+      .where(
+        and(eq(linkRules.id, c.req.param('ruleId')), eq(linkRules.linkId, link.id)),
+      )
+      .returning()
+  )[0];
+  if (!deleted) return c.json({ error: 'rule_not_found' }, 404);
+
+  const remaining = await db
+    .select()
+    .from(linkRules)
+    .where(eq(linkRules.linkId, link.id))
+    .orderBy(asc(linkRules.position));
+  for (let i = 0; i < remaining.length; i++) {
+    if (remaining[i]!.position !== i) {
+      await db.update(linkRules).set({ position: i }).where(eq(linkRules.id, remaining[i]!.id));
+    }
+  }
+
+  const feed = (await db.select().from(feeds).where(eq(feeds.id, feedId)).limit(1))[0];
+  if (feed) await resynthesize(c, db, feed);
+  return c.json({ ok: true });
+});
+
+/** Reorder the whole pipeline (admin): every rule id exactly once, new order. */
+feedRoutes.put('/:feedId/member-links/:linkId/rules/order', requireAdmin, async (c) => {
+  const parsed = ReorderLinkRulesInput.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) {
+    return c.json({ error: 'invalid', issues: parsed.error.issues }, 400);
+  }
+  const db = getDb(c.env.DB);
+  const familyId = c.get('member').familyId;
+  const feedId = c.req.param('feedId');
+  const link = await loadLink(db, familyId, feedId, c.req.param('linkId'));
+  if (!link) return c.json({ error: 'not_found' }, 404);
+
+  const existing = await db
+    .select()
+    .from(linkRules)
+    .where(eq(linkRules.linkId, link.id));
+  const existingIds = new Set(existing.map((r) => r.id));
+  const requested = parsed.data.ruleIds;
+  if (
+    requested.length !== existing.length ||
+    !requested.every((id) => existingIds.has(id)) ||
+    new Set(requested).size !== requested.length
+  ) {
+    return c.json({ error: 'order_mismatch' }, 400);
+  }
+
+  for (let i = 0; i < requested.length; i++) {
+    await db.update(linkRules).set({ position: i }).where(eq(linkRules.id, requested[i]!));
+  }
+
+  const feed = (await db.select().from(feeds).where(eq(feeds.id, feedId)).limit(1))[0];
+  if (feed) await resynthesize(c, db, feed);
+
+  const rules = await db
+    .select()
+    .from(linkRules)
+    .where(eq(linkRules.linkId, link.id))
+    .orderBy(asc(linkRules.position));
+  return c.json({ rules });
+});
+
+// --- Source events (dismiss / restore) ---------------------------------------
 
 /** Load a source event scoped to its feed + family. */
 async function loadEvent(
@@ -350,9 +597,9 @@ async function loadEvent(
 }
 
 /**
- * Mark a feed event unneeded (admin) — e.g. an erroneous closure. Its generated
- * tasks are dismissed and the feed is rebuilt so the event no longer creates
- * tasks (explicit) or cancels the baseline (exception).
+ * Mark a feed event unneeded (admin) — e.g. an erroneous closure. The
+ * resynthesis removes anything it produced (its synthesized events cascade
+ * their tasks; a cancel-day it caused is undone; its pending decision goes).
  */
 feedRoutes.post('/:feedId/events/:eventId/dismiss', requireAdmin, async (c) => {
   const db = getDb(c.env.DB);
@@ -363,20 +610,13 @@ feedRoutes.post('/:feedId/events/:eventId/dismiss', requireAdmin, async (c) => {
   if (!event) return c.json({ error: 'not_found' }, 404);
 
   await db.update(sourceEvents).set({ dismissedAt: new Date() }).where(eq(sourceEvents.id, eventId));
-  // Explicit feeds: drop this event's tasks from queues + calendars. (Exception
-  // feeds have no event-linked tasks; the rebuild restores the baseline.)
-  await db
-    .update(tasks)
-    .set({ status: 'dismissed', ownerMemberId: null })
-    .where(eq(tasks.sourceEventId, eventId));
 
   const feed = (await db.select().from(feeds).where(eq(feeds.id, feedId)).limit(1))[0];
-  if (feed) await buildFeedTasks(db, feed);
-  enqueueReconcile(c, { kind: 'family', familyId });
+  if (feed) await resynthesize(c, db, feed);
   return c.json({ ok: true });
 });
 
-/** Restore a previously-dismissed feed event (admin) + rebuild. */
+/** Restore a previously-dismissed feed event (admin) + resynthesize. */
 feedRoutes.post('/:feedId/events/:eventId/restore', requireAdmin, async (c) => {
   const db = getDb(c.env.DB);
   const familyId = c.get('member').familyId;
@@ -387,21 +627,17 @@ feedRoutes.post('/:feedId/events/:eventId/restore', requireAdmin, async (c) => {
 
   await db
     .update(sourceEvents)
-    .set({ dismissedAt: null, tasksBuiltHash: null })
+    .set({ dismissedAt: null, synthesizedHash: null })
     .where(eq(sourceEvents.id, eventId));
-  // Un-dismiss its tasks so the rebuild can refresh them (explicit feeds).
-  await db
-    .update(tasks)
-    .set({ status: 'unowned' })
-    .where(and(eq(tasks.sourceEventId, eventId), eq(tasks.status, 'dismissed')));
 
   const feed = (await db.select().from(feeds).where(eq(feeds.id, feedId)).limit(1))[0];
-  if (feed) await buildFeedTasks(db, feed);
-  enqueueReconcile(c, { kind: 'family', familyId });
+  if (feed) await resynthesize(c, db, feed);
   return c.json({ ok: true });
 });
 
-/** Force-refresh a single feed now. */
+// --- Refresh ------------------------------------------------------------------
+
+/** Force-refresh a single feed now (ingest → synthesize → task-gen → mirror). */
 feedRoutes.post('/:feedId/refresh', async (c) => {
   const db = getDb(c.env.DB);
   const familyId = c.get('member').familyId;
@@ -422,22 +658,30 @@ feedRoutes.post('/:feedId/refresh', async (c) => {
     .where(eq(feeds.id, feed.id));
 
   const ingest = await ingestFeed(db, feed, ingestSecrets(c.env));
-  const build = await buildFeedTasks(db, feed);
+  const synthesis = await synthesizeFeed(db, feed);
+  const links = await db
+    .select({ familyMemberId: familyMemberFeeds.familyMemberId })
+    .from(familyMemberFeeds)
+    .where(eq(familyMemberFeeds.feedId, feed.id));
+  for (const familyMemberId of new Set(links.map((l) => l.familyMemberId))) {
+    await buildMemberTasks(db, familyMemberId);
+  }
   enqueueReconcile(c, { kind: 'family', familyId });
-  return c.json({ ingest, build });
+  return c.json({ ingest, synthesis });
 });
 
-/** Force-refresh all of a family's feeds now (ingest + rebuild tasks). */
+/** Force-refresh all of a family's feeds now (full pipeline). */
 feedRoutes.post('/refresh-all', async (c) => {
   const db = getDb(c.env.DB);
   const familyId = c.get('member').familyId;
   const ingest = await ingestFamilyFeeds(db, familyId, ingestSecrets(c.env));
 
   const familyFeeds = await db.select().from(feeds).where(eq(feeds.familyId, familyId));
-  const build = [];
+  const synthesis = [];
   for (const feed of familyFeeds) {
-    build.push(await buildFeedTasks(db, feed));
+    synthesis.push(await synthesizeFeed(db, feed));
   }
+  await buildFamilyTasks(db, familyId);
   enqueueReconcile(c, { kind: 'family', familyId });
-  return c.json({ ingest, build });
+  return c.json({ ingest, synthesis });
 });

@@ -1,11 +1,11 @@
 import {
   and,
-  calendarTargets,
   type Db,
   eq,
   externalAccounts,
   feeds,
   getDb,
+  memberCalendars,
   secrets,
 } from '@igt/db';
 import {
@@ -187,9 +187,9 @@ accountRoutes.delete('/:accountId', async (c) => {
   )[0];
   const usedByTarget = (
     await db
-      .select({ id: calendarTargets.id })
-      .from(calendarTargets)
-      .where(eq(calendarTargets.externalAccountId, account.id))
+      .select({ id: memberCalendars.id })
+      .from(memberCalendars)
+      .where(eq(memberCalendars.targetExternalAccountId, account.id))
       .limit(1)
   )[0];
   if (usedByFeed || usedByTarget) return c.json({ error: 'in_use' }, 409);
