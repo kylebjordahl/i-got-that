@@ -1,5 +1,10 @@
 # Caretaker Calendar Platform — Product Development Plan
 
+> **Superseded (July 2026):** the product has been re-architected around the
+> unified-calendar primitive per **PRD 1 — Unified Calendars & Task Generation**
+> (synthesis + task generation as decoupled transforms). This document is the
+> original plan, kept for history; see AGENTS.md for the current architecture.
+
 ## Context
 
 The user is building a lightweight, standards-based (CalDAV/iCalendar) platform that, on

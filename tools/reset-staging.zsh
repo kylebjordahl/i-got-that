@@ -1,8 +1,8 @@
 #!/usr/bin/env zsh
-# One-off DESTRUCTIVE reset of the STAGING D1 database for the #26 data-model
-# change (external accounts + input/output feeds). Wipes ALL data, then
-# re-applies the fresh single baseline migration. There are no real customers,
-# so this is intentionally not a safe/clean migration.
+# DESTRUCTIVE reset of the STAGING D1 database (currently: the unified-calendar
+# re-architecture, PRD 1). Wipes ALL data, then re-applies the fresh single
+# baseline migration. There are no real customers, so this is intentionally not
+# a safe/clean migration.
 #
 # NEVER run this against production.
 #

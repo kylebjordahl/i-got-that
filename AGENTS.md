@@ -6,12 +6,26 @@ instructions file; other tool-specific files (`CLAUDE.md`, `GEMINI.md`,
 
 ## What this is
 
-**i-got-that** — a Caretaker Calendar Platform. It ingests calendar feeds (e.g. a
-school ICS), classifies events into pickup/drop-off/attendance **tasks**, lets
-caretakers claim/own tasks, and reflects owned tasks onto each caretaker's
-calendars (CalDAV/iCloud, Google, email/iMIP). A **family is the tenant**.
+**i-got-that** — a family-logistics coordination layer built on one recursive
+primitive, the **unified calendar** (PRD 1). Two decoupled transforms, a
+**family is the tenant**:
 
-- Product plan: `docs/original-plan.md`
+```
+feeds → ingest → source_events
+source_events + link(baseline + link_rules) → SYNTHESIS → calendar_events + pending_decisions
+target calendar → READ-BACK → calendar_events (provenance 'human')
+calendar_events → TASK-GEN → tasks (pickup/drop-off/attendance, claim-only)
+claim → a 'claimed_task' event on the CLAIMER's unified calendar (the recursion)
+calendar_events (synthesized|claimed) → MIRROR → the member's one target calendar
+```
+
+Every member (child or caretaker) can have a unified calendar: the DB
+(`calendar_events`) is canonical; an optional per-member external target
+(CalDAV/iCloud or Google, `member_calendars`) is a write-through mirror whose
+human-authored events are read back in. Unmatched exception-feed events become
+**pending decisions** — the system never guesses.
+
+- Product spec: PRD 1 (unified calendars & task generation); `docs/original-plan.md` is the superseded original plan
 - Deploy: `docs/DEPLOYMENT.md` · Auth: `docs/AUTH.md`
 
 ## Stack & layout
@@ -26,8 +40,8 @@ libs/
   domain/     Zod schemas / shared types — the API contract source of truth
   db/         Drizzle schema + D1 migrations
   ical/       ical.js / ical-generator / tsdav wrappers
-  classification/  rule engine (explicit + exception/baseline)
-  delivery/   DeliveryProvider interface + Email/CalDAV/Google providers
+  classification/  pure engine: synthesis (override pipeline + baseline) + task generation
+  delivery/   DeliveryProvider interface + CalDAV/Google providers (email parked, unregistered)
 infra/terraform/  durable Cloudflare infra (D1, queues)
 .github/workflows/  CI + staging/production deploy
 ```
@@ -67,18 +81,34 @@ paths in particular).
 
 ## Architecture notes that bite
 
-- **Delivery is a reconcile model** (`syncMember`/`syncFamily` in
-  `apps/api/src/services/delivery.ts`): a caretaker's owned tasks are continuously
-  reflected onto their calendar targets; `delivery.payloadHash` skips unchanged
-  events. Route handlers schedule reconciles via `enqueueReconcile(c, job)` →
-  Cloudflare **Queue** (deployed) or inline `waitUntil` (local/tests). Never
-  `await` a full reconcile in a request path (it blocks on slow CalDAV/Google
-  writes — that caused the member-edit hang).
+- **`synthKey` is the idempotency backbone** of `calendar_events`
+  (`apps/api/src/services/synthesis.ts`): synthesis computes the desired key
+  set per link+window and upserts/deletes by `(familyMemberId, synthKey)` with
+  a `contentHash` skip — rule/config changes resynthesize without duplicating.
+  Key forms: `bl:<linkId>:<date>`, `ev:<linkId>:<sourceEventId>`,
+  `pd:<decisionId>`, `task:<taskId>`, `ext:<uid>:<recurrenceId>`.
+- **Two recursion guards** keep the claim loop from echoing: task-gen never
+  generates from `claimed_task` events (`libs/classification`), and read-back
+  never imports events whose UID starts with `igt-`
+  (`apps/api/src/services/readback.ts`). Don't weaken either.
+- **The mirror is a reconcile model** (`syncMemberMirror`/`syncFamilyMirror` in
+  `apps/api/src/services/mirror.ts`): a member's synthesized + claimed events
+  are continuously reflected onto their one target calendar;
+  `event_mirrors.payloadHash` skips unchanged events. `event_mirrors` has **no
+  FK to calendar_events on purpose** — mirror rows must outlive their events so
+  the next reconcile can cancel the remote copy. Route handlers schedule
+  reconciles via `enqueueReconcile(c, job)` → Cloudflare **Queue** (deployed)
+  or inline `waitUntil` (local/tests). Never `await` a full reconcile in a
+  request path (it blocks on slow CalDAV/Google writes).
+- **Owned tasks are never deleted by reconciliation** (`services/task-gen.ts`):
+  only unowned tasks are removed/swept, and user-converted (`createdVia:
+  'manual'`) tasks are healed, never reclassified.
 - **CalDAV** does a direct authenticated `PUT`/`DELETE` to the discovered
   collection URL (`libs/delivery/src/caldav.ts`), not tsdav's create-only helper.
 - **Credentials** are envelope-encrypted (KEK → DEK) into the `secret` table and
-  never returned by the API. The OAuth client secret stays in `apps/api`; the
-  Google provider gets an injected refresher, so `libs/delivery` never sees it.
+  never returned by the API. Accounts are **user-owned** (reused across
+  families); the OAuth client secret stays in `apps/api`; the Google provider
+  gets an injected refresher, so `libs/delivery` never sees it.
 - **Auth**: magic-link (returns a `devToken` outside production), Sign in with
   Apple (server done; client wiring TODO), and member-claim invites
   (`/invites/:token/accept` links an existing user to a pre-created member).
@@ -86,9 +116,14 @@ paths in particular).
   `staging.igt.kylebjordahl.com` serving `/api/*` (API, prefix stripped),
   `/app/*` (Flutter web via the `ASSETS` binding), and `/` → `/app/`. Gated on the
   `ASSETS` binding so local/dev/tests serve the API at the root.
-- **Permissions** are enforced server-side: caretakers edit only their own
-  calendar targets (admins any); feeds + family structure + role flags are
-  admin-only.
+- **Permissions** are enforced server-side: a member's calendar target draws
+  only from the **caller's own** connected accounts, and a member linked to a
+  different user keeps their target private even from admins; feeds + family
+  structure + role flags are admin-only.
+- **Wipe-and-reseed tooling**: `tools/reset-local.zsh` (local D1),
+  `tools/reset-staging.zsh` (staging; keep `tools/reset-staging.sql`'s drop
+  list in sync with the schema), `tools/seed-dev.zsh` (demo family via the
+  live API — update it when API shapes change).
 
 ## Working agreement
 
