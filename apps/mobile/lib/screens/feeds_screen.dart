@@ -17,7 +17,7 @@ class FeedsScreen extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final feeds = ref.watch(feedsProvider).valueOrNull ?? const <Map<String, dynamic>>[];
+    final feeds = ref.watch(feedsProvider).valueOrNull ?? const <FeedItem>[];
     final isAdmin = ref.watch(currentMemberProvider).valueOrNull?.isAdmin ?? false;
 
     return Scaffold(
@@ -81,45 +81,34 @@ class FeedsScreen extends ConsumerWidget {
 
 class _FeedRow extends ConsumerWidget {
   const _FeedRow({required this.feed});
-  final Map<String, dynamic> feed;
+  final FeedItem feed;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final feedId = feed['id'] as String;
-    final kind = feed['kind'] as String? ?? 'ics';
-    final title = (feed['sourceCalendarName'] as String?) ??
-        (feed['url'] as String?) ??
-        (feed['sourceCalendarId'] as String?) ??
-        'Account calendar';
-    final protocol = switch (kind) {
+    final protocol = switch (feed.kind) {
       'google' => 'Google',
       'caldav' => 'CalDAV',
       _ => 'ICS',
     };
-    final typeLabel = kind == 'ics' ? 'School calendar' : 'Family calendar';
+    final typeLabel = feed.isException ? 'Exception-only' : 'Standard';
 
-    final members = ref.watch(membersProvider).valueOrNull ?? const <Member>[];
-    final byId = {for (final m in members) m.id: m};
-    final links = ref.watch(feedLinksProvider(feedId)).valueOrNull ?? const [];
-    final kids = links
-        .cast<Map<String, dynamic>>()
-        .where((l) => byId[l['familyMemberId']]?.requiresCaretaker ?? true)
-        .length;
+    final links = ref.watch(feedLinksProvider(feed.id)).valueOrNull ?? const <FeedLink>[];
+    final linkedCount = links.length;
 
     return SettingRow(
-      icon: kind == 'ics' ? Icons.rss_feed_rounded : Icons.calendar_month_rounded,
-      iconColor: kind == 'ics' ? AppColors.feedBlue : AppColors.purple,
-      title: title,
+      icon: feed.kind == 'ics' ? Icons.rss_feed_rounded : Icons.calendar_month_rounded,
+      iconColor: feed.isException ? AppColors.amber : AppColors.feedBlue,
+      title: feed.displayName,
       subtitle: '$typeLabel · $protocol',
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Text('$kids ${kids == 1 ? 'kid' : 'kids'}', style: AppText.secondary),
+          Text('$linkedCount linked', style: AppText.secondary),
           const SizedBox(width: 8),
           const Icon(Icons.chevron_right_rounded, color: AppColors.textMuted),
         ],
       ),
-      onTap: () => _refresh(context, ref, feedId),
+      onTap: () => _refresh(context, ref, feed.id),
     );
   }
 
@@ -128,6 +117,8 @@ class _FeedRow extends ConsumerWidget {
     await ref.read(apiClientProvider).refreshFeed(familyId, feedId);
     ref.invalidate(unownedTasksProvider);
     ref.invalidate(allTasksProvider);
+    ref.invalidate(calendarEventsProvider);
+    ref.invalidate(pendingDecisionsProvider);
     if (context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Feed refreshed')));
     }
@@ -290,8 +281,8 @@ class _AddFeedDialogState extends ConsumerState<_AddFeedDialog> {
             const SizedBox(height: 12),
             SegmentedButton<String>(
               segments: const [
-                ButtonSegment(value: 'exception', label: Text('Exception')),
-                ButtonSegment(value: 'explicit', label: Text('Explicit')),
+                ButtonSegment(value: 'exception', label: Text('Exception-only')),
+                ButtonSegment(value: 'standard', label: Text('Standard')),
               ],
               selected: {_mode},
               onSelectionChanged: (s) => setState(() => _mode = s.first),
@@ -299,8 +290,9 @@ class _AddFeedDialogState extends ConsumerState<_AddFeedDialog> {
             const Padding(
               padding: EdgeInsets.only(top: 6),
               child: Text(
-                'Exception: events are deviations from a Mon–Fri baseline (no-school, '
-                'early dismissal). Explicit: events become tasks directly.',
+                'Exception-only: empty on normal days, carries only deviations '
+                '(no-school, early release) from a baseline. Standard: events '
+                'mean what they say.',
                 style: TextStyle(fontSize: 12),
               ),
             ),

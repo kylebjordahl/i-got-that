@@ -9,8 +9,7 @@ import '../theme/app_text.dart';
 import '../theme/person_colors.dart';
 import '../widgets/primitives.dart';
 import '../widgets/settings.dart';
-import 'caretaker_detail_screen.dart';
-import 'child_detail_screen.dart';
+import 'member_detail_screen.dart';
 
 /// People & roles — the members list off the Family hub. Caretakers and children
 /// in their own sections; the nav "+" opens the add-member menu.
@@ -59,6 +58,7 @@ class PeopleScreen extends ConsumerWidget {
     );
   }
 
+  // The Child/Caretaker split is only a grouping — both open the same screen.
   List<Widget> _rows(BuildContext context, List<Member> people, {required bool isChild}) {
     final rows = <Widget>[];
     for (var i = 0; i < people.length; i++) {
@@ -67,9 +67,7 @@ class PeopleScreen extends ConsumerWidget {
         member: m,
         onTap: () => Navigator.of(context).push(
           MaterialPageRoute(
-            builder: (_) => isChild
-                ? ChildDetailScreen(memberId: m.id)
-                : CaretakerDetailScreen(memberId: m.id),
+            builder: (_) => MemberDetailScreen(memberId: m.id),
           ),
         ),
       ));
@@ -133,7 +131,7 @@ class PeopleScreen extends ConsumerWidget {
       final id = (res['member'] as Map<String, dynamic>)['id'] as String;
       if (!context.mounted) return;
       Navigator.of(context).push(MaterialPageRoute(
-        builder: (_) => isChild ? ChildDetailScreen(memberId: id) : CaretakerDetailScreen(memberId: id),
+        builder: (_) => MemberDetailScreen(memberId: id),
       ));
     } catch (e) {
       if (context.mounted) {

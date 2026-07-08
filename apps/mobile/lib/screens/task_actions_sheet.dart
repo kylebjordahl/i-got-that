@@ -24,12 +24,14 @@ Future<void> showTaskActions(BuildContext context, WidgetRef ref, TaskItem task)
   final child = byId[task.familyMemberId];
   final owner = task.ownerMemberId != null ? byId[task.ownerMemberId] : null;
   final color = child != null ? personColor(child) : AppColors.textSecondary;
-  final isFeedTask = task.sourceEventId != null;
+  // Only event-derived tasks are convertible (fully-manual ones have no event).
+  final isFeedTask = task.calendarEventId != null;
   final unowned = task.status == 'unowned';
 
-  // Derive the current change-type segment from the whole feed-event group.
+  // Derive the current change-type segment from the whole event group.
   final all = ref.read(allTasksProvider).valueOrNull ?? const <TaskItem>[];
-  final group = all.where((t) => t.sourceEventId == task.sourceEventId).toList();
+  final group =
+      all.where((t) => t.calendarEventId == task.calendarEventId).toList();
   final types = (group.isEmpty ? [task] : group).map((t) => t.type).toSet();
   final hasAtt = types.contains('attendance');
   final hasTrans = types.contains('pickup') || types.contains('dropoff');
@@ -156,18 +158,6 @@ Future<void> showTaskActions(BuildContext context, WidgetRef ref, TaskItem task)
                         'Marked not needed');
                   },
                 ),
-                if (isAdmin && isFeedTask) ...[
-                  const Divider(height: 18),
-                  _ActionRow(
-                    icon: Icons.event_busy_rounded,
-                    iconColor: AppColors.amber,
-                    label: 'Mark whole event not needed',
-                    onTap: () {
-                      Navigator.of(sheetCtx).pop();
-                      _dismissEvent(context, ref, task);
-                    },
-                  ),
-                ],
               ],
             ),
           ),
@@ -222,38 +212,6 @@ Future<void> _pickAndAssign(
   );
 }
 
-Future<void> _dismissEvent(BuildContext context, WidgetRef ref, TaskItem task) async {
-  final events = await ref.read(sourceEventsProvider.future);
-  final feedId = events.where((e) => e.id == task.sourceEventId).map((e) => e.feedId).firstOrNull;
-  if (feedId == null) {
-    if (context.mounted) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(const SnackBar(content: Text("Couldn't find the feed event")));
-    }
-    return;
-  }
-  if (!context.mounted) return;
-  final ok = await showDialog<bool>(
-    context: context,
-    builder: (_) => AlertDialog(
-      title: const Text('Mark event not needed?'),
-      content: const Text('This removes every task generated from this feed event '
-          '(e.g. an erroneous closure). You can restore it later from the feed.'),
-      actions: [
-        TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Cancel')),
-        PillButton(
-          label: 'Mark not needed',
-          variant: PillVariant.white,
-          onPressed: () => Navigator.of(context).pop(true),
-        ),
-      ],
-    ),
-  );
-  if (ok != true || !context.mounted) return;
-  await _run(context, ref,
-      (api, fid) => api.dismissEvent(fid, feedId, task.sourceEventId!), 'Event marked not needed');
-}
-
 Future<void> _run(
   BuildContext context,
   WidgetRef ref,
@@ -265,7 +223,8 @@ Future<void> _run(
     await action(ref.read(apiClientProvider), familyId);
     ref.invalidate(unownedTasksProvider);
     ref.invalidate(allTasksProvider);
-    ref.invalidate(sourceEventsProvider);
+    // Claims move events between calendars (the recursion) — refresh Plan too.
+    ref.invalidate(calendarEventsProvider);
     if (context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(success)));
     }

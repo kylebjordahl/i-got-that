@@ -69,7 +69,7 @@ class FamilyScreen extends ConsumerWidget {
                 icon: Icons.rss_feed_rounded,
                 iconColor: AppColors.feedBlue,
                 title: 'Input feeds',
-                subtitle: 'Calendars that generate tasks',
+                subtitle: 'Source calendars, linked on each member',
                 onTap: () => Navigator.of(context).push(
                   MaterialPageRoute(builder: (_) => const FeedsScreen()),
                 ),
@@ -79,7 +79,7 @@ class FamilyScreen extends ConsumerWidget {
                 icon: Icons.rule_rounded,
                 iconColor: AppColors.purple,
                 title: 'Family rules',
-                subtitle: 'How events become tasks',
+                subtitle: 'Family-wide behavior · task threading',
                 onTap: () => Navigator.of(context).push(
                   MaterialPageRoute(builder: (_) => const RulesScreen()),
                 ),
@@ -91,8 +91,8 @@ class FamilyScreen extends ConsumerWidget {
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 4),
           child: Text(
-            'Delivery calendars live on each caretaker now — set them in their '
-            'detail. Feed→child links live on the child.',
+            'Each member has a unified calendar — sources, rules, and the '
+            'target calendar all live on their detail screen.',
             style: AppText.caveat,
           ),
         ),

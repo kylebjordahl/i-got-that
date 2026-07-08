@@ -24,7 +24,8 @@ final TaskItem _task = TaskItem(
   type: 'dropoff',
   start: DateTime.now().add(const Duration(hours: 2)),
   status: 'unowned',
-  sourceEventId: 'e1',
+  createdVia: 'generated',
+  calendarEventId: 'e1',
 );
 
 void main() {
@@ -36,6 +37,9 @@ void main() {
         currentMemberProvider.overrideWith((ref) async => me),
         unownedTasksProvider.overrideWith((ref) async => [_task]),
         allTasksProvider.overrideWith((ref) async => [_task]),
+        pendingDecisionsProvider.overrideWith((ref) async => const []),
+        calendarEventsProvider.overrideWith((ref) async => const []),
+        threadingThresholdProvider.overrideWith((ref) async => 30),
       ],
       child: MaterialApp(
         theme: buildAppTheme(),
