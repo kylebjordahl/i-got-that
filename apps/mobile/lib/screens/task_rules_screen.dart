@@ -5,6 +5,7 @@ import '../state/auth.dart';
 import '../state/family.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_text.dart';
+import '../widgets/app_bottom_nav.dart';
 import '../widgets/primitives.dart';
 import '../widgets/settings.dart';
 
@@ -55,43 +56,53 @@ class _TaskRulesScreenState extends ConsumerState<TaskRulesScreen> {
     }
 
     return Scaffold(
+      extendBody: true,
       body: SafeArea(
-        child: ListView(
-          padding: const EdgeInsets.fromLTRB(22, 12, 22, 40),
+        child: Column(
           children: [
-            SubPageHeader(title: 'Task rules', subtitle: widget.member.relationName),
-            const SizedBox(height: 18),
-            Text('ACTIVE CALENDAR', style: AppText.eyebrow()),
-            const SizedBox(height: 10),
-            SizedBox(
-              height: 38,
+            Padding(
+              padding: const EdgeInsets.fromLTRB(22, 12, 22, 18),
+              child: SubPageHeader(title: 'Task rules', subtitle: widget.member.relationName),
+            ),
+            Expanded(
               child: ListView(
-                scrollDirection: Axis.horizontal,
+                padding: const EdgeInsets.fromLTRB(22, 0, 22, 150),
                 children: [
-                  for (final (label, linkId) in calendars)
-                    Padding(
-                      padding: const EdgeInsets.only(right: 8),
-                      child: _CalChip(
-                        label: label,
-                        selected: _activeLinkId == linkId,
-                        onTap: () => setState(() => _activeLinkId = linkId),
-                      ),
+                  Text('ACTIVE CALENDAR', style: AppText.eyebrow()),
+                  const SizedBox(height: 10),
+                  SizedBox(
+                    height: 38,
+                    child: ListView(
+                      scrollDirection: Axis.horizontal,
+                      children: [
+                        for (final (label, linkId) in calendars)
+                          Padding(
+                            padding: const EdgeInsets.only(right: 8),
+                            child: _CalChip(
+                              label: label,
+                              selected: _activeLinkId == linkId,
+                              onTap: () => setState(() => _activeLinkId = linkId),
+                            ),
+                          ),
+                      ],
                     ),
+                  ),
+                  const SizedBox(height: 20),
+                  setAsync.when(
+                    loading: () => const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 40),
+                      child: Center(child: CircularProgressIndicator()),
+                    ),
+                    error: (e, _) => Text('$e', style: font(kBodyFont, 13, 500, color: AppColors.coral)),
+                    data: (ruleSet) => _pipeline(ruleSet),
+                  ),
                 ],
               ),
-            ),
-            const SizedBox(height: 20),
-            setAsync.when(
-              loading: () => const Padding(
-                padding: EdgeInsets.symmetric(vertical: 40),
-                child: Center(child: CircularProgressIndicator()),
-              ),
-              error: (e, _) => Text('$e', style: font(kBodyFont, 13, 500, color: AppColors.coral)),
-              data: (ruleSet) => _pipeline(ruleSet),
             ),
           ],
         ),
       ),
+      bottomNavigationBar: const PersistentAppNav(),
     );
   }
 

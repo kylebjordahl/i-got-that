@@ -98,6 +98,66 @@ describe('ingest: account-backed input feeds', () => {
     expect(rows2).toHaveLength(2);
   });
 
+  it('persists the calendar timezone from a Google feed (so exception baselines use it, not UTC)', async () => {
+    const user = await login('ingest-google-tz@example.com');
+    const familyId = await createFamily(user.token, 'Ingest G TZ');
+    const db = getDb(env.DB);
+
+    const credRef = await storeSecret(
+      db,
+      env.KEK,
+      null,
+      JSON.stringify({ kind: 'oauth', refreshToken: 'rt-tz' }),
+    );
+    const account = (
+      await db
+        .insert(externalAccounts)
+        .values({ userId: user.userId, kind: 'google', name: 'G', credentialsRef: credRef })
+        .returning()
+    )[0]!;
+    const feed = (
+      await db
+        .insert(feeds)
+        .values({
+          familyId,
+          kind: 'google',
+          externalAccountId: account.id,
+          sourceCalendarId: 'primary',
+          mode: 'exception',
+        })
+        .returning()
+    )[0]!;
+
+    const listJson = {
+      timeZone: 'America/Denver',
+      items: [
+        {
+          iCalUID: 'closure@g',
+          status: 'confirmed',
+          summary: 'Closed',
+          start: { date: '2026-08-04' },
+          end: { date: '2026-08-05' },
+        },
+      ],
+    };
+    const fetchImpl = (async () => ({
+      ok: true,
+      status: 200,
+      json: async () => listJson,
+    })) as unknown as typeof fetch;
+
+    await ingestFeed(db, feed, {
+      fetchImpl,
+      windowStart: new Date('2026-07-01T00:00:00Z'),
+      windowEnd: new Date('2026-09-01T00:00:00Z'),
+      kek: env.KEK,
+      googleRefresh: async () => 'access-token',
+    });
+
+    const after = (await db.select().from(feeds).where(eq(feeds.id, feed.id)).limit(1))[0]!;
+    expect(after.timezone).toBe('America/Denver');
+  });
+
   it('marks a feed errored when its account credential is missing', async () => {
     const user = await login('ingest-broken@example.com');
     const familyId = await createFamily(user.token, 'Ingest B');
