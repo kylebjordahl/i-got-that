@@ -191,6 +191,59 @@ describe('task generation (Module B)', () => {
     expect(after.map((t) => t.type)).toEqual(['attendance']);
   });
 
+  it('healing a moved event carries its dtend along, not just dtstart', async () => {
+    const fam = await setupFamily('gen-heal-dtend@example.com');
+    const db = getDb(env.DB);
+    const { link } = await linkedFeed(db, fam.familyId, fam.childId, 'transition');
+    const event = await insertEvent(db, fam.familyId, fam.childId, {
+      synthKey: 'ev:l1:heal',
+      linkId: link.id,
+      dtstart: new Date('2026-07-06T15:30:00Z'),
+      dtend: new Date('2026-07-06T21:45:00Z'),
+    });
+    await buildMemberTasks(db, fam.childId);
+    const dropoffBefore = (
+      await db
+        .select()
+        .from(tasks)
+        .where(eq(tasks.calendarEventId, event.id))
+    ).find((t) => t.type === 'dropoff')!;
+    // Default dropoff window is 15min, anchored to the event's dtstart.
+    expect(dropoffBefore.dtend!.getTime()).toBe(
+      new Date('2026-07-06T15:45:00Z').getTime(),
+    );
+
+    // The event reschedules an hour later — a re-ingested feed correction, or
+    // a DST-driven recompute upstream. Its content hash changes so task-gen
+    // reconsiders it.
+    const movedStart = new Date('2026-07-06T16:30:00Z');
+    const movedEnd = new Date('2026-07-06T22:45:00Z');
+    const payload = {
+      dtstart: movedStart,
+      dtend: movedEnd,
+      allDay: false,
+      summary: 'School day',
+      location: null,
+      description: null,
+    };
+    await db
+      .update(calendarEvents)
+      .set({ ...payload, contentHash: hashCalendarEvent(payload) })
+      .where(eq(calendarEvents.id, event.id));
+    await buildMemberTasks(db, fam.childId);
+
+    const dropoffAfter = (
+      await db
+        .select()
+        .from(tasks)
+        .where(eq(tasks.calendarEventId, event.id))
+    ).find((t) => t.type === 'dropoff')!;
+    expect(dropoffAfter.dtstart.getTime()).toBe(movedStart.getTime());
+    // The window should track the new anchor (15min later), not stay pinned
+    // to the pre-move dtend.
+    expect(dropoffAfter.dtend!.getTime()).toBe(movedStart.getTime() + 15 * 60_000);
+  });
+
   it('preserves manual conversions and sweeps unowned orphans', async () => {
     const fam = await setupFamily('gen-preserve@example.com');
     const db = getDb(env.DB);
