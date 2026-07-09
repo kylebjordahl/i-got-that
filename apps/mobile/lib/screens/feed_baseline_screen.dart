@@ -165,7 +165,6 @@ class _FeedBaselineScreenState extends ConsumerState<FeedBaselineScreen> {
                   const SectionEyebrow('Feed source'),
                   const SizedBox(height: 12),
                   AppCard(
-                    padding: EdgeInsets.zero,
                     child: SettingRow(
                       icon: _feed.kind == 'ics' ? Icons.rss_feed_rounded : Icons.calendar_month_rounded,
                       iconColor: AppColors.feedBlue,
