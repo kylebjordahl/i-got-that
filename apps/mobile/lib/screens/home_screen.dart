@@ -64,6 +64,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final decisions =
         ref.watch(pendingDecisionsProvider).valueOrNull ?? const <PendingDecision>[];
     final threshold = ref.watch(threadingThresholdProvider).valueOrNull ?? 30;
+    final events =
+        ref.watch(calendarEventsProvider).valueOrNull ?? const <CalendarEventItem>[];
+    final eventsById = {for (final e in events) e.id: e};
     final byId = {for (final m in members) m.id: m};
     final now = DateTime.now();
 
@@ -150,7 +153,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                   ),
                   SliverPadding(
                     padding: const EdgeInsets.fromLTRB(22, 0, 22, 8),
-                    sliver: _daySliver(byDay[day]!, byId, me, threshold),
+                    sliver: _daySliver(byDay[day]!, byId, eventsById, me, threshold),
                   ),
                 ],
               ),
@@ -182,17 +185,17 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     return chains;
   }
 
-  Widget _daySliver(
-      List<TaskItem> tasks, Map<String, Member> byId, Member? me, int threshold) {
+  Widget _daySliver(List<TaskItem> tasks, Map<String, Member> byId,
+      Map<String, CalendarEventItem> eventsById, Member? me, int threshold) {
     final chains = _chains(tasks, threshold);
     return SliverList.separated(
       itemCount: chains.length,
       separatorBuilder: (_, __) => const SizedBox(height: 11),
       itemBuilder: (_, i) {
         final chain = chains[i];
-        if (chain.length == 1) return _row(chain.first, byId, me);
+        if (chain.length == 1) return _row(chain.first, byId, eventsById, me);
         return _ThreadedChain(
-          rows: [for (final t in chain) _row(t, byId, me)],
+          rows: [for (final t in chain) _row(t, byId, eventsById, me)],
           gaps: [
             for (var j = 1; j < chain.length; j++)
               chain[j]
@@ -265,7 +268,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     );
   }
 
-  Widget _row(TaskItem t, Map<String, Member> byId, Member? me) {
+  Widget _row(TaskItem t, Map<String, Member> byId,
+      Map<String, CalendarEventItem> eventsById, Member? me) {
     final child = byId[t.familyMemberId];
     final color = child != null ? personColor(child) : AppColors.textSecondary;
     final owned = t.status == 'owned';
@@ -273,7 +277,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     return TaskRow(
       icon: taskIcon(t.type),
       iconColor: color,
-      typeLabel: taskTypeLabel(t.type),
+      typeLabel: taskTitle(t, eventsById[t.calendarEventId]),
       personName: child?.relationName ?? 'child',
       personColor: color,
       subtitle: '${taskCategory(t.type)} · ${friendlyTime(t.start)}',

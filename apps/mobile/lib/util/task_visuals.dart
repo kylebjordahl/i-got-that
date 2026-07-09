@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../models.dart';
 
 /// Shared task-type glyphs + labels (Home rows, Plan blocks).
 
@@ -18,3 +19,13 @@ String taskTypeLabel(String type) => switch (type) {
       'dropoff' => 'Drop-off',
       _ => 'Attendance',
     };
+
+/// The row title for a task: drop-off/pickup keep their generic type label,
+/// but attendance tasks read as the source event's own title (e.g. "Soccer
+/// practice") instead of the generic "Attendance", when that event is known.
+String taskTitle(TaskItem task, CalendarEventItem? sourceEvent) {
+  if (task.type == 'attendance' && sourceEvent != null) {
+    return sourceEvent.displaySummary;
+  }
+  return taskTypeLabel(task.type);
+}

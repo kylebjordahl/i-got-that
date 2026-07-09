@@ -74,7 +74,7 @@ export async function readBackMember(
   let occurrences: Occurrence[];
   if (cal.targetMethod === 'caldav') {
     if (credential.kind !== 'basic') return result;
-    occurrences = await fetchCalDavOccurrences(
+    ({ occurrences } = await fetchCalDavOccurrences(
       {
         collectionUrl: cal.targetCalendarId,
         username: credential.username,
@@ -82,7 +82,7 @@ export async function readBackMember(
       },
       expand,
       opts.fetchImpl,
-    );
+    ));
   } else {
     if (credential.kind !== 'oauth') return result;
     const accessToken =
@@ -91,12 +91,12 @@ export async function readBackMember(
         ? await opts.googleRefresh(credential.refreshToken)
         : undefined);
     if (!accessToken) return result;
-    occurrences = await fetchGoogleOccurrences(
+    ({ occurrences } = await fetchGoogleOccurrences(
       accessToken,
       cal.targetCalendarId,
       expand,
       opts.fetchImpl,
-    );
+    ));
   }
   result.fetched = true;
 

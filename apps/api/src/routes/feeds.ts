@@ -42,8 +42,10 @@ import { Hono } from 'hono';
 import type { Bindings, HonoEnv } from '../env.js';
 import { googleRefresherFor } from '../lib/google-oauth.js';
 import { requireAdmin, requireFamilyMember } from '../middleware/auth.js';
+import { reconcileClaimEvents } from '../services/claim.js';
 import { ingestFamilyFeeds, ingestFeed } from '../services/ingest.js';
 import { enqueueReconcile } from '../services/mirror.js';
+import { readBackFamily } from '../services/readback.js';
 import { synthesizeFeed } from '../services/synthesis.js';
 import { buildFamilyTasks, buildMemberTasks } from '../services/task-gen.js';
 
@@ -626,7 +628,11 @@ feedRoutes.post('/:feedId/events/:eventId/restore', requireAdmin, async (c) => {
 
 // --- Refresh ------------------------------------------------------------------
 
-/** Force-refresh a single feed now (ingest → synthesize → task-gen → mirror). */
+/**
+ * Force-refresh a single feed now: ingest → synthesize → read-back (family,
+ * so human edits on member target calendars aren't left stale between cron
+ * ticks) → task-gen → claim true-up → mirror.
+ */
 feedRoutes.post('/:feedId/refresh', async (c) => {
   const db = getDb(c.env.DB);
   const familyId = c.get('member').familyId;
@@ -648,6 +654,7 @@ feedRoutes.post('/:feedId/refresh', async (c) => {
 
   const ingest = await ingestFeed(db, feed, ingestSecrets(c.env));
   const synthesis = await synthesizeFeed(db, feed);
+  await readBackFamily(db, familyId, ingestSecrets(c.env));
   const links = await db
     .select({ familyMemberId: familyMemberFeeds.familyMemberId })
     .from(familyMemberFeeds)
@@ -655,11 +662,17 @@ feedRoutes.post('/:feedId/refresh', async (c) => {
   for (const familyMemberId of new Set(links.map((l) => l.familyMemberId))) {
     await buildMemberTasks(db, familyMemberId);
   }
+  await reconcileClaimEvents(db, familyId);
   enqueueReconcile(c, { kind: 'family', familyId });
   return c.json({ ingest, synthesis });
 });
 
-/** Force-refresh all of a family's feeds now (full pipeline). */
+/**
+ * Force-refresh all of a family's feeds now — mirrors the cron tick's
+ * pipeline order: ingest+synthesize → read-back → task-gen → claim
+ * true-up → mirror. Without the read-back step, human edits made directly
+ * on a member's target calendar wouldn't show up until the next cron tick.
+ */
 feedRoutes.post('/refresh-all', async (c) => {
   const db = getDb(c.env.DB);
   const familyId = c.get('member').familyId;
@@ -670,7 +683,9 @@ feedRoutes.post('/refresh-all', async (c) => {
   for (const feed of familyFeeds) {
     synthesis.push(await synthesizeFeed(db, feed));
   }
+  await readBackFamily(db, familyId, ingestSecrets(c.env));
   await buildFamilyTasks(db, familyId);
+  await reconcileClaimEvents(db, familyId);
   enqueueReconcile(c, { kind: 'family', familyId });
   return c.json({ ingest, synthesis });
 });
