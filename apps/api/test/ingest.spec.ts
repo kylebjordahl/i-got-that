@@ -33,7 +33,7 @@ describe('ingest: account-backed input feeds', () => {
           kind: 'google',
           externalAccountId: account.id,
           sourceCalendarId: 'primary',
-          mode: 'explicit',
+          mode: 'standard',
         })
         .returning()
     )[0]!;
@@ -118,7 +118,7 @@ describe('ingest: account-backed input feeds', () => {
           kind: 'google',
           externalAccountId: account.id,
           sourceCalendarId: 'primary',
-          mode: 'explicit',
+          mode: 'standard',
         })
         .returning()
     )[0]!;

@@ -3,7 +3,7 @@ import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import type { Bindings, HonoEnv } from './env.js';
 import { authMiddleware } from './middleware/auth.js';
-import { deliveryQueueConsumer } from './services/delivery.js';
+import { deliveryQueueConsumer } from './services/mirror.js';
 import { accountRoutes } from './routes/accounts.js';
 import { authRoutes } from './routes/auth.js';
 import { familyRoutes } from './routes/families.js';

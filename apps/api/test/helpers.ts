@@ -68,3 +68,27 @@ export async function createFamily(token: string, name: string): Promise<string>
   const { family } = (await res.json()) as { family: { id: string } };
   return family.id;
 }
+
+/**
+ * Common pipeline fixture: an admin caretaker, their family, and a dependent
+ * child. Specs add feeds/links/rules on top.
+ */
+export async function setupFamily(email: string, name = 'Test Fam') {
+  const admin = await login(email);
+  const res = await call('/families', authed(admin.token, { name }));
+  const { family, member } = (await res.json()) as {
+    family: { id: string };
+    member: { id: string };
+  };
+  const childRes = await call(
+    `/families/${family.id}/members`,
+    authed(admin.token, { relationName: 'child', requiresCaretaker: true }),
+  );
+  const { member: child } = (await childRes.json()) as { member: { id: string } };
+  return {
+    admin,
+    familyId: family.id,
+    adminMemberId: member.id,
+    childId: child.id,
+  };
+}

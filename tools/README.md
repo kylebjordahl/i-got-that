@@ -1,6 +1,20 @@
 # tools
 
-Build/codegen utilities.
+Build/codegen + dev-data utilities.
+
+## Reset & seed (wipe-and-restart)
+
+No data is precious pre-launch; these make a clean slate cheap:
+
+- `reset-local.zsh` — wipe the local D1 (removes `apps/api/.wrangler`) and
+  re-apply the migration baseline.
+- `reset-staging.zsh` — DESTRUCTIVE staging wipe + baseline re-apply. Keep the
+  drop list in `reset-staging.sql` in sync with `libs/db/src/schema.ts`.
+  Never run against production.
+- `seed-dev.zsh` — drive the live local API to build a demo family: exception
+  school feed + baseline + override rules, synthesized events, claimable tasks
+  (one pre-claimed so Plan shows the recursion), and pending decisions from
+  unmatched feed events. Update it when API request shapes change.
 
 ## OpenAPI → Dart client (planned)
 

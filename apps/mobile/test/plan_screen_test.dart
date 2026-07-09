@@ -24,7 +24,8 @@ void main() {
         type: 'dropoff',
         start: DateTime(now.year, now.month, now.day, 8),
         status: 'unowned',
-        sourceEventId: 'e1',
+        createdVia: 'generated',
+        calendarEventId: 'e1',
       ),
     ];
     await tester.pumpWidget(ProviderScope(
@@ -34,6 +35,9 @@ void main() {
               _m('theo', 'Theo', child: true),
             ]),
         allTasksProvider.overrideWith((ref) async => tasks),
+        calendarEventsProvider.overrideWith((ref) async => const []),
+        pendingDecisionsProvider.overrideWith((ref) async => const []),
+        threadingThresholdProvider.overrideWith((ref) async => 30),
       ],
       child: MaterialApp(
         theme: buildAppTheme(),
@@ -54,8 +58,8 @@ void main() {
       (tester) async {
     final now = DateTime.now();
     final tasks = [
-      TaskItem(id: 'a', familyMemberId: 'mia', type: 'attendance', start: DateTime(now.year, now.month, now.day, 10), status: 'unowned', sourceEventId: 'e1'),
-      TaskItem(id: 'b', familyMemberId: 'theo', type: 'attendance', start: DateTime(now.year, now.month, now.day, 14), status: 'owned', ownerMemberId: 'dad', sourceEventId: 'e2'),
+      TaskItem(id: 'a', familyMemberId: 'mia', type: 'attendance', start: DateTime(now.year, now.month, now.day, 10), status: 'unowned', createdVia: 'generated', calendarEventId: 'e1'),
+      TaskItem(id: 'b', familyMemberId: 'theo', type: 'attendance', start: DateTime(now.year, now.month, now.day, 14), status: 'owned', ownerMemberId: 'dad', createdVia: 'generated', calendarEventId: 'e2'),
     ];
     await tester.pumpWidget(ProviderScope(
       overrides: [
@@ -65,6 +69,9 @@ void main() {
               _m('mia', 'Mia', child: true),
             ]),
         allTasksProvider.overrideWith((ref) async => tasks),
+        calendarEventsProvider.overrideWith((ref) async => const []),
+        pendingDecisionsProvider.overrideWith((ref) async => const []),
+        threadingThresholdProvider.overrideWith((ref) async => 30),
       ],
       child: MaterialApp(
         theme: buildAppTheme(),
@@ -88,7 +95,8 @@ void main() {
         type: 'dropoff',
         start: DateTime(now.year, now.month, now.day, 21, 0),
         status: 'unowned',
-        sourceEventId: 'e1',
+        createdVia: 'generated',
+        calendarEventId: 'e1',
       ),
     ];
     await tester.pumpWidget(ProviderScope(
@@ -98,6 +106,9 @@ void main() {
               _m('theo', 'Theo', child: true),
             ]),
         allTasksProvider.overrideWith((ref) async => tasks),
+        calendarEventsProvider.overrideWith((ref) async => const []),
+        pendingDecisionsProvider.overrideWith((ref) async => const []),
+        threadingThresholdProvider.overrideWith((ref) async => 30),
       ],
       child: MaterialApp(
         theme: buildAppTheme(),
@@ -128,9 +139,9 @@ void main() {
       // A midnight event pins the window's start to hour 0 deterministically —
       // regardless of the current time (the now-line can only pull the start
       // *earlier* than an event, and nothing is earlier than 0).
-      TaskItem(id: 'a', familyMemberId: 'theo', type: 'dropoff', start: DateTime(now.year, now.month, now.day), status: 'unowned', sourceEventId: 'e1'),
+      TaskItem(id: 'a', familyMemberId: 'theo', type: 'dropoff', start: DateTime(now.year, now.month, now.day), status: 'unowned', createdVia: 'generated', calendarEventId: 'e1'),
       // ...and a late event makes the grid taller than the viewport so it scrolls.
-      TaskItem(id: 'b', familyMemberId: 'theo', type: 'pickup', start: DateTime(now.year, now.month, now.day, 20), status: 'unowned', sourceEventId: 'e2'),
+      TaskItem(id: 'b', familyMemberId: 'theo', type: 'pickup', start: DateTime(now.year, now.month, now.day, 20), status: 'unowned', createdVia: 'generated', calendarEventId: 'e2'),
     ];
     await tester.pumpWidget(ProviderScope(
       overrides: [
@@ -139,6 +150,9 @@ void main() {
               _m('theo', 'Theo', child: true),
             ]),
         allTasksProvider.overrideWith((ref) async => tasks),
+        calendarEventsProvider.overrideWith((ref) async => const []),
+        pendingDecisionsProvider.overrideWith((ref) async => const []),
+        threadingThresholdProvider.overrideWith((ref) async => 30),
       ],
       child: MaterialApp(
         theme: buildAppTheme(),

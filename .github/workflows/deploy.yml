@@ -32,6 +32,21 @@ on:
         required: true
       AWS_SECRET_ACCESS_KEY:
         required: true
+      # iOS TestFlight signing/upload. Only used by the `testflight` job,
+      # which only runs for `environment: staging` — optional so the
+      # production caller (which doesn't pass these yet) still validates.
+      IOS_DIST_CERT_P12_BASE64:
+        required: false
+      IOS_DIST_CERT_PASSWORD:
+        required: false
+      IOS_STAGING_PROFILE_BASE64:
+        required: false
+      APP_STORE_CONNECT_KEY_ID:
+        required: false
+      APP_STORE_CONNECT_ISSUER_ID:
+        required: false
+      APP_STORE_CONNECT_API_KEY_P8:
+        required: false
 
 jobs:
   deploy:
@@ -123,3 +138,85 @@ jobs:
         run: |
           pnpm wrangler d1 migrations apply "$D1_DATABASE" --env "$WRANGLER_ENV" --remote
           pnpm wrangler deploy --env "$WRANGLER_ENV"
+
+  # Archives, signs, and uploads the mobile app's `staging` flavor to
+  # TestFlight. Staging-only for now (prod has no real API domain yet — see
+  # the note in deploy-production.yml for how to enable it). Needs macOS for
+  # Xcode/codesign, so it's a separate job from `deploy` (which stays on
+  # ubuntu-latest) rather than an extra step there.
+  testflight:
+    name: TestFlight → ${{ inputs.environment }}
+    if: inputs.environment == 'staging'
+    runs-on: macos-latest
+    environment: ${{ inputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          # Need the parent commit to diff against below.
+          fetch-depth: 2
+
+      # Building/signing/uploading is the expensive part of this job (and the
+      # reason it needs macOS runners); skip it when this deploy didn't touch
+      # the mobile app, e.g. a backend-only merge to main.
+      - name: Check for mobile app changes
+        id: mobile-changed
+        run: |
+          if git diff --name-only HEAD^ HEAD | grep -q '^apps/mobile/'; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "No apps/mobile/** changes in this commit — skipping TestFlight build."
+          fi
+
+      - uses: subosito/flutter-action@v2
+        if: steps.mobile-changed.outputs.changed == 'true'
+        with:
+          channel: stable
+          cache: true
+
+      # Regenerates the gitignored ephemeral iOS project files; the committed
+      # flavor pbxproj/xcconfigs survive (same pattern ci.yml relies on).
+      - name: Regenerate ephemeral iOS project files
+        if: steps.mobile-changed.outputs.changed == 'true'
+        working-directory: apps/mobile
+        run: |
+          flutter create . --platforms=ios --project-name caretaker_app
+          flutter pub get
+
+      - name: Import distribution signing certificate
+        if: steps.mobile-changed.outputs.changed == 'true'
+        uses: apple-actions/import-codesign-certs@v3
+        with:
+          p12-file-base64: ${{ secrets.IOS_DIST_CERT_P12_BASE64 }}
+          p12-password: ${{ secrets.IOS_DIST_CERT_PASSWORD }}
+
+      - name: Install App Store provisioning profile
+        if: steps.mobile-changed.outputs.changed == 'true'
+        run: |
+          PROFILE_DIR="$HOME/Library/MobileDevice/Provisioning Profiles"
+          mkdir -p "$PROFILE_DIR"
+          echo "${{ secrets.IOS_STAGING_PROFILE_BASE64 }}" | base64 --decode \
+            > "$PROFILE_DIR/staging-appstore.mobileprovision"
+
+      - name: Build signed IPA (staging)
+        if: steps.mobile-changed.outputs.changed == 'true'
+        working-directory: apps/mobile
+        run: |
+          flutter build ipa --flavor staging \
+            --export-options-plist ios/ExportOptions-staging.plist \
+            --dart-define=API_BASE_URL=https://staging.igt.kylebjordahl.com/api \
+            --build-number=${{ github.run_number }}
+
+      # `github.run_number` is a small monotonic int, satisfying TestFlight's
+      # "strictly increasing build number" rule without a fragile round-trip
+      # to query the latest existing build. Marketing version stays whatever
+      # `pubspec.yaml`'s `version` says.
+      - name: Upload to TestFlight
+        if: steps.mobile-changed.outputs.changed == 'true'
+        uses: apple-actions/upload-testflight-build@v3
+        with:
+          app-path: apps/mobile/build/ios/ipa/*.ipa
+          issuer-id: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+          api-key-id: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          api-private-key: ${{ secrets.APP_STORE_CONNECT_API_KEY_P8 }}

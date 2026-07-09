@@ -20,8 +20,26 @@ const _labelWidth = 46.0;
 const _defaultStartHour = 7;
 const _defaultEndHour = 19; // 7 PM
 
-/// Plan — an iOS-Calendar-style day view. Shows who's covering what across the
-/// day so caretakers can spot and claim gaps.
+/// One item on the Plan grid: a unified-calendar event (synthesized / human /
+/// claimed — colored by whose calendar it's on) or an unowned task (dashed,
+/// claimable inline).
+class _PlanItem {
+  _PlanItem.event(CalendarEventItem this.event) : task = null;
+  _PlanItem.task(TaskItem this.task) : event = null;
+
+  final CalendarEventItem? event;
+  final TaskItem? task;
+
+  bool get isEvent => event != null;
+  String get memberId => event?.familyMemberId ?? task!.familyMemberId;
+  DateTime get start => event?.start ?? task!.start;
+  DateTime? get end => event?.end ?? task!.end;
+}
+
+/// Plan — an iOS-Calendar-style day view of every member's unified calendar.
+/// Kids and caretakers each have a calendar chip; a claimed task shows up as an
+/// event on the claimer's calendar (the recursion, visible), and unclaimed
+/// tasks render hatched with an inline Claim.
 class PlanScreen extends ConsumerStatefulWidget {
   const PlanScreen({super.key});
 
@@ -32,6 +50,9 @@ class PlanScreen extends ConsumerStatefulWidget {
 class _PlanScreenState extends ConsumerState<PlanScreen> {
   late final DateTime _today = _dateOnly(DateTime.now());
   late DateTime _selected = _today;
+
+  /// The member whose unified calendar is shown; null ⇒ Everyone (merged).
+  String? _selectedMemberId;
 
   // Filters are stored as *exclusions* (empty ⇒ show all): a chip is selected
   // when it's NOT in the set, so a category only constrains once you deselect
@@ -67,15 +88,16 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
     });
   }
 
-  /// Expand the default window to fit every event on the day (+ the now-line),
+  /// Expand the default window to fit every item on the day (+ the now-line),
   /// so nothing is clipped and the whole day is reachable by scrolling.
-  void _computeRange(List<TaskItem> dayTasks) {
+  void _computeRange(List<_PlanItem> dayItems) {
     var start = _defaultStartHour;
     var end = _defaultEndHour;
-    for (final t in dayTasks) {
-      final l = t.start.toLocal();
+    for (final it in dayItems) {
+      final l = it.start.toLocal();
       if (l.hour < start) start = l.hour;
-      final endH = l.hour + (t.type == 'attendance' ? 2 : 1);
+      final endL = it.end?.toLocal();
+      final endH = endL != null && endL.isAfter(l) ? endL.hour + 1 : l.hour + 1;
       if (endH > end) end = endH;
     }
     final now = DateTime.now();
@@ -123,6 +145,7 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
     await ref.read(apiClientProvider).assignTask(familyId, taskId);
     ref.invalidate(allTasksProvider);
     ref.invalidate(unownedTasksProvider);
+    ref.invalidate(calendarEventsProvider);
   }
 
   @override
@@ -131,6 +154,8 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
     final byId = {for (final m in members) m.id: m};
     final me = ref.watch(currentMemberProvider).valueOrNull;
     final rawTasks = ref.watch(allTasksProvider).valueOrNull ?? const <TaskItem>[];
+    final events =
+        ref.watch(calendarEventsProvider).valueOrNull ?? const <CalendarEventItem>[];
     // Children I'm covering (for the "only my kids" filter): kids with a task I own.
     final myKids = {
       for (final t in rawTasks)
@@ -141,12 +166,27 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
         if (_showCompleted || !t.isDismissed) t
     ];
 
-    final dayTasks = [
+    bool memberVisible(String memberId) =>
+        _selectedMemberId == null || _selectedMemberId == memberId;
+
+    // The grid merges the selected unified calendar(s) with the day's unowned
+    // tasks. Owned tasks aren't drawn directly — they appear as claimed events
+    // on their owner's calendar.
+    final dayItems = <_PlanItem>[
+      for (final e in events)
+        if (dayKey(e.start) == _selected &&
+            memberVisible(e.familyMemberId) &&
+            !_exChildren.contains(e.familyMemberId))
+          _PlanItem.event(e),
       for (final t in allTasks)
-        if (dayKey(t.start) == _selected && _passesFilter(t, myKids)) t
+        if (t.isUnowned &&
+            dayKey(t.start) == _selected &&
+            memberVisible(t.familyMemberId) &&
+            _passesFilter(t, myKids))
+          _PlanItem.task(t),
     ];
-    _computeRange(dayTasks);
-    final placed = _layout(dayTasks);
+    _computeRange(dayItems);
+    final placed = _layout(dayItems);
     // Default the grid's scroll to the 7 AM–6 PM window (once per day change).
     _scheduleDefaultScroll();
 
@@ -157,7 +197,12 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
           padding: const EdgeInsets.fromLTRB(22, 14, 22, 0),
           child: _header(),
         ),
-        const SizedBox(height: 18),
+        const SizedBox(height: 14),
+        Padding(
+          padding: const EdgeInsets.only(left: 22),
+          child: _memberChips(members),
+        ),
+        const SizedBox(height: 14),
         Padding(
           padding: const EdgeInsets.only(left: 22),
           child: _dayScroller(allTasks, byId),
@@ -226,6 +271,39 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
       (ref.read(membersProvider).valueOrNull ?? const <Member>[])
           .where((m) => m.isCaretaker)
           .toList();
+
+  /// Unified-calendar chips: Everyone + one per member — kids AND caretakers
+  /// each have their own calendar (6c).
+  Widget _memberChips(List<Member> members) {
+    return SizedBox(
+      height: 38,
+      child: ListView(
+        scrollDirection: Axis.horizontal,
+        children: [
+          Padding(
+            padding: const EdgeInsets.only(right: 8),
+            child: _FilterChip(
+              label: 'Everyone',
+              selected: _selectedMemberId == null,
+              onTap: () => setState(() => _selectedMemberId = null),
+            ),
+          ),
+          for (final m in members)
+            Padding(
+              padding: const EdgeInsets.only(right: 8),
+              child: _FilterChip(
+                label: m.relationName,
+                dotColor: personColor(m),
+                selected: _selectedMemberId == m.id,
+                onTap: () => setState(() =>
+                    _selectedMemberId = _selectedMemberId == m.id ? null : m.id),
+              ),
+            ),
+          const SizedBox(width: 14),
+        ],
+      ),
+    );
+  }
 
   Widget _dayScroller(List<TaskItem> allTasks, Map<String, Member> byId) {
     final byDay = <DateTime, List<TaskItem>>{};
@@ -321,18 +399,22 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
                 right: 0,
                 child: _HourLine(label: _hourLabel(h)),
               ),
-            // Task blocks.
+            // Item blocks (events + unowned tasks).
             for (final p in placed)
               Positioned(
                 top: p.top,
                 left: laneLeft + p.colIndex * (laneWidth / p.colCount),
                 width: laneWidth / p.colCount - 6,
                 height: p.height,
-                child: _TaskBlock(
+                child: _ItemBlock(
                   placed: p,
                   byId: byId,
-                  onClaim: () => _claim(p.task.id),
-                  onTapBlock: () => showTaskActions(context, ref, p.task),
+                  onClaim:
+                      p.item.task != null ? () => _claim(p.item.task!.id) : null,
+                  onTapBlock: () {
+                    final task = p.item.task ?? _taskFor(p.item.event);
+                    if (task != null) showTaskActions(context, ref, task);
+                  },
                 ),
               ),
             // Now-line.
@@ -352,6 +434,13 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
         ),
       );
     });
+  }
+
+  /// The task behind a claimed event (so tapping it opens the quick actions).
+  TaskItem? _taskFor(CalendarEventItem? event) {
+    if (event?.taskId == null) return null;
+    final all = ref.read(allTasksProvider).valueOrNull ?? const <TaskItem>[];
+    return all.where((t) => t.id == event!.taskId).firstOrNull;
   }
 
   String _hourLabel(int h) {
@@ -510,16 +599,23 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
     );
   }
 
-  // --- Layout: position + column-pack the day's tasks --------------------
+  // --- Layout: position + column-pack the day's items --------------------
 
-  List<_Placed> _layout(List<TaskItem> tasks) {
+  /// Whether an item renders as a tall duration block (events, attendance)
+  /// rather than a slim transition pill.
+  static bool _isBlock(_PlanItem it) =>
+      it.isEvent || it.task!.type == 'attendance';
+
+  List<_Placed> _layout(List<_PlanItem> items) {
     final evs = [
-      for (final t in tasks)
+      for (final it in items)
         _Ev(
-          task: t,
-          start: t.start.toLocal(),
-          // No end-time in the model: nominal durations for layout only.
-          end: t.start.toLocal().add(Duration(minutes: t.type == 'attendance' ? 90 : 30)),
+          item: it,
+          start: it.start.toLocal(),
+          // Real end when present; nominal durations for point items.
+          end: (it.end != null && it.end!.isAfter(it.start))
+              ? it.end!.toLocal()
+              : it.start.toLocal().add(Duration(minutes: _isBlock(it) ? 90 : 30)),
         )
     ]..sort((a, b) => a.start.compareTo(b.start));
 
@@ -559,13 +655,13 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
         final ev = cluster[k];
         final top = (((ev.start.hour + ev.start.minute / 60) - _gridStart) * _hourPx)
             .clamp(0.0, _gridHeight);
-        final isAtt = ev.task.type == 'attendance';
-        final height = isAtt
+        final height = _isBlock(ev.item)
             // Tall enough for the title + time + a Claim/avatar footer.
-            ? (ev.end.difference(ev.start).inMinutes / 60 * _hourPx).clamp(76.0, _gridHeight)
+            ? (ev.end.difference(ev.start).inMinutes / 60 * _hourPx)
+                .clamp(76.0, _gridHeight)
             : 34.0;
         placed.add(_Placed(
-          task: ev.task,
+          item: ev.item,
           top: top,
           height: height,
           colIndex: colOf[k],
@@ -579,21 +675,21 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
 }
 
 class _Ev {
-  _Ev({required this.task, required this.start, required this.end});
-  final TaskItem task;
+  _Ev({required this.item, required this.start, required this.end});
+  final _PlanItem item;
   final DateTime start;
   final DateTime end;
 }
 
 class _Placed {
   _Placed({
-    required this.task,
+    required this.item,
     required this.top,
     required this.height,
     required this.colIndex,
     required this.colCount,
   });
-  final TaskItem task;
+  final _PlanItem item;
   final double top;
   final double height;
   final int colIndex;
@@ -881,9 +977,11 @@ class _FiltersButton extends StatelessWidget {
   }
 }
 
-/// A single positioned task block (transition pill or attendance block).
-class _TaskBlock extends StatelessWidget {
-  const _TaskBlock({
+/// A positioned grid item: a unified-calendar event block (solid, tinted to
+/// whose calendar it's on — a claimed task therefore renders in the OWNER's
+/// color, the recursion made visible) or an unowned task (dashed + Claim).
+class _ItemBlock extends StatelessWidget {
+  const _ItemBlock({
     required this.placed,
     required this.byId,
     required this.onClaim,
@@ -891,25 +989,89 @@ class _TaskBlock extends StatelessWidget {
   });
   final _Placed placed;
   final Map<String, Member> byId;
-  final VoidCallback onClaim;
+  final VoidCallback? onClaim;
   final VoidCallback? onTapBlock;
 
   @override
   Widget build(BuildContext context) {
-    final t = placed.task;
-    final child = byId[t.familyMemberId];
-    final owner = t.ownerMemberId != null ? byId[t.ownerMemberId] : null;
-    final unowned = owner == null;
-    final accent = owner != null
-        ? personColor(owner)
-        : (child != null ? personColor(child) : AppColors.indigo);
-    final isAtt = t.type == 'attendance';
+    final event = placed.item.event;
+    if (event != null) return _eventBlock(event);
+    return _taskBlock(placed.item.task!);
+  }
 
+  Widget _eventBlock(CalendarEventItem e) {
+    final calendarOwner = byId[e.familyMemberId];
+    final accent =
+        calendarOwner != null ? personColor(calendarOwner) : AppColors.indigo;
+    final time = e.end != null
+        ? '${clockShort(e.start)} – ${clockShort(e.end!)}'
+        : clockShort(e.start);
+    final subtitle = e.isClaimedTask
+        ? "$time · on ${calendarOwner?.relationName ?? 'their'}'s calendar"
+        : time;
+
+    return GestureDetector(
+      onTap: onTapBlock,
+      behavior: HitTestBehavior.opaque,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.centerLeft,
+            end: Alignment.centerRight,
+            colors: [AppColors.tint(accent, 0.22), AppColors.tint(accent, 0.10)],
+          ),
+          borderRadius: BorderRadius.circular(12),
+          border: Border(left: BorderSide(color: accent, width: 3)),
+        ),
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(e.displaySummary,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: font(kBodyFont, 12.5, 600, color: AppColors.textPrimary)),
+                const SizedBox(height: 2),
+                Text(subtitle,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: font(kBodyFont, 11, 500, color: AppColors.textTertiary)),
+              ],
+            ),
+            Align(
+              alignment: Alignment.bottomLeft,
+              child: Row(mainAxisSize: MainAxisSize.min, children: [
+                if (calendarOwner != null)
+                  PersonAvatar(
+                      initial: initialFor(calendarOwner.relationName),
+                      color: accent,
+                      size: 20),
+                if (e.isHuman) ...[
+                  const SizedBox(width: 6),
+                  Text('manual',
+                      style: font(kBodyFont, 10, 600, color: AppColors.textMuted)),
+                ],
+              ]),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _taskBlock(TaskItem t) {
+    final child = byId[t.familyMemberId];
+    final accent = child != null ? personColor(child) : AppColors.indigo;
+    final isAtt = t.type == 'attendance';
     final label = '${taskTypeLabel(t.type)} · ${child?.relationName ?? 'child'}';
     final time = clockShort(t.start);
 
-    // Title pinned to the top, footer (Claim / avatars) to the bottom. A Stack
-    // (not a Column) so a too-short block can never throw a flex overflow.
+    // Title pinned to the top, Claim to the bottom. A Stack (not a Column) so a
+    // too-short block can never throw a flex overflow.
     final content = isAtt
         ? Stack(
             fit: StackFit.expand,
@@ -928,9 +1090,7 @@ class _TaskBlock extends StatelessWidget {
               ),
               Align(
                 alignment: Alignment.bottomLeft,
-                child: unowned
-                    ? PillButton(label: 'Claim', compact: true, onPressed: onClaim)
-                    : Row(mainAxisSize: MainAxisSize.min, children: _avatars(child, owner)),
+                child: PillButton(label: 'Claim', compact: true, onPressed: onClaim),
               ),
             ],
           )
@@ -944,56 +1104,25 @@ class _TaskBlock extends StatelessWidget {
                     overflow: TextOverflow.ellipsis,
                     style: font(kBodyFont, 12, 600, color: AppColors.textPrimary)),
               ),
-              if (unowned)
-                PillButton(label: 'Claim', compact: true, onPressed: onClaim)
-              else
-                PersonAvatar(initial: initialFor(owner.relationName), color: accent, size: 20),
+              PillButton(label: 'Claim', compact: true, onPressed: onClaim),
             ],
-          );
-
-    final Widget box = unowned
-        ? CustomPaint(
-            painter: _DashedBox(color: accent.withValues(alpha: 0.7)),
-            child: Container(
-              padding: EdgeInsets.symmetric(horizontal: 10, vertical: isAtt ? 9 : 4),
-              decoration: BoxDecoration(
-                color: AppColors.tint(accent, 0.06),
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: content,
-            ),
-          )
-        : Container(
-            padding: EdgeInsets.symmetric(horizontal: 10, vertical: isAtt ? 9 : 6),
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.centerLeft,
-                end: Alignment.centerRight,
-                colors: [AppColors.tint(accent, 0.22), AppColors.tint(accent, 0.10)],
-              ),
-              borderRadius: BorderRadius.circular(12),
-              border: Border(left: BorderSide(color: accent, width: 3)),
-            ),
-            child: content,
           );
 
     return GestureDetector(
       onTap: onTapBlock,
       behavior: HitTestBehavior.opaque,
-      child: box,
+      child: CustomPaint(
+        painter: _DashedBox(color: accent.withValues(alpha: 0.7)),
+        child: Container(
+          padding: EdgeInsets.symmetric(horizontal: 10, vertical: isAtt ? 9 : 4),
+          decoration: BoxDecoration(
+            color: AppColors.tint(accent, 0.06),
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: content,
+        ),
+      ),
     );
-  }
-
-  List<Widget> _avatars(Member? child, Member? owner) {
-    final chips = <Widget>[];
-    if (child != null) {
-      chips.add(PersonAvatar(initial: initialFor(child.relationName), color: personColor(child), size: 20));
-    }
-    if (owner != null) {
-      if (chips.isNotEmpty) chips.add(const SizedBox(width: 4));
-      chips.add(PersonAvatar(initial: initialFor(owner.relationName), color: personColor(owner), size: 20));
-    }
-    return chips;
   }
 }
 

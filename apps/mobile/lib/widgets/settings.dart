@@ -192,8 +192,9 @@ class _RoundIconButton extends StatelessWidget {
 
 /// A sub-page header: back button + title (used by the detail screens).
 class SubPageHeader extends StatelessWidget {
-  const SubPageHeader({super.key, required this.title, this.onBack});
+  const SubPageHeader({super.key, required this.title, this.subtitle, this.onBack});
   final String title;
+  final String? subtitle;
   final VoidCallback? onBack;
 
   @override
@@ -205,7 +206,16 @@ class SubPageHeader extends StatelessWidget {
           onTap: onBack ?? () => Navigator.of(context).maybePop(),
         ),
         const SizedBox(width: 14),
-        Text(title, style: AppText.subPageTitle),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(title, style: AppText.subPageTitle),
+              if (subtitle != null)
+                Text(subtitle!, style: AppText.subtitle, maxLines: 1, overflow: TextOverflow.ellipsis),
+            ],
+          ),
+        ),
       ],
     );
   }

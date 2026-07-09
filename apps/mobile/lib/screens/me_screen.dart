@@ -117,6 +117,12 @@ class MeScreen extends ConsumerWidget {
             ],
           ),
         ),
+        if (me?.isAdmin ?? false) ...[
+          const SizedBox(height: 24),
+          const SectionEyebrow('Family logistics', color: AppColors.coral),
+          const SizedBox(height: 12),
+          _ThreadingCard(),
+        ],
         const SizedBox(height: 28),
         _SignOutButton(onTap: () => _signOut(context, ref)),
       ],
@@ -198,6 +204,56 @@ class MeScreen extends ConsumerWidget {
         'icloud' => AppColors.indigo,
         _ => AppColors.purple,
       };
+}
+
+/// The family task-threading window (moved here from the removed Family
+/// settings). Tasks within this gap render as one threaded trip on Home/Plan.
+class _ThreadingCard extends ConsumerStatefulWidget {
+  @override
+  ConsumerState<_ThreadingCard> createState() => _ThreadingCardState();
+}
+
+class _ThreadingCardState extends ConsumerState<_ThreadingCard> {
+  double? _value;
+
+  @override
+  Widget build(BuildContext context) {
+    final threshold = ref.watch(threadingThresholdProvider).valueOrNull ?? 30;
+    final value = (_value ?? threshold.toDouble()).clamp(0, 120).toDouble();
+    return AppCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SettingRow(
+            icon: Icons.linear_scale_rounded,
+            iconColor: AppColors.coral,
+            title: 'Stitch tasks into a trip',
+            subtitle: 'Tasks within ${value.round()} min render as one chain',
+          ),
+          Slider(
+            value: value,
+            min: 0,
+            max: 120,
+            divisions: 24,
+            label: '${value.round()} min',
+            onChanged: (v) => setState(() => _value = v),
+            onChangeEnd: (v) => _save(v.round()),
+          ),
+          Text(
+            'A pickup followed by an appointment within this window shows as one '
+            'threaded trip — each leg stays independently claimable.',
+            style: AppText.subtitle,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _save(int minutes) async {
+    final familyId = await ref.read(familyProvider.future);
+    await ref.read(apiClientProvider).updateFamily(familyId, threadingThresholdMinutes: minutes);
+    ref.invalidate(threadingThresholdProvider);
+  }
 }
 
 class _ConnectedPill extends StatelessWidget {

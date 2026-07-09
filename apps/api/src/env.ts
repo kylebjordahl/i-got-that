@@ -1,6 +1,6 @@
 import type { familyMembers } from "@igt/db";
 import type { SessionUser } from "./services/auth.js";
-import type { DeliveryJob } from "./services/delivery.js";
+import type { DeliveryJob } from "./services/mirror.js";
 
 /** Worker bindings (kept in sync with wrangler.jsonc + Terraform). */
 export interface Bindings {

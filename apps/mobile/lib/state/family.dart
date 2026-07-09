@@ -99,33 +99,73 @@ final sourceEventsProvider = FutureProvider<List<SourceEventItem>>((ref) async {
   return rows.map((e) => SourceEventItem.fromJson(e as Map<String, dynamic>)).toList();
 });
 
-final feedsProvider = FutureProvider<List<Map<String, dynamic>>>((ref) async {
+final feedsProvider = FutureProvider<List<FeedItem>>((ref) async {
   final api = ref.watch(apiClientProvider);
   final familyId = await ref.watch(familyProvider.future);
-  return (await api.listFeeds(familyId)).cast<Map<String, dynamic>>();
-});
-
-/// All classification rules for the family (global + feed-scoped combined).
-/// Group client-side by [ClassificationRule.feedId] for display.
-final classificationRulesProvider = FutureProvider<List<ClassificationRule>>((ref) async {
-  final api = ref.watch(apiClientProvider);
-  final familyId = await ref.watch(familyProvider.future);
-  final rows = await api.listClassificationRules(familyId);
-  return rows.map((e) => ClassificationRule.fromJson(e as Map<String, dynamic>)).toList();
+  final rows = await api.listFeeds(familyId);
+  return rows.map((e) => FeedItem.fromJson(e as Map<String, dynamic>)).toList();
 });
 
 /// Member links (with baselines) for a specific feed.
 final feedLinksProvider =
-    FutureProvider.family<List<Map<String, dynamic>>, String>((ref, feedId) async {
+    FutureProvider.family<List<FeedLink>, String>((ref, feedId) async {
   final api = ref.watch(apiClientProvider);
   final familyId = await ref.watch(familyProvider.future);
-  return (await api.listMemberLinks(familyId, feedId)).cast<Map<String, dynamic>>();
+  final rows = await api.listMemberLinks(familyId, feedId);
+  return rows.map((e) => FeedLink.fromJson(e as Map<String, dynamic>)).toList();
 });
 
-final targetsProvider = FutureProvider<List<Map<String, dynamic>>>((ref) async {
+/// A link's override pipeline, in position order.
+final linkRulesProvider = FutureProvider.family<List<OverrideRule>,
+    ({String feedId, String linkId})>((ref, key) async {
   final api = ref.watch(apiClientProvider);
   final familyId = await ref.watch(familyProvider.future);
-  return (await api.listCalendarTargets(familyId)).cast<Map<String, dynamic>>();
+  final rows = await api.listLinkRules(familyId, key.feedId, key.linkId);
+  return rows.map((e) => OverrideRule.fromJson(e as Map<String, dynamic>)).toList();
+});
+
+/// Open pending decisions — ranked above unclaimed tasks on Home.
+final pendingDecisionsProvider = FutureProvider<List<PendingDecision>>((ref) async {
+  final api = ref.watch(apiClientProvider);
+  final familyId = await ref.watch(familyProvider.future);
+  final rows = await api.listPendingDecisions(familyId);
+  return rows.map((e) => PendingDecision.fromJson(e as Map<String, dynamic>)).toList();
+});
+
+/// Every unified-calendar event in the family (Plan's data source).
+final calendarEventsProvider = FutureProvider<List<CalendarEventItem>>((ref) async {
+  final api = ref.watch(apiClientProvider);
+  final familyId = await ref.watch(familyProvider.future);
+  final rows = await api.listCalendarEvents(familyId);
+  return rows
+      .map((e) => CalendarEventItem.fromJson(e as Map<String, dynamic>))
+      .toList();
+});
+
+/// A member's task-rule pipeline + per-calendar defaults (6k).
+final taskRulesProvider =
+    FutureProvider.family<TaskRuleSet, String>((ref, memberId) async {
+  final api = ref.watch(apiClientProvider);
+  final familyId = await ref.watch(familyProvider.future);
+  return TaskRuleSet.fromJson(await api.getTaskRules(familyId, memberId));
+});
+
+/// A member's unified-calendar target config (null ⇒ DB-only calendar).
+final memberCalendarProvider =
+    FutureProvider.family<MemberCalendarConfig?, String>((ref, memberId) async {
+  final api = ref.watch(apiClientProvider);
+  final familyId = await ref.watch(familyProvider.future);
+  final row = await api.getMemberCalendarTarget(familyId, memberId);
+  return row == null ? null : MemberCalendarConfig.fromJson(row);
+});
+
+/// The family-level threading threshold (minutes) for stitching task chains.
+final threadingThresholdProvider = FutureProvider<int>((ref) async {
+  final api = ref.watch(apiClientProvider);
+  final familyId = await ref.watch(familyProvider.future);
+  final res = await api.getFamily(familyId);
+  final family = res['family'] as Map<String, dynamic>;
+  return family['threadingThresholdMinutes'] as int? ?? 30;
 });
 
 /// The current user's connected external calendar accounts (not family-scoped).
