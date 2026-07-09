@@ -1,6 +1,7 @@
 import { env } from 'cloudflare:test';
 import { and, calendarEvents, eq, getDb, tasks } from '@igt/db';
 import { describe, expect, it } from 'vitest';
+import { hashCalendarEvent } from '../src/services/synthesis.js';
 import { authed, call, setupFamily } from './helpers.js';
 
 type Db = ReturnType<typeof getDb>;
@@ -21,6 +22,49 @@ async function insertTask(db: Db, familyId: string, childId: string) {
       })
       .returning()
   )[0]!;
+}
+
+/** An attendance task generated from a real calendar event (source of truth for the mirror). */
+async function insertAttendanceTaskWithEvent(db: Db, familyId: string, childId: string) {
+  const payload = {
+    dtstart: new Date('2026-07-06T15:30:00Z'),
+    dtend: new Date('2026-07-06T17:00:00Z'),
+    allDay: false,
+    summary: 'Soccer practice',
+    location: 'Elm Park Fields',
+    description: 'Bring cleats and shin guards',
+  };
+  const event = (
+    await db
+      .insert(calendarEvents)
+      .values({
+        familyId,
+        familyMemberId: childId,
+        provenance: 'synthesized',
+        synthKey: 'ev:test:soccer',
+        contentHash: hashCalendarEvent(payload),
+        ...payload,
+      })
+      .returning()
+  )[0]!;
+  const task = (
+    await db
+      .insert(tasks)
+      .values({
+        familyId,
+        familyMemberId: childId,
+        calendarEventId: event.id,
+        type: 'attendance',
+        attendanceRequirement: 'any',
+        dtstart: payload.dtstart,
+        dtend: payload.dtend,
+        location: payload.location,
+        status: 'unowned',
+        createdVia: 'generated',
+      })
+      .returning()
+  )[0]!;
+  return { event, task };
 }
 
 function claimEventsFor(db: Db, taskId: string) {
@@ -78,6 +122,28 @@ describe('claiming (the recursion)', () => {
     );
     expect(unassign.status).toBe(200);
     expect(await claimEventsFor(db, task.id)).toHaveLength(0);
+  });
+
+  it('claiming an attendance task mirrors the source event exactly', async () => {
+    const fam = await setupFamily('claim-attendance@example.com');
+    const db = getDb(env.DB);
+    const { event, task } = await insertAttendanceTaskWithEvent(db, fam.familyId, fam.childId);
+
+    const claim = await call(
+      `/families/${fam.familyId}/tasks/${task.id}/assign`,
+      authed(fam.admin.token, {}),
+    );
+    expect(claim.status).toBe(200);
+
+    const events = await claimEventsFor(db, task.id);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      familyMemberId: fam.adminMemberId,
+      summary: event.summary,
+      location: event.location,
+      description: event.description,
+      allDay: event.allDay,
+    });
   });
 
   it('dismiss removes the claimed event; deleting the task cascades it', async () => {

@@ -58,6 +58,16 @@ const DAY = 24 * 60 * 60 * 1000;
 /**
  * Parse an ICS document and expand recurring events into concrete occurrences
  * within [windowStart, windowEnd).
+ *
+ * VEVENTs carrying a RECURRENCE-ID are *overrides* of one occurrence of a
+ * recurring master, not independent events — ical.js only recognizes that
+ * relationship when the override is explicitly related via the master's
+ * `exceptions` option (isRecurring() is false for the override itself, since
+ * it has no RRULE of its own). Treating every VEVENT independently would
+ * both double-count overridden dates (stale master occurrence + moved
+ * override) and, since every override falls through to `recurrenceId: null`,
+ * collapse two or more overrides of the same series onto the same
+ * (uid, recurrenceId) key.
  */
 export function parseAndExpand(
   icsText: string,
@@ -71,24 +81,43 @@ export function parseAndExpand(
   const vevents = root.getAllSubcomponents('vevent');
   const out: Occurrence[] = [];
 
+  const masters = new Map<string, ICAL.Component>();
+  const overridesByUid = new Map<string, ICAL.Component[]>();
+  const standalone: ICAL.Component[] = [];
+
   for (const ve of vevents) {
     const event = new ICAL.Event(ve);
-
-    if (!event.isRecurring()) {
-      if (!event.startDate) continue;
-      const start = icalTimeToDate(event.startDate);
-      if (start < windowStart || start >= windowEnd) continue;
-      out.push({
-        uid: event.uid,
-        recurrenceId: null,
-        start,
-        end: event.endDate ? icalTimeToDate(event.endDate) : null,
-        summary: event.summary ?? null,
-        location: event.location ?? null,
-        allDay: event.startDate.isDate,
-      });
-      continue;
+    if (event.recurrenceId) {
+      const list = overridesByUid.get(event.uid) ?? [];
+      list.push(ve);
+      overridesByUid.set(event.uid, list);
+    } else if (event.isRecurring()) {
+      masters.set(event.uid, ve);
+    } else {
+      standalone.push(ve);
     }
+  }
+
+  for (const ve of standalone) {
+    const event = new ICAL.Event(ve);
+    if (!event.startDate) continue;
+    const start = icalTimeToDate(event.startDate);
+    if (start < windowStart || start >= windowEnd) continue;
+    out.push({
+      uid: event.uid,
+      recurrenceId: null,
+      start,
+      end: event.endDate ? icalTimeToDate(event.endDate) : null,
+      summary: event.summary ?? null,
+      location: event.location ?? null,
+      allDay: event.startDate.isDate,
+    });
+  }
+
+  for (const [uid, masterVe] of masters) {
+    const exceptions = overridesByUid.get(uid) ?? [];
+    overridesByUid.delete(uid);
+    const event = new ICAL.Event(masterVe, { exceptions });
 
     const iterator = event.iterator();
     let count = 0;
@@ -108,6 +137,27 @@ export function parseAndExpand(
         summary: details.item.summary ?? null,
         location: details.item.location ?? null,
         allDay: details.startDate.isDate,
+      });
+    }
+  }
+
+  // Overrides whose master didn't appear in this document (e.g. a CalDAV
+  // time-range REPORT that returned the exception object but not the master)
+  // still get a stable key from their own RECURRENCE-ID.
+  for (const exVeList of overridesByUid.values()) {
+    for (const ve of exVeList) {
+      const event = new ICAL.Event(ve);
+      if (!event.startDate || !event.recurrenceId) continue;
+      const start = icalTimeToDate(event.startDate);
+      if (start < windowStart || start >= windowEnd) continue;
+      out.push({
+        uid: event.uid,
+        recurrenceId: icalTimeToDate(event.recurrenceId).toISOString(),
+        start,
+        end: event.endDate ? icalTimeToDate(event.endDate) : null,
+        summary: event.summary ?? null,
+        location: event.location ?? null,
+        allDay: event.startDate.isDate,
       });
     }
   }

@@ -31,6 +31,21 @@ async function memberName(db: Db, memberId: string): Promise<string> {
   return row?.relationName ?? 'child';
 }
 
+/** The event a task was generated from, if it still exists. */
+async function sourceEvent(
+  db: Db,
+  calendarEventId: string | null,
+): Promise<typeof calendarEvents.$inferSelect | undefined> {
+  if (!calendarEventId) return undefined;
+  return (
+    await db
+      .select()
+      .from(calendarEvents)
+      .where(eq(calendarEvents.id, calendarEventId))
+      .limit(1)
+  )[0];
+}
+
 /**
  * The recursion (§3.1): a claimed task becomes an event on the CLAIMING
  * member's unified calendar (`task:<taskId>` synthKey, provenance
@@ -38,20 +53,30 @@ async function memberName(db: Db, memberId: string): Promise<string> {
  * already use. Task-gen never generates tasks from these events. Idempotent —
  * reassignment moves the same row to the new owner's calendar.
  *
+ * An `attendance` task spans its whole source event, so its claimed event is
+ * an exact mirror of that event (summary/location/description/all-day) —
+ * otherwise the caretaker's calendar loses the metadata (e.g. LOCATION) that
+ * drives client features like Apple's travel time. A `dropoff`/`pickup` task
+ * is only a windowed slice of the event, so it keeps its synthesized
+ * "Pickup — <name>"-style summary and the task's own location.
+ *
  * Callers do DB writes first, then `enqueueReconcile` for every affected
  * member (never awaiting the reconcile in a request path).
  */
 export async function upsertClaimEvent(db: Db, task: TaskRow): Promise<void> {
   if (task.status !== 'owned' || !task.ownerMemberId) return;
-  const summary = taskSummary(task, await memberName(db, task.familyMemberId));
+  const source =
+    task.type === 'attendance' ? await sourceEvent(db, task.calendarEventId) : undefined;
+  const summary =
+    source?.summary ?? taskSummary(task, await memberName(db, task.familyMemberId));
   const payload = {
     familyMemberId: task.ownerMemberId,
     dtstart: task.dtstart,
     dtend: task.dtend,
-    allDay: false,
+    allDay: source?.allDay ?? false,
     summary,
-    location: task.location,
-    description: null,
+    location: source?.location ?? task.location,
+    description: source?.description ?? null,
   };
   const contentHash = hashCalendarEvent(payload);
 
