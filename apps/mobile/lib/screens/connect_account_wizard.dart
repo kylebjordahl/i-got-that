@@ -4,7 +4,6 @@ import '../state/auth.dart';
 import '../state/family.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_text.dart';
-import '../widgets/app_bottom_nav.dart';
 import '../widgets/primitives.dart';
 import '../widgets/settings.dart';
 
@@ -141,7 +140,6 @@ class _ConnectAccountWizardState extends ConsumerState<ConnectAccountWizard> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      extendBody: true,
       body: SafeArea(
         child: ListView(
           padding: const EdgeInsets.fromLTRB(22, 12, 22, 150),
@@ -175,7 +173,6 @@ class _ConnectAccountWizardState extends ConsumerState<ConnectAccountWizard> {
           ],
         ),
       ),
-      bottomNavigationBar: const PersistentAppNav(),
     );
   }
 

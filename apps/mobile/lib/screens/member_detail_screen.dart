@@ -7,7 +7,6 @@ import '../state/nav.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_text.dart';
 import '../theme/person_colors.dart';
-import '../widgets/app_bottom_nav.dart';
 import '../widgets/primitives.dart';
 import '../widgets/settings.dart';
 import 'add_calendar_sheet.dart';
@@ -40,7 +39,6 @@ class MemberDetailScreen extends ConsumerWidget {
     final grouping = member.requiresCaretaker ? 'Child' : 'Caretaker';
 
     return Scaffold(
-      extendBody: true,
       body: SafeArea(
         child: Column(
           children: [
@@ -88,7 +86,6 @@ class MemberDetailScreen extends ConsumerWidget {
           ],
         ),
       ),
-      bottomNavigationBar: const PersistentAppNav(),
     );
   }
 

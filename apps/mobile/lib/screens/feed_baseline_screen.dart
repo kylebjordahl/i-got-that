@@ -5,7 +5,6 @@ import '../state/auth.dart';
 import '../state/family.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_text.dart';
-import '../widgets/app_bottom_nav.dart';
 import '../widgets/primitives.dart';
 import '../widgets/settings.dart';
 
@@ -152,7 +151,6 @@ class _FeedBaselineScreenState extends ConsumerState<FeedBaselineScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      extendBody: true,
       body: SafeArea(
         child: Column(
           children: [
@@ -248,7 +246,6 @@ class _FeedBaselineScreenState extends ConsumerState<FeedBaselineScreen> {
           ],
         ),
       ),
-      bottomNavigationBar: const PersistentAppNav(),
     );
   }
 
