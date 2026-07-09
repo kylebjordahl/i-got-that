@@ -1,4 +1,5 @@
 import 'package:dio/dio.dart';
+import 'dio_credentials.dart';
 
 /// Sentinel that distinguishes "omit this PATCH field" from "set to null".
 /// Used by [ApiClient.updateLinkRule] for clearable nullable columns.
@@ -7,7 +8,9 @@ const Object _unset = Object();
 /// Thin typed wrapper over the backend HTTP API. Replaced by an OpenAPI-
 /// generated client once the spec is emitted from libs/domain (see /tools).
 class ApiClient {
-  ApiClient({required this.baseUrl}) : _dio = Dio(BaseOptions(baseUrl: baseUrl));
+  ApiClient({required this.baseUrl}) : _dio = Dio(BaseOptions(baseUrl: baseUrl)) {
+    enableSessionCookie(_dio);
+  }
 
   final String baseUrl;
   final Dio _dio;
@@ -40,6 +43,14 @@ class ApiClient {
   }
 
   Future<Map<String, dynamic>> me() async => _obj(await _dio.get('/me', options: _auth));
+
+  /// Invalidate the session server-side and clear the web session cookie.
+  /// Safe to call even without a known token (web restores auth from the
+  /// cookie alone, so [_sessionToken] may still be null at this point).
+  Future<void> logout() async {
+    await _dio.post('/auth/logout', data: <String, dynamic>{}, options: _auth);
+    _sessionToken = null;
+  }
 
   Future<Map<String, dynamic>> createFamily(String name) async =>
       _obj(await _dio.post('/families', data: {'name': name}, options: _auth));

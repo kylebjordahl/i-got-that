@@ -172,3 +172,9 @@ export async function getUserBySessionToken(
   if (!row || row.session.expiresAt.getTime() < Date.now()) return null;
   return row.user;
 }
+
+/** Invalidate a session (logout). No-op if the token is already gone/invalid. */
+export async function deleteSession(db: Db, rawToken: string): Promise<void> {
+  const tokenHash = await sha256hex(rawToken);
+  await db.delete(sessions).where(eq(sessions.tokenHash, tokenHash));
+}
