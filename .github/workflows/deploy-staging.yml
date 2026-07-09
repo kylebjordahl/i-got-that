@@ -16,6 +16,14 @@ jobs:
   staging:
     # Only deploy when the triggering CI run actually succeeded.
     if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    # Reusable-workflow jobs are capped by the caller's grant, not just their
+    # own request: deploy.yml's `check-mobile-changed` job calls the GitHub
+    # API to find the last successful TestFlight run, which needs `actions:
+    # read` here or the call fails validation even though that job's `if`
+    # would otherwise skip it.
+    permissions:
+      contents: read
+      actions: read
     uses: ./.github/workflows/deploy.yml
     with:
       environment: staging

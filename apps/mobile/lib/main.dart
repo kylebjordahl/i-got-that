@@ -16,7 +16,7 @@ class CaretakerApp extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final authed = ref.watch(authControllerProvider).isAuthed;
+    final auth = ref.watch(authControllerProvider);
     return MaterialApp(
       title: 'I Got That',
       debugShowCheckedModeBanner: false,
@@ -24,14 +24,21 @@ class CaretakerApp extends ConsumerWidget {
       themeMode: ThemeMode.dark,
       navigatorKey: rootNavigatorKey,
       navigatorObservers: [AppNavObserver()],
-      home: authed ? const AppShell() : const LoginScreen(),
+      // While restoring (the one round trip to check the web session cookie —
+      // see state/auth.dart), hold on a blank scaffold instead of flashing the
+      // login screen for an already-authed user.
+      home: auth.restoring
+          ? const Scaffold()
+          : auth.isAuthed
+              ? const AppShell()
+              : const LoginScreen(),
       // The floating nav renders here — above the Navigator, not inside any
       // route's Scaffold — so page transitions never carry it along. See
       // PersistentAppNav for the full rationale.
       builder: (context, child) => Stack(
         children: [
           if (child != null) child,
-          if (authed) const PersistentAppNav(),
+          if (auth.isAuthed) const PersistentAppNav(),
         ],
       ),
     );

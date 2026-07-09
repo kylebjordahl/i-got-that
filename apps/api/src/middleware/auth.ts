@@ -1,12 +1,16 @@
 import { and, eq, familyMembers, getDb } from '@igt/db';
 import { createMiddleware } from 'hono/factory';
 import type { HonoEnv } from '../env.js';
+import { sessionToken } from '../lib/session-cookie.js';
 import { getUserBySessionToken } from '../services/auth.js';
 
-/** Require a valid session (Authorization: Bearer <token>); sets `user`. */
+/**
+ * Require a valid session — `Authorization: Bearer <token>` (native), falling
+ * back to the `igt_session` HttpOnly cookie (web, see lib/session-cookie.ts).
+ * Sets `user`.
+ */
 export const authMiddleware = createMiddleware<HonoEnv>(async (c, next) => {
-  const header = c.req.header('Authorization');
-  const token = header?.startsWith('Bearer ') ? header.slice(7) : undefined;
+  const token = sessionToken(c);
   if (!token) return c.json({ error: 'unauthorized' }, 401);
 
   const user = await getUserBySessionToken(getDb(c.env.DB), token);
