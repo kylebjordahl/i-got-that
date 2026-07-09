@@ -13,6 +13,7 @@ import '../widgets/primitives.dart';
 Future<void> showAddCalendarSheet(BuildContext context, WidgetRef ref, Member member) {
   return showModalBottomSheet<void>(
     context: context,
+    useRootNavigator: true,
     showDragHandle: true,
     isScrollControlled: true,
     builder: (_) => _AddCalendarSheet(member: member),

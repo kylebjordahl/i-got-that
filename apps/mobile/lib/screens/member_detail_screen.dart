@@ -429,6 +429,7 @@ class _UnifiedCalendarSection extends ConsumerWidget {
     if (accounts.isEmpty) return;
     await showModalBottomSheet<void>(
       context: context,
+      useRootNavigator: true,
       showDragHandle: true,
       isScrollControlled: true,
       builder: (sheetCtx) =>
