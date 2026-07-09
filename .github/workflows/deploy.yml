@@ -139,38 +139,97 @@ jobs:
           pnpm wrangler d1 migrations apply "$D1_DATABASE" --env "$WRANGLER_ENV" --remote
           pnpm wrangler deploy --env "$WRANGLER_ENV"
 
+  # Building/signing/uploading in `testflight` below is the expensive part of
+  # deploying to TestFlight (and the reason that job needs macOS runners), so
+  # decide whether it's needed on a cheap ubuntu runner first. Nx-affected is
+  # base/head aware (unlike a plain path grep) and understands the project
+  # graph, so it correctly catches mobile changes spread across several
+  # commits, not just the most recent one.
+  check-mobile-changed:
+    name: Check for mobile app changes
+    if: inputs.environment == 'staging'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      changed: ${{ steps.mobile-changed.outputs.changed }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          # Full history: the last successful TestFlight build may be many
+          # commits back, and Nx needs both ends of the range locally.
+          fetch-depth: 0
+      - uses: ./.github/actions/pnpm-install
+
+      # Walk "Deploy staging" runs newest-first and find the most recent one
+      # whose `testflight` job actually succeeded (as opposed to no-op'd —
+      # see the job-level `if` below, a no-op reports as skipped, not
+      # success). That run's commit is the last point we know TestFlight is
+      # up to date, so it's the right base for the Nx-affected diff below.
+      - name: Find commit of last successful TestFlight build
+        id: base-sha
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          BASE_SHA=""
+          for run_id in $(gh api "repos/${REPO}/actions/workflows/deploy-staging.yml/runs?status=completed&per_page=30" --jq '.workflow_runs[].id'); do
+            conclusion=$(gh api "repos/${REPO}/actions/runs/${run_id}/jobs" \
+              --jq '[.jobs[] | select(.name | endswith("TestFlight → staging"))][0].conclusion // empty')
+            if [ "$conclusion" = "success" ]; then
+              BASE_SHA=$(gh api "repos/${REPO}/actions/runs/${run_id}" --jq '.head_sha')
+              break
+            fi
+          done
+          if [ -z "$BASE_SHA" ]; then
+            echo "No prior successful TestFlight build found — building unconditionally."
+          else
+            echo "Last successful TestFlight build was for commit $BASE_SHA."
+          fi
+          echo "base_sha=$BASE_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Check whether mobile is Nx-affected since that build
+        id: mobile-changed
+        run: |
+          set -euo pipefail
+          BASE_SHA="${{ steps.base-sha.outputs.base_sha }}"
+          if [ -z "$BASE_SHA" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          HEAD_SHA="$(git rev-parse HEAD)"
+          affected=$(pnpm exec nx show projects --affected --base="$BASE_SHA" --head="$HEAD_SHA" --json)
+          echo "Nx-affected projects since $BASE_SHA: $affected"
+          if echo "$affected" | jq -e 'index("mobile") != null' > /dev/null; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "mobile is not Nx-affected since the last successful TestFlight build — skipping."
+          fi
+
   # Archives, signs, and uploads the mobile app's `staging` flavor to
   # TestFlight. Staging-only for now (prod has no real API domain yet — see
   # the note in deploy-production.yml for how to enable it). Needs macOS for
   # Xcode/codesign, so it's a separate job from `deploy` (which stays on
   # ubuntu-latest) rather than an extra step there.
+  #
+  # Gated at the job level (rather than per-step) on `check-mobile-changed`
+  # so a no-op shows up as skipped, not a false green success.
   testflight:
     name: TestFlight → ${{ inputs.environment }}
-    if: inputs.environment == 'staging'
+    needs: check-mobile-changed
+    if: inputs.environment == 'staging' && needs.check-mobile-changed.outputs.changed == 'true'
     runs-on: macos-latest
     environment: ${{ inputs.environment }}
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.ref }}
-          # Need the parent commit to diff against below.
-          fetch-depth: 2
-
-      # Building/signing/uploading is the expensive part of this job (and the
-      # reason it needs macOS runners); skip it when this deploy didn't touch
-      # the mobile app, e.g. a backend-only merge to main.
-      - name: Check for mobile app changes
-        id: mobile-changed
-        run: |
-          if git diff --name-only HEAD^ HEAD | grep -q '^apps/mobile/'; then
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-            echo "No apps/mobile/** changes in this commit — skipping TestFlight build."
-          fi
 
       - uses: subosito/flutter-action@v2
-        if: steps.mobile-changed.outputs.changed == 'true'
         with:
           channel: stable
           cache: true
@@ -178,21 +237,18 @@ jobs:
       # Regenerates the gitignored ephemeral iOS project files; the committed
       # flavor pbxproj/xcconfigs survive (same pattern ci.yml relies on).
       - name: Regenerate ephemeral iOS project files
-        if: steps.mobile-changed.outputs.changed == 'true'
         working-directory: apps/mobile
         run: |
           flutter create . --platforms=ios --project-name caretaker_app
           flutter pub get
 
       - name: Import distribution signing certificate
-        if: steps.mobile-changed.outputs.changed == 'true'
         uses: apple-actions/import-codesign-certs@v3
         with:
           p12-file-base64: ${{ secrets.IOS_DIST_CERT_P12_BASE64 }}
           p12-password: ${{ secrets.IOS_DIST_CERT_PASSWORD }}
 
       - name: Install App Store provisioning profile
-        if: steps.mobile-changed.outputs.changed == 'true'
         run: |
           PROFILE_DIR="$HOME/Library/MobileDevice/Provisioning Profiles"
           mkdir -p "$PROFILE_DIR"
@@ -200,7 +256,6 @@ jobs:
             > "$PROFILE_DIR/staging-appstore.mobileprovision"
 
       - name: Build signed IPA (staging)
-        if: steps.mobile-changed.outputs.changed == 'true'
         working-directory: apps/mobile
         run: |
           flutter build ipa --flavor staging \
@@ -213,7 +268,6 @@ jobs:
       # to query the latest existing build. Marketing version stays whatever
       # `pubspec.yaml`'s `version` says.
       - name: Upload to TestFlight
-        if: steps.mobile-changed.outputs.changed == 'true'
         uses: apple-actions/upload-testflight-build@v3
         with:
           app-path: apps/mobile/build/ios/ipa/*.ipa
