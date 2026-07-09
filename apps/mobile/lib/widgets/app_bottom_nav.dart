@@ -1,28 +1,47 @@
 import 'dart:ui' show ImageFilter;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../screens/family_screen.dart' show showAddMemberSheet;
+import '../state/family.dart';
 import '../state/nav.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_text.dart';
 
-/// Drop into `bottomNavigationBar` on any screen pushed on top of [AppShell]
-/// (member detail, feed setup, task rules, connect-account) so the floating
-/// pill persists everywhere, not just on the four root tabs. Picking a tab
-/// pops back to the shell and switches it, mirroring [AppShell]'s own wiring.
+/// The floating nav, mounted once above the app's Navigator (see
+/// `CaretakerApp`'s `builder` in main.dart) instead of inside any pushed
+/// route's own Scaffold. That keeps the pill itself stationary through every
+/// push/pop transition between [AppShell] and its sub-screens (member detail,
+/// feed setup, task rules, connect-account) — only that route's content
+/// slides, the way a per-route `bottomNavigationBar` used to make the whole
+/// pill slide along with it.
 class PersistentAppNav extends ConsumerWidget {
   const PersistentAppNav({super.key});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final index = ref.watch(navIndexProvider);
-    return SafeArea(
-      top: false,
-      child: AppBottomNav(
-        currentIndex: index,
-        onSelect: (i) {
-          ref.read(navIndexProvider.notifier).state = i;
-          Navigator.of(context).popUntil((route) => route.isFirst);
-        },
+    final isAdmin = ref.watch(currentMemberProvider).valueOrNull?.isAdmin ?? false;
+    return Positioned(
+      left: 0,
+      right: 0,
+      bottom: MediaQuery.of(context).viewInsets.bottom,
+      child: SafeArea(
+        top: false,
+        child: ValueListenableBuilder<int>(
+          valueListenable: routeDepthNotifier,
+          builder: (context, depth, _) => AppBottomNav(
+            currentIndex: index,
+            onAdd: depth == 0 && index == 2 && isAdmin
+                ? () => showAddMemberSheet(rootNavigatorKey.currentContext!, ref)
+                : null,
+            onSelect: (i) {
+              ref.read(navIndexProvider.notifier).state = i;
+              if (depth > 0) {
+                rootNavigatorKey.currentState!.popUntil((route) => route.isFirst);
+              }
+            },
+          ),
+        ),
       ),
     );
   }
