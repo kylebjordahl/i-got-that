@@ -3,8 +3,11 @@ import {
   calendarEvents,
   eq,
   eventMirrors,
+  familyMemberFeeds,
+  feeds,
   getDb,
   memberCalendars,
+  tasks,
 } from '@igt/db';
 import {
   type DeliveryEvent,
@@ -94,6 +97,8 @@ async function insertEvent(
         familyId,
         familyMemberId,
         provenance: values.provenance ?? 'synthesized',
+        linkId: values.linkId ?? null,
+        taskId: values.taskId ?? null,
         contentHash: hashCalendarEvent(payload as never),
         ...payload,
         synthKey: values.synthKey,
@@ -201,6 +206,66 @@ describe('mirror reconcile (syncMemberMirror)', () => {
         .from(eventMirrors)
         .where(eq(eventMirrors.familyMemberId, fam.adminMemberId)),
     ).toHaveLength(0);
+  });
+
+  it('mirrors a claimed drop-off/pickup task in the source calendar\'s timezone, not bare UTC', async () => {
+    const fam = await setupFamily('mirror-claimed-tz@example.com');
+    const db = getDb(env.DB);
+    // The claimer (admin) is the mirror target; the task is about the child,
+    // sourced from a feed whose calendar is in America/Denver.
+    await connectTarget(db, fam, fam.adminMemberId);
+
+    const feed = (
+      await db
+        .insert(feeds)
+        .values({
+          familyId: fam.familyId,
+          kind: 'ics',
+          url: 'https://example.com/cal.ics',
+          mode: 'exception',
+          timezone: 'America/Denver',
+        })
+        .returning()
+    )[0]!;
+    const link = (
+      await db
+        .insert(familyMemberFeeds)
+        .values({ familyId: fam.familyId, feedId: feed.id, familyMemberId: fam.childId })
+        .returning()
+    )[0]!;
+    const source = await insertEvent(db, fam.familyId, fam.childId, {
+      synthKey: `bl:${link.id}:2026-07-06`,
+      linkId: link.id,
+      summary: 'School day',
+    });
+    const task = (
+      await db
+        .insert(tasks)
+        .values({
+          familyId: fam.familyId,
+          calendarEventId: source.id,
+          familyMemberId: fam.childId,
+          type: 'dropoff',
+          dtstart: new Date('2026-07-06T15:30:00Z'),
+          dtend: new Date('2026-07-06T15:45:00Z'),
+          status: 'owned',
+          ownerMemberId: fam.adminMemberId,
+          createdVia: 'generated',
+        })
+        .returning()
+    )[0]!;
+    await insertEvent(db, fam.familyId, fam.adminMemberId, {
+      synthKey: `task:${task.id}`,
+      provenance: 'claimed_task',
+      summary: 'Drop-off — child',
+      taskId: task.id,
+    });
+
+    const fake = new FakeProvider('caldav');
+    const registry = new DeliveryProviderRegistry().register(fake);
+    const r = await syncMemberMirror(db, registry, env.KEK, fam.adminMemberId);
+    expect(r.created).toBe(1);
+    expect(fake.upserts[0]!.event.timezone).toBe('America/Denver');
   });
 
   it('a member without a target is a clean no-op', async () => {
