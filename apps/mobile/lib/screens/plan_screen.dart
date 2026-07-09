@@ -63,6 +63,7 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
   final Set<String> _exTypes = {};
   bool _showCompleted = false;
   bool _onlyMyKids = false;
+  bool _refreshingFeeds = false;
 
   // The visible hour window for the current day (computed each build).
   int _gridStart = _defaultStartHour;
@@ -146,6 +147,26 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
     ref.invalidate(allTasksProvider);
     ref.invalidate(unownedTasksProvider);
     ref.invalidate(calendarEventsProvider);
+  }
+
+  Future<void> _refreshFeeds() async {
+    setState(() => _refreshingFeeds = true);
+    try {
+      final familyId = await ref.read(familyProvider.future);
+      await ref.read(apiClientProvider).refreshAllFeeds(familyId);
+      ref.invalidate(allTasksProvider);
+      ref.invalidate(unownedTasksProvider);
+      ref.invalidate(calendarEventsProvider);
+      ref.invalidate(pendingDecisionsProvider);
+      await ref.read(allTasksProvider.future);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Refresh failed: $e')));
+      }
+    } finally {
+      if (mounted) setState(() => _refreshingFeeds = false);
+    }
   }
 
   @override
@@ -263,6 +284,8 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
         _PillIconButton(icon: Icons.schedule_rounded, label: 'Today', onTap: _goToToday),
         const SizedBox(width: 8),
         _FiltersButton(count: _filterCount, onTap: () => _openFilters(caretakersFor())),
+        const SizedBox(width: 8),
+        RefreshFeedsButton(busy: _refreshingFeeds, onTap: _refreshFeeds, size: 36),
       ],
     );
   }
