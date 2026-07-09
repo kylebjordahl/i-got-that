@@ -1,6 +1,16 @@
 import { env, fetchMock } from 'cloudflare:test';
+import {
+  and,
+  calendarEvents,
+  eq,
+  externalAccounts,
+  getDb,
+  memberCalendars,
+  tasks,
+} from '@igt/db';
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
-import { authed, bearer, call, createFamily, login } from './helpers.js';
+import { storeSecret } from '../src/lib/secrets.js';
+import { authed, bearer, call, createFamily, login, setupFamily } from './helpers.js';
 
 const FEED_ORIGIN = 'https://feed.example.com';
 const FEED_PATH = '/cal.ics';
@@ -190,5 +200,96 @@ describe('feed ingest', () => {
     const list = await call(`/families/${familyId}/feeds`, bearer(alice.token));
     const { feeds } = (await list.json()) as { feeds: unknown[] };
     expect(feeds.length).toBe(1);
+  });
+
+  it('refresh-all reads back a human edit on a member target calendar (not just the next cron tick)', async () => {
+    // Regression: /refresh-all used to only re-run ingest+synthesis+task-gen,
+    // skipping the read-back step the cron tick does — so an edit made
+    // directly on a member's target calendar (a 'human' calendar_event) sat
+    // stale until the next cron ran read-back for you.
+    const f = await setupFamily('refresh-readback@example.com');
+    const db = getDb(env.DB);
+    const credRef = await storeSecret(
+      db,
+      env.KEK,
+      null,
+      // A pre-resolved access token — no live Google OAuth refresh needed.
+      JSON.stringify({ kind: 'oauth', accessToken: 'test-access-token' }),
+    );
+    const account = (
+      await db
+        .insert(externalAccounts)
+        .values({ userId: f.admin.userId, kind: 'google', name: 'G', credentialsRef: credRef })
+        .returning()
+    )[0]!;
+    await db.insert(memberCalendars).values({
+      familyId: f.familyId,
+      familyMemberId: f.childId,
+      targetExternalAccountId: account.id,
+      targetMethod: 'google',
+      targetCalendarId: 'kid-calendar-id',
+    });
+
+    const day = new Date();
+    day.setUTCDate(day.getUTCDate() + 2);
+    day.setUTCHours(16, 0, 0, 0);
+    const dayEnd = new Date(day.getTime() + 2 * 60 * 60 * 1000);
+    const googleEvent = (summary: string) => ({
+      iCalUID: 'playdate@google.com',
+      status: 'confirmed',
+      summary,
+      start: { dateTime: day.toISOString() },
+      end: { dateTime: dayEnd.toISOString() },
+    });
+
+    const stubGoogleEvents = (summary: string) =>
+      fetchMock
+        .get('https://www.googleapis.com')
+        .intercept({
+          path: (p: string) => p.startsWith('/calendar/v3/calendars/kid-calendar-id/events'),
+          method: 'GET',
+        })
+        .reply(200, JSON.stringify({ items: [googleEvent(summary)] }), {
+          headers: { 'content-type': 'application/json' },
+        });
+
+    // First refresh: picks up the manual event and generates its attendance task.
+    stubGoogleEvents('Playdate with Sam');
+    const r1 = await call(
+      `/families/${f.familyId}/feeds/refresh-all`,
+      authed(f.admin.token),
+    );
+    expect(r1.status).toBe(200);
+
+    const humanBefore = await db
+      .select()
+      .from(calendarEvents)
+      .where(
+        and(eq(calendarEvents.familyMemberId, f.childId), eq(calendarEvents.provenance, 'human')),
+      );
+    expect(humanBefore).toHaveLength(1);
+    expect(humanBefore[0]!.summary).toBe('Playdate with Sam');
+    const taskBefore = await db
+      .select()
+      .from(tasks)
+      .where(eq(tasks.calendarEventId, humanBefore[0]!.id));
+    expect(taskBefore).toHaveLength(1);
+    expect(taskBefore[0]!.type).toBe('attendance');
+
+    // The user edits the manual event directly on the target calendar, then
+    // hits refresh — a single /refresh-all call must reflect the edit, with
+    // no separate cron tick.
+    stubGoogleEvents('Playdate with Sam (moved to Rec Center)');
+    const r2 = await call(
+      `/families/${f.familyId}/feeds/refresh-all`,
+      authed(f.admin.token),
+    );
+    expect(r2.status).toBe(200);
+
+    const humanAfter = await db
+      .select()
+      .from(calendarEvents)
+      .where(eq(calendarEvents.id, humanBefore[0]!.id));
+    expect(humanAfter[0]!.summary).toBe('Playdate with Sam (moved to Rec Center)');
   });
 });
