@@ -5,7 +5,7 @@ Actions:
 
 | Trigger | Workflow | Target |
 | --- | --- | --- |
-| Every push to `main` (after CI passes; docs-only skipped) | `.github/workflows/deploy-staging.yml` | **staging** |
+| Every push to `main` (after CI passes; docs-only skipped) | `.github/workflows/deploy-staging.yml` | **staging** Worker, + TestFlight (staging flavor) if `apps/mobile/**` changed |
 | A GitHub **Release** is *published* | `.github/workflows/deploy-production.yml` | **production** |
 | Push / PR | `.github/workflows/ci.yml` | tests only (no deploy) |
 
@@ -157,12 +157,70 @@ tests (no binding) still serve the API directly at the root.
 > `assets` blocks under `env.production` (e.g. `igt.kylebjordahl.com`). Until
 > then prod has no `ASSETS` binding and serves the API at the root.
 
+### 8. iOS / TestFlight (staging)
+
+`deploy.yml` has a `testflight` job (macOS runner) that archives, signs, and
+uploads the mobile app's **`staging`** flavor (`com.kylebjordahl.igt.staging`)
+to TestFlight whenever a staging deploy includes a change under
+`apps/mobile/**`. It's staging-only for now — prod is deferred until prod has
+a real API domain (see the comment in `deploy-production.yml`). Signing is
+**manual** (a distribution `.p12` + an App Store provisioning profile), not
+Xcode-managed — headless `-allowProvisioningUpdates` is flaky; a pinned
+profile name is deterministic.
+
+**One-time setup, all done by hand (not code):**
+
+1. **App Store Connect app record** for `com.kylebjordahl.igt.staging`
+   (App Store Connect → My Apps → **+** → New App).
+2. **App Store Connect API key** (App Store Connect → Users and Access →
+   Integrations → App Store Connect API → **Generate API Key**, role
+   *App Manager*). Save the **Issuer ID**, **Key ID**, and download the `.p8`
+   — the `.p8` can only be downloaded once.
+3. **Distribution signing assets**:
+   - An **Apple Distribution** certificate (Apple Developer portal, or Xcode →
+     Settings → Accounts → Manage Certificates), exported from Keychain Access
+     as a password-protected `.p12`.
+   - An **App Store** (not Ad Hoc/Development) provisioning profile for
+     `com.kylebjordahl.igt.staging`. Its **name** must match
+     `PROVISIONING_PROFILE_SPECIFIER` in
+     `apps/mobile/ios/Flutter/stagingRelease.xcconfig` and the
+     `provisioningProfiles` entry in `apps/mobile/ios/ExportOptions-staging.plist`
+     (both currently set to `IGT Staging App Store` — rename the profile to
+     match, or update both files to match whatever you name it).
+4. **GitHub secrets**, added to the **`staging`** GitHub Environment (repo →
+   Settings → Environments → `staging` → Environment secrets):
+
+   | Secret | Contents |
+   | --- | --- |
+   | `IOS_DIST_CERT_P12_BASE64` | `base64 -i dist.p12 \| pbcopy` |
+   | `IOS_DIST_CERT_PASSWORD` | the `.p12` export password |
+   | `IOS_STAGING_PROFILE_BASE64` | `base64 -i staging_appstore.mobileprovision \| pbcopy` |
+   | `APP_STORE_CONNECT_KEY_ID` | ASC API Key ID from step 2 |
+   | `APP_STORE_CONNECT_ISSUER_ID` | ASC API Issuer ID from step 2 |
+   | `APP_STORE_CONNECT_API_KEY_P8` | contents of the `.p8` from step 2 |
+
+   These are passed through by `deploy-staging.yml`; `deploy-production.yml`
+   doesn't pass them (they're `required: false` in `deploy.yml`, so the
+   production caller still validates without them).
+
+Once the secrets exist, the next staging deploy that touches `apps/mobile/**`
+builds and uploads a TestFlight build automatically — no further action
+needed per-release. Add internal/external testers in App Store Connect →
+TestFlight the first time a build lands.
+
+**Promoting prod later**: add the same six secrets to the `production`
+Environment, add an `ios/ExportOptions-prod.plist` (+ prod signing xcconfig),
+and update the `if: inputs.environment == 'staging'` gate on the `testflight`
+job in `deploy.yml` to also allow `production`.
+
 ---
 
 ## Day-to-day flow
 
 - **Staging**: merge to `main` → once `CI` passes, `Deploy staging` runs
-  automatically (build web → Terraform → migrate → deploy).
+  automatically (build web → Terraform → migrate → deploy). If the merge
+  touched `apps/mobile/**`, the `testflight` job also archives, signs, and
+  uploads the staging flavor to TestFlight (see §8).
 - **Production**: when staging looks good, cut a release:
   ```bash
   git tag v0.2.0 && git push origin v0.2.0
@@ -217,3 +275,9 @@ cd apps/api && pnpm wrangler tail --env staging        # live logs
   client, keyed on the `apps/mobile` sources — a backend/infra-only deploy
   restores the last bundle instead of rebuilding Flutter. Changing anything
   under `apps/mobile` busts that cache and forces a rebuild.
+- **TestFlight is change-gated, not cached**: the `testflight` job diffs
+  `apps/mobile/**` against the parent commit and skips the archive/sign/upload
+  steps entirely when nothing changed, rather than restoring a previous
+  `.ipa` (there's nothing useful to "restore" — every build must get a fresh,
+  strictly-increasing build number). This keeps macOS runner minutes and
+  TestFlight build clutter tied to real client changes.
