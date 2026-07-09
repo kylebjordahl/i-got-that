@@ -166,15 +166,20 @@ export function parseAndExpand(
 }
 
 /**
- * The calendar's timezone (IANA, e.g. "America/Los_Angeles") from X-WR-TIMEZONE
- * — Google/Apple exports include it. Used to interpret configured baseline
- * wall-times for exception feeds. Null if absent/unparseable.
+ * The calendar's timezone (IANA, e.g. "America/Los_Angeles") — the calendar-wide
+ * X-WR-TIMEZONE property if present (Google/Apple .ics exports include it),
+ * else the TZID of the document's first VTIMEZONE (CalDAV time-range REPORTs
+ * return per-object VCALENDARs that carry one instead). Used to interpret
+ * configured baseline wall-times for exception feeds. Null if absent/unparseable.
  */
 export function extractTimezone(icsText: string): string | null {
   try {
     const root = new ICAL.Component(ICAL.parse(icsText));
     const tz = root.getFirstPropertyValue('x-wr-timezone');
-    return typeof tz === 'string' && tz.length > 0 ? tz : null;
+    if (typeof tz === 'string' && tz.length > 0) return tz;
+    const vtimezone = root.getFirstSubcomponent('vtimezone');
+    const tzid = vtimezone?.getFirstPropertyValue('tzid');
+    return typeof tzid === 'string' && tzid.length > 0 ? tzid : null;
   } catch {
     return null;
   }
@@ -406,18 +411,27 @@ export interface CalDavSourceConfig {
   password: string;
 }
 
+export interface AccountOccurrences {
+  occurrences: Occurrence[];
+  /** IANA timezone of the source calendar, if discoverable; null otherwise. */
+  timezone: string | null;
+}
+
 /**
  * Read occurrences from a CalDAV collection via a single time-ranged REPORT
  * (tsdav's standalone `fetchCalendarObjects`, no account discovery — we already
  * know the collection URL). Each returned object is a VCALENDAR expanded with
  * `parseAndExpand`, so RRULEs window identically to the ICS path. `fetchImpl` is
- * injectable for tests / bound to the global scope for Workers.
+ * injectable for tests / bound to the global scope for Workers. The collection's
+ * timezone (needed for exception-feed baselines) is read off whichever fetched
+ * object's VCALENDAR carries it first — a time-range REPORT returns per-object
+ * VCALENDARs, not one calendar-wide document.
  */
 export async function fetchCalDavOccurrences(
   config: CalDavSourceConfig,
   opts: ExpandOptions = {},
   fetchImpl: typeof fetch = fetch.bind(globalThis),
-): Promise<Occurrence[]> {
+): Promise<AccountOccurrences> {
   const windowStart = opts.windowStart ?? new Date();
   const windowEnd = opts.windowEnd ?? new Date(Date.now() + 90 * DAY);
   const authorization = `Basic ${btoa(`${config.username}:${config.password}`)}`;
@@ -428,9 +442,11 @@ export async function fetchCalDavOccurrences(
     fetch: fetchImpl,
   });
   const out: Occurrence[] = [];
+  let timezone: string | null = null;
   for (const obj of objects) {
     const data = typeof obj.data === 'string' ? obj.data : '';
     if (!data) continue;
+    if (!timezone) timezone = extractTimezone(data);
     try {
       out.push(
         ...parseAndExpand(data, {
@@ -443,7 +459,7 @@ export async function fetchCalDavOccurrences(
       // Skip an individual unparseable object rather than failing the feed.
     }
   }
-  return out;
+  return { occurrences: out, timezone };
 }
 
 interface GoogleApiTime {
@@ -464,6 +480,8 @@ interface GoogleApiEvent {
 interface GoogleEventsResponse {
   items?: GoogleApiEvent[];
   nextPageToken?: string;
+  /** IANA timezone of the calendar being queried (Google always includes it). */
+  timeZone?: string;
 }
 
 /** All-day google times carry `date` (YYYY-MM-DD); anchor to UTC midnight like ICS. */
@@ -496,17 +514,20 @@ function googleEventToOccurrence(ev: GoogleApiEvent): Occurrence | null {
 /**
  * Read occurrences from a Google calendar via `events.list` (singleEvents=true so
  * recurrences arrive pre-expanded). The caller supplies a valid access token
- * (the host exchanges the stored refresh token). Paginates fully.
+ * (the host exchanges the stored refresh token). Paginates fully. Also returns
+ * the calendar's own IANA timezone (the response's top-level `timeZone` field —
+ * calendar-wide, not per-event), needed for exception-feed baselines.
  */
 export async function fetchGoogleOccurrences(
   accessToken: string,
   calendarId: string,
   opts: ExpandOptions = {},
   fetchImpl: typeof fetch = fetch.bind(globalThis),
-): Promise<Occurrence[]> {
+): Promise<AccountOccurrences> {
   const windowStart = opts.windowStart ?? new Date();
   const windowEnd = opts.windowEnd ?? new Date(Date.now() + 90 * DAY);
   const out: Occurrence[] = [];
+  let timezone: string | null = null;
   let pageToken: string | undefined;
   do {
     const params = new URLSearchParams({
@@ -523,13 +544,14 @@ export async function fetchGoogleOccurrences(
     );
     if (!res.ok) throw new Error(`google events.list failed: ${res.status}`);
     const json = (await res.json()) as GoogleEventsResponse;
+    if (!timezone && json.timeZone) timezone = json.timeZone;
     for (const ev of json.items ?? []) {
       const occ = googleEventToOccurrence(ev);
       if (occ) out.push(occ);
     }
     pageToken = json.nextPageToken;
   } while (pageToken);
-  return out;
+  return { occurrences: out, timezone };
 }
 
 export interface CalendarChoice {
