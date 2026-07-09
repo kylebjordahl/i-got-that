@@ -1,7 +1,32 @@
 import 'dart:ui' show ImageFilter;
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../state/nav.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_text.dart';
+
+/// Drop into `bottomNavigationBar` on any screen pushed on top of [AppShell]
+/// (member detail, feed setup, task rules, connect-account) so the floating
+/// pill persists everywhere, not just on the four root tabs. Picking a tab
+/// pops back to the shell and switches it, mirroring [AppShell]'s own wiring.
+class PersistentAppNav extends ConsumerWidget {
+  const PersistentAppNav({super.key});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final index = ref.watch(navIndexProvider);
+    return SafeArea(
+      top: false,
+      child: AppBottomNav(
+        currentIndex: index,
+        onSelect: (i) {
+          ref.read(navIndexProvider.notifier).state = i;
+          Navigator.of(context).popUntil((route) => route.isFirst);
+        },
+      ),
+    );
+  }
+}
 
 /// The shared floating nav: a blurred pill with Home / Plan / Family / Me (active
 /// tab pill-filled indigo). The circular "+" quick-add appears **only** when
