@@ -273,7 +273,6 @@ jobs:
       # expansion, so a literal `*.ipa` pattern fails with "File does not
       # exist at path: .../*.ipa".
       - name: Locate built IPA
-        if: steps.mobile-changed.outputs.changed == 'true'
         id: locate-ipa
         working-directory: apps/mobile
         run: |
