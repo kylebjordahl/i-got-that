@@ -10,8 +10,10 @@ import type { HonoEnv } from '../env.js';
 import { verifyAppleIdentityToken, verifyAppleNotificationToken } from '../lib/apple.js';
 import { randomToken } from '../lib/crypto.js';
 import { getMailer } from '../lib/mailer.js';
+import { clearSessionCookie, sessionToken, setSessionCookie } from '../lib/session-cookie.js';
 import {
   createSession,
+  deleteSession,
   findOrCreateUserByApple,
   handleAppleAccountEvent,
   requestMagicLink,
@@ -98,9 +100,10 @@ authRoutes.post('/apple', async (c) => {
 
   const db = getDb(c.env.DB);
   const user = await findOrCreateUserByApple(db, identity.sub, identity.email);
-  const sessionToken = await createSession(db, user.id);
+  const token = await createSession(db, user.id);
+  setSessionCookie(c, token);
   return c.json({
-    sessionToken,
+    sessionToken: token,
     user: { id: user.id, username: user.username, displayName: user.displayName },
   });
 });
@@ -195,8 +198,9 @@ authRoutes.post('/apple/callback', async (c) => {
 
   const db = getDb(c.env.DB);
   const user = await findOrCreateUserByApple(db, identity.sub, identity.email);
-  const sessionToken = await createSession(db, user.id);
-  return back(`session=${encodeURIComponent(sessionToken)}`);
+  const token = await createSession(db, user.id);
+  setSessionCookie(c, token);
+  return back(`session=${encodeURIComponent(token)}`);
 });
 
 /**
@@ -237,6 +241,7 @@ authRoutes.post('/magic-link/verify', async (c) => {
   const result = await verifyMagicLink(getDb(c.env.DB), parsed.data.token);
   if (!result) return c.json({ error: 'invalid_token' }, 401);
 
+  setSessionCookie(c, result.sessionToken);
   return c.json({
     sessionToken: result.sessionToken,
     user: {
@@ -245,4 +250,16 @@ authRoutes.post('/magic-link/verify', async (c) => {
       displayName: result.user.displayName,
     },
   });
+});
+
+/**
+ * Log out: invalidate the session (whichever way it was presented — bearer
+ * header or the web session cookie) and clear the cookie. Always 200, even if
+ * the token was already gone.
+ */
+authRoutes.post('/logout', async (c) => {
+  const token = sessionToken(c);
+  if (token) await deleteSession(getDb(c.env.DB), token);
+  clearSessionCookie(c);
+  return c.json({ ok: true });
 });

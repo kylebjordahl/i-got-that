@@ -2,6 +2,30 @@
 
 Two login methods feed the same session model (a `sessions` row → bearer token).
 
+## Session persistence on web (surviving a page refresh)
+
+The Flutter web SPA keeps its session token in memory only (`AuthState` in
+`lib/state/auth.dart`) — it's never written to `localStorage`/`sessionStorage`,
+which JS-side XSS could read. Instead, every route that issues a session
+(`POST /auth/apple`, `POST /auth/apple/callback`, `POST /auth/magic-link/verify`)
+also mirrors the token into an **`igt_session`** cookie — `HttpOnly` (invisible
+to JS), `Secure`, `SameSite=Lax`, set in `apps/api/src/lib/session-cookie.ts`.
+`authMiddleware` (`apps/api/src/middleware/auth.ts`) accepts either the
+`Authorization: Bearer` header (native) or this cookie (web) — whichever is
+present.
+
+On startup, before falling back to the login screen, the web client calls
+`GET /me` with the cookie attached (`credentials: 'include'`, wired via
+`apps/mobile/lib/api/dio_credentials_html.dart`); a valid cookie restores the
+session with no token ever touching JS. `POST /auth/logout` invalidates the
+session server-side and clears the cookie.
+
+`SameSite=Lax` is enough because deployed envs serve the SPA and API
+same-origin (see below), and local dev (`flutter run` on one port, `wrangler
+dev` on `:8787`) is still "same-site" (same `localhost` host, different port).
+Cross-origin dev CORS (`apps/api/src/index.ts`) reflects the request `Origin`
+and sets `credentials: true`, which a wildcard `origin: '*'` can't do.
+
 | Method | State | Notes |
 | --- | --- | --- |
 | **Magic link** (email) | Fully implemented | Needs outbound email, which is **off** (no paid plan). In **dev/staging** the request endpoint returns the token directly (`devToken`) so you can log in without a mailbox; in **production** it does not. |
