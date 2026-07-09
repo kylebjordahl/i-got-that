@@ -10,6 +10,11 @@
       "options": {
         "command": "wrangler dev",
         "cwd": "apps/api"
+      },
+      "configurations": {
+        "tunnel": {
+          "command": "wrangler dev --tunnel"
+        }
       }
     },
     "deploy": {
