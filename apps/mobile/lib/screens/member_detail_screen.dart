@@ -3,19 +3,21 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models.dart';
 import '../state/auth.dart';
 import '../state/family.dart';
+import '../state/nav.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_text.dart';
 import '../theme/person_colors.dart';
 import '../widgets/primitives.dart';
 import '../widgets/settings.dart';
-import 'dialogs.dart';
+import 'add_calendar_sheet.dart';
 import 'feed_baseline_screen.dart';
-import 'member_sections.dart';
+import 'member_editor_screen.dart';
+import 'task_rules_screen.dart';
 
-/// One detail screen for every family member — child and caretaker alike (the
-/// Child/Caretaker tag is only a grouping). Configures the member's unified
-/// calendar: source calendars (feed links), the target calendar the synthesis
-/// mirrors to, task-claiming permissions, and the member color.
+/// One detail screen for every family member — child and caretaker alike (6e).
+/// Three sections, each with a full-height accent bar: Source calendars, the
+/// Unified (target) calendar, and Family logistics (task generation + claiming
+/// merged). Identity — name / color / role / admin — is edited in the ✎ modal.
 class MemberDetailScreen extends ConsumerWidget {
   const MemberDetailScreen({super.key, required this.memberId});
   final String memberId;
@@ -31,7 +33,6 @@ class MemberDetailScreen extends ConsumerWidget {
     final color = personColor(member);
     final isAdmin = me?.isAdmin ?? false;
     final isSelf = me?.id == member.id;
-    final canEditColor = isAdmin || isSelf;
     // Target config is credential-bound: the member themselves, or an admin for
     // members without their own login (children, helpers).
     final canEditTarget = isSelf || (isAdmin && !member.hasLogin);
@@ -48,51 +49,25 @@ class MemberDetailScreen extends ConsumerWidget {
               avatar: PersonAvatar(
                   initial: initialFor(member.relationName), color: color, size: 54),
               name: member.relationName,
-              subtitle:
-                  '$grouping${member.isCaretaker ? ' · can claim tasks' : ''}',
-              onEdit: () => showEditNameDialog(context, ref, member),
+              subtitle: '$grouping · ● ${_colorName(color)}',
+              onEdit: (isAdmin || isSelf)
+                  ? () => showMemberEditor(context, ref, member)
+                  : null,
             ),
             const SizedBox(height: 24),
-            MemberColorSection(member: member, others: members, enabled: canEditColor),
-            const SizedBox(height: 24),
-            _SourceCalendarsSection(member: member, canEdit: isAdmin),
-            const SizedBox(height: 24),
-            _UnifiedCalendarSection(member: member, canEdit: canEditTarget),
-            const SizedBox(height: 24),
-            const SectionEyebrow('Task claiming', color: AppColors.indigo),
-            const SizedBox(height: 12),
-            AppCard(
-              child: Column(
-                children: [
-                  SwitchRow(
-                    icon: Icons.person_outline_rounded,
-                    iconColor: AppColors.indigo,
-                    title: 'Can claim tasks',
-                    subtitle: 'Appears as an owner option when claiming',
-                    value: member.isCaretaker,
-                    onChanged:
-                        isAdmin ? (v) => _setFlag(ref, member, isCaretaker: v) : null,
-                  ),
-                  const Divider(height: 20),
-                  SwitchRow(
-                    icon: Icons.shield_outlined,
-                    iconColor: AppColors.amber,
-                    title: 'Admin access',
-                    subtitle: 'Can manage the whole family',
-                    value: member.isAdmin,
-                    onChanged:
-                        isAdmin ? (v) => _setFlag(ref, member, isAdmin: v) : null,
-                  ),
-                ],
-              ),
+            _AccentSection(
+              color: AppColors.feedBlue,
+              child: _SourceCalendarsSection(member: member, canEdit: isAdmin),
             ),
             const SizedBox(height: 24),
-            const SectionEyebrow('Family logistics', color: AppColors.amber),
-            const SizedBox(height: 8),
-            Text(
-              'What each event generates (drop-off, pickup, attendance) lives on '
-              'the calendar link — tap a source calendar above to configure it.',
-              style: AppText.subtitle,
+            _AccentSection(
+              color: AppColors.green,
+              child: _UnifiedCalendarSection(member: member, canEdit: canEditTarget),
+            ),
+            const SizedBox(height: 24),
+            _AccentSection(
+              color: AppColors.amber,
+              child: _FamilyLogisticsSection(member: member, canEdit: isAdmin),
             ),
             const SizedBox(height: 28),
             if (isAdmin && !isSelf)
@@ -106,17 +81,17 @@ class MemberDetailScreen extends ConsumerWidget {
     );
   }
 
-  Future<void> _setFlag(WidgetRef ref, Member m,
-      {bool? isAdmin, bool? isCaretaker}) async {
-    final familyId = await ref.read(familyProvider.future);
-    await ref.read(apiClientProvider).updateMember(
-          familyId,
-          m.id,
-          isAdmin: isAdmin,
-          isCaretaker: isCaretaker,
-        );
-    ref.invalidate(membersProvider);
-    ref.invalidate(currentMemberProvider);
+  String _colorName(Color c) {
+    final hex = hexFromColor(c).toUpperCase();
+    return switch (hex) {
+      '#8E9BFF' => 'Indigo',
+      '#66B4FF' => 'Blue',
+      '#4FD9A8' => 'Green',
+      '#C08CFF' => 'Purple',
+      '#FF7A6B' => 'Coral',
+      '#E8A44D' => 'Amber',
+      _ => 'Custom',
+    };
   }
 
   Future<void> _confirmRemove(BuildContext context, WidgetRef ref, Member m) async {
@@ -165,15 +140,10 @@ class _SourceCalendarsSection extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final feeds = ref.watch(feedsProvider).valueOrNull ?? const <FeedItem>[];
     final linked = <(FeedItem, FeedLink)>[];
-    var anyUnlinked = false;
     for (final feed in feeds) {
       final links = ref.watch(feedLinksProvider(feed.id)).valueOrNull ?? const <FeedLink>[];
       final link = links.where((l) => l.familyMemberId == member.id).firstOrNull;
-      if (link != null) {
-        linked.add((feed, link));
-      } else {
-        anyUnlinked = true;
-      }
+      if (link != null) linked.add((feed, link));
     }
 
     return Column(
@@ -231,9 +201,7 @@ class _SourceCalendarsSection extends ConsumerWidget {
                   icon: Icons.add_rounded,
                   iconColor: AppColors.feedBlue,
                   title: 'Add another calendar',
-                  onTap: anyUnlinked || feeds.isEmpty
-                      ? () => _openLink(context, null, null)
-                      : null,
+                  onTap: () => showAddCalendarSheet(context, ref, member),
                 ),
             ],
           ),
@@ -242,11 +210,127 @@ class _SourceCalendarsSection extends ConsumerWidget {
     );
   }
 
-  void _openLink(BuildContext context, FeedItem? feed, FeedLink? link) {
+  void _openLink(BuildContext context, FeedItem feed, FeedLink link) {
     Navigator.of(context).push(MaterialPageRoute(
       builder: (_) =>
           FeedBaselineScreen(member: member, feed: feed, existingLink: link),
     ));
+  }
+}
+
+/// A section wrapped by a full-height 3px accent bar on its left (6e).
+class _AccentSection extends StatelessWidget {
+  const _AccentSection({required this.color, required this.child});
+  final Color color;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return IntrinsicHeight(
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Container(
+            width: 3,
+            margin: const EdgeInsets.only(right: 14, top: 2, bottom: 2),
+            decoration: BoxDecoration(
+              color: color,
+              borderRadius: BorderRadius.circular(2),
+            ),
+          ),
+          Expanded(child: child),
+        ],
+      ),
+    );
+  }
+}
+
+/// "Family logistics" (6e) — task generation + claiming are one feature, so
+/// they live together. Admin access moved to the member editor (6h).
+class _FamilyLogisticsSection extends ConsumerWidget {
+  const _FamilyLogisticsSection({required this.member, required this.canEdit});
+  final Member member;
+  final bool canEdit;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final generates = member.generatesFamilyTasks;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const SectionEyebrow('Family logistics', color: AppColors.amber),
+        const SizedBox(height: 8),
+        Text(
+          "Turn this person's events into tasks the family can claim — and "
+          'whether this person can claim others’ tasks.',
+          style: AppText.subtitle,
+        ),
+        const SizedBox(height: 12),
+        AppCard(
+          child: Column(
+            children: [
+              SwitchRow(
+                icon: Icons.auto_awesome_rounded,
+                iconColor: AppColors.amber,
+                title: 'Generate family tasks',
+                subtitle:
+                    "${member.relationName}'s unified-calendar events become claimable tasks",
+                value: generates,
+                onChanged: canEdit
+                    ? (v) => _setFlag(ref, generatesFamilyTasks: v)
+                    : null,
+              ),
+              if (generates) ...[
+                const Divider(height: 20),
+                SettingRow(
+                  icon: Icons.rule_rounded,
+                  iconColor: AppColors.purple,
+                  title: 'Task rules',
+                  subtitle: 'What each event generates, per calendar',
+                  trailing:
+                      const Icon(Icons.chevron_right_rounded, color: AppColors.textMuted),
+                  onTap: () => Navigator.of(context).push(MaterialPageRoute(
+                    builder: (_) => TaskRulesScreen(member: member),
+                  )),
+                ),
+              ],
+              const Divider(height: 20),
+              SwitchRow(
+                icon: Icons.person_outline_rounded,
+                iconColor: AppColors.indigo,
+                title: 'Can claim tasks',
+                subtitle: 'Appears as an owner option when claiming',
+                value: member.isCaretaker,
+                onChanged: canEdit ? (v) => _setFlag(ref, isCaretaker: v) : null,
+              ),
+            ],
+          ),
+        ),
+        if (generates) ...[
+          const SizedBox(height: 8),
+          Text(
+            'Which events become tasks is set per source calendar — open one '
+            'under Source calendars above to edit its schedule rules.',
+            style: AppText.subtitle,
+          ),
+        ],
+      ],
+    );
+  }
+
+  Future<void> _setFlag(WidgetRef ref,
+      {bool? isCaretaker, bool? generatesFamilyTasks}) async {
+    final familyId = await ref.read(familyProvider.future);
+    await ref.read(apiClientProvider).updateMember(
+          familyId,
+          member.id,
+          isCaretaker: isCaretaker,
+          generatesFamilyTasks: generatesFamilyTasks,
+        );
+    ref.invalidate(membersProvider);
+    ref.invalidate(currentMemberProvider);
+    ref.invalidate(unownedTasksProvider);
+    ref.invalidate(allTasksProvider);
   }
 }
 
@@ -261,6 +345,7 @@ class _UnifiedCalendarSection extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final target = ref.watch(memberCalendarProvider(member.id)).valueOrNull;
+    final accounts = ref.watch(accountsProvider).valueOrNull ?? const <ExternalAccount>[];
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -269,28 +354,63 @@ class _UnifiedCalendarSection extends ConsumerWidget {
         const SizedBox(height: 8),
         Text(
           'Pick one writable calendar as the target. Sources are merged into it; '
-          'the result shows in Plan.',
+          'events you add by hand are kept — synthesis only manages what it brought in.',
           style: AppText.subtitle,
         ),
         const SizedBox(height: 12),
-        AppCard(
-          padding: EdgeInsets.zero,
-          child: SettingRow(
-            icon: Icons.event_available_rounded,
-            iconColor: AppColors.green,
-            title: target == null
-                ? 'No target calendar'
-                : '${target.methodLabel} · '
-                    '${target.targetCalendarName ?? target.targetCalendarId}',
-            subtitle: target == null
-                ? 'Agenda lives in the app only — tap to pick one'
-                : 'shared, writable · synced both ways',
-            trailing: canEdit
-                ? const Icon(Icons.chevron_right_rounded, color: AppColors.textMuted)
-                : null,
+        if (target != null)
+          AppCard(
             onTap: canEdit ? () => _pickTarget(context, ref, target) : null,
+            child: Row(
+              children: [
+                const IconTile(
+                    icon: Icons.event_available_rounded, color: AppColors.green, size: 40),
+                const SizedBox(width: 14),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('TARGET CALENDAR', style: AppText.eyebrow(AppColors.green)),
+                      const SizedBox(height: 4),
+                      Text(
+                          '${target.methodLabel} · ${target.targetCalendarName ?? target.targetCalendarId}',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: AppText.sectionItemTitle),
+                      const SizedBox(height: 2),
+                      Text('shared, writable · synced both ways', style: AppText.subtitle),
+                    ],
+                  ),
+                ),
+                if (canEdit)
+                  const Icon(Icons.chevron_right_rounded, color: AppColors.textMuted),
+              ],
+            ),
+          )
+        else if (accounts.isEmpty)
+          _UnconfiguredCard(
+            accent: AppColors.amber,
+            icon: Icons.link_off_rounded,
+            title: 'No calendar accounts',
+            body: 'The calendar runs in-app. To mirror it out to a real calendar, '
+                'connect an account first.',
+            cta: 'Set up an account →',
+            enabled: canEdit,
+            onTap: () => Navigator.of(context).push<void>(
+              MaterialPageRoute(builder: (_) => const _MeShortcut()),
+            ),
+          )
+        else
+          _UnconfiguredCard(
+            accent: AppColors.green,
+            icon: Icons.cloud_off_rounded,
+            title: 'Kept in-app only',
+            body: 'No writable target picked, so it stays server-side: synthesis '
+                'still runs and feeds Plan & tasks. Pick a target to also mirror it out.',
+            cta: 'Choose a target calendar',
+            enabled: canEdit,
+            onTap: () => _pickTarget(context, ref, null),
           ),
-        ),
       ],
     );
   }
@@ -298,11 +418,7 @@ class _UnifiedCalendarSection extends ConsumerWidget {
   Future<void> _pickTarget(
       BuildContext context, WidgetRef ref, MemberCalendarConfig? current) async {
     final accounts = ref.read(accountsProvider).valueOrNull ?? const <ExternalAccount>[];
-    if (accounts.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          content: Text('Connect a calendar account on the Me tab first')));
-      return;
-    }
+    if (accounts.isEmpty) return;
     await showModalBottomSheet<void>(
       context: context,
       showDragHandle: true,
@@ -310,6 +426,85 @@ class _UnifiedCalendarSection extends ConsumerWidget {
       builder: (sheetCtx) =>
           _TargetPickerSheet(member: member, accounts: accounts, current: current),
     );
+  }
+}
+
+/// A dashed "unconfigured" resting-state card (6j) — not an error.
+class _UnconfiguredCard extends StatelessWidget {
+  const _UnconfiguredCard({
+    required this.accent,
+    required this.icon,
+    required this.title,
+    required this.body,
+    required this.cta,
+    required this.enabled,
+    required this.onTap,
+  });
+  final Color accent;
+  final IconData icon;
+  final String title;
+  final String body;
+  final String cta;
+  final bool enabled;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: AppColors.tint(accent, 0.07),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: accent.withValues(alpha: 0.4)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(icon, color: accent, size: 20),
+              const SizedBox(width: 10),
+              Text(title, style: AppText.sectionItemTitle),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Text(body, style: AppText.subtitle),
+          if (enabled) ...[
+            const SizedBox(height: 14),
+            SizedBox(
+              width: double.infinity,
+              child: Material(
+                color: accent,
+                borderRadius: BorderRadius.circular(999),
+                child: InkWell(
+                  onTap: onTap,
+                  borderRadius: BorderRadius.circular(999),
+                  child: Container(
+                    height: 46,
+                    alignment: Alignment.center,
+                    child: Text(cta,
+                        style: font(kBodyFont, 14, 700, color: const Color(0xFF14231A))),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+/// Routes to the Me tab (for the "set up an account" CTA on 6j).
+class _MeShortcut extends ConsumerWidget {
+  const _MeShortcut();
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      ref.read(navIndexProvider.notifier).state = 3; // Me tab
+      Navigator.of(context).popUntil((r) => r.isFirst);
+    });
+    return const Scaffold(body: Center(child: CircularProgressIndicator()));
   }
 }
 

@@ -51,21 +51,25 @@ print "→ exception feed $feed"
 
 link=$(curl -fsS "$BASE/families/$fam/feeds/$feed/member-links" -H "$auth" -H "$CT" -d "$(jq -nc \
   --arg m "$child" \
-  '{familyMemberId:$m, weekdayMask:31, dayStart:"08:30", dayEnd:"14:45",
-    location:"School", generatesTypes:["dropoff","pickup"], defaultAttendance:"any"}')" \
+  '{familyMemberId:$m, weekdayMask:31, dayStart:"08:30", dayEnd:"14:45", location:"School"}')" \
   | jq -r '.link.id')
-print "→ baseline link $link (Mon–Fri 08:30→14:45, dropoff+pickup)"
+print "→ baseline link $link (Mon–Fri 08:30→14:45)"
 
+# Override rules (schedule only): cancel / modify the baseline day.
 rules="$BASE/families/$fam/feeds/$feed/member-links/$link/rules"
 curl -fsS "$rules" -H "$auth" -H "$CT" -d "$(jq -nc \
   '{matchField:"summary", matchOp:"regex", matchValue:"/no school|closed/i", outcome:"cancel_day"}')" >/dev/null
-print "→ rule 0: /no school|closed/i → cancel day"
+print "→ override 0: /no school|closed/i → cancel day"
 curl -fsS "$rules" -H "$auth" -H "$CT" -d "$(jq -nc \
   '{matchField:"summary", matchOp:"contains", matchValue:"Early", outcome:"modify_day", params:{dayEnd:"12:00"}}')" >/dev/null
-print "→ rule 1: contains 'Early' → modify day (ends 12:00)"
-curl -fsS "$rules" -H "$auth" -H "$CT" -d "$(jq -nc \
-  '{matchField:"summary", matchOp:"contains", matchValue:"Photo", outcome:"annotate", params:{text:"Photo Day"}}')" >/dev/null
-print "→ rule 2: contains 'Photo' → annotate"
+print "→ override 1: contains 'Early' → modify day (ends 12:00)"
+
+# Task rules (typing): school days default to drop-off + pickup, field trips → attendance.
+curl -fsS "$BASE/families/$fam/members/$child/task-default" -X PUT -H "$auth" -H "$CT" -d "$(jq -nc \
+  --arg l "$link" '{linkId:$l, defaultResultType:"transition"}')" >/dev/null
+curl -fsS "$BASE/families/$fam/members/$child/task-rules" -H "$auth" -H "$CT" -d "$(jq -nc \
+  --arg l "$link" '{linkId:$l, scope:"this_calendar", resultType:"attendance", matchValue:"/field trip/i"}')" >/dev/null
+print "→ task rules: default drop-off+pickup; /field trip/i → attendance"
 
 print "→ refreshing feeds (ingest → synthesize → generate tasks)…"
 curl -fsS "$BASE/families/$fam/feeds/refresh-all" -H "$auth" -H "$CT" -d '{}' | jq -c '.synthesis'

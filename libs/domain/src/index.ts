@@ -269,6 +269,7 @@ export const CreateFamilyMemberInput = z.object({
   isCaretaker: z.boolean().default(false),
   isAdmin: z.boolean().default(false),
   requiresCaretaker: z.boolean().default(false),
+  generatesFamilyTasks: z.boolean().default(true),
   color: HexColor.optional(),
   userId: Id.optional(),
 });
@@ -283,6 +284,7 @@ export const UpdateFamilyMemberInput = z.object({
   isCaretaker: z.boolean().optional(),
   isAdmin: z.boolean().optional(),
   requiresCaretaker: z.boolean().optional(),
+  generatesFamilyTasks: z.boolean().optional(),
   color: HexColor.optional(),
 });
 export type UpdateFamilyMemberInput = z.infer<typeof UpdateFamilyMemberInput>;

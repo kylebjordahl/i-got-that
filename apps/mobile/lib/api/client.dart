@@ -97,6 +97,7 @@ class ApiClient {
     bool? isCaretaker,
     bool? isAdmin,
     bool? requiresCaretaker,
+    bool? generatesFamilyTasks,
     String? color,
   }) async {
     await _dio.patch(
@@ -106,6 +107,7 @@ class ApiClient {
         if (isCaretaker != null) 'isCaretaker': isCaretaker,
         if (isAdmin != null) 'isAdmin': isAdmin,
         if (requiresCaretaker != null) 'requiresCaretaker': requiresCaretaker,
+        if (generatesFamilyTasks != null) 'generatesFamilyTasks': generatesFamilyTasks,
         if (color != null) 'color': color,
       },
       options: _auth,
@@ -186,14 +188,16 @@ class ApiClient {
   Future<List<dynamic>> listFeeds(String familyId) async =>
       _list(await _dio.get('/families/$familyId/feeds', options: _auth), 'feeds');
 
-  /// Create an input feed: a public ICS URL (`kind: 'ics'`, pass `url`) or a
-  /// calendar from a connected account (`kind: 'caldav' | 'google'`, pass
-  /// `externalAccountId` + `sourceCalendarId`).
+  /// Create an input feed: a public ICS URL (`kind: 'ics'`, pass `url`, with an
+  /// optional `name` — blank ⇒ fetched from the feed) or a calendar from a
+  /// connected account (`kind: 'caldav' | 'google'`, pass `externalAccountId` +
+  /// `sourceCalendarId`).
   Future<Map<String, dynamic>> createFeed(
     String familyId, {
     required String mode, // 'standard' | 'exception'
     String kind = 'ics',
     String? url,
+    String? name,
     String? externalAccountId,
     String? sourceCalendarId,
     String? sourceCalendarName,
@@ -206,6 +210,7 @@ class ApiClient {
         'mode': mode,
         'refreshMinutes': refreshMinutes,
         if (url != null) 'url': url,
+        if (name != null) 'name': name,
         if (externalAccountId != null) 'externalAccountId': externalAccountId,
         if (sourceCalendarId != null) 'sourceCalendarId': sourceCalendarId,
         if (sourceCalendarName != null) 'sourceCalendarName': sourceCalendarName,
@@ -222,10 +227,7 @@ class ApiClient {
     int? weekdayMask,
     String? dayStart,
     String? dayEnd,
-    int? durationMinutes,
     String? location,
-    List<String>? generatesTypes,
-    String? defaultAttendance,
   }) async {
     final res = await _dio.post(
       '/families/$familyId/feeds/$feedId/member-links',
@@ -234,10 +236,7 @@ class ApiClient {
         if (weekdayMask != null) 'weekdayMask': weekdayMask,
         if (dayStart != null) 'dayStart': dayStart,
         if (dayEnd != null) 'dayEnd': dayEnd,
-        if (durationMinutes != null) 'durationMinutes': durationMinutes,
         if (location != null) 'location': location,
-        if (generatesTypes != null) 'generatesTypes': generatesTypes,
-        if (defaultAttendance != null) 'defaultAttendance': defaultAttendance,
       },
       options: _auth,
     );
@@ -255,10 +254,7 @@ class ApiClient {
     int? weekdayMask,
     String? dayStart,
     String? dayEnd,
-    int? durationMinutes,
     String? location,
-    List<String>? generatesTypes,
-    String? defaultAttendance,
     bool? active,
   }) async {
     await _dio.patch(
@@ -267,10 +263,7 @@ class ApiClient {
         if (weekdayMask != null) 'weekdayMask': weekdayMask,
         if (dayStart != null) 'dayStart': dayStart,
         if (dayEnd != null) 'dayEnd': dayEnd,
-        if (durationMinutes != null) 'durationMinutes': durationMinutes,
         if (location != null) 'location': location,
-        if (generatesTypes != null) 'generatesTypes': generatesTypes,
-        if (defaultAttendance != null) 'defaultAttendance': defaultAttendance,
         if (active != null) 'active': active,
       },
       options: _auth,
@@ -300,7 +293,7 @@ class ApiClient {
       _list(await _dio.get(_rulesBase(familyId, feedId, linkId), options: _auth),
           'rules');
 
-  /// Insert a rule into the pipeline; omitted [position] appends.
+  /// Insert an override rule into the pipeline; omitted [position] appends.
   Future<Map<String, dynamic>> createLinkRule(
     String familyId,
     String feedId,
@@ -311,8 +304,6 @@ class ApiClient {
     String? matchValue,
     int? position,
     Map<String, dynamic>? params,
-    List<String>? generatesTypes,
-    String? defaultAttendance,
   }) async {
     final res = await _dio.post(
       _rulesBase(familyId, feedId, linkId),
@@ -323,17 +314,14 @@ class ApiClient {
         if (matchValue != null) 'matchValue': matchValue,
         if (position != null) 'position': position,
         if (params != null) 'params': params,
-        if (generatesTypes != null) 'generatesTypes': generatesTypes,
-        if (defaultAttendance != null) 'defaultAttendance': defaultAttendance,
       },
       options: _auth,
     );
     return _obj(res);
   }
 
-  /// Update a rule. Clearable params (`matchValue`, `params`, `generatesTypes`,
-  /// `defaultAttendance`) accept an explicit `null` to clear the column;
-  /// omitting them leaves the column unchanged.
+  /// Update an override rule. Clearable params (`matchValue`, `params`) accept
+  /// an explicit `null` to clear the column; omitting them leaves it unchanged.
   Future<void> updateLinkRule(
     String familyId,
     String feedId,
@@ -344,8 +332,6 @@ class ApiClient {
     String? outcome,
     Object? matchValue = _unset,
     Object? params = _unset,
-    Object? generatesTypes = _unset,
-    Object? defaultAttendance = _unset,
   }) async {
     await _dio.patch(
       '${_rulesBase(familyId, feedId, linkId)}/$ruleId',
@@ -355,8 +341,6 @@ class ApiClient {
         if (outcome != null) 'outcome': outcome,
         if (matchValue != _unset) 'matchValue': matchValue,
         if (params != _unset) 'params': params,
-        if (generatesTypes != _unset) 'generatesTypes': generatesTypes,
-        if (defaultAttendance != _unset) 'defaultAttendance': defaultAttendance,
       },
       options: _auth,
     );
@@ -455,22 +439,20 @@ class ApiClient {
       await _dio.get('/families/$familyId/pending-decisions', options: _auth),
       'decisions');
 
-  /// Resolve a pending decision: what the unmatched event should generate.
+  /// Resolve a pending decision: accept the unmatched event onto the calendar
+  /// as a normal day (task typing then flows through the member's task rules).
+  /// Optional start/end override the source event's own times.
   Future<void> resolvePendingDecision(
     String familyId,
     String decisionId, {
-    required List<String> types,
-    String? defaultAttendance,
     String? startTime,
-    int? durationMinutes,
+    String? endTime,
   }) async {
     await _dio.post(
       '/families/$familyId/pending-decisions/$decisionId/resolve',
       data: {
-        'types': types,
-        if (defaultAttendance != null) 'defaultAttendance': defaultAttendance,
         if (startTime != null) 'startTime': startTime,
-        if (durationMinutes != null) 'durationMinutes': durationMinutes,
+        if (endTime != null) 'endTime': endTime,
       },
       options: _auth,
     );
@@ -540,5 +522,105 @@ class ApiClient {
   Future<void> clearMemberCalendarTarget(String familyId, String memberId) async {
     await _dio.delete('/families/$familyId/members/$memberId/calendar-target',
         options: _auth);
+  }
+
+  // --- Task rules (per member; 6k/6n) ----------------------------------------
+
+  String _taskRulesBase(String familyId, String memberId) =>
+      '/families/$familyId/members/$memberId/task-rules';
+
+  /// The member's whole task-rule pipeline + every calendar's default:
+  /// `{ rules: [...], defaults: { unified, links } }`.
+  Future<Map<String, dynamic>> getTaskRules(String familyId, String memberId) async =>
+      _obj(await _dio.get(_taskRulesBase(familyId, memberId), options: _auth));
+
+  Future<Map<String, dynamic>> createTaskRule(
+    String familyId,
+    String memberId, {
+    String? linkId,
+    required String scope, // 'this_calendar' | 'all_calendars'
+    required String resultType, // 'transition' | 'attendance'
+    String matchField = 'summary',
+    String matchOp = 'regex',
+    String? matchValue,
+    int? position,
+    int? dropoffWindowMin,
+    int? pickupWindowMin,
+  }) async {
+    final res = await _dio.post(
+      _taskRulesBase(familyId, memberId),
+      data: {
+        if (linkId != null) 'linkId': linkId,
+        'scope': scope,
+        'resultType': resultType,
+        'matchField': matchField,
+        'matchOp': matchOp,
+        if (matchValue != null) 'matchValue': matchValue,
+        if (position != null) 'position': position,
+        if (dropoffWindowMin != null) 'dropoffWindowMin': dropoffWindowMin,
+        if (pickupWindowMin != null) 'pickupWindowMin': pickupWindowMin,
+      },
+      options: _auth,
+    );
+    return _obj(res);
+  }
+
+  Future<void> updateTaskRule(
+    String familyId,
+    String memberId,
+    String ruleId, {
+    String? scope,
+    String? resultType,
+    String? matchField,
+    String? matchOp,
+    Object? matchValue = _unset,
+    Object? dropoffWindowMin = _unset,
+    Object? pickupWindowMin = _unset,
+  }) async {
+    await _dio.patch(
+      '${_taskRulesBase(familyId, memberId)}/$ruleId',
+      data: {
+        if (scope != null) 'scope': scope,
+        if (resultType != null) 'resultType': resultType,
+        if (matchField != null) 'matchField': matchField,
+        if (matchOp != null) 'matchOp': matchOp,
+        if (matchValue != _unset) 'matchValue': matchValue,
+        if (dropoffWindowMin != _unset) 'dropoffWindowMin': dropoffWindowMin,
+        if (pickupWindowMin != _unset) 'pickupWindowMin': pickupWindowMin,
+      },
+      options: _auth,
+    );
+  }
+
+  Future<void> deleteTaskRule(String familyId, String memberId, String ruleId) async {
+    await _dio.delete('${_taskRulesBase(familyId, memberId)}/$ruleId', options: _auth);
+  }
+
+  /// Reorder the rules visible in one calendar's pipeline (new order of visible ids).
+  Future<void> reorderTaskRules(
+      String familyId, String memberId, List<String> ruleIds) async {
+    await _dio.put('${_taskRulesBase(familyId, memberId)}/order',
+        data: {'ruleIds': ruleIds}, options: _auth);
+  }
+
+  /// Set a calendar's terminal default; `linkId` null = the unified calendar.
+  Future<void> setTaskDefault(
+    String familyId,
+    String memberId, {
+    String? linkId,
+    required String defaultResultType,
+    int? dropoffWindowMin,
+    int? pickupWindowMin,
+  }) async {
+    await _dio.put(
+      '/families/$familyId/members/$memberId/task-default',
+      data: {
+        if (linkId != null) 'linkId': linkId,
+        'defaultResultType': defaultResultType,
+        if (dropoffWindowMin != null) 'dropoffWindowMin': dropoffWindowMin,
+        if (pickupWindowMin != null) 'pickupWindowMin': pickupWindowMin,
+      },
+      options: _auth,
+    );
   }
 }

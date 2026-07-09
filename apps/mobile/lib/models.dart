@@ -26,6 +26,7 @@ class Member {
     required this.isCaretaker,
     required this.isAdmin,
     required this.requiresCaretaker,
+    this.generatesFamilyTasks = true,
     this.userId,
     this.color,
   });
@@ -35,6 +36,9 @@ class Member {
   final bool isCaretaker;
   final bool isAdmin;
   final bool requiresCaretaker;
+
+  /// When false, this member's events don't spawn claimable family tasks.
+  final bool generatesFamilyTasks;
 
   /// The linked login account, if any. Null ⇒ can be invited to claim this slot.
   final String? userId;
@@ -51,6 +55,7 @@ class Member {
         isCaretaker: j['isCaretaker'] as bool? ?? false,
         isAdmin: j['isAdmin'] as bool? ?? false,
         requiresCaretaker: j['requiresCaretaker'] as bool? ?? false,
+        generatesFamilyTasks: j['generatesFamilyTasks'] as bool? ?? true,
         userId: j['userId'] as String?,
         color: j['color'] as String?,
       );
@@ -192,10 +197,10 @@ class FeedLink {
     this.weekdayMask,
     this.dayStart,
     this.dayEnd,
-    this.durationMinutes,
     this.location,
-    this.generatesTypes,
-    this.defaultAttendance,
+    this.defaultTaskType = 'transition',
+    this.defaultDropoffWindowMin = 15,
+    this.defaultPickupWindowMin = 15,
   });
 
   final String id;
@@ -205,10 +210,12 @@ class FeedLink {
   final int? weekdayMask;
   final String? dayStart; // "HH:MM"
   final String? dayEnd;
-  final int? durationMinutes;
   final String? location;
-  final List<String>? generatesTypes;
-  final String? defaultAttendance;
+
+  /// This calendar's task-rule terminal default.
+  final String defaultTaskType; // 'transition' | 'attendance'
+  final int defaultDropoffWindowMin;
+  final int defaultPickupWindowMin;
 
   factory FeedLink.fromJson(Map<String, dynamic> j) => FeedLink(
         id: j['id'] as String,
@@ -218,14 +225,14 @@ class FeedLink {
         weekdayMask: j['weekdayMask'] as int?,
         dayStart: j['dayStart'] as String?,
         dayEnd: j['dayEnd'] as String?,
-        durationMinutes: j['durationMinutes'] as int?,
         location: j['location'] as String?,
-        generatesTypes: (j['generatesTypes'] as List?)?.cast<String>(),
-        defaultAttendance: j['defaultAttendance'] as String?,
+        defaultTaskType: j['defaultTaskType'] as String? ?? 'transition',
+        defaultDropoffWindowMin: j['defaultDropoffWindowMin'] as int? ?? 15,
+        defaultPickupWindowMin: j['defaultPickupWindowMin'] as int? ?? 15,
       );
 }
 
-/// One rule of a link's override pipeline (first match wins by [position]).
+/// One rule of a feed's override pipeline (schedule only; first match wins).
 class OverrideRule {
   OverrideRule({
     required this.id,
@@ -235,8 +242,6 @@ class OverrideRule {
     required this.outcome,
     this.matchValue,
     this.params,
-    this.generatesTypes,
-    this.defaultAttendance,
   });
 
   final String id;
@@ -244,39 +249,17 @@ class OverrideRule {
   final String matchField; // summary|location|description|any_text|all_day|duration
   final String matchOp; // contains|starts_with|equals|regex|is_true|is_false|gte|lte
   final String? matchValue;
-  final String outcome; // cancel_day|modify_day|annotate|set_event
+  final String outcome; // cancel_day|modify_day|ignore
   final Map<String, dynamic>? params;
-  final List<String>? generatesTypes;
-  final String? defaultAttendance;
 
   String get outcomeLabel => switch (outcome) {
         'cancel_day' => 'Cancel day',
         'modify_day' => 'Modify day',
-        'annotate' => 'Annotate',
-        _ => 'Set event',
+        _ => 'Ignore',
       };
 
   /// A compact matcher summary, e.g. `Title matches /no school/i`.
-  String get matcherSummary {
-    final field = switch (matchField) {
-      'summary' => 'Title',
-      'location' => 'Location',
-      'description' => 'Description',
-      'any_text' => 'Any text',
-      'all_day' => 'All-day',
-      _ => 'Duration',
-    };
-    return switch (matchOp) {
-      'contains' => '$field contains "$matchValue"',
-      'starts_with' => '$field starts with "$matchValue"',
-      'equals' => '$field equals "$matchValue"',
-      'regex' => '$field matches $matchValue',
-      'is_true' => '$field is true',
-      'is_false' => '$field is false',
-      'gte' => '$field ≥ $matchValue min',
-      _ => '$field ≤ $matchValue min',
-    };
-  }
+  String get matcher => matcherSummary(matchField, matchOp, matchValue);
 
   factory OverrideRule.fromJson(Map<String, dynamic> j) => OverrideRule(
         id: j['id'] as String,
@@ -286,9 +269,130 @@ class OverrideRule {
         matchValue: j['matchValue'] as String?,
         outcome: j['outcome'] as String,
         params: j['params'] as Map<String, dynamic>?,
-        generatesTypes: (j['generatesTypes'] as List?)?.cast<String>(),
-        defaultAttendance: j['defaultAttendance'] as String?,
       );
+}
+
+/// A shared matcher summary for override + task rules.
+String matcherSummary(String matchField, String matchOp, String? matchValue) {
+  final field = switch (matchField) {
+    'summary' => 'Title',
+    'location' => 'Location',
+    'description' => 'Description',
+    'any_text' => 'Any text',
+    'all_day' => 'All-day',
+    _ => 'Duration',
+  };
+  return switch (matchOp) {
+    'contains' => '$field contains "$matchValue"',
+    'starts_with' => '$field starts with "$matchValue"',
+    'equals' => '$field equals "$matchValue"',
+    'regex' => '$field matches $matchValue',
+    'is_true' => '$field is true',
+    'is_false' => '$field is false',
+    'gte' => '$field ≥ $matchValue min',
+    _ => '$field ≤ $matchValue min',
+  };
+}
+
+/// One rule of a member's task-rule pipeline (6k/6n): what tasks an event makes.
+class TaskRule {
+  TaskRule({
+    required this.id,
+    required this.position,
+    required this.scope,
+    required this.matchField,
+    required this.matchOp,
+    required this.resultType,
+    this.linkId,
+    this.matchValue,
+    this.dropoffWindowMin,
+    this.pickupWindowMin,
+  });
+
+  final String id;
+  final int position;
+  final String scope; // 'this_calendar' | 'all_calendars'
+  final String? linkId; // null = the member's unified/direct calendar
+  final String matchField;
+  final String matchOp;
+  final String? matchValue;
+  final String resultType; // 'transition' | 'attendance'
+  final int? dropoffWindowMin;
+  final int? pickupWindowMin;
+
+  bool get isTransition => resultType == 'transition';
+  String get resultLabel => isTransition ? 'Drop-off & pickup' : 'Attendance';
+  String get scopeLabel => scope == 'all_calendars' ? 'All calendars' : 'This calendar';
+
+  String get matcher => matcherSummary(matchField, matchOp, matchValue);
+
+  factory TaskRule.fromJson(Map<String, dynamic> j) => TaskRule(
+        id: j['id'] as String,
+        position: j['position'] as int,
+        scope: j['scope'] as String,
+        linkId: j['linkId'] as String?,
+        matchField: j['matchField'] as String,
+        matchOp: j['matchOp'] as String,
+        matchValue: j['matchValue'] as String?,
+        resultType: j['resultType'] as String,
+        dropoffWindowMin: j['dropoffWindowMin'] as int?,
+        pickupWindowMin: j['pickupWindowMin'] as int?,
+      );
+}
+
+/// A calendar's terminal default in the task-rule pipeline.
+class TaskDefault {
+  TaskDefault({
+    required this.resultType,
+    required this.dropoffWindowMin,
+    required this.pickupWindowMin,
+  });
+
+  final String resultType;
+  final int dropoffWindowMin;
+  final int pickupWindowMin;
+
+  factory TaskDefault.fromJson(Map<String, dynamic> j) => TaskDefault(
+        resultType: j['defaultResultType'] as String,
+        dropoffWindowMin: j['dropoffWindowMin'] as int? ?? 15,
+        pickupWindowMin: j['pickupWindowMin'] as int? ?? 15,
+      );
+}
+
+/// The whole task-rule pipeline for a member + every calendar's default.
+class TaskRuleSet {
+  TaskRuleSet({required this.rules, required this.unifiedDefault, required this.linkDefaults});
+
+  final List<TaskRule> rules;
+  final TaskDefault unifiedDefault;
+  final Map<String, TaskDefault> linkDefaults;
+
+  /// Rules that govern one calendar (all_calendars ∪ this-calendar-for-it),
+  /// in position order — mirrors the engine's `taskRulesForCalendar`.
+  List<TaskRule> forCalendar(String? linkId) {
+    final subset = rules
+        .where((r) => r.scope == 'all_calendars' || (r.scope == 'this_calendar' && r.linkId == linkId))
+        .toList()
+      ..sort((a, b) => a.position.compareTo(b.position));
+    return subset;
+  }
+
+  TaskDefault defaultFor(String? linkId) =>
+      linkId == null ? unifiedDefault : (linkDefaults[linkId] ?? unifiedDefault);
+
+  factory TaskRuleSet.fromJson(Map<String, dynamic> j) {
+    final defaults = j['defaults'] as Map<String, dynamic>;
+    final links = (defaults['links'] as Map<String, dynamic>? ?? const {});
+    return TaskRuleSet(
+      rules: ((j['rules'] as List?) ?? const [])
+          .map((e) => TaskRule.fromJson(e as Map<String, dynamic>))
+          .toList(),
+      unifiedDefault: TaskDefault.fromJson(defaults['unified'] as Map<String, dynamic>),
+      linkDefaults: {
+        for (final e in links.entries) e.key: TaskDefault.fromJson(e.value as Map<String, dynamic>),
+      },
+    );
+  }
 }
 
 /// An event on a member's unified calendar (what Plan renders).
@@ -302,9 +406,7 @@ class CalendarEventItem {
     this.end,
     this.summary,
     this.location,
-    this.annotation,
     this.taskId,
-    this.generatesTypes,
   });
 
   final String id;
@@ -318,20 +420,13 @@ class CalendarEventItem {
   final String? summary;
   final String? location;
 
-  /// Note stamped by an annotate rule ("Photo Day").
-  final String? annotation;
-
   /// For claimed_task events: the task this event reflects (the recursion).
   final String? taskId;
-  final List<String>? generatesTypes;
 
   bool get isClaimedTask => provenance == 'claimed_task';
   bool get isHuman => provenance == 'human';
 
-  String get displaySummary {
-    final base = summary ?? 'Event';
-    return annotation != null ? '$base · $annotation' : base;
-  }
+  String get displaySummary => summary ?? 'Event';
 
   factory CalendarEventItem.fromJson(Map<String, dynamic> j) {
     final allDay = j['allDay'] as bool? ?? false;
@@ -344,9 +439,7 @@ class CalendarEventItem {
       end: j['dtend'] == null ? null : parseTimestamp(j['dtend']),
       summary: j['summary'] as String?,
       location: j['location'] as String?,
-      annotation: j['annotation'] as String?,
       taskId: j['taskId'] as String?,
-      generatesTypes: (j['generatesTypes'] as List?)?.cast<String>(),
     );
   }
 }

@@ -91,6 +91,23 @@ export async function buildMemberTasks(
   )[0];
   if (!member) return result;
 
+  // Generation paused for this member: drop their unowned event-derived tasks
+  // (owned tasks + their calendar defaults/rules are kept) and stop.
+  if (!member.generatesFamilyTasks) {
+    const removed = await db
+      .delete(tasks)
+      .where(
+        and(
+          eq(tasks.familyMemberId, familyMemberId),
+          eq(tasks.status, 'unowned'),
+          sql`${tasks.calendarEventId} IS NOT NULL`,
+        ),
+      )
+      .returning({ id: tasks.id });
+    result.tasksRemoved = removed.length;
+    return result;
+  }
+
   // The member's task-rule pipeline + per-calendar defaults, loaded once.
   const rules = (
     await db.select().from(taskRules).where(eq(taskRules.familyMemberId, familyMemberId))

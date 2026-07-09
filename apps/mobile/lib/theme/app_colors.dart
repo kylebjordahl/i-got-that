@@ -37,16 +37,16 @@ abstract final class AppColors {
   /// Feed / broadcast icon tint (a hair brighter than [blue]).
   static const feedBlue = Color(0xFF66B4FF);
 
-  /// "Theo" / success / linked state.
+  /// Success / linked / target-calendar accent.
   static const green = Color(0xFF4FD9A8);
 
-  /// "Mia" / secondary accent.
+  /// Secondary accent (override/task-rule pipelines).
   static const purple = Color(0xFFC08CFF);
 
-  /// "Adeline" / warning-adjacent.
+  /// Warning-adjacent / threading / destructive.
   static const coral = Color(0xFFFF7A6B);
 
-  /// "Grandma".
+  /// Exception-only / baseline / pending-decision accent.
   static const amber = Color(0xFFE8A44D);
 
   /// Hero-highlight amber (brighter than [amber]).

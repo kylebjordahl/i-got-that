@@ -12,12 +12,21 @@ primitive, the **unified calendar** (PRD 1). Two decoupled transforms, a
 
 ```
 feeds → ingest → source_events
-source_events + link(baseline + link_rules) → SYNTHESIS → calendar_events + pending_decisions
+source_events + link(baseline + link_rules)  → SYNTHESIS (schedule) → calendar_events + pending_decisions
 target calendar → READ-BACK → calendar_events (provenance 'human')
-calendar_events → TASK-GEN → tasks (pickup/drop-off/attendance, claim-only)
+calendar_events + member task_rules → TASK-GEN (typing) → tasks (transition = drop-off+pickup, or attendance; claim-only)
 claim → a 'claimed_task' event on the CLAIMER's unified calendar (the recursion)
 calendar_events (synthesized|claimed) → MIRROR → the member's one target calendar
 ```
+
+**Two rule pipelines** (round-6 review split): `link_rules` are the feed's
+SCHEDULE overrides (`cancel_day`/`modify_day`/`ignore` on exception feeds);
+`task_rules` are the per-member TYPING pipeline (`transition` vs `attendance`
++ drop-off/pickup windows, scoped `this_calendar`/`all_calendars`, with a
+terminal default per calendar on the link + member). Task type is resolved at
+task-gen time, keyed by the event's source calendar (`calendar_events.linkId`;
+null ⇒ the member's own unified/direct calendar). A member's
+`generatesFamilyTasks=false` pauses task generation (rules/defaults kept).
 
 Every member (child or caretaker) can have a unified calendar: the DB
 (`calendar_events`) is canonical; an optional per-member external target

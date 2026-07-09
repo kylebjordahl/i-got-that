@@ -115,6 +115,11 @@ export const familyMembers = sqliteTable(
     requiresCaretaker: integer('requires_caretaker', { mode: 'boolean' })
       .notNull()
       .default(false),
+    // When false, this member's unified-calendar events don't spawn claimable
+    // family tasks (their calendar defaults + task rules are kept for later).
+    generatesFamilyTasks: integer('generates_family_tasks', { mode: 'boolean' })
+      .notNull()
+      .default(true),
     /** Persistent per-person accent color (hex `#RRGGBB`). Null ⇒ derived client-side. */
     color: text('color'),
     // The task-rule terminal default for this member's own unified/direct

@@ -13,6 +13,7 @@ import {
   requireFamilyMember,
 } from '../middleware/auth.js';
 import { enqueueReconcile } from '../services/mirror.js';
+import { rebuildMemberTasks } from '../services/task-gen.js';
 import { createMemberClaimInvite } from '../services/invites.js';
 import { feedRoutes } from './feeds.js';
 import { memberCalendarRoutes } from './member-calendars.js';
@@ -138,6 +139,7 @@ familyRoutes.post(
           isCaretaker: parsed.data.isCaretaker,
           isAdmin: parsed.data.isAdmin,
           requiresCaretaker: parsed.data.requiresCaretaker,
+          generatesFamilyTasks: parsed.data.generatesFamilyTasks,
           color: parsed.data.color ?? null,
         })
         .returning()
@@ -201,7 +203,10 @@ familyRoutes.patch('/:familyId/members/:memberId', requireFamilyMember, async (c
 
   const d = parsed.data;
   const changingFlags =
-    d.isCaretaker !== undefined || d.isAdmin !== undefined || d.requiresCaretaker !== undefined;
+    d.isCaretaker !== undefined ||
+    d.isAdmin !== undefined ||
+    d.requiresCaretaker !== undefined ||
+    d.generatesFamilyTasks !== undefined;
   if (!me.isAdmin) {
     if (memberId !== me.id) return c.json({ error: 'forbidden' }, 403);
     if (changingFlags) return c.json({ error: 'forbidden_roles' }, 403);
@@ -215,6 +220,7 @@ familyRoutes.patch('/:familyId/members/:memberId', requireFamilyMember, async (c
     if (d.isCaretaker !== undefined) set.isCaretaker = d.isCaretaker;
     if (d.isAdmin !== undefined) set.isAdmin = d.isAdmin;
     if (d.requiresCaretaker !== undefined) set.requiresCaretaker = d.requiresCaretaker;
+    if (d.generatesFamilyTasks !== undefined) set.generatesFamilyTasks = d.generatesFamilyTasks;
   }
   if (Object.keys(set).length > 0) {
     await db.update(familyMembers).set(set).where(eq(familyMembers.id, memberId));
@@ -222,6 +228,11 @@ familyRoutes.patch('/:familyId/members/:memberId', requireFamilyMember, async (c
   const updated = (
     await db.select().from(familyMembers).where(eq(familyMembers.id, memberId)).limit(1)
   )[0]!;
+
+  // Toggling generation on/off changes the member's tasks; rebuild them.
+  if (d.generatesFamilyTasks !== undefined) {
+    await rebuildMemberTasks(db, memberId);
+  }
 
   // The child's name appears in event titles — reconcile calendars off the
   // request path (queue when deployed) so the edit doesn't block on slow writes.

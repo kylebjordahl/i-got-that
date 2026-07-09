@@ -1,18 +1,19 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models.dart';
+import '../state/auth.dart';
 import '../state/family.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_text.dart';
 import '../theme/person_colors.dart';
 import '../widgets/primitives.dart';
 import '../widgets/settings.dart';
-import 'feeds_screen.dart';
-import 'people_screen.dart';
-import 'rules_screen.dart';
+import 'member_detail_screen.dart';
 
-/// Family — the settings-first hub: People & roles, Input feeds, Family rules.
-/// (Delivery methods live on each caretaker; calendar accounts live on Me.)
+/// Family — the hub (6l): Caretakers and Children render inline as two lists;
+/// tapping a person opens their unified member-detail screen. The nav "+"
+/// invites a new member. "Family settings" (input feeds / family rules) is
+/// gone — feeds are linked per-person, and task rules live per-person too.
 class FamilyScreen extends ConsumerWidget {
   const FamilyScreen({super.key});
 
@@ -21,83 +22,49 @@ class FamilyScreen extends ConsumerWidget {
     final members = ref.watch(membersProvider).valueOrNull ?? const <Member>[];
     final me = ref.watch(currentMemberProvider).valueOrNull;
     final info = ref.watch(familyInfoProvider).valueOrNull;
-    final caretakers = members.where((m) => m.isCaretaker).length;
-    final children = members.where((m) => m.requiresCaretaker).length;
+    final caretakers = members.where((m) => m.isCaretaker).toList();
+    final children = members.where((m) => m.requiresCaretaker).toList();
 
     return ListView(
       padding: const EdgeInsets.fromLTRB(22, 14, 22, 130),
       children: [
         _header(context, ref, info, me?.isAdmin ?? false),
-        const SizedBox(height: 22),
-        AppCard(
-          onTap: () => Navigator.of(context).push(
-            MaterialPageRoute(builder: (_) => const PeopleScreen()),
+        const SizedBox(height: 24),
+        if (caretakers.isNotEmpty) ...[
+          SectionEyebrow('Caretakers',
+              color: AppColors.indigo,
+              trailing: Text('${caretakers.length}', style: AppText.secondary)),
+          const SizedBox(height: 12),
+          AppCard(child: Column(children: _rows(context, caretakers))),
+          const SizedBox(height: 24),
+        ],
+        if (children.isNotEmpty) ...[
+          SectionEyebrow('Children',
+              trailing: Text('${children.length}', style: AppText.secondary)),
+          const SizedBox(height: 12),
+          AppCard(child: Column(children: _rows(context, children))),
+        ],
+        if (members.isEmpty)
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 40),
+            child: Center(child: Text('No members yet — tap + to add one', style: AppText.subtitle)),
           ),
-          child: Row(
-            children: [
-              AvatarCluster(
-                avatars: [
-                  for (final m in members.take(3))
-                    (initialFor(m.relationName), personColor(m)),
-                ],
-                overflow: members.length > 3 ? members.length - 3 : null,
-              ),
-              const SizedBox(width: 14),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text('People & roles', style: AppText.sectionItemTitle),
-                    const SizedBox(height: 2),
-                    Text('$caretakers caretaker${caretakers == 1 ? '' : 's'} · '
-                        '$children child${children == 1 ? '' : 'ren'}',
-                        style: AppText.subtitle),
-                  ],
-                ),
-              ),
-              const Icon(Icons.chevron_right_rounded, color: AppColors.textMuted),
-            ],
-          ),
-        ),
-        const SizedBox(height: 26),
-        const SectionEyebrow('Family settings'),
-        const SizedBox(height: 12),
-        AppCard(
-          child: Column(
-            children: [
-              SettingRow(
-                icon: Icons.rss_feed_rounded,
-                iconColor: AppColors.feedBlue,
-                title: 'Input feeds',
-                subtitle: 'Source calendars, linked on each member',
-                onTap: () => Navigator.of(context).push(
-                  MaterialPageRoute(builder: (_) => const FeedsScreen()),
-                ),
-              ),
-              const Divider(height: 22),
-              SettingRow(
-                icon: Icons.rule_rounded,
-                iconColor: AppColors.purple,
-                title: 'Family rules',
-                subtitle: 'Family-wide behavior · task threading',
-                onTap: () => Navigator.of(context).push(
-                  MaterialPageRoute(builder: (_) => const RulesScreen()),
-                ),
-              ),
-            ],
-          ),
-        ),
-        const SizedBox(height: 20),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 4),
-          child: Text(
-            'Each member has a unified calendar — sources, rules, and the '
-            'target calendar all live on their detail screen.',
-            style: AppText.caveat,
-          ),
-        ),
       ],
     );
+  }
+
+  List<Widget> _rows(BuildContext context, List<Member> people) {
+    final rows = <Widget>[];
+    for (var i = 0; i < people.length; i++) {
+      rows.add(_PersonRow(
+        member: people[i],
+        onTap: () => Navigator.of(context).push(
+          MaterialPageRoute(builder: (_) => MemberDetailScreen(memberId: people[i].id)),
+        ),
+      ));
+      if (i < people.length - 1) rows.add(const Divider(height: 18));
+    }
+    return rows;
   }
 
   Widget _header(BuildContext context, WidgetRef ref, ({String name, int count})? info, bool isAdmin) {
@@ -162,6 +129,137 @@ class FamilyScreen extends ConsumerWidget {
                   Navigator.of(context).pop();
                 },
               ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// The add-member sheet (raised by the Family tab's nav "+"): choose caretaker
+/// or child, name them, and open their detail screen to finish setup.
+Future<void> showAddMemberSheet(BuildContext context, WidgetRef ref) {
+  return showModalBottomSheet<void>(
+    context: context,
+    showDragHandle: true,
+    builder: (sheetCtx) => Padding(
+      padding: const EdgeInsets.fromLTRB(22, 4, 22, 28),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('Add a person', style: AppText.subPageTitle),
+          const SizedBox(height: 12),
+          SettingRow(
+            icon: Icons.person_add_alt_1_rounded,
+            iconColor: AppColors.indigo,
+            title: 'Add a caretaker',
+            subtitle: 'Someone who can claim tasks',
+            onTap: () {
+              Navigator.of(sheetCtx).pop();
+              _createAndOpen(context, ref, isChild: false);
+            },
+          ),
+          const Divider(height: 22),
+          SettingRow(
+            icon: Icons.child_care_rounded,
+            iconColor: AppColors.green,
+            title: 'Add a child',
+            subtitle: 'A child whose events need a caretaker',
+            onTap: () {
+              Navigator.of(sheetCtx).pop();
+              _createAndOpen(context, ref, isChild: true);
+            },
+          ),
+        ],
+      ),
+    ),
+  );
+}
+
+Future<void> _createAndOpen(BuildContext context, WidgetRef ref, {required bool isChild}) async {
+  final name = await _promptName(context, isChild ? 'Add a child' : 'Add a caretaker');
+  if (name == null || name.trim().isEmpty) return;
+  try {
+    final familyId = await ref.read(familyProvider.future);
+    final res = await ref.read(apiClientProvider).createMember(
+          familyId,
+          relationName: name.trim(),
+          isCaretaker: !isChild,
+          requiresCaretaker: isChild,
+        );
+    ref.invalidate(membersProvider);
+    final id = (res['member'] as Map<String, dynamic>)['id'] as String;
+    if (!context.mounted) return;
+    Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => MemberDetailScreen(memberId: id)),
+    );
+  } catch (e) {
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed: $e')));
+    }
+  }
+}
+
+Future<String?> _promptName(BuildContext context, String title) {
+  final controller = TextEditingController();
+  return showDialog<String>(
+    context: context,
+    builder: (_) => AlertDialog(
+      title: Text(title),
+      content: TextField(
+        controller: controller,
+        autofocus: true,
+        decoration: const InputDecoration(labelText: 'Name / relation'),
+        onSubmitted: (v) => Navigator.of(context).pop(v),
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('Cancel')),
+        PillButton(
+          label: 'Continue',
+          variant: PillVariant.amber,
+          onPressed: () => Navigator.of(context).pop(controller.text),
+        ),
+      ],
+    ),
+  );
+}
+
+class _PersonRow extends StatelessWidget {
+  const _PersonRow({required this.member, required this.onTap});
+  final Member member;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final subtitle = member.requiresCaretaker
+        ? 'Child'
+        : '${member.isAdmin ? 'Admin' : 'Caretaker'} · can claim tasks';
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(14),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 8),
+        child: Row(
+          children: [
+            PersonAvatar(initial: initialFor(member.relationName), color: personColor(member), size: 40),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(member.relationName, style: AppText.sectionItemTitle),
+                  const SizedBox(height: 2),
+                  Text(subtitle, style: AppText.subtitle),
+                ],
+              ),
+            ),
+            if (member.hasLogin)
+              const Padding(
+                padding: EdgeInsets.only(right: 6),
+                child: Icon(Icons.link_rounded, size: 16, color: AppColors.textMuted),
+              ),
+            const Icon(Icons.chevron_right_rounded, color: AppColors.textMuted),
           ],
         ),
       ),

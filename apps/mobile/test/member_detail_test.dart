@@ -51,7 +51,7 @@ void main() {
         ),
       );
 
-  testWidgets('one member-detail screen serves a child: all round-6 sections render',
+  testWidgets('one member-detail screen serves a child: the three 6e sections render',
       (tester) async {
     await pumpTall(tester, app('theo'));
 
@@ -59,19 +59,22 @@ void main() {
     expect(find.textContaining('Child'), findsWidgets); // grouping tag only
     expect(find.text('SOURCE CALENDARS'), findsOneWidget);
     expect(find.text('UNIFIED CALENDAR'), findsOneWidget);
-    expect(find.text('TASK CLAIMING'), findsOneWidget);
     expect(find.text('FAMILY LOGISTICS'), findsOneWidget);
-    // No target designated ⇒ the DB-only hint shows.
-    expect(find.text('No target calendar'), findsOneWidget);
+    // Task claiming is merged into Family logistics (its own section is gone).
+    expect(find.text('Generate family tasks'), findsOneWidget);
+    expect(find.text('Can claim tasks'), findsOneWidget);
+    // Admin access moved to the editor (6h) — not on the detail screen.
+    expect(find.text('Admin access'), findsNothing);
+    // No connected accounts ⇒ the "no accounts" unconfigured target state (6j).
+    expect(find.text('No calendar accounts'), findsOneWidget);
   });
 
-  testWidgets('the same screen serves a caretaker, with role toggles editable',
-      (tester) async {
+  testWidgets('the same screen serves a caretaker', (tester) async {
     await pumpTall(tester, app('dad'));
 
     expect(find.text('Family member'), findsOneWidget);
     expect(find.text('Can claim tasks'), findsOneWidget);
-    expect(find.text('Admin access'), findsOneWidget);
     expect(find.text('SOURCE CALENDARS'), findsOneWidget);
+    expect(find.text('FAMILY LOGISTICS'), findsOneWidget);
   });
 }

@@ -193,13 +193,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   }
 
   Future<void> _resolveDecision(PendingDecision d) async {
-    final types = await showResolveDecisionSheet(context, d);
-    if (types == null || types.isEmpty) return;
+    // Resolve accepts the event onto the calendar as a normal day; what tasks
+    // it generates then follows the member's task rules.
     try {
       final familyId = await ref.read(familyProvider.future);
-      await ref
-          .read(apiClientProvider)
-          .resolvePendingDecision(familyId, d.id, types: types);
+      await ref.read(apiClientProvider).resolvePendingDecision(familyId, d.id);
       _refresh();
     } catch (e) {
       if (mounted) {
@@ -362,64 +360,6 @@ class _DecisionCard extends StatelessWidget {
       ),
     );
   }
-}
-
-/// Resolve sheet: which task types the unmatched event should generate.
-Future<List<String>?> showResolveDecisionSheet(
-    BuildContext context, PendingDecision decision) {
-  return showModalBottomSheet<List<String>>(
-    context: context,
-    showDragHandle: true,
-    builder: (sheetCtx) {
-      var transition = false;
-      var attendance = true;
-      return StatefulBuilder(
-        builder: (ctx, setState) => SingleChildScrollView(
-          padding: const EdgeInsets.fromLTRB(22, 4, 22, 28),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(decision.summary ?? 'Unmatched event', style: AppText.subPageTitle),
-              const SizedBox(height: 6),
-              Text('Pick what this event generates. It lands on the calendar '
-                  'and its tasks appear for claiming.',
-                  style: AppText.subtitle),
-              const SizedBox(height: 16),
-              SwitchListTile(
-                contentPadding: EdgeInsets.zero,
-                title: const Text('Transitions'),
-                subtitle: const Text('Drop-off + pickup points'),
-                value: transition,
-                onChanged: (v) => setState(() => transition = v),
-              ),
-              SwitchListTile(
-                contentPadding: EdgeInsets.zero,
-                title: const Text('Attendance'),
-                subtitle: const Text('Someone stays for the duration'),
-                value: attendance,
-                onChanged: (v) => setState(() => attendance = v),
-              ),
-              const SizedBox(height: 16),
-              SizedBox(
-                width: double.infinity,
-                child: PillButton(
-                  label: 'Resolve',
-                  variant: PillVariant.amber,
-                  onPressed: !transition && !attendance
-                      ? null
-                      : () => Navigator.of(sheetCtx).pop([
-                            if (transition) ...['dropoff', 'pickup'],
-                            if (attendance) 'attendance',
-                          ]),
-                ),
-              ),
-            ],
-          ),
-        ),
-      );
-    },
-  );
 }
 
 /// Threaded chain (6d, treatment 1 — "connector thread"): separate cards joined

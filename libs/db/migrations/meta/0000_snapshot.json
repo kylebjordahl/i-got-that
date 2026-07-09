@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "fa4b9c43-47ba-4619-b84b-20d72d3eaaf1",
+  "id": "0ab5dfbc-72f7-4705-99dd-d7c19952c71d",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "tables": {
     "auth_tokens": {
@@ -827,6 +827,14 @@
           "notNull": true,
           "autoincrement": false,
           "default": false
+        },
+        "generates_family_tasks": {
+          "name": "generates_family_tasks",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": true
         },
         "color": {
           "name": "color",

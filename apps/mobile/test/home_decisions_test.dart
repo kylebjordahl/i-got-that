@@ -61,24 +61,13 @@ void main() {
 
     expect(find.text('NEEDS A DECISION'), findsOneWidget);
     expect(find.textContaining('Book Fair'), findsWidgets);
+    // The decision card offers Resolve + Dismiss (no type picker now).
+    expect(find.text('Resolve'), findsOneWidget);
+    expect(find.text('Dismiss'), findsOneWidget);
 
-    // The decision card sits above the task row.
+    // The decision card sits above the claimable task row.
     final decisionY = tester.getTopLeft(find.text('NEEDS A DECISION')).dy;
-    final taskY = tester.getTopLeft(find.text('Claim')).dy;
+    final taskY = tester.getTopLeft(find.text('Claim').first).dy;
     expect(decisionY, lessThan(taskY));
-  });
-
-  testWidgets('Resolve opens the type sheet and returns the chosen types',
-      (tester) async {
-    await tester.pumpWidget(app());
-    await tester.pumpAndSettle();
-
-    await tester.tap(find.text('Resolve'));
-    await tester.pumpAndSettle();
-
-    // Attendance defaults on; the sheet's Resolve button is enabled.
-    expect(find.text('Transitions'), findsOneWidget);
-    expect(find.text('Attendance'), findsOneWidget);
-    expect(find.widgetWithText(SwitchListTile, 'Attendance'), findsOneWidget);
   });
 }

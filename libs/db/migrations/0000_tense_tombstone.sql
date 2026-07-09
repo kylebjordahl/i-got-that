@@ -111,6 +111,7 @@ CREATE TABLE `family_members` (
 	`is_caretaker` integer DEFAULT false NOT NULL,
 	`is_admin` integer DEFAULT false NOT NULL,
 	`requires_caretaker` integer DEFAULT false NOT NULL,
+	`generates_family_tasks` integer DEFAULT true NOT NULL,
 	`color` text,
 	`unified_default_task_type` text DEFAULT 'attendance' NOT NULL,
 	`unified_dropoff_window_min` integer DEFAULT 15 NOT NULL,

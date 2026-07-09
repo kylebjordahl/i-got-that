@@ -142,6 +142,14 @@ final calendarEventsProvider = FutureProvider<List<CalendarEventItem>>((ref) asy
       .toList();
 });
 
+/// A member's task-rule pipeline + per-calendar defaults (6k).
+final taskRulesProvider =
+    FutureProvider.family<TaskRuleSet, String>((ref, memberId) async {
+  final api = ref.watch(apiClientProvider);
+  final familyId = await ref.watch(familyProvider.future);
+  return TaskRuleSet.fromJson(await api.getTaskRules(familyId, memberId));
+});
+
 /// A member's unified-calendar target config (null ⇒ DB-only calendar).
 final memberCalendarProvider =
     FutureProvider.family<MemberCalendarConfig?, String>((ref, memberId) async {
