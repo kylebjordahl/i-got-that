@@ -23,11 +23,31 @@ class HomeScreen extends ConsumerStatefulWidget {
 }
 
 class _HomeScreenState extends ConsumerState<HomeScreen> {
+  bool _refreshingFeeds = false;
+
   void _refresh() {
     ref.invalidate(unownedTasksProvider);
     ref.invalidate(allTasksProvider);
     ref.invalidate(pendingDecisionsProvider);
     ref.invalidate(calendarEventsProvider);
+  }
+
+  Future<void> _refreshFeeds() async {
+    setState(() => _refreshingFeeds = true);
+    try {
+      final familyId = await ref.read(familyProvider.future);
+      await ref.read(apiClientProvider).refreshAllFeeds(familyId);
+      ref.invalidate(feedsProvider);
+      _refresh();
+      await ref.read(allTasksProvider.future);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Refresh failed: $e')));
+      }
+    } finally {
+      if (mounted) setState(() => _refreshingFeeds = false);
+    }
   }
 
   Future<void> _claim(String taskId) async {
@@ -79,7 +99,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  _header(me, now),
+                  _header(now),
                   const SizedBox(height: 18),
                   // Pending decisions rank ABOVE unclaimed tasks — they block
                   // the pipeline until a human decides.
@@ -220,8 +240,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     }
   }
 
-  Widget _header(Member? me, DateTime now) {
-    final meColor = me == null ? AppColors.indigo : personColor(me);
+  Widget _header(DateTime now) {
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -241,7 +260,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             ],
           ),
         ),
-        PersonAvatar(initial: initialFor(me?.relationName ?? '?'), color: meColor),
+        RefreshFeedsButton(busy: _refreshingFeeds, onTap: _refreshFeeds),
       ],
     );
   }

@@ -219,6 +219,44 @@ class TintBadge extends StatelessWidget {
   }
 }
 
+/// A refresh-all-feeds trigger: a bare circular icon button. Used in place of
+/// the user badge on Home, and as a compact toolbar icon next to Filters on
+/// Plan. Spins the icon while [busy].
+class RefreshFeedsButton extends StatelessWidget {
+  const RefreshFeedsButton({
+    super.key,
+    required this.busy,
+    required this.onTap,
+    this.size = 40,
+  });
+
+  final bool busy;
+  final VoidCallback? onTap;
+  final double size;
+
+  @override
+  Widget build(BuildContext context) {
+    final iconOrSpinner = busy
+        ? SizedBox(
+            width: size * 0.45,
+            height: size * 0.45,
+            child: const CircularProgressIndicator(
+                strokeWidth: 2, color: AppColors.textSecondary),
+          )
+        : Icon(Icons.refresh_rounded, size: size * 0.5, color: AppColors.textSecondary);
+
+    return Material(
+      color: AppColors.card,
+      shape: const CircleBorder(side: BorderSide(color: AppColors.border)),
+      child: InkWell(
+        onTap: busy ? null : onTap,
+        customBorder: const CircleBorder(),
+        child: SizedBox(width: size, height: size, child: Center(child: iconOrSpinner)),
+      ),
+    );
+  }
+}
+
 /// Pill buttons in the three design variants.
 enum PillVariant { amber, white, ghost, indigo }
 
