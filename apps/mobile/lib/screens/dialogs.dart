@@ -99,7 +99,6 @@ class _AddMemberDialogState extends ConsumerState<_AddMemberDialog> {
             autofocus: true,
             decoration: const InputDecoration(
               labelText: 'Name / relation',
-              hintText: 'e.g. Adeline, Dad, Grandma',
             ),
           ),
           SwitchListTile(

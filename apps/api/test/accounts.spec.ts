@@ -62,7 +62,7 @@ describe('external accounts', () => {
         externalAccountId: accountId,
         sourceCalendarId: 'https://dav.example.com/cal/home/',
         sourceCalendarName: 'Home',
-        mode: 'explicit',
+        mode: 'standard',
       }),
     );
     expect(feedRes.status).toBe(201);
@@ -103,7 +103,7 @@ describe('external accounts', () => {
         kind: 'caldav',
         externalAccountId: accountId,
         sourceCalendarId: 'https://dav.example.com/cal/home/',
-        mode: 'explicit',
+        mode: 'standard',
       }),
     );
     expect(feedRes.status).toBe(404);

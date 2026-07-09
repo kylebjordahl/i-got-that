@@ -1,1 +1,0 @@
-ALTER TABLE `family_members` ADD `color` text;

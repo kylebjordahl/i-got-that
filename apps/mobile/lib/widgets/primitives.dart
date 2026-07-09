@@ -220,7 +220,7 @@ class TintBadge extends StatelessWidget {
 }
 
 /// Pill buttons in the three design variants.
-enum PillVariant { amber, white, ghost }
+enum PillVariant { amber, white, ghost, indigo }
 
 class PillButton extends StatelessWidget {
   const PillButton({
@@ -248,6 +248,7 @@ class PillButton extends StatelessWidget {
       PillVariant.amber => (AppColors.amberHero, const Color(0xFF2A1E05), null),
       PillVariant.white => (AppColors.textPrimary, const Color(0xFF17141C), null),
       PillVariant.ghost => (Colors.transparent, AppColors.textPrimary, AppColors.border),
+      PillVariant.indigo => (AppColors.indigo, const Color(0xFF17162B), null),
     };
     return Material(
       color: bg,

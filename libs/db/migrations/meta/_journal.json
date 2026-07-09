@@ -5,15 +5,8 @@
     {
       "idx": 0,
       "version": "6",
-      "when": 1782926499920,
-      "tag": "0000_messy_calypso",
-      "breakpoints": true
-    },
-    {
-      "idx": 1,
-      "version": "6",
-      "when": 1783044716323,
-      "tag": "0001_lying_iron_fist",
+      "when": 1783572223068,
+      "tag": "0000_tense_tombstone",
       "breakpoints": true
     }
   ]

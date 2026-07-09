@@ -26,6 +26,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   void _refresh() {
     ref.invalidate(unownedTasksProvider);
     ref.invalidate(allTasksProvider);
+    ref.invalidate(pendingDecisionsProvider);
+    ref.invalidate(calendarEventsProvider);
   }
 
   Future<void> _claim(String taskId) async {
@@ -39,6 +41,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final allAsync = ref.watch(allTasksProvider);
     final members = ref.watch(membersProvider).valueOrNull ?? const <Member>[];
     final me = ref.watch(currentMemberProvider).valueOrNull;
+    final decisions =
+        ref.watch(pendingDecisionsProvider).valueOrNull ?? const <PendingDecision>[];
+    final threshold = ref.watch(threadingThresholdProvider).valueOrNull ?? 30;
     final byId = {for (final m in members) m.id: m};
     final now = DateTime.now();
 
@@ -76,6 +81,26 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                 children: [
                   _header(me, now),
                   const SizedBox(height: 18),
+                  // Pending decisions rank ABOVE unclaimed tasks — they block
+                  // the pipeline until a human decides.
+                  if (decisions.isNotEmpty) ...[
+                    SectionEyebrow(
+                      'Needs a decision',
+                      color: AppColors.amber,
+                      trailing: TintBadge('${decisions.length}', color: AppColors.amber),
+                    ),
+                    const SizedBox(height: 10),
+                    for (final d in decisions) ...[
+                      _DecisionCard(
+                        decision: d,
+                        member: byId[d.familyMemberId],
+                        onResolve: () => _resolveDecision(d),
+                        onDismiss: () => _dismissDecision(d),
+                      ),
+                      const SizedBox(height: 10),
+                    ],
+                    const SizedBox(height: 8),
+                  ],
                   const _HintChip(),
                   const SizedBox(height: 8),
                 ],
@@ -105,11 +130,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                   ),
                   SliverPadding(
                     padding: const EdgeInsets.fromLTRB(22, 0, 22, 8),
-                    sliver: SliverList.separated(
-                      itemCount: byDay[day]!.length,
-                      separatorBuilder: (_, __) => const SizedBox(height: 11),
-                      itemBuilder: (_, i) => _row(byDay[day]![i], byId, me),
-                    ),
+                    sliver: _daySliver(byDay[day]!, byId, me, threshold),
                   ),
                 ],
               ),
@@ -117,6 +138,86 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         ],
       ),
     );
+  }
+
+  /// Stitch a day's tasks into threaded chains: consecutive tasks whose gap is
+  /// within the family threshold render joined by a dotted spine ("same trip")
+  /// while staying independently claimable. Presentation only — nothing stored.
+  List<List<TaskItem>> _chains(List<TaskItem> tasks, int thresholdMinutes) {
+    final chains = <List<TaskItem>>[];
+    for (final t in tasks) {
+      if (chains.isEmpty) {
+        chains.add([t]);
+        continue;
+      }
+      final prev = chains.last.last;
+      final anchor = prev.end ?? prev.start;
+      final gap = t.start.difference(anchor).inMinutes;
+      if (gap >= 0 && gap <= thresholdMinutes) {
+        chains.last.add(t);
+      } else {
+        chains.add([t]);
+      }
+    }
+    return chains;
+  }
+
+  Widget _daySliver(
+      List<TaskItem> tasks, Map<String, Member> byId, Member? me, int threshold) {
+    final chains = _chains(tasks, threshold);
+    return SliverList.separated(
+      itemCount: chains.length,
+      separatorBuilder: (_, __) => const SizedBox(height: 11),
+      itemBuilder: (_, i) {
+        final chain = chains[i];
+        if (chain.length == 1) return _row(chain.first, byId, me);
+        return _ThreadedChain(
+          rows: [for (final t in chain) _row(t, byId, me)],
+          gaps: [
+            for (var j = 1; j < chain.length; j++)
+              chain[j]
+                  .start
+                  .difference(chain[j - 1].end ?? chain[j - 1].start)
+                  .inMinutes,
+          ],
+          onClaimAll: chain.every((t) => t.isUnowned)
+              ? () async {
+                  for (final t in chain) {
+                    await _claim(t.id);
+                  }
+                }
+              : null,
+        );
+      },
+    );
+  }
+
+  Future<void> _resolveDecision(PendingDecision d) async {
+    // Resolve accepts the event onto the calendar as a normal day; what tasks
+    // it generates then follows the member's task rules.
+    try {
+      final familyId = await ref.read(familyProvider.future);
+      await ref.read(apiClientProvider).resolvePendingDecision(familyId, d.id);
+      _refresh();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Resolve failed: $e')));
+      }
+    }
+  }
+
+  Future<void> _dismissDecision(PendingDecision d) async {
+    try {
+      final familyId = await ref.read(familyProvider.future);
+      await ref.read(apiClientProvider).dismissPendingDecision(familyId, d.id);
+      _refresh();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Dismiss failed: $e')));
+      }
+    }
   }
 
   Widget _header(Member? me, DateTime now) {
@@ -179,6 +280,153 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         padding: const EdgeInsets.symmetric(vertical: 24),
         child: Text(msg, style: font(kBodyFont, 13, 500, color: AppColors.coral)),
       );
+}
+
+/// An unmatched exception-feed event awaiting a human decision (6b): amber
+/// dashed card with Resolve / Dismiss. The system never guesses.
+class _DecisionCard extends StatelessWidget {
+  const _DecisionCard({
+    required this.decision,
+    required this.member,
+    required this.onResolve,
+    required this.onDismiss,
+  });
+  final PendingDecision decision;
+  final Member? member;
+  final VoidCallback onResolve;
+  final VoidCallback onDismiss;
+
+  @override
+  Widget build(BuildContext context) {
+    final memberColor =
+        member != null ? personColor(member!) : AppColors.textSecondary;
+    final when = decision.allDay
+        ? homeDayHeader(dayKey(decision.start), DateTime.now())
+        : friendlyTime(decision.start);
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: AppColors.tint(AppColors.amber, 0.07),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: AppColors.amber.withValues(alpha: 0.45)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const IconTile(icon: Icons.help_outline_rounded, color: AppColors.amber, size: 38),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text.rich(
+                      TextSpan(children: [
+                        TextSpan(
+                            text: decision.summary ?? 'Unmatched event',
+                            style: AppText.sectionItemTitle),
+                        TextSpan(
+                            text: ' · ${member?.relationName ?? 'member'}',
+                            style: font(kBodyFont, 14, 700, color: memberColor)),
+                      ]),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      'No rule matched · $when — what should this generate?',
+                      style: font(kBodyFont, 12, 500, color: AppColors.amber),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: PillButton(
+                    label: 'Resolve', variant: PillVariant.amber, onPressed: onResolve),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: PillButton(label: 'Dismiss', onPressed: onDismiss),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Threaded chain (6d, treatment 1 — "connector thread"): separate cards joined
+/// by a dotted coral spine + "then… same trip" note; each leg stays
+/// independently claimable, with an optional "Claim both".
+class _ThreadedChain extends StatelessWidget {
+  const _ThreadedChain({
+    required this.rows,
+    required this.gaps,
+    this.onClaimAll,
+  });
+  final List<Widget> rows;
+  final List<int> gaps;
+  final Future<void> Function()? onClaimAll;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(8),
+      decoration: BoxDecoration(
+        color: AppColors.coral.withValues(alpha: 0.05),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: AppColors.coral.withValues(alpha: 0.16)),
+      ),
+      child: Column(
+        children: [
+          for (var i = 0; i < rows.length; i++) ...[
+            if (i > 0)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 2),
+                child: Row(
+                  children: [
+                    const SizedBox(width: 26),
+                    Container(
+                      width: 2,
+                      height: 16,
+                      decoration: BoxDecoration(
+                        color: AppColors.coral.withValues(alpha: 0.55),
+                        borderRadius: BorderRadius.circular(2),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Text(
+                      'then, ${gaps[i - 1]} min later — same trip',
+                      style: font(kBodyFont, 11.5, 600, color: AppColors.coral),
+                    ),
+                  ],
+                ),
+              ),
+            rows[i],
+          ],
+          if (onClaimAll != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: Align(
+                alignment: Alignment.centerRight,
+                child: TextButton(
+                  onPressed: () => onClaimAll!(),
+                  child: Text('Claim both',
+                      style: font(kBodyFont, 12.5, 700, color: AppColors.coral)),
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
 }
 
 /// The discoverability hint for the long-press quick-actions.

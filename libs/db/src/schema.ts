@@ -8,8 +8,7 @@ import {
 } from 'drizzle-orm/sqlite-core';
 import {
   AttendanceRequirement,
-  DeliveryMethod,
-  DeliveryStatus,
+  EventProvenance,
   ExternalAccountKind,
   FeedKind,
   FeedMode,
@@ -17,12 +16,15 @@ import {
   IdentityProvider,
   InviteStatus,
   InviteType,
-  ProviderHint,
-  RsvpStatus,
-  RuleEffect,
-  RuleMatchField,
-  RuleMatchOp,
+  MirrorMethod,
+  MirrorStatus,
+  OverrideMatchField,
+  OverrideMatchOp,
+  OverrideOutcome,
+  PendingDecisionStatus,
   TaskCreatedVia,
+  TaskResultType,
+  TaskRuleScope,
   TaskStatus,
   TaskType,
 } from '@igt/domain';
@@ -81,6 +83,11 @@ export const identities = sqliteTable(
 export const families = sqliteTable('families', {
   id: id(),
   name: text('name').notNull(),
+  // Max gap (minutes) between adjacent tasks for the client to render them as
+  // one threaded "trip". Presentation-only; nothing server-side keys off it.
+  threadingThresholdMinutes: integer('threading_threshold_minutes')
+    .notNull()
+    .default(30),
   createdAt: createdAt(),
 });
 
@@ -108,8 +115,26 @@ export const familyMembers = sqliteTable(
     requiresCaretaker: integer('requires_caretaker', { mode: 'boolean' })
       .notNull()
       .default(false),
+    // When false, this member's unified-calendar events don't spawn claimable
+    // family tasks (their calendar defaults + task rules are kept for later).
+    generatesFamilyTasks: integer('generates_family_tasks', { mode: 'boolean' })
+      .notNull()
+      .default(true),
     /** Persistent per-person accent color (hex `#RRGGBB`). Null ⇒ derived client-side. */
     color: text('color'),
+    // The task-rule terminal default for this member's own unified/direct
+    // calendar (events added by hand, not synthesized from a feed).
+    unifiedDefaultTaskType: text('unified_default_task_type', {
+      enum: TaskResultType.options,
+    })
+      .notNull()
+      .default('attendance'),
+    unifiedDropoffWindowMin: integer('unified_dropoff_window_min')
+      .notNull()
+      .default(15),
+    unifiedPickupWindowMin: integer('unified_pickup_window_min')
+      .notNull()
+      .default(15),
     createdAt: createdAt(),
   },
   (t) => ({
@@ -190,10 +215,12 @@ export const feeds = sqliteTable(
 );
 
 /**
- * The always-present link between a feed and the dependent(s) it covers
- * (one feed → many members). For `exception` feeds it also carries that
- * member's baseline schedule; for `explicit` feeds the baseline columns are
- * unused. Folds in the old standalone baseline_schedule table.
+ * The always-present link between a feed and the member(s) whose unified
+ * calendar it feeds (one feed → many members). For `exception` feeds it also
+ * carries that member's baseline schedule (weekday mask + day start/end +
+ * default location). Task typing is NOT here — it lives in the per-calendar
+ * task-rule pipeline (`taskRules` + the `default*` columns below are this
+ * calendar's terminal default).
  */
 export const familyMemberFeeds = sqliteTable(
   'family_member_feeds',
@@ -211,18 +238,21 @@ export const familyMemberFeeds = sqliteTable(
     weekdayMask: integer('weekday_mask'),
     dayStart: text('day_start'),
     dayEnd: text('day_end'),
-    // Block length (minutes) for generated baseline events. Null ⇒ a point in
-    // time (the delivery layer falls back to a 1h block).
-    durationMinutes: integer('duration_minutes'),
     // Location stamped on generated baseline events (e.g. the school). Null ⇒ none.
     location: text('location'),
-    // JSON array of TaskType, e.g. ["pickup","dropoff"].
-    generatesTypes: text('generates_types', { mode: 'json' }).$type<
-      string[]
-    >(),
-    defaultAttendance: text('default_attendance', {
-      enum: AttendanceRequirement.options,
-    }),
+    // This calendar's task-rule terminal default (what an unmatched event
+    // generates): 'transition' | 'attendance', with drop-off/pickup windows.
+    defaultTaskType: text('default_task_type', {
+      enum: TaskResultType.options,
+    })
+      .notNull()
+      .default('transition'),
+    defaultDropoffWindowMin: integer('default_dropoff_window_min')
+      .notNull()
+      .default(15),
+    defaultPickupWindowMin: integer('default_pickup_window_min')
+      .notNull()
+      .default(15),
     active: integer('active', { mode: 'boolean' }).notNull().default(true),
     createdAt: createdAt(),
   },
@@ -258,11 +288,11 @@ export const sourceEvents = sqliteTable(
     location: text('location'),
     raw: text('raw'),
     contentHash: text('content_hash').notNull(),
-    // The content_hash tasks were last generated from. Needs (re)processing
-    // iff tasksBuiltHash != contentHash.
-    tasksBuiltHash: text('tasks_built_hash'),
-    // Manually marked unneeded (e.g. a bad feed event): excluded from task
-    // generation and the exception resolver. Null ⇒ active.
+    // The content_hash synthesis last consumed. Needs (re)processing iff
+    // synthesizedHash != contentHash.
+    synthesizedHash: text('synthesized_hash'),
+    // Manually marked unneeded (e.g. a bad feed event): excluded from
+    // synthesis and the exception resolver. Null ⇒ active.
     dismissedAt: integer('dismissed_at', { mode: 'timestamp_ms' }),
     createdAt: createdAt(),
   },
@@ -276,36 +306,145 @@ export const sourceEvents = sqliteTable(
   }),
 );
 
-// --- Classification ------------------------------------------------------
+// --- Override pipeline (per feed↔member link; schedule only) --------------
 
-export const classificationRules = sqliteTable(
-  'classification_rules',
+/**
+ * One rule in a feed link's override pipeline. Rules run in `position` order
+ * over each incoming exception-feed event; the first match wins and its
+ * `outcome` shapes the covered baseline day's SCHEDULE only —
+ * `cancel_day` / `modify_day` / `ignore`. Task typing lives in `taskRules`.
+ * `params` (modify_day's new hours) is validated by the domain schemas.
+ */
+export const linkRules = sqliteTable(
+  'link_rules',
   {
     id: id(),
     familyId: text('family_id')
       .notNull()
       .references(() => families.id, { onDelete: 'cascade' }),
-    // null = family-global (all feeds); set = scoped to one feed.
-    feedId: text('feed_id').references(() => feeds.id, { onDelete: 'cascade' }),
-    priority: integer('priority').notNull().default(100),
-    matchField: text('match_field', { enum: RuleMatchField.options }).notNull(),
-    matchOp: text('match_op', { enum: RuleMatchOp.options }).notNull(),
-    matchValue: text('match_value').notNull(),
-    effect: text('effect', { enum: RuleEffect.options }).notNull(),
-    producesTypes: text('produces_types', { mode: 'json' }).$type<string[]>(),
-    defaultAttendance: text('default_attendance', {
-      enum: AttendanceRequirement.options,
-    }),
-    shiftToTime: text('shift_to_time'),
-    defaultOwnerMemberId: text('default_owner_member_id').references(
-      () => familyMembers.id,
-      { onDelete: 'set null' },
-    ),
+    linkId: text('link_id')
+      .notNull()
+      .references(() => familyMemberFeeds.id, { onDelete: 'cascade' }),
+    position: integer('position').notNull(),
+    matchField: text('match_field', {
+      enum: OverrideMatchField.options,
+    }).notNull(),
+    matchOp: text('match_op', { enum: OverrideMatchOp.options }).notNull(),
+    // Text/regex pattern, or minutes for duration ops; null for is_true/is_false.
+    matchValue: text('match_value'),
+    outcome: text('outcome', { enum: OverrideOutcome.options }).notNull(),
+    params: text('params', { mode: 'json' }).$type<Record<string, unknown>>(),
     createdAt: createdAt(),
   },
   (t) => ({
-    familyIdx: index('classification_rules_family_idx').on(t.familyId),
-    feedIdx: index('classification_rules_feed_idx').on(t.feedId),
+    linkPositionIdx: index('link_rules_link_position_idx').on(
+      t.linkId,
+      t.position,
+    ),
+    familyIdx: index('link_rules_family_idx').on(t.familyId),
+  }),
+);
+
+// --- Task rules (per member; typing pipeline across their calendars) ------
+
+/**
+ * One rule in a member's task-generation pipeline. Decides whether a matched
+ * event generates a `transition` (drop-off + pickup) or an `attendance` task.
+ * `scope` = `this_calendar` (only the calendar named by `linkId`; null linkId =
+ * the member's own unified/direct calendar) or `all_calendars` (every calendar
+ * of the member). Rules share one `position` order per member; when a calendar
+ * is evaluated, its applicable subset (all_calendars ∪ this-calendar-for-it) is
+ * run in that order, first match wins, then the calendar's default.
+ */
+export const taskRules = sqliteTable(
+  'task_rules',
+  {
+    id: id(),
+    familyId: text('family_id')
+      .notNull()
+      .references(() => families.id, { onDelete: 'cascade' }),
+    familyMemberId: text('family_member_id')
+      .notNull()
+      .references(() => familyMembers.id, { onDelete: 'cascade' }),
+    // The source calendar this rule lives on; null = the unified/direct calendar.
+    // Ignored when scope = all_calendars.
+    linkId: text('link_id').references(() => familyMemberFeeds.id, {
+      onDelete: 'cascade',
+    }),
+    scope: text('scope', { enum: TaskRuleScope.options })
+      .notNull()
+      .default('this_calendar'),
+    position: integer('position').notNull(),
+    matchField: text('match_field', {
+      enum: OverrideMatchField.options,
+    }).notNull(),
+    matchOp: text('match_op', { enum: OverrideMatchOp.options }).notNull(),
+    matchValue: text('match_value'),
+    resultType: text('result_type', { enum: TaskResultType.options }).notNull(),
+    // Only meaningful when resultType = transition.
+    dropoffWindowMin: integer('dropoff_window_min'),
+    pickupWindowMin: integer('pickup_window_min'),
+    createdAt: createdAt(),
+  },
+  (t) => ({
+    memberPositionIdx: index('task_rules_member_position_idx').on(
+      t.familyMemberId,
+      t.position,
+    ),
+    familyIdx: index('task_rules_family_idx').on(t.familyId),
+  }),
+);
+
+// --- Pending decisions -----------------------------------------------------
+
+/**
+ * An exception-feed event that matched no override rule — the system never
+ * guesses, a human resolves or dismisses it. Rows persist after resolution so
+ * synthesis won't re-raise them; `sourceContentHash` reopens the decision when
+ * the feed event's content changes.
+ */
+export const pendingDecisions = sqliteTable(
+  'pending_decisions',
+  {
+    id: id(),
+    familyId: text('family_id')
+      .notNull()
+      .references(() => families.id, { onDelete: 'cascade' }),
+    feedId: text('feed_id')
+      .notNull()
+      .references(() => feeds.id, { onDelete: 'cascade' }),
+    linkId: text('link_id')
+      .notNull()
+      .references(() => familyMemberFeeds.id, { onDelete: 'cascade' }),
+    familyMemberId: text('family_member_id')
+      .notNull()
+      .references(() => familyMembers.id, { onDelete: 'cascade' }),
+    sourceEventId: text('source_event_id')
+      .notNull()
+      .references(() => sourceEvents.id, { onDelete: 'cascade' }),
+    status: text('status', { enum: PendingDecisionStatus.options })
+      .notNull()
+      .default('pending'),
+    sourceContentHash: text('source_content_hash').notNull(),
+    // JSON array of TaskType chosen at resolution.
+    resolvedTypes: text('resolved_types', { mode: 'json' }).$type<string[]>(),
+    resolvedByMemberId: text('resolved_by_member_id').references(
+      () => familyMembers.id,
+      { onDelete: 'set null' },
+    ),
+    resolvedAt: integer('resolved_at', { mode: 'timestamp_ms' }),
+    dismissedAt: integer('dismissed_at', { mode: 'timestamp_ms' }),
+    createdAt: createdAt(),
+  },
+  (t) => ({
+    linkSourceUq: uniqueIndex('pending_decisions_link_source_uq').on(
+      t.linkId,
+      t.sourceEventId,
+    ),
+    familyStatusIdx: index('pending_decisions_family_status_idx').on(
+      t.familyId,
+      t.status,
+    ),
   }),
 );
 
@@ -318,12 +457,12 @@ export const tasks = sqliteTable(
     familyId: text('family_id')
       .notNull()
       .references(() => families.id, { onDelete: 'cascade' }),
-    // The feed that generated this task (null for manually-created tasks) — lets
-    // us clean up a child's tasks when their feed link changes/removes.
-    feedId: text('feed_id').references(() => feeds.id, { onDelete: 'cascade' }),
-    sourceEventId: text('source_event_id').references(() => sourceEvents.id, {
-      onDelete: 'cascade',
-    }),
+    // The unified-calendar event this task was generated from. Deliberately NOT
+    // a foreign key: an owned task must survive its event vanishing (surfaced
+    // as stale, not silently deleted) — task-gen sweeps unowned orphans itself.
+    calendarEventId: text('calendar_event_id'),
+    // The member the task is about (the event's calendar owner), NOT the
+    // claiming caretaker — that's ownerMemberId.
     familyMemberId: text('family_member_id')
       .notNull()
       .references(() => familyMembers.id, { onDelete: 'cascade' }),
@@ -345,11 +484,11 @@ export const tasks = sqliteTable(
   },
   (t) => ({
     familyStatusIdx: index('tasks_family_status_idx').on(t.familyId, t.status),
-    sourceEventIdx: index('tasks_source_event_idx').on(t.sourceEventId),
+    calendarEventIdx: index('tasks_calendar_event_idx').on(t.calendarEventId),
   }),
 );
 
-// --- Delivery & secrets --------------------------------------------------
+// --- Secrets ---------------------------------------------------------------
 
 export const secrets = sqliteTable('secrets', {
   id: id(),
@@ -364,63 +503,158 @@ export const secrets = sqliteTable('secrets', {
   createdAt: createdAt(),
 });
 
-export const calendarTargets = sqliteTable(
-  'calendar_targets',
+// --- Unified calendars -----------------------------------------------------
+
+/**
+ * The canonical unified calendar: one row per event on a member's agenda. The
+ * DB is the source of truth; an optional external target (member_calendars) is
+ * a write-through mirror. `synthKey` is the idempotency backbone — synthesis
+ * computes the desired key set per link+window and upserts/deletes by
+ * (familyMemberId, synthKey), so config changes resynthesize without dupes:
+ *   `bl:<linkId>:<YYYY-MM-DD>`  baseline day
+ *   `ev:<linkId>:<sourceEventId>`  feed-event-derived
+ *   `pd:<pendingDecisionId>`  resolved pending decision
+ *   `task:<taskId>`  claimed task on the claimer's calendar (the recursion)
+ *   `ext:<uid>:<recurrenceId|''>`  human event read back from the target
+ */
+export const calendarEvents = sqliteTable(
+  'calendar_events',
   {
     id: id(),
-    memberId: text('member_id')
+    familyId: text('family_id')
+      .notNull()
+      .references(() => families.id, { onDelete: 'cascade' }),
+    // Whose unified calendar this event is on.
+    familyMemberId: text('family_member_id')
       .notNull()
       .references(() => familyMembers.id, { onDelete: 'cascade' }),
-    name: text('name').notNull(),
-    method: text('method', { enum: DeliveryMethod.options }).notNull(),
-    providerHint: text('provider_hint', { enum: ProviderHint.options }),
-    // caldav/google outputs draw their credential from this connected account;
-    // null for standalone email targets.
-    externalAccountId: text('external_account_id').references(
-      () => externalAccounts.id,
-      { onDelete: 'set null' },
+    provenance: text('provenance', { enum: EventProvenance.options }).notNull(),
+    synthKey: text('synth_key').notNull(),
+    // Provenance linkage. Cascades are safe here because mirror bookkeeping
+    // (event_mirrors) deliberately has no FK and outlives these rows — the next
+    // mirror reconcile cancels the remote copy of any vanished event.
+    linkId: text('link_id').references(() => familyMemberFeeds.id, {
+      onDelete: 'cascade',
+    }),
+    sourceEventId: text('source_event_id').references(() => sourceEvents.id, {
+      onDelete: 'cascade',
+    }),
+    matchedRuleId: text('matched_rule_id').references(() => linkRules.id, {
+      onDelete: 'set null',
+    }),
+    taskId: text('task_id').references(() => tasks.id, { onDelete: 'cascade' }),
+    pendingDecisionId: text('pending_decision_id').references(
+      () => pendingDecisions.id,
+      { onDelete: 'cascade' },
     ),
-    // email: the delivery address. caldav: the collection URL. google: the calendar id.
-    addressOrUrl: text('address_or_url').notNull(),
-    externalCalendarId: text('external_calendar_id'),
-    // JSON array of minutes-before-start for default alerts (max 2), e.g. [30,10].
-    alertMinutes: text('alert_minutes', { mode: 'json' }).$type<number[]>(),
-    active: integer('active', { mode: 'boolean' }).notNull().default(true),
+    // Identity of a human event on the external target (foreign UID); null for
+    // synthesized/claimed events — the mirror owns their `igt-` UIDs.
+    externalUid: text('external_uid'),
+    externalRecurrenceId: text('external_recurrence_id'),
+    // Payload.
+    dtstart: integer('dtstart', { mode: 'timestamp_ms' }).notNull(),
+    dtend: integer('dtend', { mode: 'timestamp_ms' }),
+    allDay: integer('all_day', { mode: 'boolean' }).notNull().default(false),
+    summary: text('summary'),
+    location: text('location'),
+    description: text('description'),
+    // Task typing is NOT stamped here — task-gen resolves it at build time from
+    // the member's task-rule pipeline, keyed by this event's `linkId` (the
+    // source calendar; null ⇒ the member's own unified/direct calendar).
+    // Skip no-op rewrites on resynthesis (same pattern as source_events).
+    contentHash: text('content_hash').notNull(),
+    // The content_hash task-gen last consumed; reprocess iff != contentHash.
+    tasksBuiltHash: text('tasks_built_hash'),
     createdAt: createdAt(),
   },
   (t) => ({
-    memberIdx: index('calendar_targets_member_idx').on(t.memberId),
+    memberSynthKeyUq: uniqueIndex('calendar_events_member_synth_key_uq').on(
+      t.familyMemberId,
+      t.synthKey,
+    ),
+    memberStartIdx: index('calendar_events_member_start_idx').on(
+      t.familyMemberId,
+      t.dtstart,
+    ),
+    taskIdx: index('calendar_events_task_idx').on(t.taskId),
+    familyIdx: index('calendar_events_family_idx').on(t.familyId),
   }),
 );
 
-export const deliveries = sqliteTable(
-  'deliveries',
+/**
+ * A member's designated external target calendar — the write-through mirror of
+ * their unified calendar (and the source of human events read back into it).
+ * At most one per member; a member without a row still has a fully working
+ * DB-only unified calendar.
+ */
+export const memberCalendars = sqliteTable(
+  'member_calendars',
   {
     id: id(),
-    taskId: text('task_id')
+    familyId: text('family_id')
       .notNull()
-      .references(() => tasks.id, { onDelete: 'cascade' }),
-    calendarTargetId: text('calendar_target_id')
+      .references(() => families.id, { onDelete: 'cascade' }),
+    familyMemberId: text('family_member_id')
       .notNull()
-      .references(() => calendarTargets.id, { onDelete: 'cascade' }),
-    method: text('method', { enum: DeliveryMethod.options }).notNull(),
-    status: text('status', { enum: DeliveryStatus.options })
+      .references(() => familyMembers.id, { onDelete: 'cascade' }),
+    // The owning user's connected account the target is drawn from. If the
+    // account is deleted this goes null and mirror/read-back skip the row.
+    targetExternalAccountId: text('target_external_account_id').references(
+      () => externalAccounts.id,
+      { onDelete: 'set null' },
+    ),
+    targetMethod: text('target_method', { enum: MirrorMethod.options }).notNull(),
+    // CalDAV collection URL or Google calendar id.
+    targetCalendarId: text('target_calendar_id').notNull(),
+    targetCalendarName: text('target_calendar_name'),
+    // JSON array of minutes-before-start for default alerts (max 2), e.g. [30,10].
+    alertMinutes: text('alert_minutes', { mode: 'json' }).$type<number[]>(),
+    active: integer('active', { mode: 'boolean' }).notNull().default(true),
+    lastMirroredAt: integer('last_mirrored_at', { mode: 'timestamp_ms' }),
+    lastReadBackAt: integer('last_read_back_at', { mode: 'timestamp_ms' }),
+    createdAt: createdAt(),
+  },
+  (t) => ({
+    memberUq: uniqueIndex('member_calendars_member_uq').on(t.familyMemberId),
+    familyIdx: index('member_calendars_family_idx').on(t.familyId),
+  }),
+);
+
+/**
+ * Mirror bookkeeping: one row per event we have written to a member's target
+ * calendar. Deliberately NO foreign key to calendar_events — event deletion
+ * happens deep inside synthesis, and the mirror row must survive it so the
+ * next reconcile can cancel the remote copy before dropping the row.
+ */
+export const eventMirrors = sqliteTable(
+  'event_mirrors',
+  {
+    id: id(),
+    familyMemberId: text('family_member_id')
       .notNull()
-      .default('pending'),
-    externalRef: text('external_ref'),
-    icalUid: text('ical_uid'),
+      .references(() => familyMembers.id, { onDelete: 'cascade' }),
+    calendarEventId: text('calendar_event_id').notNull(),
+    // `igt-<calendarEventId>` — also the read-back filter that keeps our own
+    // mirrored events from being re-imported as human events.
+    icalUid: text('ical_uid').notNull(),
     sequence: integer('sequence').notNull().default(0),
-    // Hash of the delivered event payload; lets reconcile skip unchanged events.
+    // Hash of the mirrored payload; lets reconcile skip unchanged events.
     payloadHash: text('payload_hash'),
-    rsvpStatus: text('rsvp_status', { enum: RsvpStatus.options })
+    externalRef: text('external_ref'),
+    status: text('status', { enum: MirrorStatus.options })
       .notNull()
-      .default('none'),
+      .default('sent'),
     sentAt: integer('sent_at', { mode: 'timestamp_ms' }),
     createdAt: createdAt(),
   },
   (t) => ({
-    taskIdx: index('deliveries_task_idx').on(t.taskId),
-    icalUidIdx: index('deliveries_ical_uid_idx').on(t.icalUid),
+    memberUidUq: uniqueIndex('event_mirrors_member_uid_uq').on(
+      t.familyMemberId,
+      t.icalUid,
+    ),
+    calendarEventIdx: index('event_mirrors_calendar_event_idx').on(
+      t.calendarEventId,
+    ),
   }),
 );
 
@@ -502,29 +736,6 @@ export const sessions = sqliteTable(
   }),
 );
 
-// --- Ownership rules (modeled now; auto-assign engine lands in v1.1) ------
-
-export const ownershipRules = sqliteTable(
-  'ownership_rules',
-  {
-    id: id(),
-    familyId: text('family_id')
-      .notNull()
-      .references(() => families.id, { onDelete: 'cascade' }),
-    // JSON filter, e.g. { taskType: "pickup", familyMemberId: "..." }.
-    filter: text('filter', { mode: 'json' }).$type<Record<string, unknown>>(),
-    weekdayMask: integer('weekday_mask'),
-    ownerMemberId: text('owner_member_id')
-      .notNull()
-      .references(() => familyMembers.id, { onDelete: 'cascade' }),
-    active: integer('active', { mode: 'boolean' }).notNull().default(true),
-    createdAt: createdAt(),
-  },
-  (t) => ({
-    familyIdx: index('ownership_rules_family_idx').on(t.familyId),
-  }),
-);
-
 export const schema = {
   users,
   identities,
@@ -534,15 +745,17 @@ export const schema = {
   feeds,
   familyMemberFeeds,
   sourceEvents,
-  classificationRules,
+  linkRules,
+  taskRules,
+  pendingDecisions,
   tasks,
+  calendarEvents,
+  memberCalendars,
+  eventMirrors,
   secrets,
-  calendarTargets,
-  deliveries,
   invites,
   authTokens,
   sessions,
-  ownershipRules,
 };
 
 // Keep `sql` referenced for future raw defaults without tripping lint.

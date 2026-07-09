@@ -10,69 +10,54 @@ import '../widgets/settings.dart';
 
 const _weekdayLabels = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
-/// Add / edit a child's feed link (5q). The feed stays shared; this link scopes
-/// it to the child. Covers the source, a per-child label, which task types it
-/// generates, and — for exception feeds — the schedule baseline. Wired to the
-/// family's member-links.
+/// Feed setup (6g): how one source calendar shapes a member's SCHEDULE. Feed
+/// type (standard / exception-only), the baseline for normal days on exception
+/// feeds, and the override pipeline — cancel/modify/ignore, first match wins,
+/// unmatched exception events become pending decisions. Task typing lives
+/// separately in Task rules (6k).
 class FeedBaselineScreen extends ConsumerStatefulWidget {
   const FeedBaselineScreen({
     super.key,
-    required this.child,
-    this.feed,
-    this.existingLink,
+    required this.member,
+    required this.feed,
+    required this.existingLink,
   });
 
-  final Member child;
-
-  /// The feed being linked. Null in "Link a feed" mode — pick it in the screen.
-  final Map<String, dynamic>? feed;
-
-  /// The current member-link (with baseline), or null to create a new link.
-  final Map<String, dynamic>? existingLink;
+  final Member member;
+  final FeedItem feed;
+  final FeedLink existingLink;
 
   @override
   ConsumerState<FeedBaselineScreen> createState() => _FeedBaselineScreenState();
 }
 
 class _FeedBaselineScreenState extends ConsumerState<FeedBaselineScreen> {
-  Map<String, dynamic>? _feed;
+  late FeedItem _feed = widget.feed;
   final Set<int> _weekdays = {0, 1, 2, 3, 4};
-  final _label = TextEditingController();
-  final _dayStart = TextEditingController(text: '08:00');
-  final _dayEnd = TextEditingController(text: '15:00');
-  final _duration = TextEditingController();
-  bool _genTransition = true;
-  bool _genAttendance = false;
+  final _location = TextEditingController();
+  final _dayStart = TextEditingController(text: '08:30');
+  final _dayEnd = TextEditingController(text: '14:45');
   bool _busy = false;
   String? _error;
 
-  bool get _linked => widget.existingLink != null;
-  bool get _isException => _feed?['mode'] == 'exception';
+  bool get _isException => _feed.isException;
 
   @override
   void initState() {
     super.initState();
-    _feed = widget.feed;
     final ex = widget.existingLink;
-    if (ex != null) {
-      final mask = ex['weekdayMask'] as int? ?? 31;
-      _weekdays
-        ..clear()
-        ..addAll([for (var i = 0; i < 7; i++) if ((mask & (1 << i)) != 0) i]);
-      final types = (ex['generatesTypes'] as List?)?.cast<String>() ?? const [];
-      _genTransition = types.contains('dropoff') || types.contains('pickup') || types.isEmpty;
-      _genAttendance = types.contains('attendance');
-      _label.text = ex['location'] as String? ?? '';
-      _dayStart.text = ex['dayStart'] as String? ?? '08:00';
-      _dayEnd.text = ex['dayEnd'] as String? ?? '15:00';
-      final dur = ex['durationMinutes'] as int?;
-      _duration.text = dur != null ? '$dur' : '';
-    }
+    final mask = ex.weekdayMask ?? 31;
+    _weekdays
+      ..clear()
+      ..addAll([for (var i = 0; i < 7; i++) if ((mask & (1 << i)) != 0) i]);
+    _location.text = ex.location ?? '';
+    _dayStart.text = ex.dayStart ?? '08:30';
+    _dayEnd.text = ex.dayEnd ?? '14:45';
   }
 
   @override
   void dispose() {
-    for (final c in [_label, _dayStart, _dayEnd, _duration]) {
+    for (final c in [_location, _dayStart, _dayEnd]) {
       c.dispose();
     }
     super.dispose();
@@ -80,64 +65,55 @@ class _FeedBaselineScreenState extends ConsumerState<FeedBaselineScreen> {
 
   int get _weekdayMask => _weekdays.fold(0, (m, b) => m | (1 << b));
 
-  List<String> get _generatesTypes => [
-        if (_genTransition) ...['dropoff', 'pickup'],
-        if (_genAttendance) 'attendance',
-      ];
-
-  void _refresh(String feedId) {
-    ref.invalidate(feedLinksProvider(feedId));
+  void _refresh() {
+    ref.invalidate(feedsProvider);
+    ref.invalidate(feedLinksProvider(_feed.id));
+    ref.invalidate(calendarEventsProvider);
+    ref.invalidate(pendingDecisionsProvider);
     ref.invalidate(unownedTasksProvider);
     ref.invalidate(allTasksProvider);
   }
 
+  Future<void> _setMode(String mode) async {
+    if (_feed.mode == mode) return;
+    setState(() => _busy = true);
+    try {
+      final familyId = await ref.read(familyProvider.future);
+      await ref.read(apiClientProvider).updateFeed(familyId, _feed.id, mode: mode);
+      setState(() => _feed = FeedItem(
+            id: _feed.id,
+            kind: _feed.kind,
+            mode: mode,
+            url: _feed.url,
+            sourceCalendarName: _feed.sourceCalendarName,
+            timezone: _feed.timezone,
+            status: _feed.status,
+          ));
+      _refresh();
+    } catch (e) {
+      setState(() => _error = '$e');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
   Future<void> _save() async {
-    final feed = _feed;
-    if (feed == null) {
-      setState(() => _error = 'Pick a feed source');
-      return;
-    }
-    if (!_genTransition && !_genAttendance) {
-      setState(() => _error = 'Pick at least one task type to generate');
-      return;
-    }
     setState(() {
       _busy = true;
       _error = null;
     });
     try {
       final familyId = await ref.read(familyProvider.future);
-      final api = ref.read(apiClientProvider);
-      final feedId = feed['id'] as String;
-      final location = _label.text.trim().isEmpty ? null : _label.text.trim();
-      final duration = _isException ? int.tryParse(_duration.text.trim()) : null;
-      if (_linked) {
-        await api.updateMemberLink(
-          familyId,
-          feedId,
-          widget.existingLink!['id'] as String,
-          weekdayMask: _isException ? _weekdayMask : null,
-          dayStart: _isException ? _dayStart.text.trim() : null,
-          dayEnd: _isException ? _dayEnd.text.trim() : null,
-          durationMinutes: duration,
-          location: location,
-          generatesTypes: _generatesTypes,
-        );
-      } else {
-        await api.createMemberLink(
-          familyId,
-          feedId,
-          familyMemberId: widget.child.id,
-          weekdayMask: _isException ? _weekdayMask : null,
-          dayStart: _isException ? _dayStart.text.trim() : null,
-          dayEnd: _isException ? _dayEnd.text.trim() : null,
-          durationMinutes: duration,
-          location: location,
-          generatesTypes: _generatesTypes,
-          defaultAttendance: _genAttendance ? 'any' : null,
-        );
-      }
-      _refresh(feedId);
+      await ref.read(apiClientProvider).updateMemberLink(
+            familyId,
+            _feed.id,
+            widget.existingLink.id,
+            weekdayMask: _isException ? _weekdayMask : null,
+            dayStart: _isException ? _dayStart.text.trim() : null,
+            dayEnd: _isException ? _dayEnd.text.trim() : null,
+            location: _location.text.trim().isEmpty ? null : _location.text.trim(),
+          );
+      _refresh();
       if (mounted) Navigator.of(context).pop(true);
     } catch (e) {
       setState(() => _error = '$e');
@@ -147,30 +123,23 @@ class _FeedBaselineScreenState extends ConsumerState<FeedBaselineScreen> {
   }
 
   Future<void> _unlink() async {
-    final feedId = _feed!['id'] as String;
     final ok = await showDialog<bool>(
       context: context,
       builder: (_) => AlertDialog(
         title: const Text('Unlink feed?'),
-        content: Text('Stop generating ${widget.child.relationName}\'s tasks from '
-            'this feed? The baseline is removed.'),
+        content: Text('Stop synthesizing ${widget.member.relationName}\'s events '
+            'from this feed? Its events, rules, and generated tasks are removed.'),
         actions: [
           TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Cancel')),
-          PillButton(
-            label: 'Unlink',
-            variant: PillVariant.white,
-            onPressed: () => Navigator.of(context).pop(true),
-          ),
+          PillButton(label: 'Unlink', variant: PillVariant.white, onPressed: () => Navigator.of(context).pop(true)),
         ],
       ),
     );
     if (ok != true) return;
     try {
       final familyId = await ref.read(familyProvider.future);
-      await ref
-          .read(apiClientProvider)
-          .deleteMemberLink(familyId, feedId, widget.existingLink!['id'] as String);
-      _refresh(feedId);
+      await ref.read(apiClientProvider).deleteMemberLink(familyId, _feed.id, widget.existingLink.id);
+      _refresh();
       if (mounted) Navigator.of(context).pop(true);
     } catch (e) {
       if (mounted) {
@@ -186,72 +155,42 @@ class _FeedBaselineScreenState extends ConsumerState<FeedBaselineScreen> {
         child: ListView(
           padding: const EdgeInsets.fromLTRB(22, 12, 22, 40),
           children: [
-            const SubPageHeader(title: 'Linked feed'),
+            const SubPageHeader(title: 'Feed setup'),
             const SizedBox(height: 18),
-            Text(
-              'Connect a shared calendar source to ${widget.child.relationName}. The '
-              'feed stays shared; this link says "these events are '
-              '${widget.child.relationName}\'s."',
-              style: AppText.subtitle,
-            ),
-            const SizedBox(height: 22),
             const SectionEyebrow('Feed source'),
             const SizedBox(height: 12),
             AppCard(
               padding: EdgeInsets.zero,
-              child: _PickerRow(
-                label: 'Source',
-                value: _feed == null ? 'Choose a feed' : _feedName(_feed!),
-                enabled: !_linked,
-                onTap: _pickSource,
+              child: SettingRow(
+                icon: _feed.kind == 'ics' ? Icons.rss_feed_rounded : Icons.calendar_month_rounded,
+                iconColor: AppColors.feedBlue,
+                title: _feed.displayName,
+                subtitle: _feed.kind.toUpperCase(),
               ),
             ),
             const SizedBox(height: 24),
-            const SectionEyebrow('Label for this child'),
-            const SizedBox(height: 12),
-            TextField(
-              controller: _label,
-              decoration: const InputDecoration(labelText: 'Label', hintText: 'e.g. School calendar'),
+            const SectionEyebrow('Feed type'),
+            const SizedBox(height: 8),
+            Text(
+              'Exception-only feeds are empty on normal days and carry only '
+              'deviations; normal days come from the baseline below.',
+              style: AppText.subtitle,
             ),
-            const SizedBox(height: 24),
-            const SectionEyebrow('Generates'),
             const SizedBox(height: 12),
-            AppCard(
-              child: Column(
-                children: [
-                  SwitchRow(
-                    icon: Icons.login_rounded,
-                    iconColor: AppColors.green,
-                    title: 'Transition tasks',
-                    subtitle: 'Drop-off & pickup points',
-                    value: _genTransition,
-                    onChanged: (v) => setState(() => _genTransition = v),
-                  ),
-                  const Divider(height: 20),
-                  SwitchRow(
-                    icon: Icons.groups_rounded,
-                    iconColor: AppColors.purple,
-                    title: 'Attendance tasks',
-                    subtitle: 'Someone stays for the duration',
-                    value: _genAttendance,
-                    onChanged: (v) => setState(() => _genAttendance = v),
-                  ),
-                ],
-              ),
+            _Segmented(
+              options: const [('standard', 'Standard'), ('exception', 'Exception-only')],
+              value: _feed.mode,
+              activeColor: _isException ? AppColors.amber : AppColors.indigo,
+              onChanged: _busy ? null : _setMode,
             ),
-            if (_isException && _genTransition) ...[
+            if (_isException) ...[
               const SizedBox(height: 24),
-              const SectionEyebrow('Schedule'),
-              const SizedBox(height: 8),
-              Text('Exception feeds deviate from this weekly baseline.',
-                  style: AppText.subtitle),
+              const SectionEyebrow('Baseline — the normal school day', color: AppColors.amber),
               const SizedBox(height: 12),
               AppCard(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text('School days', style: AppText.eyebrow()),
-                    const SizedBox(height: 10),
                     Wrap(
                       spacing: 8,
                       runSpacing: 8,
@@ -268,15 +207,24 @@ class _FeedBaselineScreenState extends ConsumerState<FeedBaselineScreen> {
                     const SizedBox(height: 16),
                     Row(
                       children: [
-                        Expanded(child: _field(_dayStart, 'Drop-off', 'HH:MM')),
+                        Expanded(child: _field(_dayStart, 'Day starts', 'HH:MM')),
                         const SizedBox(width: 12),
-                        Expanded(child: _field(_dayEnd, 'Pickup', 'HH:MM')),
+                        Expanded(child: _field(_dayEnd, 'Day ends', 'HH:MM')),
                       ],
                     ),
                     const SizedBox(height: 14),
-                    _field(_duration, 'Block length (min)', 'blank = 1h', number: true),
+                    _field(_location, 'Default location', 'Prefilled onto every task'),
                   ],
                 ),
+              ),
+              const SizedBox(height: 24),
+              _OverridePipeline(feed: _feed, link: widget.existingLink),
+            ] else ...[
+              const SizedBox(height: 16),
+              Text(
+                'Standard feeds pass events through as-is. What tasks they '
+                'generate is set in Task rules (Family logistics).',
+                style: AppText.subtitle,
               ),
             ],
             if (_error != null) ...[
@@ -284,119 +232,420 @@ class _FeedBaselineScreenState extends ConsumerState<FeedBaselineScreen> {
               Text(_error!, style: font(kBodyFont, 13, 500, color: AppColors.coral)),
             ],
             const SizedBox(height: 28),
-            _PrimaryButton(
-              label: _linked ? 'Save linked feed' : 'Link feed',
-              busy: _busy,
-              onPressed: _busy ? null : _save,
-            ),
-            if (_linked) ...[
-              const SizedBox(height: 12),
-              _RemoveButton(label: 'Unlink feed', onTap: _unlink),
-            ],
-          ],
-        ),
-      ),
-    );
-  }
-
-  Future<void> _pickSource() async {
-    if (_linked) return;
-    final feeds = ref.read(feedsProvider).valueOrNull ?? const <Map<String, dynamic>>[];
-    // Offer feeds not already linked to this child.
-    final unlinked = <Map<String, dynamic>>[];
-    for (final f in feeds) {
-      final links = ref.read(feedLinksProvider(f['id'] as String)).valueOrNull ?? const [];
-      final linked = links.cast<Map<String, dynamic>>().any((l) => l['familyMemberId'] == widget.child.id);
-      if (!linked) unlinked.add(f);
-    }
-    if (unlinked.isEmpty) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(const SnackBar(content: Text('No more feeds to link — add one in Input feeds')));
-      return;
-    }
-    await showModalBottomSheet<void>(
-      context: context,
-      showDragHandle: true,
-      builder: (sheetCtx) => SingleChildScrollView(
-        padding: const EdgeInsets.fromLTRB(22, 4, 22, 28),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('Feed source', style: AppText.subPageTitle),
+            _PrimaryButton(label: 'Save linked feed', busy: _busy, onPressed: _busy ? null : _save),
             const SizedBox(height: 12),
-            for (final f in unlinked)
-              SettingRow(
-                icon: (f['kind'] as String? ?? 'ics') == 'ics'
-                    ? Icons.rss_feed_rounded
-                    : Icons.calendar_month_rounded,
-                iconColor: (f['kind'] as String? ?? 'ics') == 'ics'
-                    ? AppColors.feedBlue
-                    : AppColors.purple,
-                title: _feedName(f),
-                subtitle: (f['kind'] as String? ?? 'ics') == 'ics' ? 'ICS' : 'Google',
-                onTap: () {
-                  Navigator.of(sheetCtx).pop();
-                  setState(() => _feed = f);
-                },
-              ),
+            _RemoveButton(label: 'Unlink feed', onTap: _unlink),
           ],
         ),
       ),
     );
   }
 
-  String _feedName(Map<String, dynamic> f) =>
-      (f['sourceCalendarName'] as String?) ??
-      (f['url'] as String?) ??
-      (f['sourceCalendarId'] as String?) ??
-      'Calendar feed';
+  Widget _field(TextEditingController c, String label, String hint) => TextField(
+        controller: c,
+        decoration: InputDecoration(labelText: label, hintText: hint),
+      );
+}
 
-  Widget _field(TextEditingController c, String label, String hint, {bool number = false}) {
-    return TextField(
-      controller: c,
-      keyboardType: number ? TextInputType.number : TextInputType.text,
-      decoration: InputDecoration(labelText: label, hintText: hint),
+/// The override pipeline (schedule only; first match wins): incoming event →
+/// rules in order → the unmatched terminal (pending decision). Rules edit via
+/// the 6m bottom sheet.
+class _OverridePipeline extends ConsumerWidget {
+  const _OverridePipeline({required this.feed, required this.link});
+  final FeedItem feed;
+  final FeedLink link;
+
+  ({String feedId, String linkId}) get _key => (feedId: feed.id, linkId: link.id);
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final rules = ref.watch(linkRulesProvider(_key)).valueOrNull ?? const <OverrideRule>[];
+
+    Future<void> reorder(int oldIndex, int newIndex) async {
+      final ids = rules.map((r) => r.id).toList();
+      final moved = ids.removeAt(oldIndex);
+      ids.insert(newIndex, moved);
+      final familyId = await ref.read(familyProvider.future);
+      await ref.read(apiClientProvider).reorderLinkRules(familyId, feed.id, link.id, ids);
+      ref.invalidate(linkRulesProvider(_key));
+      ref.invalidate(calendarEventsProvider);
+      ref.invalidate(pendingDecisionsProvider);
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const SectionEyebrow('Override pipeline', color: AppColors.purple),
+        const SizedBox(height: 8),
+        Text('How feed exceptions change the baseline. Drag to reorder · first match wins.',
+            style: AppText.subtitle),
+        const SizedBox(height: 12),
+        AppCard(
+          padding: EdgeInsets.zero,
+          child: SettingRow(
+            icon: Icons.input_rounded,
+            iconColor: AppColors.feedBlue,
+            title: 'Incoming event',
+            subtitle: feed.displayName,
+          ),
+        ),
+        const SizedBox(height: 10),
+        if (rules.isNotEmpty)
+          ReorderableListView(
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            buildDefaultDragHandles: false,
+            onReorderItem: reorder,
+            children: [
+              for (var i = 0; i < rules.length; i++)
+                Padding(
+                  key: ValueKey(rules[i].id),
+                  padding: const EdgeInsets.only(bottom: 10),
+                  child: _RuleCard(
+                    index: i,
+                    rule: rules[i],
+                    onTap: () => showOverrideRuleSheet(context, ref, feed: feed, link: link, existing: rules[i]),
+                  ),
+                ),
+            ],
+          ),
+        Center(
+          child: TextButton.icon(
+            onPressed: () => showOverrideRuleSheet(context, ref, feed: feed, link: link),
+            icon: const Icon(Icons.add_rounded, size: 18, color: AppColors.purple),
+            label: Text('Add rule', style: font(kBodyFont, 13, 700, color: AppColors.purple)),
+          ),
+        ),
+        const SizedBox(height: 4),
+        Container(
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            color: AppColors.tint(AppColors.amber, 0.07),
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: AppColors.amber.withValues(alpha: 0.35)),
+          ),
+          child: Row(
+            children: [
+              const Icon(Icons.help_outline_rounded, color: AppColors.amber, size: 18),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  'Everything else — unmatched: not on the baseline and no rule '
+                  'matched → pending decision. The system won’t guess.',
+                  style: font(kBodyFont, 12, 500, color: AppColors.amber),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
     );
   }
 }
 
-class _PickerRow extends StatelessWidget {
-  const _PickerRow({
-    required this.label,
-    required this.value,
-    required this.onTap,
-    this.enabled = true,
-  });
-  final String label;
-  final String value;
+class _RuleCard extends StatelessWidget {
+  const _RuleCard({required this.index, required this.rule, required this.onTap});
+  final int index;
+  final OverrideRule rule;
   final VoidCallback onTap;
-  final bool enabled;
+
+  Color get _outcomeColor => switch (rule.outcome) {
+        'cancel_day' => AppColors.coral,
+        'modify_day' => AppColors.amber,
+        _ => AppColors.textMuted,
+      };
 
   @override
   Widget build(BuildContext context) {
-    return InkWell(
-      onTap: enabled ? onTap : null,
-      borderRadius: BorderRadius.circular(20),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
-        child: Row(
-          children: [
-            Text(label, style: AppText.sectionItemTitle),
-            const Spacer(),
-            Flexible(
-              child: Text(value,
-                  textAlign: TextAlign.right,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: AppText.subtitle),
-            ),
-            if (enabled) ...[
+    return AppCard(
+      padding: EdgeInsets.zero,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(18),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(10, 12, 14, 12),
+          child: Row(
+            children: [
+              ReorderableDragStartListener(
+                index: index,
+                child: const Padding(
+                  padding: EdgeInsets.all(6),
+                  child: Icon(Icons.drag_indicator_rounded, color: AppColors.textMuted, size: 20),
+                ),
+              ),
+              const SizedBox(width: 4),
+              Expanded(
+                child: Text(rule.matcher,
+                    maxLines: 2, overflow: TextOverflow.ellipsis, style: AppText.sectionItemTitle),
+              ),
               const SizedBox(width: 8),
-              const Icon(Icons.chevron_right_rounded, color: AppColors.textMuted),
+              TintBadge(rule.outcomeLabel, color: _outcomeColor),
             ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Override-rule editor bottom sheet (6m): match + Then (cancel/modify/ignore).
+Future<void> showOverrideRuleSheet(
+  BuildContext context,
+  WidgetRef ref, {
+  required FeedItem feed,
+  required FeedLink link,
+  OverrideRule? existing,
+}) {
+  return showModalBottomSheet<void>(
+    context: context,
+    showDragHandle: true,
+    isScrollControlled: true,
+    builder: (_) => _OverrideRuleSheet(feed: feed, link: link, existing: existing),
+  );
+}
+
+class _OverrideRuleSheet extends ConsumerStatefulWidget {
+  const _OverrideRuleSheet({required this.feed, required this.link, this.existing});
+  final FeedItem feed;
+  final FeedLink link;
+  final OverrideRule? existing;
+
+  @override
+  ConsumerState<_OverrideRuleSheet> createState() => _OverrideRuleSheetState();
+}
+
+class _OverrideRuleSheetState extends ConsumerState<_OverrideRuleSheet> {
+  late String _matchOp; // contains | regex
+  late String _outcome; // cancel_day | modify_day | ignore
+  final _value = TextEditingController();
+  final _newStart = TextEditingController();
+  final _newEnd = TextEditingController();
+  bool _busy = false;
+  String? _error;
+
+  bool get _editing => widget.existing != null;
+
+  @override
+  void initState() {
+    super.initState();
+    final ex = widget.existing;
+    _matchOp = ex?.matchOp == 'regex' ? 'regex' : 'contains';
+    _outcome = ex?.outcome ?? 'cancel_day';
+    _value.text = ex?.matchValue ?? '';
+    _newStart.text = (ex?.params?['dayStart'] as String?) ?? '';
+    _newEnd.text = (ex?.params?['dayEnd'] as String?) ?? '';
+  }
+
+  @override
+  void dispose() {
+    for (final c in [_value, _newStart, _newEnd]) {
+      c.dispose();
+    }
+    super.dispose();
+  }
+
+  Map<String, dynamic>? get _params {
+    if (_outcome != 'modify_day') return null;
+    return {
+      if (_newStart.text.trim().isNotEmpty) 'dayStart': _newStart.text.trim(),
+      if (_newEnd.text.trim().isNotEmpty) 'dayEnd': _newEnd.text.trim(),
+    };
+  }
+
+  void _invalidate() {
+    ref.invalidate(linkRulesProvider((feedId: widget.feed.id, linkId: widget.link.id)));
+    ref.invalidate(calendarEventsProvider);
+    ref.invalidate(pendingDecisionsProvider);
+    ref.invalidate(unownedTasksProvider);
+    ref.invalidate(allTasksProvider);
+  }
+
+  Future<void> _save() async {
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      final familyId = await ref.read(familyProvider.future);
+      final api = ref.read(apiClientProvider);
+      final matchValue = _value.text.trim().isEmpty ? null : _value.text.trim();
+      if (_editing) {
+        await api.updateLinkRule(
+          familyId, widget.feed.id, widget.link.id, widget.existing!.id,
+          matchField: 'summary',
+          matchOp: _matchOp,
+          outcome: _outcome,
+          matchValue: matchValue,
+          params: _params,
+        );
+      } else {
+        await api.createLinkRule(
+          familyId, widget.feed.id, widget.link.id,
+          matchField: 'summary',
+          matchOp: _matchOp,
+          outcome: _outcome,
+          matchValue: matchValue,
+          params: _params,
+        );
+      }
+      _invalidate();
+      if (mounted) Navigator.of(context).pop();
+    } catch (e) {
+      setState(() {
+        _busy = false;
+        _error = '$e';
+      });
+    }
+  }
+
+  Future<void> _delete() async {
+    setState(() => _busy = true);
+    try {
+      final familyId = await ref.read(familyProvider.future);
+      await ref.read(apiClientProvider).deleteLinkRule(familyId, widget.feed.id, widget.link.id, widget.existing!.id);
+      _invalidate();
+      if (mounted) Navigator.of(context).pop();
+    } catch (e) {
+      setState(() {
+        _busy = false;
+        _error = '$e';
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      child: SingleChildScrollView(
+        padding: EdgeInsets.fromLTRB(22, 4, 22, 28 + MediaQuery.of(context).viewInsets.bottom),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Text(_editing ? 'Edit override rule' : 'New override rule', style: AppText.subPageTitle),
+                const Spacer(),
+                if (_editing)
+                  IconButton(
+                    onPressed: _busy ? null : _delete,
+                    icon: const Icon(Icons.delete_outline_rounded, color: AppColors.coral),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            Text('${widget.feed.displayName} · exception feed', style: AppText.subtitle),
+            const SizedBox(height: 16),
+            Text('MATCH', style: AppText.eyebrow()),
+            const SizedBox(height: 8),
+            _Segmented(
+              options: const [('contains', 'Contains'), ('regex', 'Regex')],
+              value: _matchOp,
+              activeColor: AppColors.indigo,
+              onChanged: (v) => setState(() => _matchOp = v),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _value,
+              decoration: InputDecoration(
+                labelText: 'Title ${_matchOp == 'regex' ? 'pattern' : 'value'}',
+                hintText: _matchOp == 'regex' ? '/no school|closed/i' : 'No School',
+              ),
+            ),
+            const SizedBox(height: 20),
+            Text('THEN', style: AppText.eyebrow()),
+            const SizedBox(height: 8),
+            _Segmented(
+              options: const [('cancel_day', 'Cancel day'), ('modify_day', 'Modify day'), ('ignore', 'Ignore')],
+              value: _outcome,
+              activeColor: AppColors.purple,
+              onChanged: (v) => setState(() => _outcome = v),
+            ),
+            if (_outcome == 'cancel_day') ...[
+              const SizedBox(height: 12),
+              Text('A matched day is dropped from the baseline entirely — nothing generates.',
+                  style: AppText.subtitle),
+            ] else if (_outcome == 'modify_day') ...[
+              const SizedBox(height: 12),
+              Text('Overrides the baseline’s hours for matched days.', style: AppText.subtitle),
+              const SizedBox(height: 10),
+              Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: _newStart,
+                      decoration: const InputDecoration(labelText: 'New day starts', hintText: 'HH:MM'),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: TextField(
+                      controller: _newEnd,
+                      decoration: const InputDecoration(labelText: 'New day ends', hintText: 'HH:MM'),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+            if (_error != null) ...[
+              const SizedBox(height: 12),
+              Text(_error!, style: font(kBodyFont, 13, 500, color: AppColors.coral)),
+            ],
+            const SizedBox(height: 20),
+            SizedBox(
+              width: double.infinity,
+              child: PillButton(label: 'Save rule', variant: PillVariant.indigo, onPressed: _busy ? null : _save),
+            ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+class _Segmented extends StatelessWidget {
+  const _Segmented({
+    required this.options,
+    required this.value,
+    required this.activeColor,
+    required this.onChanged,
+  });
+  final List<(String, String)> options;
+  final String value;
+  final Color activeColor;
+  final ValueChanged<String>? onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(4),
+      decoration: BoxDecoration(
+        color: AppColors.bg,
+        borderRadius: BorderRadius.circular(13),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: Row(
+        children: [
+          for (final (v, label) in options)
+            Expanded(
+              child: GestureDetector(
+                onTap: onChanged == null ? null : () => onChanged!(v),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(vertical: 9),
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    color: v == value ? activeColor : Colors.transparent,
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Text(label,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: font(kBodyFont, 12, 700,
+                          color: v == value ? const Color(0xFF17162B) : AppColors.textSecondary)),
+                ),
+              ),
+            ),
+        ],
       ),
     );
   }
@@ -415,15 +664,13 @@ class _DayChip extends StatelessWidget {
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 9),
         decoration: BoxDecoration(
-          color: selected ? AppColors.indigo : AppColors.bg,
+          color: selected ? AppColors.amber : AppColors.bg,
           borderRadius: BorderRadius.circular(999),
-          border: Border.all(color: selected ? AppColors.indigo : AppColors.border),
+          border: Border.all(color: selected ? AppColors.amber : AppColors.border),
         ),
-        child: Text(
-          label,
-          style: font(kBodyFont, 13, 600,
-              color: selected ? const Color(0xFF17162B) : AppColors.textSecondary),
-        ),
+        child: Text(label,
+            style: font(kBodyFont, 13, 600,
+                color: selected ? const Color(0xFF2A1E05) : AppColors.textSecondary)),
       ),
     );
   }
@@ -438,7 +685,7 @@ class _PrimaryButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Material(
-      color: AppColors.amberHero,
+      color: AppColors.indigo,
       borderRadius: BorderRadius.circular(999),
       child: InkWell(
         onTap: onPressed,
@@ -450,9 +697,9 @@ class _PrimaryButton extends StatelessWidget {
               ? const SizedBox(
                   height: 20,
                   width: 20,
-                  child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF2A1E05)),
+                  child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF17162B)),
                 )
-              : Text(label, style: font(kBodyFont, 14.5, 700, color: const Color(0xFF2A1E05))),
+              : Text(label, style: font(kBodyFont, 14.5, 700, color: const Color(0xFF17162B))),
         ),
       ),
     );
