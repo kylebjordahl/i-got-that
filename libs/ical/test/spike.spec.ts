@@ -4,6 +4,7 @@ import {
   buildInviteICalendar,
   buildStoredEventICalendar,
   createCalDavClient,
+  extractTimezone,
   fetchGoogleOccurrences,
   hashOccurrence,
   parseAndExpand,
@@ -226,6 +227,20 @@ END:VCALENDAR`;
     expect(noLocation).not.toContain('X-APPLE-TRAVEL-ADVISORY-BEHAVIOR');
   });
 
+  it('reads the calendar timezone from X-WR-TIMEZONE when present', () => {
+    const ics = `BEGIN:VCALENDAR\r\nVERSION:2.0\r\nX-WR-TIMEZONE:America/Los_Angeles\r\nBEGIN:VEVENT\r\nUID:a\r\nDTSTART:20260105T150000Z\r\nDTEND:20260105T153000Z\r\nSUMMARY:x\r\nEND:VEVENT\r\nEND:VCALENDAR`;
+    expect(extractTimezone(ics)).toBe('America/Los_Angeles');
+  });
+
+  it('falls back to the first VTIMEZONE TZID when X-WR-TIMEZONE is absent (CalDAV per-object payloads)', () => {
+    const ics = `BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VTIMEZONE\r\nTZID:America/Chicago\r\nBEGIN:STANDARD\r\nDTSTART:19701101T020000\r\nTZOFFSETFROM:-0500\r\nTZOFFSETTO:-0600\r\nEND:STANDARD\r\nEND:VTIMEZONE\r\nBEGIN:VEVENT\r\nUID:a\r\nDTSTART;TZID=America/Chicago:20260105T090000\r\nDTEND;TZID=America/Chicago:20260105T093000\r\nSUMMARY:x\r\nEND:VEVENT\r\nEND:VCALENDAR`;
+    expect(extractTimezone(ics)).toBe('America/Chicago');
+  });
+
+  it('returns null when neither X-WR-TIMEZONE nor a VTIMEZONE is present', () => {
+    expect(extractTimezone(SAMPLE_ICS)).toBeNull();
+  });
+
   it('instantiates a CalDAV client (tsdav importable in workerd)', () => {
     // Don't hit the network — just prove the factory is callable here.
     const client = createCalDavClient({
@@ -238,6 +253,7 @@ END:VCALENDAR`;
 
   it('maps Google events.list into occurrences (timed, all-day, recurrence, cancelled)', async () => {
     const page = {
+      timeZone: 'America/Chicago',
       items: [
         {
           iCalUID: 'timed@g',
@@ -270,7 +286,7 @@ END:VCALENDAR`;
       return { ok: true, status: 200, json: async () => page };
     }) as unknown as typeof fetch;
 
-    const occ = await fetchGoogleOccurrences(
+    const { occurrences: occ, timezone } = await fetchGoogleOccurrences(
       'access-token',
       'primary',
       {
@@ -280,6 +296,7 @@ END:VCALENDAR`;
       fetchImpl,
     );
 
+    expect(timezone).toBe('America/Chicago');
     expect(occ).toHaveLength(3); // cancelled dropped
     const holiday = occ.find((o) => o.uid === 'holiday@g')!;
     expect(holiday.allDay).toBe(true);

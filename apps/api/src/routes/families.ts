@@ -22,6 +22,12 @@ import { taskRuleRoutes } from './task-rules.js';
 
 export const familyRoutes = new Hono<HonoEnv>();
 
+// Caretakers default to NOT generating claimable logistics tasks from their
+// own events (they're the ones claiming, not the ones tasks get generated
+// for); dependents default to generating them. Independent of claim
+// eligibility, which stays gated on `isCaretaker` alone (see tasks.ts).
+const defaultGeneratesFamilyTasks = (isCaretaker: boolean): boolean => !isCaretaker;
+
 // Every family route requires a session.
 familyRoutes.use('*', authMiddleware);
 
@@ -62,6 +68,7 @@ familyRoutes.post('/', async (c) => {
         isCaretaker: true,
         isAdmin: true,
         requiresCaretaker: false,
+        generatesFamilyTasks: defaultGeneratesFamilyTasks(true),
       })
       .returning()
   )[0]!;
@@ -139,7 +146,9 @@ familyRoutes.post(
           isCaretaker: parsed.data.isCaretaker,
           isAdmin: parsed.data.isAdmin,
           requiresCaretaker: parsed.data.requiresCaretaker,
-          generatesFamilyTasks: parsed.data.generatesFamilyTasks,
+          generatesFamilyTasks:
+            parsed.data.generatesFamilyTasks ??
+            defaultGeneratesFamilyTasks(parsed.data.isCaretaker),
           color: parsed.data.color ?? null,
         })
         .returning()

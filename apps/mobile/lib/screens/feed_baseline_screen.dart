@@ -5,6 +5,7 @@ import '../state/auth.dart';
 import '../state/family.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_text.dart';
+import '../widgets/app_bottom_nav.dart';
 import '../widgets/primitives.dart';
 import '../widgets/settings.dart';
 
@@ -151,93 +152,103 @@ class _FeedBaselineScreenState extends ConsumerState<FeedBaselineScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      extendBody: true,
       body: SafeArea(
-        child: ListView(
-          padding: const EdgeInsets.fromLTRB(22, 12, 22, 40),
+        child: Column(
           children: [
-            const SubPageHeader(title: 'Feed setup'),
-            const SizedBox(height: 18),
-            const SectionEyebrow('Feed source'),
-            const SizedBox(height: 12),
-            AppCard(
-              padding: EdgeInsets.zero,
-              child: SettingRow(
-                icon: _feed.kind == 'ics' ? Icons.rss_feed_rounded : Icons.calendar_month_rounded,
-                iconColor: AppColors.feedBlue,
-                title: _feed.displayName,
-                subtitle: _feed.kind.toUpperCase(),
-              ),
+            const Padding(
+              padding: EdgeInsets.fromLTRB(22, 12, 22, 18),
+              child: SubPageHeader(title: 'Feed setup'),
             ),
-            const SizedBox(height: 24),
-            const SectionEyebrow('Feed type'),
-            const SizedBox(height: 8),
-            Text(
-              'Exception-only feeds are empty on normal days and carry only '
-              'deviations; normal days come from the baseline below.',
-              style: AppText.subtitle,
-            ),
-            const SizedBox(height: 12),
-            _Segmented(
-              options: const [('standard', 'Standard'), ('exception', 'Exception-only')],
-              value: _feed.mode,
-              activeColor: _isException ? AppColors.amber : AppColors.indigo,
-              onChanged: _busy ? null : _setMode,
-            ),
-            if (_isException) ...[
-              const SizedBox(height: 24),
-              const SectionEyebrow('Baseline — the normal school day', color: AppColors.amber),
-              const SizedBox(height: 12),
-              AppCard(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Wrap(
-                      spacing: 8,
-                      runSpacing: 8,
-                      children: [
-                        for (var i = 0; i < 7; i++)
-                          _DayChip(
-                            label: _weekdayLabels[i],
-                            selected: _weekdays.contains(i),
-                            onTap: () => setState(() =>
-                                _weekdays.contains(i) ? _weekdays.remove(i) : _weekdays.add(i)),
+            Expanded(
+              child: ListView(
+                padding: const EdgeInsets.fromLTRB(22, 0, 22, 150),
+                children: [
+                  const SectionEyebrow('Feed source'),
+                  const SizedBox(height: 12),
+                  AppCard(
+                    padding: EdgeInsets.zero,
+                    child: SettingRow(
+                      icon: _feed.kind == 'ics' ? Icons.rss_feed_rounded : Icons.calendar_month_rounded,
+                      iconColor: AppColors.feedBlue,
+                      title: _feed.displayName,
+                      subtitle: _feed.kind.toUpperCase(),
+                    ),
+                  ),
+                  const SizedBox(height: 24),
+                  const SectionEyebrow('Feed type'),
+                  const SizedBox(height: 8),
+                  Text(
+                    'Exception-only feeds are empty on normal days and carry only '
+                    'deviations; normal days come from the baseline below.',
+                    style: AppText.subtitle,
+                  ),
+                  const SizedBox(height: 12),
+                  _Segmented(
+                    options: const [('standard', 'Standard'), ('exception', 'Exception-only')],
+                    value: _feed.mode,
+                    activeColor: _isException ? AppColors.amber : AppColors.indigo,
+                    onChanged: _busy ? null : _setMode,
+                  ),
+                  if (_isException) ...[
+                    const SizedBox(height: 24),
+                    const SectionEyebrow('Baseline — the normal school day', color: AppColors.amber),
+                    const SizedBox(height: 12),
+                    AppCard(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Wrap(
+                            spacing: 8,
+                            runSpacing: 8,
+                            children: [
+                              for (var i = 0; i < 7; i++)
+                                _DayChip(
+                                  label: _weekdayLabels[i],
+                                  selected: _weekdays.contains(i),
+                                  onTap: () => setState(() =>
+                                      _weekdays.contains(i) ? _weekdays.remove(i) : _weekdays.add(i)),
+                                ),
+                            ],
                           ),
-                      ],
+                          const SizedBox(height: 16),
+                          Row(
+                            children: [
+                              Expanded(child: _field(_dayStart, 'Day starts', 'HH:MM')),
+                              const SizedBox(width: 12),
+                              Expanded(child: _field(_dayEnd, 'Day ends', 'HH:MM')),
+                            ],
+                          ),
+                          const SizedBox(height: 14),
+                          _field(_location, 'Default location', 'Prefilled onto every task'),
+                        ],
+                      ),
                     ),
+                    const SizedBox(height: 24),
+                    _OverridePipeline(feed: _feed, link: widget.existingLink),
+                  ] else ...[
                     const SizedBox(height: 16),
-                    Row(
-                      children: [
-                        Expanded(child: _field(_dayStart, 'Day starts', 'HH:MM')),
-                        const SizedBox(width: 12),
-                        Expanded(child: _field(_dayEnd, 'Day ends', 'HH:MM')),
-                      ],
+                    Text(
+                      'Standard feeds pass events through as-is. What tasks they '
+                      'generate is set in Task rules (Family logistics).',
+                      style: AppText.subtitle,
                     ),
-                    const SizedBox(height: 14),
-                    _field(_location, 'Default location', 'Prefilled onto every task'),
                   ],
-                ),
+                  if (_error != null) ...[
+                    const SizedBox(height: 16),
+                    Text(_error!, style: font(kBodyFont, 13, 500, color: AppColors.coral)),
+                  ],
+                  const SizedBox(height: 28),
+                  _PrimaryButton(label: 'Save linked feed', busy: _busy, onPressed: _busy ? null : _save),
+                  const SizedBox(height: 12),
+                  _RemoveButton(label: 'Unlink feed', onTap: _unlink),
+                ],
               ),
-              const SizedBox(height: 24),
-              _OverridePipeline(feed: _feed, link: widget.existingLink),
-            ] else ...[
-              const SizedBox(height: 16),
-              Text(
-                'Standard feeds pass events through as-is. What tasks they '
-                'generate is set in Task rules (Family logistics).',
-                style: AppText.subtitle,
-              ),
-            ],
-            if (_error != null) ...[
-              const SizedBox(height: 16),
-              Text(_error!, style: font(kBodyFont, 13, 500, color: AppColors.coral)),
-            ],
-            const SizedBox(height: 28),
-            _PrimaryButton(label: 'Save linked feed', busy: _busy, onPressed: _busy ? null : _save),
-            const SizedBox(height: 12),
-            _RemoveButton(label: 'Unlink feed', onTap: _unlink),
+            ),
           ],
         ),
       ),
+      bottomNavigationBar: const PersistentAppNav(),
     );
   }
 

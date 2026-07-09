@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../api/client.dart';
 import '../util/web_auth.dart';
@@ -14,24 +15,37 @@ final apiClientProvider = Provider<ApiClient>(
 );
 
 class AuthState {
-  const AuthState({this.sessionToken, this.user, this.error});
+  const AuthState({this.sessionToken, this.user, this.error, this.restoring = false});
   final String? sessionToken;
   final Map<String, dynamic>? user;
 
   /// A login error to surface (e.g. an `auth_error` from the Apple callback).
   final String? error;
-  bool get isAuthed => sessionToken != null;
+
+  /// True while startup restore (fragment or cookie) is in flight — lets the
+  /// UI hold off rendering the login screen for the one round trip it takes to
+  /// find out whether the web session cookie is still valid.
+  final bool restoring;
+
+  /// Web sessions restored from the `igt_session` cookie never populate
+  /// [sessionToken] in JS (that's the point — see docs/AUTH.md); [user] is the
+  /// authoritative "am I logged in" signal there, so check both.
+  bool get isAuthed => sessionToken != null || user != null;
 }
 
 class AuthController extends StateNotifier<AuthState> {
-  AuthController(this._api) : super(const AuthState()) {
-    _restoreFromWebRedirect();
+  AuthController(this._api) : super(const AuthState(restoring: true)) {
+    _restore();
   }
   final ApiClient _api;
 
-  /// On web startup, pick up a session (or error) the Apple callback left in the
-  /// URL fragment. No-op on native / when there's nothing to consume.
-  Future<void> _restoreFromWebRedirect() async {
+  /// On web startup: first pick up a session (or error) the Apple callback
+  /// left in the URL fragment; failing that, ask the server whether the
+  /// `igt_session` cookie (set on login, HttpOnly so JS never touches the raw
+  /// token — see docs/AUTH.md) still identifies a valid session, so a plain
+  /// page refresh doesn't force a re-login. No-op on native / when neither
+  /// yields anything.
+  Future<void> _restore() async {
     final (:session, :error) = consumeAppleAuthFragment();
     if (session != null) {
       _api.setSession(session);
@@ -45,14 +59,34 @@ class AuthController extends StateNotifier<AuthState> {
         _api.setSession(null);
         state = AuthState(error: '$e');
       }
-    } else if (error != null) {
+      return;
+    }
+    if (error != null) {
       state = AuthState(error: error);
+      return;
+    }
+
+    // Native has no cookie to restore from (and no persisted token yet — see
+    // docs/AUTH.md's native TODO), so skip the round trip and go straight to
+    // the login screen.
+    if (!kIsWeb) {
+      state = const AuthState();
+      return;
+    }
+
+    try {
+      final me = await _api.me();
+      state = AuthState(user: me['user'] as Map<String, dynamic>?);
+    } catch (_) {
+      // No valid session cookie — the ordinary logged-out state, not an error
+      // to surface.
+      state = const AuthState();
     }
   }
 
   /// Web: begin Sign in with Apple by navigating to the API's redirect endpoint;
   /// Apple sends the browser back to `/app/#session=…`, picked up on reload by
-  /// [_restoreFromWebRedirect]. Native wiring uses `sign_in_with_apple` (TODO).
+  /// [_restore]. Native wiring uses `sign_in_with_apple` (TODO).
   void loginWithApple() => startWebRedirect('$apiBaseUrl/auth/apple/start');
 
   /// Dev flow: request a magic link and immediately verify with the returned
@@ -72,8 +106,12 @@ class AuthController extends StateNotifier<AuthState> {
     );
   }
 
-  void logout() {
-    _api.setSession(null);
+  Future<void> logout() async {
+    try {
+      await _api.logout();
+    } catch (_) {
+      // Best-effort server-side invalidation; clear local state regardless.
+    }
     state = const AuthState();
   }
 }

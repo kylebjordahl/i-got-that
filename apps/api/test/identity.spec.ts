@@ -95,6 +95,50 @@ describe('identity & tenancy', () => {
     expect(members).toHaveLength(2);
   });
 
+  it('defaults generatesFamilyTasks from role: off for caretakers, on for dependents', async () => {
+    const alice = await login('roles-alice@example.com');
+
+    const created = await call('/families', authed(alice.token, { name: 'Roles', relationName: 'mom' }));
+    const { family, member: creator } = (await created.json()) as {
+      family: { id: string };
+      member: { generatesFamilyTasks: boolean };
+    };
+    // The creator is seeded as a caretaker — defaults to not generating tasks.
+    expect(creator.generatesFamilyTasks).toBe(false);
+
+    const dependent = await call(
+      `/families/${family.id}/members`,
+      authed(alice.token, { relationName: 'child', requiresCaretaker: true }),
+    );
+    const { member: dependentMember } = (await dependent.json()) as {
+      member: { generatesFamilyTasks: boolean };
+    };
+    expect(dependentMember.generatesFamilyTasks).toBe(true);
+
+    const caretaker = await call(
+      `/families/${family.id}/members`,
+      authed(alice.token, { relationName: 'dad', isCaretaker: true }),
+    );
+    const { member: caretakerMember } = (await caretaker.json()) as {
+      member: { generatesFamilyTasks: boolean };
+    };
+    expect(caretakerMember.generatesFamilyTasks).toBe(false);
+
+    // An explicit value always wins over the role-based default.
+    const explicit = await call(
+      `/families/${family.id}/members`,
+      authed(alice.token, {
+        relationName: 'grandma',
+        isCaretaker: true,
+        generatesFamilyTasks: true,
+      }),
+    );
+    const { member: explicitMember } = (await explicit.json()) as {
+      member: { generatesFamilyTasks: boolean };
+    };
+    expect(explicitMember.generatesFamilyTasks).toBe(true);
+  });
+
   it('enforces tenant isolation and admin-only member creation', async () => {
     const alice = await login('alice2@example.com');
     const bob = await login('bob@example.com');
