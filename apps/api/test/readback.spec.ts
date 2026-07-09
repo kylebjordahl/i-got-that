@@ -110,10 +110,9 @@ describe('read-back (human events from the target calendar)', () => {
       summary: 'Playdate with Sam',
       externalUid: 'playdate@google.com',
       synthKey: 'ext:playdate@google.com:',
-      generatesTypes: null,
     });
 
-    // Human events get the convertible attendance task.
+    // Human events get a task via the member's unified default (attendance).
     await buildMemberTasks(f.db, f.childId);
     const generated = await f.db
       .select()

@@ -84,6 +84,8 @@ feedRoutes.post('/', requireAdmin, async (c) => {
 
   if (d.kind === 'ics') {
     values.url = d.url ?? null;
+    // Optional display title; blank ⇒ backfilled from X-WR-CALNAME on first sync.
+    values.sourceCalendarName = d.name ?? null;
   } else {
     // Owner-only: only the account's owner may draw its calendars into a feed.
     const account = (
@@ -221,10 +223,7 @@ feedRoutes.post('/:feedId/member-links', requireAdmin, async (c) => {
         weekdayMask: parsed.data.weekdayMask ?? null,
         dayStart: parsed.data.dayStart ?? null,
         dayEnd: parsed.data.dayEnd ?? null,
-        durationMinutes: parsed.data.durationMinutes ?? null,
         location: parsed.data.location ?? null,
-        generatesTypes: parsed.data.generatesTypes ?? null,
-        defaultAttendance: parsed.data.defaultAttendance ?? null,
       })
       .returning()
   )[0]!;
@@ -245,10 +244,10 @@ feedRoutes.get('/:feedId/member-links', async (c) => {
       weekdayMask: familyMemberFeeds.weekdayMask,
       dayStart: familyMemberFeeds.dayStart,
       dayEnd: familyMemberFeeds.dayEnd,
-      durationMinutes: familyMemberFeeds.durationMinutes,
       location: familyMemberFeeds.location,
-      generatesTypes: familyMemberFeeds.generatesTypes,
-      defaultAttendance: familyMemberFeeds.defaultAttendance,
+      defaultTaskType: familyMemberFeeds.defaultTaskType,
+      defaultDropoffWindowMin: familyMemberFeeds.defaultDropoffWindowMin,
+      defaultPickupWindowMin: familyMemberFeeds.defaultPickupWindowMin,
       active: familyMemberFeeds.active,
     })
     .from(familyMemberFeeds)
@@ -301,10 +300,7 @@ feedRoutes.patch('/:feedId/member-links/:linkId', requireAdmin, async (c) => {
   if (d.weekdayMask !== undefined) set.weekdayMask = d.weekdayMask;
   if (d.dayStart !== undefined) set.dayStart = d.dayStart;
   if (d.dayEnd !== undefined) set.dayEnd = d.dayEnd;
-  if (d.durationMinutes !== undefined) set.durationMinutes = d.durationMinutes;
   if (d.location !== undefined) set.location = d.location;
-  if (d.generatesTypes !== undefined) set.generatesTypes = d.generatesTypes;
-  if (d.defaultAttendance !== undefined) set.defaultAttendance = d.defaultAttendance;
   if (d.active !== undefined) set.active = d.active;
   if (Object.keys(set).length > 0) {
     await db.update(familyMemberFeeds).set(set).where(eq(familyMemberFeeds.id, link.id));
@@ -360,12 +356,9 @@ feedRoutes.delete('/:feedId/member-links/:linkId', requireAdmin, async (c) => {
 
 // --- Override rules (the link's event pipeline) ------------------------------
 
-/** Baseline-day outcomes only make sense against an exception feed's baseline. */
-function outcomeAllowed(feedMode: string, outcome: string): boolean {
-  if (outcome === 'cancel_day' || outcome === 'modify_day') {
-    return feedMode === 'exception';
-  }
-  return true;
+/** Override rules only shape an exception feed's baseline; standard feeds pass through. */
+function outcomeAllowed(feedMode: string, _outcome: string): boolean {
+  return feedMode === 'exception';
 }
 
 /** List a link's rules in pipeline order. */
@@ -430,8 +423,6 @@ feedRoutes.post('/:feedId/member-links/:linkId/rules', requireAdmin, async (c) =
         matchValue: d.matchValue ?? null,
         outcome: d.outcome,
         params: (d.params as Record<string, unknown> | undefined) ?? null,
-        generatesTypes: d.generatesTypes ?? null,
-        defaultAttendance: d.defaultAttendance ?? null,
       })
       .returning()
   )[0]!;
@@ -487,8 +478,6 @@ feedRoutes.patch('/:feedId/member-links/:linkId/rules/:ruleId', requireAdmin, as
   if ('matchValue' in d) set.matchValue = d.matchValue ?? null;
   if ('outcome' in d) set.outcome = d.outcome;
   if ('params' in d) set.params = (d.params as Record<string, unknown> | null) ?? null;
-  if ('generatesTypes' in d) set.generatesTypes = d.generatesTypes ?? null;
-  if ('defaultAttendance' in d) set.defaultAttendance = d.defaultAttendance ?? null;
   const updated = (
     await db.update(linkRules).set(set).where(eq(linkRules.id, rule.id)).returning()
   )[0]!;

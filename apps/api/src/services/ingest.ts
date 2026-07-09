@@ -1,5 +1,6 @@
 import { type Db, eq, feeds, sourceEvents } from '@igt/db';
 import {
+  extractCalendarName,
   extractTimezone,
   fetchCalDavOccurrences,
   fetchGoogleOccurrences,
@@ -121,6 +122,9 @@ async function ingestIcsFeed(
       lastSyncedAt: new Date(),
       etag: etag ?? feed.etag,
       timezone: extractTimezone(text) ?? feed.timezone,
+      // Backfill the display title from the feed's own X-WR-CALNAME when the
+      // user didn't supply one on creation.
+      sourceCalendarName: feed.sourceCalendarName ?? extractCalendarName(text),
       status: 'active',
     })
     .where(eq(feeds.id, feed.id));

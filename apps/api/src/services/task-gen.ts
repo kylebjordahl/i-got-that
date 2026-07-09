@@ -3,16 +3,23 @@ import {
   calendarEvents,
   type Db,
   eq,
+  familyMemberFeeds,
   familyMembers,
   inArray,
   isNull,
   ne,
   or,
   sql,
+  taskRules,
   tasks,
 } from '@igt/db';
-import { generateTaskIntents, type TaskIntent } from '@igt/classification';
-import type { TaskType } from '@igt/domain';
+import {
+  generateTaskIntents,
+  resolveTaskResult,
+  type TaskDefault,
+  type TaskIntent,
+  type TaskRuleLike,
+} from '@igt/classification';
 
 type CalendarEventRow = typeof calendarEvents.$inferSelect;
 type TaskRow = typeof tasks.$inferSelect;
@@ -23,68 +30,90 @@ export interface TaskGenResult {
   tasksRemoved: number;
 }
 
-/** The canonical time anchor for a task type on an event (used for healing). */
-function anchorFor(event: CalendarEventRow, type: TaskType): TaskIntent {
-  if (type === 'dropoff') {
-    return {
-      type,
-      attendanceRequirement: null,
-      dtstart: event.dtstart,
-      dtend: null,
-      location: event.location,
-    };
-  }
-  if (type === 'pickup') {
-    return {
-      type,
-      attendanceRequirement: null,
-      dtstart: event.dtend ?? event.dtstart,
-      dtend: null,
-      location: event.location,
-    };
-  }
+function toTaskRuleLike(r: typeof taskRules.$inferSelect): TaskRuleLike {
   return {
-    type,
-    attendanceRequirement: null,
-    dtstart: event.dtstart,
-    dtend: event.dtend,
-    location: event.location,
+    id: r.id,
+    position: r.position,
+    scope: r.scope,
+    linkId: r.linkId,
+    matchField: r.matchField,
+    matchOp: r.matchOp,
+    matchValue: r.matchValue,
+    resultType: r.resultType,
+    dropoffWindowMin: r.dropoffWindowMin,
+    pickupWindowMin: r.pickupWindowMin,
   };
 }
 
-async function healTask(db: Db, task: TaskRow, intent: TaskIntent): Promise<void> {
+/** Heal an existing task's anchor/location if the event moved; keep its window. */
+async function healTask(
+  db: Db,
+  task: TaskRow,
+  dtstart: Date,
+  location: string | null,
+): Promise<void> {
   if (
-    task.dtstart.getTime() === intent.dtstart.getTime() &&
-    (task.dtend?.getTime() ?? null) === (intent.dtend?.getTime() ?? null) &&
-    (task.location ?? null) === (intent.location ?? null)
+    task.dtstart.getTime() === dtstart.getTime() &&
+    (task.location ?? null) === (location ?? null)
   ) {
     return;
   }
-  await db
-    .update(tasks)
-    .set({ dtstart: intent.dtstart, dtend: intent.dtend, location: intent.location })
-    .where(eq(tasks.id, task.id));
+  await db.update(tasks).set({ dtstart, location }).where(eq(tasks.id, task.id));
+}
+
+/** The start anchor a given task type takes on an event (for manual healing). */
+function anchorStart(event: CalendarEventRow, type: string): Date {
+  return type === 'pickup' ? (event.dtend ?? event.dtstart) : event.dtstart;
 }
 
 /**
  * Module B — task generation. Reads a member's unified-calendar events (never
- * `claimed_task` ones — the recursion guard lives in the engine) and reconciles
- * the claimable tasks each event spawns, keyed by (calendarEventId, type).
+ * `claimed_task` ones — the recursion guard) and reconciles the claimable tasks
+ * each event spawns, keyed by (calendarEventId, type). Task TYPE is resolved at
+ * build time from the member's task-rule pipeline (keyed by the event's source
+ * calendar, `linkId`; null ⇒ the member's own unified/direct calendar), falling
+ * through to that calendar's default.
  *
- * Preservation rules (carried over from the pre-rework builder):
- *  - Once a user has converted an event's tasks (`createdVia: 'manual'`), the
- *    builder never reclassifies — it only heals times/location so a moved event
- *    moves its tasks.
- *  - Owned tasks are never deleted by reconciliation; only unowned tasks are
- *    removed when no longer desired.
- *  - Unowned tasks whose event vanished entirely are swept; owned ones survive
- *    (surfaced as stale rather than silently dropped).
+ * Preservation rules:
+ *  - User-converted tasks (`createdVia: 'manual'`) freeze the type set — the
+ *    builder only heals their anchor/location, never reclassifies.
+ *  - Owned tasks are never deleted by reconciliation; only unowned ones are.
+ *  - Unowned tasks whose event vanished are swept; owned ones survive.
  */
 export async function buildMemberTasks(
   db: Db,
   familyMemberId: string,
 ): Promise<TaskGenResult> {
   const result: TaskGenResult = { familyMemberId, tasksCreated: 0, tasksRemoved: 0 };
+
+  const member = (
+    await db.select().from(familyMembers).where(eq(familyMembers.id, familyMemberId)).limit(1)
+  )[0];
+  if (!member) return result;
+
+  // The member's task-rule pipeline + per-calendar defaults, loaded once.
+  const rules = (
+    await db.select().from(taskRules).where(eq(taskRules.familyMemberId, familyMemberId))
+  ).map(toTaskRuleLike);
+  const links = await db
+    .select()
+    .from(familyMemberFeeds)
+    .where(eq(familyMemberFeeds.familyMemberId, familyMemberId));
+  const linkDefault = new Map<string, TaskDefault>(
+    links.map((l) => [
+      l.id,
+      {
+        resultType: l.defaultTaskType,
+        dropoffWindowMin: l.defaultDropoffWindowMin,
+        pickupWindowMin: l.defaultPickupWindowMin,
+      },
+    ]),
+  );
+  const unifiedDefault: TaskDefault = {
+    resultType: member.unifiedDefaultTaskType,
+    dropoffWindowMin: member.unifiedDropoffWindowMin,
+    pickupWindowMin: member.unifiedPickupWindowMin,
+  };
 
   const dirty = await db
     .select()
@@ -101,14 +130,22 @@ export async function buildMemberTasks(
     );
 
   for (const event of dirty) {
-    const intents = generateTaskIntents({
-      provenance: event.provenance,
-      generatesTypes: (event.generatesTypes as TaskType[] | null) ?? null,
-      defaultAttendance: event.defaultAttendance ?? null,
-      dtstart: event.dtstart,
-      dtend: event.dtend,
-      location: event.location,
-    });
+    const fallback =
+      (event.linkId && linkDefault.get(event.linkId)) || unifiedDefault;
+    const resolution = resolveTaskResult(
+      {
+        summary: event.summary,
+        location: event.location,
+        description: event.description,
+        allDay: event.allDay,
+        dtstart: event.dtstart,
+        dtend: event.dtend,
+      },
+      rules,
+      event.linkId ?? null,
+      fallback,
+    );
+    const intents = generateTaskIntents(event, resolution);
 
     const existing = await db
       .select()
@@ -119,7 +156,7 @@ export async function buildMemberTasks(
     const manual = existing.filter((t) => t.createdVia === 'manual');
     if (manual.length > 0) {
       for (const t of manual) {
-        await healTask(db, t, anchorFor(event, t.type));
+        await healTask(db, t, anchorStart(event, t.type), event.location);
       }
     } else {
       const desiredByType = new Map(intents.map((i) => [i.type, i]));
@@ -133,7 +170,7 @@ export async function buildMemberTasks(
       for (const intent of intents) {
         const prior = existingByType.get(intent.type);
         if (prior) {
-          await healTask(db, prior, intent);
+          await healTask(db, prior, intent.dtstart, intent.location);
         } else {
           await db.insert(tasks).values({
             familyId: event.familyId,
@@ -185,6 +222,27 @@ export async function buildMemberTasks(
   }
 
   return result;
+}
+
+/**
+ * Rebuild a member's tasks after a task-rule/default change. Task rules don't
+ * touch event content hashes, so force reconsideration by clearing every
+ * (non-claimed) event's `tasksBuiltHash` first, then run task-gen.
+ */
+export async function rebuildMemberTasks(
+  db: Db,
+  familyMemberId: string,
+): Promise<TaskGenResult> {
+  await db
+    .update(calendarEvents)
+    .set({ tasksBuiltHash: null })
+    .where(
+      and(
+        eq(calendarEvents.familyMemberId, familyMemberId),
+        ne(calendarEvents.provenance, 'claimed_task'),
+      ),
+    );
+  return buildMemberTasks(db, familyMemberId);
 }
 
 /**

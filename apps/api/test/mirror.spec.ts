@@ -86,9 +86,6 @@ async function insertEvent(
     summary: values.summary ?? 'School day',
     location: values.location ?? null,
     description: null,
-    annotation: values.annotation ?? null,
-    generatesTypes: (values.generatesTypes as string[] | null | undefined) ?? null,
-    defaultAttendance: null,
   };
   return (
     await db
@@ -123,7 +120,7 @@ describe('mirror reconcile (syncMemberMirror)', () => {
 
     const event = await insertEvent(db, fam.familyId, fam.childId, {
       synthKey: 'bl:l1:2026-07-06',
-      annotation: 'Photo Day',
+      summary: 'School day',
     });
     // Human events already live on the target — never mirrored back out.
     await insertEvent(db, fam.familyId, fam.childId, {
@@ -140,7 +137,7 @@ describe('mirror reconcile (syncMemberMirror)', () => {
     expect(r1.created).toBe(1);
     expect(fake.upserts).toHaveLength(1);
     expect(fake.upserts[0]!.event.uid).toBe(`igt-${event.id}`);
-    expect(fake.upserts[0]!.event.summary).toBe('School day · Photo Day');
+    expect(fake.upserts[0]!.event.summary).toBe('School day');
     expect(fake.upserts[0]!.event.alertMinutes).toEqual([30, 10]);
     expect(fake.upserts[0]!.target.addressOrUrl).toBe(
       'https://caldav.icloud.com/123/calendars/kid/',

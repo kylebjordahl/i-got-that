@@ -29,9 +29,6 @@ CREATE TABLE `calendar_events` (
 	`summary` text,
 	`location` text,
 	`description` text,
-	`annotation` text,
-	`generates_types` text,
-	`default_attendance` text,
 	`content_hash` text NOT NULL,
 	`tasks_built_hash` text,
 	`created_at` integer NOT NULL,
@@ -93,10 +90,10 @@ CREATE TABLE `family_member_feeds` (
 	`weekday_mask` integer,
 	`day_start` text,
 	`day_end` text,
-	`duration_minutes` integer,
 	`location` text,
-	`generates_types` text,
-	`default_attendance` text,
+	`default_task_type` text DEFAULT 'transition' NOT NULL,
+	`default_dropoff_window_min` integer DEFAULT 15 NOT NULL,
+	`default_pickup_window_min` integer DEFAULT 15 NOT NULL,
 	`active` integer DEFAULT true NOT NULL,
 	`created_at` integer NOT NULL,
 	FOREIGN KEY (`family_id`) REFERENCES `families`(`id`) ON UPDATE no action ON DELETE cascade,
@@ -115,6 +112,9 @@ CREATE TABLE `family_members` (
 	`is_admin` integer DEFAULT false NOT NULL,
 	`requires_caretaker` integer DEFAULT false NOT NULL,
 	`color` text,
+	`unified_default_task_type` text DEFAULT 'attendance' NOT NULL,
+	`unified_dropoff_window_min` integer DEFAULT 15 NOT NULL,
+	`unified_pickup_window_min` integer DEFAULT 15 NOT NULL,
 	`created_at` integer NOT NULL,
 	FOREIGN KEY (`family_id`) REFERENCES `families`(`id`) ON UPDATE no action ON DELETE cascade,
 	FOREIGN KEY (`user_id`) REFERENCES `users`(`id`) ON UPDATE no action ON DELETE set null
@@ -184,8 +184,6 @@ CREATE TABLE `link_rules` (
 	`match_value` text,
 	`outcome` text NOT NULL,
 	`params` text,
-	`generates_types` text,
-	`default_attendance` text,
 	`created_at` integer NOT NULL,
 	FOREIGN KEY (`family_id`) REFERENCES `families`(`id`) ON UPDATE no action ON DELETE cascade,
 	FOREIGN KEY (`link_id`) REFERENCES `family_member_feeds`(`id`) ON UPDATE no action ON DELETE cascade
@@ -281,6 +279,27 @@ CREATE TABLE `source_events` (
 --> statement-breakpoint
 CREATE UNIQUE INDEX `source_events_occurrence_uq` ON `source_events` (`feed_id`,`ical_uid`,`recurrence_id`);--> statement-breakpoint
 CREATE INDEX `source_events_feed_idx` ON `source_events` (`feed_id`);--> statement-breakpoint
+CREATE TABLE `task_rules` (
+	`id` text PRIMARY KEY NOT NULL,
+	`family_id` text NOT NULL,
+	`family_member_id` text NOT NULL,
+	`link_id` text,
+	`scope` text DEFAULT 'this_calendar' NOT NULL,
+	`position` integer NOT NULL,
+	`match_field` text NOT NULL,
+	`match_op` text NOT NULL,
+	`match_value` text,
+	`result_type` text NOT NULL,
+	`dropoff_window_min` integer,
+	`pickup_window_min` integer,
+	`created_at` integer NOT NULL,
+	FOREIGN KEY (`family_id`) REFERENCES `families`(`id`) ON UPDATE no action ON DELETE cascade,
+	FOREIGN KEY (`family_member_id`) REFERENCES `family_members`(`id`) ON UPDATE no action ON DELETE cascade,
+	FOREIGN KEY (`link_id`) REFERENCES `family_member_feeds`(`id`) ON UPDATE no action ON DELETE cascade
+);
+--> statement-breakpoint
+CREATE INDEX `task_rules_member_position_idx` ON `task_rules` (`family_member_id`,`position`);--> statement-breakpoint
+CREATE INDEX `task_rules_family_idx` ON `task_rules` (`family_id`);--> statement-breakpoint
 CREATE TABLE `tasks` (
 	`id` text PRIMARY KEY NOT NULL,
 	`family_id` text NOT NULL,

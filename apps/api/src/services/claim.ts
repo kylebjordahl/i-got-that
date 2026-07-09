@@ -52,9 +52,6 @@ export async function upsertClaimEvent(db: Db, task: TaskRow): Promise<void> {
     summary,
     location: task.location,
     description: null,
-    annotation: null,
-    generatesTypes: null,
-    defaultAttendance: null,
   };
   const contentHash = hashCalendarEvent(payload);
 

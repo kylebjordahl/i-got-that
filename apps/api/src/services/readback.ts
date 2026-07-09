@@ -126,9 +126,6 @@ export async function readBackMember(
       summary: occ.summary,
       location: occ.location,
       description: null,
-      annotation: null,
-      generatesTypes: null,
-      defaultAttendance: null,
     };
     const contentHash = hashCalendarEvent(payload);
     const prior = existingByKey.get(synthKey);

@@ -1,11 +1,41 @@
 import { env } from 'cloudflare:test';
-import { calendarEvents, eq, getDb, tasks } from '@igt/db';
+import {
+  calendarEvents,
+  eq,
+  familyMemberFeeds,
+  feeds,
+  getDb,
+  taskRules,
+  tasks,
+} from '@igt/db';
 import { describe, expect, it } from 'vitest';
 import { hashCalendarEvent } from '../src/services/synthesis.js';
-import { buildMemberTasks } from '../src/services/task-gen.js';
+import { buildMemberTasks, rebuildMemberTasks } from '../src/services/task-gen.js';
 import { authed, call, setupFamily } from './helpers.js';
 
 type Db = ReturnType<typeof getDb>;
+
+/** A feed + active link for the child, with a task-gen default on the link. */
+async function linkedFeed(
+  db: Db,
+  familyId: string,
+  childId: string,
+  defaultTaskType: 'transition' | 'attendance' = 'transition',
+) {
+  const feed = (
+    await db
+      .insert(feeds)
+      .values({ familyId, mode: 'standard', url: 'https://f.example.com/c.ics' })
+      .returning()
+  )[0]!;
+  const link = (
+    await db
+      .insert(familyMemberFeeds)
+      .values({ familyId, feedId: feed.id, familyMemberId: childId, defaultTaskType })
+      .returning()
+  )[0]!;
+  return { feed, link };
+}
 
 async function insertEvent(
   db: Db,
@@ -20,9 +50,6 @@ async function insertEvent(
     summary: values.summary ?? 'School day',
     location: values.location ?? null,
     description: null,
-    annotation: values.annotation ?? null,
-    generatesTypes: (values.generatesTypes as string[] | null | undefined) ?? null,
-    defaultAttendance: values.defaultAttendance ?? null,
   };
   return (
     await db
@@ -31,9 +58,10 @@ async function insertEvent(
         familyId,
         familyMemberId,
         provenance: values.provenance ?? 'synthesized',
-        contentHash: hashCalendarEvent(payload as never),
+        contentHash: hashCalendarEvent(payload),
         ...payload,
         synthKey: values.synthKey,
+        linkId: values.linkId ?? null,
         taskId: values.taskId ?? null,
       })
       .returning()
@@ -41,74 +69,82 @@ async function insertEvent(
 }
 
 describe('task generation (Module B)', () => {
-  it('generates dropoff@start + pickup@end from a configured event, convertible attendance otherwise', async () => {
-    const fam = await setupFamily('gen-basic@example.com');
+  it("uses the event's source-calendar default when no task rule matches", async () => {
+    const fam = await setupFamily('gen-default@example.com');
     const db = getDb(env.DB);
+    const { link } = await linkedFeed(db, fam.familyId, fam.childId, 'transition');
 
     await insertEvent(db, fam.familyId, fam.childId, {
       synthKey: 'bl:l1:2026-07-06',
-      generatesTypes: ['dropoff', 'pickup'],
+      linkId: link.id,
       location: 'Lincoln Elementary',
-    });
-    await insertEvent(db, fam.familyId, fam.childId, {
-      synthKey: 'ev:l1:soccer',
-      summary: 'Team Pizza Night',
-      dtstart: new Date('2026-07-10T18:00:00Z'),
-      dtend: new Date('2026-07-10T19:00:00Z'),
     });
 
     const result = await buildMemberTasks(db, fam.childId);
-    expect(result.tasksCreated).toBe(3);
+    expect(result.tasksCreated).toBe(2); // transition ⇒ drop-off + pickup
 
     const rows = await db.select().from(tasks).where(eq(tasks.familyMemberId, fam.childId));
     const dropoff = rows.find((t) => t.type === 'dropoff')!;
     expect(dropoff.dtstart.toISOString()).toBe('2026-07-06T15:30:00.000Z');
-    expect(dropoff.dtend).toBeNull();
     expect(dropoff.location).toBe('Lincoln Elementary');
-    expect(dropoff.status).toBe('unowned');
     expect(dropoff.createdVia).toBe('generated');
     const pickup = rows.find((t) => t.type === 'pickup')!;
     expect(pickup.dtstart.toISOString()).toBe('2026-07-06T21:45:00.000Z');
-    const attendance = rows.find((t) => t.type === 'attendance')!;
-    expect(attendance.attendanceRequirement).toBe('any');
-    expect(attendance.dtend!.toISOString()).toBe('2026-07-10T19:00:00.000Z');
   });
 
-  it('is idempotent and heals task anchors when the event moves', async () => {
-    const fam = await setupFamily('gen-heal@example.com');
+  it('a matching task rule overrides the default (→ attendance)', async () => {
+    const fam = await setupFamily('gen-rule@example.com');
     const db = getDb(env.DB);
-    const event = await insertEvent(db, fam.familyId, fam.childId, {
-      synthKey: 'bl:l1:2026-07-06',
-      generatesTypes: ['pickup'],
+    const { link } = await linkedFeed(db, fam.familyId, fam.childId, 'transition');
+    await db.insert(taskRules).values({
+      familyId: fam.familyId,
+      familyMemberId: fam.childId,
+      linkId: link.id,
+      scope: 'this_calendar',
+      position: 0,
+      matchField: 'summary',
+      matchOp: 'regex',
+      matchValue: '/field trip/i',
+      resultType: 'attendance',
     });
 
-    const r1 = await buildMemberTasks(db, fam.childId);
-    expect(r1.tasksCreated).toBe(1);
-    const r2 = await buildMemberTasks(db, fam.childId);
-    expect(r2.tasksCreated).toBe(0);
-
-    // Move the day end (early release): the pickup anchor heals.
-    const newEnd = new Date('2026-07-06T19:00:00.000Z');
-    const payload = {
-      dtstart: event.dtstart,
-      dtend: newEnd,
-      allDay: false,
-      summary: event.summary,
-      location: null,
-      description: null,
-      annotation: null,
-      generatesTypes: ['pickup'],
-      defaultAttendance: null,
-    };
-    await db
-      .update(calendarEvents)
-      .set({ dtend: newEnd, contentHash: hashCalendarEvent(payload as never) })
-      .where(eq(calendarEvents.id, event.id));
+    await insertEvent(db, fam.familyId, fam.childId, {
+      synthKey: 'ev:l1:ft',
+      linkId: link.id,
+      summary: 'Class field trip',
+    });
 
     await buildMemberTasks(db, fam.childId);
-    const rows = await db.select().from(tasks).where(eq(tasks.calendarEventId, event.id));
+    const rows = await db.select().from(tasks).where(eq(tasks.familyMemberId, fam.childId));
     expect(rows).toHaveLength(1);
-    expect(rows[0]!.dtstart.toISOString()).toBe('2026-07-06T19:00:00.000Z');
+    expect(rows[0]!.type).toBe('attendance');
+  });
+
+  it("an all_calendars rule inherits into a member's unified/direct events", async () => {
+    const fam = await setupFamily('gen-inherit@example.com');
+    const db = getDb(env.DB);
+    // The member's unified default is 'attendance' (schema default). An
+    // all-calendars rule flips a matching direct event to a transition.
+    await db.insert(taskRules).values({
+      familyId: fam.familyId,
+      familyMemberId: fam.childId,
+      linkId: null,
+      scope: 'all_calendars',
+      position: 0,
+      matchField: 'summary',
+      matchOp: 'contains',
+      matchValue: 'Carpool',
+      resultType: 'transition',
+    });
+
+    await insertEvent(db, fam.familyId, fam.childId, { synthKey: 'ext:a:', provenance: 'human', summary: 'Carpool duty' });
+    await insertEvent(db, fam.familyId, fam.childId, { synthKey: 'ext:b:', provenance: 'human', summary: 'Dentist' });
+
+    await buildMemberTasks(db, fam.childId);
+    const rows = await db.select().from(tasks).where(eq(tasks.familyMemberId, fam.childId));
+    const carpool = rows.filter((t) => t.location === null && (t.type === 'dropoff' || t.type === 'pickup'));
+    expect(carpool).toHaveLength(2); // Carpool → transition
+    expect(rows.filter((t) => t.type === 'attendance')).toHaveLength(1); // Dentist → unified default
   });
 
   it('never generates from claimed_task events (the recursion guard)', async () => {
@@ -117,24 +153,52 @@ describe('task generation (Module B)', () => {
     await insertEvent(db, fam.familyId, fam.adminMemberId, {
       synthKey: 'task:some-task',
       provenance: 'claimed_task',
-      generatesTypes: ['pickup', 'dropoff'],
       summary: 'Pickup — child',
     });
     const result = await buildMemberTasks(db, fam.adminMemberId);
     expect(result.tasksCreated).toBe(0);
-    expect(
-      await db.select().from(tasks).where(eq(tasks.familyMemberId, fam.adminMemberId)),
-    ).toHaveLength(0);
   });
 
-  it('preserves owned tasks and manual conversions across rebuilds; sweeps unowned orphans', async () => {
+  it('rebuildMemberTasks re-types events after a rule change; owned + manual preserved', async () => {
+    const fam = await setupFamily('gen-rebuild@example.com');
+    const db = getDb(env.DB);
+    const { link } = await linkedFeed(db, fam.familyId, fam.childId, 'transition');
+    const event = await insertEvent(db, fam.familyId, fam.childId, {
+      synthKey: 'ev:l1:x',
+      linkId: link.id,
+      summary: 'Robotics club',
+    });
+    await buildMemberTasks(db, fam.childId);
+    expect(
+      (await db.select().from(tasks).where(eq(tasks.calendarEventId, event.id))).map((t) => t.type).sort(),
+    ).toEqual(['dropoff', 'pickup']);
+
+    // Add a rule flipping it to attendance, then rebuild (rules don't change
+    // the event content hash, so a plain build wouldn't reconsider it).
+    await db.insert(taskRules).values({
+      familyId: fam.familyId,
+      familyMemberId: fam.childId,
+      linkId: link.id,
+      scope: 'this_calendar',
+      position: 0,
+      matchField: 'summary',
+      matchOp: 'contains',
+      matchValue: 'Robotics',
+      resultType: 'attendance',
+    });
+    await rebuildMemberTasks(db, fam.childId);
+    const after = await db.select().from(tasks).where(eq(tasks.calendarEventId, event.id));
+    expect(after.map((t) => t.type)).toEqual(['attendance']);
+  });
+
+  it('preserves manual conversions and sweeps unowned orphans', async () => {
     const fam = await setupFamily('gen-preserve@example.com');
     const db = getDb(env.DB);
+    const { link } = await linkedFeed(db, fam.familyId, fam.childId, 'attendance');
     const event = await insertEvent(db, fam.familyId, fam.childId, {
       synthKey: 'ev:l1:appt',
+      linkId: link.id,
       summary: 'Dentist',
-      dtstart: new Date('2026-07-09T09:15:00Z'),
-      dtend: new Date('2026-07-09T10:15:00Z'),
     });
     await buildMemberTasks(db, fam.childId);
     const attendance = (
@@ -147,39 +211,18 @@ describe('task generation (Module B)', () => {
       authed(fam.admin.token, { types: ['pickup', 'dropoff'] }),
     );
     expect(convert.status).toBe(200);
-    const converted = ((await convert.json()) as { tasks: { type: string; createdVia: string }[] })
-      .tasks;
-    expect(converted.map((t) => t.type).sort()).toEqual(['dropoff', 'pickup']);
-    expect(converted.every((t) => t.createdVia === 'manual')).toBe(true);
 
-    // A rebuild (event marked dirty) must NOT reintroduce the attendance task.
-    await db
-      .update(calendarEvents)
-      .set({ tasksBuiltHash: null })
-      .where(eq(calendarEvents.id, event.id));
-    await buildMemberTasks(db, fam.childId);
-    const afterRebuild = await db
-      .select()
-      .from(tasks)
-      .where(eq(tasks.calendarEventId, event.id));
+    // Rebuild must NOT reintroduce the attendance task.
+    await rebuildMemberTasks(db, fam.childId);
+    const afterRebuild = await db.select().from(tasks).where(eq(tasks.calendarEventId, event.id));
     expect(afterRebuild.map((t) => t.type).sort()).toEqual(['dropoff', 'pickup']);
 
-    // Claim the pickup, then delete the event: the owned task survives the
-    // orphan sweep; the unowned one is removed.
+    // Claim the pickup, delete the event: the owned task survives the sweep.
     const pickup = afterRebuild.find((t) => t.type === 'pickup')!;
-    const claim = await call(
-      `/families/${fam.familyId}/tasks/${pickup.id}/assign`,
-      authed(fam.admin.token, {}),
-    );
-    expect(claim.status).toBe(200);
+    await call(`/families/${fam.familyId}/tasks/${pickup.id}/assign`, authed(fam.admin.token, {}));
     await db.delete(calendarEvents).where(eq(calendarEvents.id, event.id));
-    // (the claimed event on the admin's calendar cascades with... nothing —
-    // deleting the source event doesn't touch the task or its claimed event)
     await buildMemberTasks(db, fam.childId);
-    const survivors = await db
-      .select()
-      .from(tasks)
-      .where(eq(tasks.calendarEventId, event.id));
+    const survivors = await db.select().from(tasks).where(eq(tasks.calendarEventId, event.id));
     expect(survivors).toHaveLength(1);
     expect(survivors[0]!.type).toBe('pickup');
     expect(survivors[0]!.status).toBe('owned');

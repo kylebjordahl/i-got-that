@@ -17,6 +17,7 @@ import { createMemberClaimInvite } from '../services/invites.js';
 import { feedRoutes } from './feeds.js';
 import { memberCalendarRoutes } from './member-calendars.js';
 import { taskRoutes } from './tasks.js';
+import { taskRuleRoutes } from './task-rules.js';
 
 export const familyRoutes = new Hono<HonoEnv>();
 
@@ -31,6 +32,9 @@ familyRoutes.route('/:familyId', taskRoutes);
 
 // Per-member unified-calendar targets under /families/:familyId/members/...
 familyRoutes.route('/:familyId', memberCalendarRoutes);
+
+// Per-member task-rule pipeline under /families/:familyId/members/:memberId/task-rules.
+familyRoutes.route('/:familyId', taskRuleRoutes);
 
 /**
  * Create a family and seed the creator as an admin caretaker. (Prototype:

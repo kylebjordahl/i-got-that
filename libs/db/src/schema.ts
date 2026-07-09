@@ -23,6 +23,8 @@ import {
   OverrideOutcome,
   PendingDecisionStatus,
   TaskCreatedVia,
+  TaskResultType,
+  TaskRuleScope,
   TaskStatus,
   TaskType,
 } from '@igt/domain';
@@ -115,6 +117,19 @@ export const familyMembers = sqliteTable(
       .default(false),
     /** Persistent per-person accent color (hex `#RRGGBB`). Null ⇒ derived client-side. */
     color: text('color'),
+    // The task-rule terminal default for this member's own unified/direct
+    // calendar (events added by hand, not synthesized from a feed).
+    unifiedDefaultTaskType: text('unified_default_task_type', {
+      enum: TaskResultType.options,
+    })
+      .notNull()
+      .default('attendance'),
+    unifiedDropoffWindowMin: integer('unified_dropoff_window_min')
+      .notNull()
+      .default(15),
+    unifiedPickupWindowMin: integer('unified_pickup_window_min')
+      .notNull()
+      .default(15),
     createdAt: createdAt(),
   },
   (t) => ({
@@ -197,9 +212,10 @@ export const feeds = sqliteTable(
 /**
  * The always-present link between a feed and the member(s) whose unified
  * calendar it feeds (one feed → many members). For `exception` feeds it also
- * carries that member's baseline schedule; for `standard` feeds the baseline
- * columns are unused. `generatesTypes`/`defaultAttendance` are the
- * task-generation config stamped onto events this link synthesizes.
+ * carries that member's baseline schedule (weekday mask + day start/end +
+ * default location). Task typing is NOT here — it lives in the per-calendar
+ * task-rule pipeline (`taskRules` + the `default*` columns below are this
+ * calendar's terminal default).
  */
 export const familyMemberFeeds = sqliteTable(
   'family_member_feeds',
@@ -217,18 +233,21 @@ export const familyMemberFeeds = sqliteTable(
     weekdayMask: integer('weekday_mask'),
     dayStart: text('day_start'),
     dayEnd: text('day_end'),
-    // Block length (minutes) for generated baseline events. Null ⇒ a point in
-    // time (the delivery layer falls back to a 1h block).
-    durationMinutes: integer('duration_minutes'),
     // Location stamped on generated baseline events (e.g. the school). Null ⇒ none.
     location: text('location'),
-    // JSON array of TaskType, e.g. ["pickup","dropoff"].
-    generatesTypes: text('generates_types', { mode: 'json' }).$type<
-      string[]
-    >(),
-    defaultAttendance: text('default_attendance', {
-      enum: AttendanceRequirement.options,
-    }),
+    // This calendar's task-rule terminal default (what an unmatched event
+    // generates): 'transition' | 'attendance', with drop-off/pickup windows.
+    defaultTaskType: text('default_task_type', {
+      enum: TaskResultType.options,
+    })
+      .notNull()
+      .default('transition'),
+    defaultDropoffWindowMin: integer('default_dropoff_window_min')
+      .notNull()
+      .default(15),
+    defaultPickupWindowMin: integer('default_pickup_window_min')
+      .notNull()
+      .default(15),
     active: integer('active', { mode: 'boolean' }).notNull().default(true),
     createdAt: createdAt(),
   },
@@ -282,14 +301,14 @@ export const sourceEvents = sqliteTable(
   }),
 );
 
-// --- Override pipeline (per feed↔member link) -----------------------------
+// --- Override pipeline (per feed↔member link; schedule only) --------------
 
 /**
- * One rule in a link's override pipeline. Rules run in `position` order over
- * each incoming feed event; the first match wins and its `outcome` decides how
- * the event shapes the member's unified calendar (cancel/modify the covered
- * baseline day, annotate, or set/patch the synthesized event). `params` is the
- * outcome-specific payload validated by the domain schemas.
+ * One rule in a feed link's override pipeline. Rules run in `position` order
+ * over each incoming exception-feed event; the first match wins and its
+ * `outcome` shapes the covered baseline day's SCHEDULE only —
+ * `cancel_day` / `modify_day` / `ignore`. Task typing lives in `taskRules`.
+ * `params` (modify_day's new hours) is validated by the domain schemas.
  */
 export const linkRules = sqliteTable(
   'link_rules',
@@ -310,11 +329,6 @@ export const linkRules = sqliteTable(
     matchValue: text('match_value'),
     outcome: text('outcome', { enum: OverrideOutcome.options }).notNull(),
     params: text('params', { mode: 'json' }).$type<Record<string, unknown>>(),
-    // Task-gen config stamped on the synthesized event, e.g. ["pickup","dropoff"].
-    generatesTypes: text('generates_types', { mode: 'json' }).$type<string[]>(),
-    defaultAttendance: text('default_attendance', {
-      enum: AttendanceRequirement.options,
-    }),
     createdAt: createdAt(),
   },
   (t) => ({
@@ -323,6 +337,56 @@ export const linkRules = sqliteTable(
       t.position,
     ),
     familyIdx: index('link_rules_family_idx').on(t.familyId),
+  }),
+);
+
+// --- Task rules (per member; typing pipeline across their calendars) ------
+
+/**
+ * One rule in a member's task-generation pipeline. Decides whether a matched
+ * event generates a `transition` (drop-off + pickup) or an `attendance` task.
+ * `scope` = `this_calendar` (only the calendar named by `linkId`; null linkId =
+ * the member's own unified/direct calendar) or `all_calendars` (every calendar
+ * of the member). Rules share one `position` order per member; when a calendar
+ * is evaluated, its applicable subset (all_calendars ∪ this-calendar-for-it) is
+ * run in that order, first match wins, then the calendar's default.
+ */
+export const taskRules = sqliteTable(
+  'task_rules',
+  {
+    id: id(),
+    familyId: text('family_id')
+      .notNull()
+      .references(() => families.id, { onDelete: 'cascade' }),
+    familyMemberId: text('family_member_id')
+      .notNull()
+      .references(() => familyMembers.id, { onDelete: 'cascade' }),
+    // The source calendar this rule lives on; null = the unified/direct calendar.
+    // Ignored when scope = all_calendars.
+    linkId: text('link_id').references(() => familyMemberFeeds.id, {
+      onDelete: 'cascade',
+    }),
+    scope: text('scope', { enum: TaskRuleScope.options })
+      .notNull()
+      .default('this_calendar'),
+    position: integer('position').notNull(),
+    matchField: text('match_field', {
+      enum: OverrideMatchField.options,
+    }).notNull(),
+    matchOp: text('match_op', { enum: OverrideMatchOp.options }).notNull(),
+    matchValue: text('match_value'),
+    resultType: text('result_type', { enum: TaskResultType.options }).notNull(),
+    // Only meaningful when resultType = transition.
+    dropoffWindowMin: integer('dropoff_window_min'),
+    pickupWindowMin: integer('pickup_window_min'),
+    createdAt: createdAt(),
+  },
+  (t) => ({
+    memberPositionIdx: index('task_rules_member_position_idx').on(
+      t.familyMemberId,
+      t.position,
+    ),
+    familyIdx: index('task_rules_family_idx').on(t.familyId),
   }),
 );
 
@@ -489,14 +553,9 @@ export const calendarEvents = sqliteTable(
     summary: text('summary'),
     location: text('location'),
     description: text('description'),
-    // Note stamped by an `annotate` override rule (e.g. "Photo Day").
-    annotation: text('annotation'),
-    // Task-generation metadata stamped by synthesis. Null generatesTypes ⇒ the
-    // default behavior downstream (a single convertible attendance task).
-    generatesTypes: text('generates_types', { mode: 'json' }).$type<string[]>(),
-    defaultAttendance: text('default_attendance', {
-      enum: AttendanceRequirement.options,
-    }),
+    // Task typing is NOT stamped here — task-gen resolves it at build time from
+    // the member's task-rule pipeline, keyed by this event's `linkId` (the
+    // source calendar; null ⇒ the member's own unified/direct calendar).
     // Skip no-op rewrites on resynthesis (same pattern as source_events).
     contentHash: text('content_hash').notNull(),
     // The content_hash task-gen last consumed; reprocess iff != contentHash.
@@ -682,6 +741,7 @@ export const schema = {
   familyMemberFeeds,
   sourceEvents,
   linkRules,
+  taskRules,
   pendingDecisions,
   tasks,
   calendarEvents,

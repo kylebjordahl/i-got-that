@@ -131,6 +131,21 @@ export function extractTimezone(icsText: string): string | null {
 }
 
 /**
+ * The calendar's own display name from X-WR-CALNAME (Google/Apple exports set
+ * it). Used to backfill an ICS feed's title when the user didn't supply one.
+ * Null if absent/unparseable.
+ */
+export function extractCalendarName(icsText: string): string | null {
+  try {
+    const root = new ICAL.Component(ICAL.parse(icsText));
+    const name = root.getFirstPropertyValue('x-wr-calname');
+    return typeof name === 'string' && name.trim().length > 0 ? name.trim() : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Stable content hash for an occurrence — used to detect feed changes
  * (source_events.content_hash). djb2 over the meaningful fields; cheap and
  * synchronous (no SubtleCrypto await needed in the hot path).

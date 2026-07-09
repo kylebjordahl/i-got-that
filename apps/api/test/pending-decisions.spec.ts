@@ -39,7 +39,6 @@ async function fixtureWithPending(email: string) {
     weekdayMask: 31,
     dayStart: '08:30',
     dayEnd: '14:45',
-    generatesTypes: ['dropoff', 'pickup'],
   });
   const source = (
     await db
@@ -85,11 +84,11 @@ describe('pending decisions', () => {
     });
   });
 
-  it('resolve creates a synthesized event with the chosen types and generates its tasks', async () => {
+  it('resolve accepts the event onto the calendar; tasks flow via the task-rule default', async () => {
     const f = await fixtureWithPending('pd-resolve@example.com');
     const res = await call(
       `/families/${f.familyId}/pending-decisions/${f.decision.id}/resolve`,
-      authed(f.admin.token, { types: ['attendance'], defaultAttendance: 'both' }),
+      authed(f.admin.token, {}),
     );
     expect(res.status).toBe(200);
 
@@ -103,17 +102,16 @@ describe('pending decisions', () => {
       provenance: 'synthesized',
       synthKey: `pd:${f.decision.id}`,
       summary: 'Book Fair',
-      generatesTypes: ['attendance'],
-      defaultAttendance: 'both',
       familyMemberId: f.childId,
     });
 
+    // No task rules configured ⇒ the feed link's default (transition) applies,
+    // so the event generates a drop-off + pickup pair.
     const generated = await f.db
       .select()
       .from(tasks)
       .where(eq(tasks.calendarEventId, event.id));
-    expect(generated).toHaveLength(1);
-    expect(generated[0]).toMatchObject({ type: 'attendance', attendanceRequirement: 'both' });
+    expect(generated.map((t) => t.type).sort()).toEqual(['dropoff', 'pickup']);
 
     const after = (
       await f.db
@@ -122,13 +120,12 @@ describe('pending decisions', () => {
         .where(eq(pendingDecisions.id, f.decision.id))
     )[0]!;
     expect(after.status).toBe('resolved');
-    expect(after.resolvedTypes).toEqual(['attendance']);
     expect(after.resolvedByMemberId).toBe(f.adminMemberId);
 
     // Resolving twice is rejected; the decision no longer lists.
     const again = await call(
       `/families/${f.familyId}/pending-decisions/${f.decision.id}/resolve`,
-      authed(f.admin.token, { types: ['pickup'] }),
+      authed(f.admin.token, {}),
     );
     expect(again.status).toBe(409);
     const list = await call(`/families/${f.familyId}/pending-decisions`, bearer(f.admin.token));
@@ -144,11 +141,11 @@ describe('pending decisions', () => {
     ).toHaveLength(1);
   });
 
-  it('resolve honors start-time/duration adjustments (wall clock in the feed tz)', async () => {
+  it('resolve honors start/end adjustments (wall clock in the feed tz)', async () => {
     const f = await fixtureWithPending('pd-adjust@example.com');
     const res = await call(
       `/families/${f.familyId}/pending-decisions/${f.decision.id}/resolve`,
-      authed(f.admin.token, { types: ['pickup'], startTime: '15:30', durationMinutes: 45 }),
+      authed(f.admin.token, { startTime: '15:30', endTime: '16:15' }),
     );
     expect(res.status).toBe(200);
     const event = (
@@ -165,7 +162,7 @@ describe('pending decisions', () => {
     const f = await fixtureWithPending('pd-reopen@example.com');
     await call(
       `/families/${f.familyId}/pending-decisions/${f.decision.id}/resolve`,
-      authed(f.admin.token, { types: ['attendance'] }),
+      authed(f.admin.token, {}),
     );
     await f.db
       .update(sourceEvents)

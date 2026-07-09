@@ -358,6 +358,10 @@ taskRoutes.post('/pending-decisions/:decisionId/resolve', async (c) => {
   )[0];
   const tz = feed?.timezone ?? 'UTC';
 
+  // Resolving accepts the event onto the calendar as a normal scheduled day;
+  // task typing then flows through the member's task rules like any event.
+  // Optional adjustments override the source event's own times (wall-clock in
+  // the feed's zone, matching baseline times).
   const d = parsed.data;
   let dtstart = source.dtstart;
   let dtend = source.dtend;
@@ -367,12 +371,9 @@ taskRoutes.post('/pending-decisions/:decisionId/resolve', async (c) => {
     allDay = false;
     dtend = dtend && dtend.getTime() > dtstart.getTime() ? dtend : null;
   }
-  if (d.durationMinutes != null) {
-    dtend =
-      d.durationMinutes > 0
-        ? new Date(dtstart.getTime() + d.durationMinutes * 60_000)
-        : null;
-    if (d.durationMinutes > 0) allDay = false;
+  if (d.endTime) {
+    dtend = wallTimeToUtc(startOfUtcDay(dtstart), d.endTime, 15, tz);
+    allDay = false;
   }
 
   const payload = {
@@ -382,9 +383,6 @@ taskRoutes.post('/pending-decisions/:decisionId/resolve', async (c) => {
     summary: source.summary,
     location: source.location,
     description: null,
-    annotation: null,
-    generatesTypes: d.types,
-    defaultAttendance: d.defaultAttendance ?? null,
   };
   await db.insert(calendarEvents).values({
     familyId: me.familyId,
@@ -401,7 +399,6 @@ taskRoutes.post('/pending-decisions/:decisionId/resolve', async (c) => {
     .update(pendingDecisions)
     .set({
       status: 'resolved',
-      resolvedTypes: d.types,
       resolvedByMemberId: me.id,
       resolvedAt: new Date(),
     })
@@ -475,8 +472,6 @@ taskRoutes.get('/calendar-events', async (c) => {
       allDay: calendarEvents.allDay,
       summary: calendarEvents.summary,
       location: calendarEvents.location,
-      annotation: calendarEvents.annotation,
-      generatesTypes: calendarEvents.generatesTypes,
     })
     .from(calendarEvents)
     .where(and(...conditions))

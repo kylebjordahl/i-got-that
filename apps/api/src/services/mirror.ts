@@ -120,10 +120,9 @@ function emptyResult(): SyncResult {
   return { targets: 0, created: 0, updated: 0, removed: 0, errors: [] };
 }
 
-/** The summary as mirrored out: annotation rides along ("School · Photo Day"). */
+/** The summary as mirrored out. */
 export function mirroredSummary(event: CalendarEventRow): string {
-  const base = event.summary ?? 'Event';
-  return event.annotation ? `${base} · ${event.annotation}` : base;
+  return event.summary ?? 'Event';
 }
 
 /** djb2 over the meaningful mirrored fields; cheap + synchronous. */

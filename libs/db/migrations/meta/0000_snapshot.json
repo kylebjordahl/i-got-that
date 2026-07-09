@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "a1225a08-4b87-4292-8eb8-b818cda02caf",
+  "id": "fa4b9c43-47ba-4619-b84b-20d72d3eaaf1",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "tables": {
     "auth_tokens": {
@@ -204,27 +204,6 @@
         },
         "description": {
           "name": "description",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "annotation": {
-          "name": "annotation",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "generates_types": {
-          "name": "generates_types",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "default_attendance": {
-          "name": "default_attendance",
           "type": "text",
           "primaryKey": false,
           "notNull": false,
@@ -685,13 +664,6 @@
           "notNull": false,
           "autoincrement": false
         },
-        "duration_minutes": {
-          "name": "duration_minutes",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
         "location": {
           "name": "location",
           "type": "text",
@@ -699,19 +671,29 @@
           "notNull": false,
           "autoincrement": false
         },
-        "generates_types": {
-          "name": "generates_types",
+        "default_task_type": {
+          "name": "default_task_type",
           "type": "text",
           "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'transition'"
         },
-        "default_attendance": {
-          "name": "default_attendance",
-          "type": "text",
+        "default_dropoff_window_min": {
+          "name": "default_dropoff_window_min",
+          "type": "integer",
           "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
+          "notNull": true,
+          "autoincrement": false,
+          "default": 15
+        },
+        "default_pickup_window_min": {
+          "name": "default_pickup_window_min",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 15
         },
         "active": {
           "name": "active",
@@ -852,6 +834,30 @@
           "primaryKey": false,
           "notNull": false,
           "autoincrement": false
+        },
+        "unified_default_task_type": {
+          "name": "unified_default_task_type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'attendance'"
+        },
+        "unified_dropoff_window_min": {
+          "name": "unified_dropoff_window_min",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 15
+        },
+        "unified_pickup_window_min": {
+          "name": "unified_pickup_window_min",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 15
         },
         "created_at": {
           "name": "created_at",
@@ -1350,20 +1356,6 @@
         },
         "params": {
           "name": "params",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "generates_types": {
-          "name": "generates_types",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "default_attendance": {
-          "name": "default_attendance",
           "type": "text",
           "primaryKey": false,
           "notNull": false,
@@ -2070,6 +2062,164 @@
           "tableTo": "families",
           "columnsFrom": [
             "family_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "task_rules": {
+      "name": "task_rules",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "family_id": {
+          "name": "family_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "family_member_id": {
+          "name": "family_member_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "link_id": {
+          "name": "link_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "scope": {
+          "name": "scope",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'this_calendar'"
+        },
+        "position": {
+          "name": "position",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "match_field": {
+          "name": "match_field",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "match_op": {
+          "name": "match_op",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "match_value": {
+          "name": "match_value",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "result_type": {
+          "name": "result_type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "dropoff_window_min": {
+          "name": "dropoff_window_min",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "pickup_window_min": {
+          "name": "pickup_window_min",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "task_rules_member_position_idx": {
+          "name": "task_rules_member_position_idx",
+          "columns": [
+            "family_member_id",
+            "position"
+          ],
+          "isUnique": false
+        },
+        "task_rules_family_idx": {
+          "name": "task_rules_family_idx",
+          "columns": [
+            "family_id"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "task_rules_family_id_families_id_fk": {
+          "name": "task_rules_family_id_families_id_fk",
+          "tableFrom": "task_rules",
+          "tableTo": "families",
+          "columnsFrom": [
+            "family_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "task_rules_family_member_id_family_members_id_fk": {
+          "name": "task_rules_family_member_id_family_members_id_fk",
+          "tableFrom": "task_rules",
+          "tableTo": "family_members",
+          "columnsFrom": [
+            "family_member_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "task_rules_link_id_family_member_feeds_id_fk": {
+          "name": "task_rules_link_id_family_member_feeds_id_fk",
+          "tableFrom": "task_rules",
+          "tableTo": "family_member_feeds",
+          "columnsFrom": [
+            "link_id"
           ],
           "columnsTo": [
             "id"

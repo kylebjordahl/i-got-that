@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   CreateLinkRuleInput,
   CreateFeedInput,
+  CreateTaskRuleInput,
   parseEcmaRegex,
   ResolvePendingDecisionInput,
   TimeOfDay,
@@ -54,8 +55,7 @@ describe('domain schemas', () => {
         matchField: 'duration',
         matchOp: 'gte',
         matchValue: 'ninety',
-        outcome: 'annotate',
-        params: { text: 'Long' },
+        outcome: 'cancel_day',
       }).success,
     ).toBe(false);
     expect(
@@ -63,18 +63,26 @@ describe('domain schemas', () => {
         matchField: 'duration',
         matchOp: 'gte',
         matchValue: '90',
-        outcome: 'annotate',
-        params: { text: 'Long' },
+        outcome: 'cancel_day',
       }).success,
     ).toBe(true);
-    // annotate requires its text param.
+    // modify_day accepts new hours; cancel_day rejects unexpected params.
     expect(
       CreateLinkRuleInput.safeParse({
         matchField: 'summary',
         matchOp: 'contains',
-        matchValue: 'Photos',
-        outcome: 'annotate',
-        params: {},
+        matchValue: 'Early',
+        outcome: 'modify_day',
+        params: { dayEnd: '12:00' },
+      }).success,
+    ).toBe(true);
+    expect(
+      CreateLinkRuleInput.safeParse({
+        matchField: 'summary',
+        matchOp: 'contains',
+        matchValue: 'x',
+        outcome: 'cancel_day',
+        params: { dayEnd: '12:00' },
       }).success,
     ).toBe(false);
     // Bad regex is rejected up front.
@@ -94,10 +102,21 @@ describe('domain schemas', () => {
     expect(() => parseEcmaRegex('(')).toThrow();
   });
 
-  it('requires at least one task type when resolving a pending decision', () => {
-    expect(ResolvePendingDecisionInput.safeParse({ types: [] }).success).toBe(false);
+  it('resolving a pending decision takes no task types (typing is via task rules)', () => {
+    expect(ResolvePendingDecisionInput.safeParse({}).success).toBe(true);
     expect(
-      ResolvePendingDecisionInput.safeParse({ types: ['attendance'] }).success,
+      ResolvePendingDecisionInput.safeParse({ startTime: '15:30', endTime: '16:15' }).success,
     ).toBe(true);
+    expect(ResolvePendingDecisionInput.safeParse({ startTime: '25:00' }).success).toBe(false);
+  });
+
+  it('validates task rules (matcher + windows)', () => {
+    expect(
+      CreateTaskRuleInput.safeParse({ resultType: 'attendance', matchValue: '/field trip/i' }).success,
+    ).toBe(true);
+    // regex matcher with a bad pattern → invalid.
+    expect(
+      CreateTaskRuleInput.safeParse({ resultType: 'transition', matchOp: 'regex', matchValue: '(' }).success,
+    ).toBe(false);
   });
 });

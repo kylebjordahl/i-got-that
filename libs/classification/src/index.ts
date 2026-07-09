@@ -1,22 +1,27 @@
 import {
   parseEcmaRegex,
   type AttendanceRequirement,
-  type EventProvenance,
   type OverrideMatchField,
   type OverrideMatchOp,
   type OverrideOutcome,
+  type TaskResultType,
+  type TaskRuleScope,
   type TaskType,
 } from '@igt/domain';
 
 /**
- * Pure synthesis + task-generation engine. Two decoupled stages, no I/O:
+ * Pure synthesis + task-generation engine. Two decoupled stages, no I/O, and —
+ * per the round-6 review — two independent rule pipelines:
  *
- *  Stage A — synthesis: feed occurrences + a link's override pipeline decide
- *  what EVENTS land on the member's unified calendar (and which occurrences
- *  become pending decisions instead — the system never guesses).
+ *  Stage A — synthesis: feed occurrences + a link's OVERRIDE pipeline decide
+ *  the SCHEDULE of events on the member's unified calendar (cancel / modify /
+ *  ignore the covered baseline day). Unmatched exception events become pending
+ *  decisions — the system never guesses.
  *
- *  Stage B — task generation: a unified-calendar event decides what claimable
- *  TASKS it spawns, from the task-gen metadata synthesis stamped on it.
+ *  Stage B — task generation: a member's TASK-RULE pipeline decides what
+ *  claimable tasks each event spawns (a transition = drop-off + pickup, or an
+ *  attendance block, with drop-off/pickup windows). Task typing is fully
+ *  separate from the schedule.
  */
 
 export const DAY_MS = 24 * 60 * 60 * 1000;
@@ -98,7 +103,7 @@ export function coveredUtcDays(e: {
   return days.length > 0 ? days : [first];
 }
 
-// --- Matchers ---------------------------------------------------------------
+// --- Matchers (shared by both pipelines) -----------------------------------
 
 /** The occurrence fields a matcher can inspect. */
 export interface OccurrenceLike {
@@ -110,17 +115,11 @@ export interface OccurrenceLike {
   dtend: Date | null;
 }
 
-/** One rule of a link's override pipeline (first match wins by `position`). */
-export interface OverrideRuleLike {
-  id: string;
-  position: number;
+/** The matcher fields common to override rules and task rules. */
+export interface MatcherLike {
   matchField: OverrideMatchField;
   matchOp: OverrideMatchOp;
   matchValue: string | null;
-  outcome: OverrideOutcome;
-  params?: Record<string, unknown> | null;
-  generatesTypes?: TaskType[] | null;
-  defaultAttendance?: AttendanceRequirement | null;
 }
 
 function textValue(occ: OccurrenceLike, field: OverrideMatchField): string {
@@ -145,7 +144,7 @@ function durationMinutes(occ: OccurrenceLike): number {
   return Math.max(0, (occ.dtend.getTime() - occ.dtstart.getTime()) / 60_000);
 }
 
-export function ruleMatches(occ: OccurrenceLike, rule: OverrideRuleLike): boolean {
+export function ruleMatches(occ: OccurrenceLike, rule: MatcherLike): boolean {
   if (rule.matchField === 'all_day') {
     if (rule.matchOp === 'is_true') return occ.allDay;
     if (rule.matchOp === 'is_false') return !occ.allDay;
@@ -180,10 +179,10 @@ export function ruleMatches(occ: OccurrenceLike, rule: OverrideRuleLike): boolea
 }
 
 /** First matching rule in `position` order (first match wins), or null. */
-export function firstMatch(
+export function firstMatch<R extends MatcherLike & { position: number }>(
   occ: OccurrenceLike,
-  rules: OverrideRuleLike[],
-): OverrideRuleLike | null {
+  rules: R[],
+): R | null {
   const sorted = [...rules].sort((a, b) => a.position - b.position);
   for (const rule of sorted) {
     if (ruleMatches(occ, rule)) return rule;
@@ -191,7 +190,15 @@ export function firstMatch(
   return null;
 }
 
-// --- Stage A: synthesis ------------------------------------------------------
+// --- Stage A: synthesis (schedule only) ------------------------------------
+
+/** One override rule (schedule pipeline). */
+export interface OverrideRuleLike extends MatcherLike {
+  id: string;
+  position: number;
+  outcome: OverrideOutcome;
+  params?: Record<string, unknown> | null;
+}
 
 /** A source-event occurrence as fed into synthesis (id = source_events.id). */
 export interface SourceOccurrence extends OccurrenceLike {
@@ -205,10 +212,7 @@ export interface LinkConfigLike {
   weekdayMask: number | null;
   dayStart: string | null;
   dayEnd: string | null;
-  durationMinutes: number | null;
   location: string | null;
-  generatesTypes?: TaskType[] | null;
-  defaultAttendance?: AttendanceRequirement | null;
   /** Summary for generated baseline-day events (e.g. the feed's name). */
   baselineSummary?: string | null;
 }
@@ -224,9 +228,6 @@ export interface EventIntent {
   summary: string | null;
   location: string | null;
   description: string | null;
-  annotation: string | null;
-  generatesTypes: TaskType[] | null;
-  defaultAttendance: AttendanceRequirement | null;
 }
 
 /** An occurrence the pipeline couldn't decide — a human must resolve it. */
@@ -240,111 +241,23 @@ export interface SynthesisResult {
   pending: PendingIntent[];
 }
 
-interface SetEventParamsLike {
-  summary?: string;
-  startTime?: string;
-  durationMinutes?: number;
-  location?: string;
-  suppress?: boolean;
-}
-
 interface ModifyDayParamsLike {
   dayStart?: string;
   dayEnd?: string;
-  durationMinutes?: number;
-  location?: string;
 }
 
-/** Apply a `set_event` patch to an occurrence-derived event. */
-function applySetEvent(
-  base: EventIntent,
-  params: SetEventParamsLike,
-  tz: string,
-): EventIntent | null {
-  if (params.suppress) return null;
-  let dtstart = base.dtstart;
-  let dtend = base.dtend;
-  let allDay = base.allDay;
-  if (params.startTime) {
-    dtstart = wallTimeToUtc(startOfUtcDay(base.dtstart), params.startTime, 8, tz);
-    allDay = false;
-    dtend = base.dtend && base.dtend.getTime() > dtstart.getTime() ? base.dtend : null;
-  }
-  if (params.durationMinutes != null) {
-    dtend =
-      params.durationMinutes > 0
-        ? new Date(dtstart.getTime() + params.durationMinutes * 60_000)
-        : null;
-    if (params.durationMinutes > 0) allDay = false;
-  }
-  return {
-    ...base,
-    dtstart,
-    dtend,
-    allDay,
-    summary: params.summary ?? base.summary,
-    location: params.location ?? base.location,
-  };
-}
-
-function occurrenceEvent(
-  linkId: string,
-  occ: SourceOccurrence,
-  rule: OverrideRuleLike | null,
-  link: LinkConfigLike,
-): EventIntent {
+function occurrenceEvent(linkId: string, occ: SourceOccurrence): EventIntent {
   return {
     synthKey: `ev:${linkId}:${occ.id}`,
     sourceEventId: occ.id,
-    matchedRuleId: rule?.id ?? null,
+    matchedRuleId: null,
     dtstart: occ.dtstart,
     dtend: occ.dtend,
     allDay: occ.allDay,
     summary: occ.summary,
     location: occ.location,
     description: occ.description ?? null,
-    annotation: null,
-    // Rule config wins; otherwise null ⇒ the downstream default (a single
-    // convertible attendance task) — "never guess" at the task-typing layer.
-    generatesTypes: rule?.generatesTypes ?? null,
-    defaultAttendance: rule?.defaultAttendance ?? link.defaultAttendance ?? null,
   };
-}
-
-/**
- * Standard feed: every occurrence lands on the unified calendar as-is unless a
- * rule reshapes or suppresses it. Unmatched occurrences pass through (a
- * standard feed is a real calendar); pending decisions are exception-only.
- * `cancel_day`/`modify_day` rules are baseline concepts and are ignored here
- * (route validation rejects creating them on standard links).
- */
-export function synthesizeStandard(
-  link: LinkConfigLike,
-  occurrences: SourceOccurrence[],
-  rules: OverrideRuleLike[],
-  tz: string,
-): SynthesisResult {
-  const applicable = rules.filter(
-    (r) => r.outcome !== 'cancel_day' && r.outcome !== 'modify_day',
-  );
-  const events: EventIntent[] = [];
-  for (const occ of occurrences) {
-    const rule = firstMatch(occ, applicable);
-    const base = occurrenceEvent(link.id, occ, rule, link);
-    if (!rule) {
-      events.push(base);
-      continue;
-    }
-    if (rule.outcome === 'annotate') {
-      const text = (rule.params as { text?: string } | null)?.text ?? null;
-      events.push({ ...base, annotation: text });
-      continue;
-    }
-    // set_event
-    const patched = applySetEvent(base, (rule.params ?? {}) as SetEventParamsLike, tz);
-    if (patched) events.push(patched);
-  }
-  return { events, pending: [] };
 }
 
 export interface SynthesisWindow {
@@ -353,13 +266,24 @@ export interface SynthesisWindow {
 }
 
 /**
+ * Standard feed: every occurrence lands on the unified calendar as-is. A
+ * standard feed's events mean what they say, so there are no schedule overrides
+ * to apply and nothing ever pends. Task typing is decided later by task rules.
+ */
+export function synthesizeStandard(
+  link: LinkConfigLike,
+  occurrences: SourceOccurrence[],
+): SynthesisResult {
+  return { events: occurrences.map((o) => occurrenceEvent(link.id, o)), pending: [] };
+}
+
+/**
  * Exception-only feed: normal days come from the link's baseline (weekday mask
- * + day start/end), feed events apply overrides. Per covered day the winning
- * (lowest-position) day-level rule decides: `cancel_day` drops the day's
- * baseline event, `modify_day` patches it, `annotate` keeps it and stamps a
- * note. `set_event` matches synthesize their own extra event and leave the
- * baseline alone. An occurrence matching NO rule becomes a pending decision —
- * the system never guesses — while the baseline stands.
+ * + day start/end), feed events apply schedule overrides. Per covered day the
+ * winning (lowest-position) rule decides: `cancel_day` drops the day's baseline
+ * event, `modify_day` patches its hours, `ignore` keeps the baseline. An
+ * occurrence matching NO rule becomes a pending decision — the baseline still
+ * stands until a human resolves it.
  */
 export function synthesizeException(
   link: LinkConfigLike,
@@ -371,7 +295,6 @@ export function synthesizeException(
   const events: EventIntent[] = [];
   const pending: PendingIntent[] = [];
 
-  // Evaluate every occurrence once; bucket day-level outcomes by covered day.
   interface DayRuling {
     rule: OverrideRuleLike;
     occ: SourceOccurrence;
@@ -383,21 +306,11 @@ export function synthesizeException(
       pending.push({ sourceEventId: occ.id, contentHash: occ.contentHash });
       continue;
     }
-    if (rule.outcome === 'set_event') {
-      const patched = applySetEvent(
-        occurrenceEvent(link.id, occ, rule, link),
-        (rule.params ?? {}) as SetEventParamsLike,
-        tz,
-      );
-      if (patched) events.push(patched);
-      continue;
-    }
     for (const day of coveredUtcDays(occ)) {
       (dayRulings.get(day) ?? dayRulings.set(day, []).get(day)!).push({ rule, occ });
     }
   }
 
-  // Expand the baseline over the window, applying each day's winning ruling.
   if (link.weekdayMask != null) {
     const windowStart = startOfUtcDay(window.start);
     for (
@@ -417,22 +330,8 @@ export function synthesizeException(
         winner?.rule.outcome === 'modify_day'
           ? ((winner.rule.params ?? {}) as ModifyDayParamsLike)
           : null;
-      const dayStart = modify?.dayStart ?? link.dayStart;
-      const dayEnd = modify?.dayEnd ?? link.dayEnd;
-      const duration = modify?.durationMinutes ?? link.durationMinutes;
-
-      const dtstart = wallTimeToUtc(day, dayStart, 8, tz);
-      const dtend = dayEnd
-        ? wallTimeToUtc(day, dayEnd, 15, tz)
-        : duration != null && duration > 0
-          ? new Date(dtstart.getTime() + duration * 60_000)
-          : null;
-
-      const annotation =
-        winner?.rule.outcome === 'annotate'
-          ? (((winner.rule.params ?? {}) as { text?: string }).text ??
-            winner.occ.summary)
-          : null;
+      const dtstart = wallTimeToUtc(day, modify?.dayStart ?? link.dayStart, 8, tz);
+      const dtend = wallTimeToUtc(day, modify?.dayEnd ?? link.dayEnd, 15, tz);
 
       events.push({
         synthKey: `bl:${link.id}:${utcDayString(day.getTime())}`,
@@ -442,13 +341,8 @@ export function synthesizeException(
         dtend,
         allDay: false,
         summary: link.baselineSummary ?? null,
-        location: modify?.location ?? link.location ?? null,
+        location: link.location ?? null,
         description: null,
-        annotation: annotation ?? null,
-        generatesTypes:
-          winner?.rule.generatesTypes ?? link.generatesTypes ?? null,
-        defaultAttendance:
-          winner?.rule.defaultAttendance ?? link.defaultAttendance ?? null,
       });
     }
   }
@@ -456,16 +350,77 @@ export function synthesizeException(
   return { events, pending };
 }
 
-// --- Stage B: task generation -------------------------------------------------
+// --- Stage B: task generation (typing pipeline) ----------------------------
 
-/** The slice of a unified-calendar event task-gen reads. */
-export interface TaskGenEventLike {
-  provenance: EventProvenance;
-  generatesTypes?: TaskType[] | null;
-  defaultAttendance?: AttendanceRequirement | null;
-  dtstart: Date;
-  dtend: Date | null;
-  location?: string | null;
+/** One task rule (typing pipeline). */
+export interface TaskRuleLike extends MatcherLike {
+  id: string;
+  position: number;
+  scope: TaskRuleScope;
+  /** Which source calendar it lives on; null = the member's unified/direct calendar. */
+  linkId: string | null;
+  resultType: TaskResultType;
+  dropoffWindowMin?: number | null;
+  pickupWindowMin?: number | null;
+}
+
+/** A calendar's terminal default when no task rule matches. */
+export interface TaskDefault {
+  resultType: TaskResultType;
+  dropoffWindowMin: number;
+  pickupWindowMin: number;
+}
+
+/** The resolved task shape for an event (from a rule, or the calendar default). */
+export interface TaskResolution {
+  resultType: TaskResultType;
+  dropoffWindowMin: number;
+  pickupWindowMin: number;
+}
+
+/**
+ * The subset of a member's task rules that governs one calendar, in evaluation
+ * order: every `all_calendars` rule plus the `this_calendar` rules whose
+ * `linkId` matches (null = the unified/direct calendar), sorted by shared
+ * `position`. Used both to evaluate task typing and to render the 6k pipeline.
+ */
+export function taskRulesForCalendar(
+  rules: TaskRuleLike[],
+  calendarLinkId: string | null,
+): TaskRuleLike[] {
+  return rules
+    .filter(
+      (r) =>
+        r.scope === 'all_calendars' ||
+        (r.scope === 'this_calendar' && (r.linkId ?? null) === calendarLinkId),
+    )
+    .sort((a, b) => a.position - b.position);
+}
+
+/**
+ * Resolve what an event on a given calendar should generate: the first matching
+ * rule in that calendar's applicable subset, else the calendar's default.
+ */
+export function resolveTaskResult(
+  occ: OccurrenceLike,
+  rules: TaskRuleLike[],
+  calendarLinkId: string | null,
+  fallback: TaskDefault,
+): TaskResolution {
+  const applicable = taskRulesForCalendar(rules, calendarLinkId);
+  const match = firstMatch(occ, applicable);
+  if (match) {
+    return {
+      resultType: match.resultType,
+      dropoffWindowMin: match.dropoffWindowMin ?? fallback.dropoffWindowMin,
+      pickupWindowMin: match.pickupWindowMin ?? fallback.pickupWindowMin,
+    };
+  }
+  return {
+    resultType: fallback.resultType,
+    dropoffWindowMin: fallback.dropoffWindowMin,
+    pickupWindowMin: fallback.pickupWindowMin,
+  };
 }
 
 export interface TaskIntent {
@@ -476,20 +431,22 @@ export interface TaskIntent {
   location: string | null;
 }
 
-/**
- * What claimable tasks an event spawns. `claimed_task` events spawn none —
- * that's the recursion guard that keeps a claimed task from re-generating
- * itself up the chain. Events without explicit `generatesTypes` (human events,
- * unconfigured synthesized ones) default to a single convertible attendance
- * task requiring any one caretaker; an empty array is an explicit "generate
- * nothing".
- */
-export function generateTaskIntents(event: TaskGenEventLike): TaskIntent[] {
-  if (event.provenance === 'claimed_task') return [];
+/** Pad an anchor instant into a claimable window of `windowMin` minutes. */
+function windowEnd(anchor: Date, windowMin: number): Date | null {
+  return windowMin > 0 ? new Date(anchor.getTime() + windowMin * 60_000) : null;
+}
 
+/**
+ * What claimable tasks an event spawns, given its resolved result type. A
+ * `transition` yields a drop-off (padded from the event start) and a pickup
+ * (padded from the event end); `attendance` yields one task spanning the event.
+ */
+export function generateTaskIntents(
+  event: { dtstart: Date; dtend: Date | null; location?: string | null },
+  resolution: TaskResolution,
+): TaskIntent[] {
   const location = event.location ?? null;
-  const types = event.generatesTypes;
-  if (types == null) {
+  if (resolution.resultType === 'attendance') {
     return [
       {
         type: 'attendance',
@@ -500,34 +457,21 @@ export function generateTaskIntents(event: TaskGenEventLike): TaskIntent[] {
       },
     ];
   }
-
-  const intents: TaskIntent[] = [];
-  for (const type of types) {
-    if (type === 'dropoff') {
-      intents.push({
-        type,
-        attendanceRequirement: event.defaultAttendance ?? null,
-        dtstart: event.dtstart,
-        dtend: null,
-        location,
-      });
-    } else if (type === 'pickup') {
-      intents.push({
-        type,
-        attendanceRequirement: event.defaultAttendance ?? null,
-        dtstart: event.dtend ?? event.dtstart,
-        dtend: null,
-        location,
-      });
-    } else {
-      intents.push({
-        type,
-        attendanceRequirement: event.defaultAttendance ?? 'any',
-        dtstart: event.dtstart,
-        dtend: event.dtend,
-        location,
-      });
-    }
-  }
-  return intents;
+  const pickupAnchor = event.dtend ?? event.dtstart;
+  return [
+    {
+      type: 'dropoff',
+      attendanceRequirement: null,
+      dtstart: event.dtstart,
+      dtend: windowEnd(event.dtstart, resolution.dropoffWindowMin),
+      location,
+    },
+    {
+      type: 'pickup',
+      attendanceRequirement: null,
+      dtstart: pickupAnchor,
+      dtend: windowEnd(pickupAnchor, resolution.pickupWindowMin),
+      location,
+    },
+  ];
 }
