@@ -4,34 +4,36 @@ import 'screens/family_screen.dart';
 import 'screens/home_screen.dart';
 import 'screens/me_screen.dart';
 import 'screens/plan_screen.dart';
-import 'state/family.dart';
 import 'state/nav.dart';
-import 'widgets/app_bottom_nav.dart';
 
-/// The persistent app shell: Home / Plan / Family / Me behind a floating nav
-/// pill. The "+" appears only on the Family tab (6l) — it invites a new member.
-class AppShell extends ConsumerWidget {
+/// The persistent root shell: Home / Plan / Family / Me tabs behind the
+/// floating nav pill. The pill itself lives one level up, in
+/// [PersistentAppNav] — see that widget for why it isn't rendered here.
+class AppShell extends ConsumerStatefulWidget {
   const AppShell({super.key});
 
+  @override
+  ConsumerState<AppShell> createState() => _AppShellState();
+}
+
+class _AppShellState extends ConsumerState<AppShell> {
   static const _pages = [HomeScreen(), PlanScreen(), FamilyScreen(), MeScreen()];
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  void initState() {
+    super.initState();
+    // Defensive reset: guards against the depth counter drifting across a
+    // logout/login cycle, which swaps `home` rather than pushing/popping.
+    routeDepthNotifier.value = 0;
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final index = ref.watch(navIndexProvider);
-    final isAdmin = ref.watch(currentMemberProvider).valueOrNull?.isAdmin ?? false;
     return Scaffold(
-      extendBody: true,
       body: SafeArea(
         bottom: false,
         child: IndexedStack(index: index, children: _pages),
-      ),
-      bottomNavigationBar: SafeArea(
-        top: false,
-        child: AppBottomNav(
-          currentIndex: index,
-          onAdd: index == 2 && isAdmin ? () => showAddMemberSheet(context, ref) : null,
-          onSelect: (i) => ref.read(navIndexProvider.notifier).state = i,
-        ),
       ),
     );
   }

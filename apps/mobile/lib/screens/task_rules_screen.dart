@@ -5,7 +5,6 @@ import '../state/auth.dart';
 import '../state/family.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_text.dart';
-import '../widgets/app_bottom_nav.dart';
 import '../widgets/primitives.dart';
 import '../widgets/settings.dart';
 
@@ -56,7 +55,6 @@ class _TaskRulesScreenState extends ConsumerState<TaskRulesScreen> {
     }
 
     return Scaffold(
-      extendBody: true,
       body: SafeArea(
         child: Column(
           children: [
@@ -102,7 +100,6 @@ class _TaskRulesScreenState extends ConsumerState<TaskRulesScreen> {
           ],
         ),
       ),
-      bottomNavigationBar: const PersistentAppNav(),
     );
   }
 
