@@ -400,26 +400,40 @@ class _RuleCard extends StatelessWidget {
 }
 
 /// Override-rule editor bottom sheet (6m): match + Then (cancel/modify/ignore).
+/// [prefillMatchValue] seeds a new rule's match value (e.g. from an unmatched
+/// event's title) — ignored when editing an [existing] rule.
 Future<void> showOverrideRuleSheet(
   BuildContext context,
   WidgetRef ref, {
   required FeedItem feed,
   required FeedLink link,
   OverrideRule? existing,
+  String? prefillMatchValue,
 }) {
   return showModalBottomSheet<void>(
     context: context,
     showDragHandle: true,
     isScrollControlled: true,
-    builder: (_) => _OverrideRuleSheet(feed: feed, link: link, existing: existing),
+    builder: (_) => _OverrideRuleSheet(
+      feed: feed,
+      link: link,
+      existing: existing,
+      prefillMatchValue: prefillMatchValue,
+    ),
   );
 }
 
 class _OverrideRuleSheet extends ConsumerStatefulWidget {
-  const _OverrideRuleSheet({required this.feed, required this.link, this.existing});
+  const _OverrideRuleSheet({
+    required this.feed,
+    required this.link,
+    this.existing,
+    this.prefillMatchValue,
+  });
   final FeedItem feed;
   final FeedLink link;
   final OverrideRule? existing;
+  final String? prefillMatchValue;
 
   @override
   ConsumerState<_OverrideRuleSheet> createState() => _OverrideRuleSheetState();
@@ -442,7 +456,7 @@ class _OverrideRuleSheetState extends ConsumerState<_OverrideRuleSheet> {
     final ex = widget.existing;
     _matchOp = ex?.matchOp == 'regex' ? 'regex' : 'contains';
     _outcome = ex?.outcome ?? 'cancel_day';
-    _value.text = ex?.matchValue ?? '';
+    _value.text = ex?.matchValue ?? widget.prefillMatchValue ?? '';
     _newStart.text = (ex?.params?['dayStart'] as String?) ?? '';
     _newEnd.text = (ex?.params?['dayEnd'] as String?) ?? '';
   }

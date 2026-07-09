@@ -449,6 +449,7 @@ class PendingDecision {
   PendingDecision({
     required this.id,
     required this.feedId,
+    required this.linkId,
     required this.familyMemberId,
     required this.start,
     required this.allDay,
@@ -459,6 +460,10 @@ class PendingDecision {
 
   final String id;
   final String feedId;
+
+  /// The member-feed link whose override pipeline the event fell through —
+  /// where a new rule to resolve it would need to live.
+  final String linkId;
 
   /// The member whose calendar the event would land on.
   final String familyMemberId;
@@ -473,6 +478,7 @@ class PendingDecision {
     return PendingDecision(
       id: j['id'] as String,
       feedId: j['feedId'] as String,
+      linkId: j['linkId'] as String,
       familyMemberId: j['familyMemberId'] as String,
       allDay: allDay,
       start: allDay ? parseAllDayDate(j['dtstart']) : parseTimestamp(j['dtstart']),

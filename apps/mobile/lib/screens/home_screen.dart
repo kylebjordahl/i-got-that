@@ -10,6 +10,7 @@ import '../util/format.dart';
 import '../util/task_visuals.dart';
 import '../widgets/primitives.dart';
 import '../widgets/task_row.dart';
+import 'feed_baseline_screen.dart';
 import 'task_actions_sheet.dart';
 
 /// Home — the claim hub. A multi-day list grouped under sticky day headers;
@@ -117,7 +118,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                       _DecisionCard(
                         decision: d,
                         member: byId[d.familyMemberId],
-                        onResolve: () => _resolveDecision(d),
+                        onResolve: () => _openRuleEditor(d),
                         onDismiss: () => _dismissDecision(d),
                       ),
                       const SizedBox(height: 10),
@@ -215,17 +216,28 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     );
   }
 
-  Future<void> _resolveDecision(PendingDecision d) async {
-    // Resolve accepts the event onto the calendar as a normal day; what tasks
-    // it generates then follows the member's task rules.
+  /// Resolve opens the override-rule editor (6m, shared with Feed setup) with
+  /// the match pre-filled to this event's title — saving a rule there is what
+  /// actually clears the decision, by resynthesizing the feed.
+  Future<void> _openRuleEditor(PendingDecision d) async {
     try {
-      final familyId = await ref.read(familyProvider.future);
-      await ref.read(apiClientProvider).resolvePendingDecision(familyId, d.id);
+      final feeds = await ref.read(feedsProvider.future);
+      final feed = feeds.firstWhere((f) => f.id == d.feedId);
+      final links = await ref.read(feedLinksProvider(d.feedId).future);
+      final link = links.firstWhere((l) => l.id == d.linkId);
+      if (!mounted) return;
+      await showOverrideRuleSheet(
+        context,
+        ref,
+        feed: feed,
+        link: link,
+        prefillMatchValue: d.summary,
+      );
       _refresh();
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('Resolve failed: $e')));
+            .showSnackBar(SnackBar(content: Text('Couldn\'t open rule editor: $e')));
       }
     }
   }

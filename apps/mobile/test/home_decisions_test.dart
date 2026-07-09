@@ -23,6 +23,7 @@ void main() {
   final decision = PendingDecision(
     id: 'pd1',
     feedId: 'f1',
+    linkId: 'link1',
     familyMemberId: 'theo',
     start: DateTime.now().add(const Duration(days: 1)),
     allDay: false,
@@ -38,6 +39,9 @@ void main() {
     calendarEventId: 'e1',
   );
 
+  final feed = FeedItem(id: 'f1', kind: 'ics', mode: 'exception');
+  final link = FeedLink(id: 'link1', familyMemberId: 'theo', active: true);
+
   Widget app() => ProviderScope(
         overrides: [
           membersProvider.overrideWith((ref) async => [me, theo]),
@@ -47,6 +51,8 @@ void main() {
           pendingDecisionsProvider.overrideWith((ref) async => [decision]),
           calendarEventsProvider.overrideWith((ref) async => const []),
           threadingThresholdProvider.overrideWith((ref) async => 30),
+          feedsProvider.overrideWith((ref) async => [feed]),
+          feedLinksProvider('f1').overrideWith((ref) async => [link]),
         ],
         child: MaterialApp(
           theme: buildAppTheme(),
@@ -69,5 +75,17 @@ void main() {
     final decisionY = tester.getTopLeft(find.text('NEEDS A DECISION')).dy;
     final taskY = tester.getTopLeft(find.text('Claim').first).dy;
     expect(decisionY, lessThan(taskY));
+  });
+
+  testWidgets('Resolve opens the override-rule editor pre-filled with the event title',
+      (tester) async {
+    await tester.pumpWidget(app());
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Resolve'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('New override rule'), findsOneWidget);
+    expect(find.text('Book Fair'), findsWidgets);
   });
 }
