@@ -154,10 +154,11 @@ async function ingestAccountFeed(
   if (!credential) return fail(`feed ${feed.id}: no account credential`);
 
   let occurrences: Occurrence[];
+  let timezone: string | null;
   try {
     if (feed.kind === 'caldav') {
       if (credential.kind !== 'basic') throw new Error('caldav feed requires a basic credential');
-      occurrences = await fetchCalDavOccurrences(
+      ({ occurrences, timezone } = await fetchCalDavOccurrences(
         {
           collectionUrl: feed.sourceCalendarId,
           username: credential.username,
@@ -165,7 +166,7 @@ async function ingestAccountFeed(
         },
         window,
         opts.fetchImpl,
-      );
+      ));
     } else {
       if (credential.kind !== 'oauth') throw new Error('google feed requires an oauth credential');
       const accessToken =
@@ -174,12 +175,12 @@ async function ingestAccountFeed(
           ? await opts.googleRefresh(credential.refreshToken)
           : undefined);
       if (!accessToken) throw new Error('google feed has no usable access token');
-      occurrences = await fetchGoogleOccurrences(
+      ({ occurrences, timezone } = await fetchGoogleOccurrences(
         accessToken,
         feed.sourceCalendarId,
         window,
         opts.fetchImpl,
-      );
+      ));
     }
   } catch (err) {
     await db.update(feeds).set({ status: 'error' }).where(eq(feeds.id, feed.id));
@@ -189,7 +190,7 @@ async function ingestAccountFeed(
   await upsertOccurrences(db, feed, occurrences);
   await db
     .update(feeds)
-    .set({ lastSyncedAt: new Date(), status: 'active' })
+    .set({ lastSyncedAt: new Date(), status: 'active', timezone: timezone ?? feed.timezone })
     .where(eq(feeds.id, feed.id));
 
   return { feedId: feed.id, fetched: true, processed: occurrences.length };
