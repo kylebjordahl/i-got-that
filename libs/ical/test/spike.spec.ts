@@ -45,6 +45,57 @@ describe('ical OSS libs under workerd', () => {
     expect(single[0]?.summary).toBe('Dentist');
   });
 
+  it('gives each RECURRENCE-ID override of a series its own distinct key', () => {
+    // A daily series with two overridden instances (e.g. "Drop Off Poppy"
+    // rescheduled on two different days). Both overrides have a RECURRENCE-ID
+    // but no RRULE of their own, so isRecurring() is false for each — without
+    // relating them to the master as exceptions, both would fall through to
+    // recurrenceId: null and collide on (uid, recurrenceId).
+    const ics = `BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//test//test//EN
+BEGIN:VEVENT
+UID:daily-1
+DTSTART:20260105T150000Z
+DTEND:20260105T153000Z
+RRULE:FREQ=DAILY;COUNT=5
+SUMMARY:Drop Off Poppy
+END:VEVENT
+BEGIN:VEVENT
+UID:daily-1
+RECURRENCE-ID:20260106T150000Z
+DTSTART:20260106T170000Z
+DTEND:20260106T173000Z
+SUMMARY:Drop Off Poppy (late)
+END:VEVENT
+BEGIN:VEVENT
+UID:daily-1
+RECURRENCE-ID:20260107T150000Z
+DTSTART:20260107T160000Z
+DTEND:20260107T163000Z
+SUMMARY:Drop Off Poppy (moved)
+END:VEVENT
+END:VCALENDAR`;
+    const occ = parseAndExpand(ics, {
+      windowStart: new Date('2026-01-01T00:00:00Z'),
+      windowEnd: new Date('2026-03-01T00:00:00Z'),
+    });
+
+    expect(occ).toHaveLength(5);
+    const keys = occ.map((o) => `${o.uid}:${o.recurrenceId ?? ''}`);
+    expect(new Set(keys).size).toBe(5); // every occurrence has a unique key
+
+    const overridden = occ.find((o) => o.summary === 'Drop Off Poppy (late)');
+    expect(overridden?.start.toISOString()).toBe('2026-01-06T17:00:00.000Z');
+    const moved = occ.find((o) => o.summary === 'Drop Off Poppy (moved)');
+    expect(moved?.start.toISOString()).toBe('2026-01-07T16:00:00.000Z');
+
+    const unmodified = occ.filter(
+      (o) => o.summary === 'Drop Off Poppy' && o.uid === 'daily-1',
+    );
+    expect(unmodified).toHaveLength(3); // 5 total, 2 overridden
+  });
+
   it('anchors all-day (VALUE=DATE) events to UTC midnight, tz-independently', () => {
     const ics = `BEGIN:VCALENDAR
 VERSION:2.0
