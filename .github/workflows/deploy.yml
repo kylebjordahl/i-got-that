@@ -212,11 +212,28 @@ jobs:
       # "strictly increasing build number" rule without a fragile round-trip
       # to query the latest existing build. Marketing version stays whatever
       # `pubspec.yaml`'s `version` says.
+
+      # Resolve the glob to a concrete file ourselves: the upload action hands
+      # app-path straight to `xcrun altool`, which doesn't do shell-style glob
+      # expansion, so a literal `*.ipa` pattern fails with "File does not
+      # exist at path: .../*.ipa".
+      - name: Locate built IPA
+        if: steps.mobile-changed.outputs.changed == 'true'
+        id: locate-ipa
+        working-directory: apps/mobile
+        run: |
+          ipa_path=$(find build/ios/ipa -maxdepth 1 -name '*.ipa' -print -quit)
+          if [ -z "$ipa_path" ]; then
+            echo "::error::No .ipa file found in build/ios/ipa"
+            exit 1
+          fi
+          echo "path=apps/mobile/$ipa_path" >> "$GITHUB_OUTPUT"
+
       - name: Upload to TestFlight
         if: steps.mobile-changed.outputs.changed == 'true'
         uses: apple-actions/upload-testflight-build@v3
         with:
-          app-path: apps/mobile/build/ios/ipa/*.ipa
+          app-path: ${{ steps.locate-ipa.outputs.path }}
           issuer-id: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
           api-key-id: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
           api-private-key: ${{ secrets.APP_STORE_CONNECT_API_KEY_P8 }}
