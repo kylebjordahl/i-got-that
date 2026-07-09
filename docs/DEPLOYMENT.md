@@ -5,7 +5,7 @@ Actions:
 
 | Trigger | Workflow | Target |
 | --- | --- | --- |
-| Every push to `main` (after CI passes; docs-only skipped) | `.github/workflows/deploy-staging.yml` | **staging** Worker, + TestFlight (staging flavor) if `apps/mobile/**` changed |
+| Every push to `main` (after CI passes; docs-only skipped) | `.github/workflows/deploy-staging.yml` | **staging** Worker, + TestFlight (staging flavor) if `mobile` is Nx-affected |
 | A GitHub **Release** is *published* | `.github/workflows/deploy-production.yml` | **production** |
 | Push / PR | `.github/workflows/ci.yml` | tests only (no deploy) |
 
@@ -161,12 +161,22 @@ tests (no binding) still serve the API directly at the root.
 
 `deploy.yml` has a `testflight` job (macOS runner) that archives, signs, and
 uploads the mobile app's **`staging`** flavor (`com.kylebjordahl.igt.staging`)
-to TestFlight whenever a staging deploy includes a change under
-`apps/mobile/**`. It's staging-only for now — prod is deferred until prod has
-a real API domain (see the comment in `deploy-production.yml`). Signing is
-**manual** (a distribution `.p12` + an App Store provisioning profile), not
-Xcode-managed — headless `-allowProvisioningUpdates` is flaky; a pinned
-profile name is deterministic.
+to TestFlight whenever the `mobile` Nx project is affected. It's staging-only
+for now — prod is deferred until prod has a real API domain (see the comment
+in `deploy-production.yml`). Signing is **manual** (a distribution `.p12` + an
+App Store provisioning profile), not Xcode-managed — headless
+`-allowProvisioningUpdates` is flaky; a pinned profile name is deterministic.
+
+A `check-mobile-changed` job (ubuntu runner) gates `testflight`: it looks up
+the commit of the last `Deploy staging` run whose `testflight` job actually
+succeeded (via the GitHub API), then runs `nx show projects --affected
+--base=<that commit> --head=<this commit>` and checks whether `mobile` is in
+the result. This is base/head aware — unlike a plain `git diff` against the
+immediate parent commit, it correctly catches mobile changes accumulated
+across several commits since the last real build. `testflight` depends on
+that job's output at the **job level** (`if:
+needs.check-mobile-changed.outputs.changed == 'true'`), so a no-op shows up
+in the Actions UI as **skipped**, not a false green success.
 
 **One-time setup, all done by hand (not code):**
 
@@ -203,7 +213,7 @@ profile name is deterministic.
    doesn't pass them (they're `required: false` in `deploy.yml`, so the
    production caller still validates without them).
 
-Once the secrets exist, the next staging deploy that touches `apps/mobile/**`
+Once the secrets exist, the next staging deploy where `mobile` is Nx-affected
 builds and uploads a TestFlight build automatically — no further action
 needed per-release. Add internal/external testers in App Store Connect →
 TestFlight the first time a build lands.
@@ -218,9 +228,10 @@ job in `deploy.yml` to also allow `production`.
 ## Day-to-day flow
 
 - **Staging**: merge to `main` → once `CI` passes, `Deploy staging` runs
-  automatically (build web → Terraform → migrate → deploy). If the merge
-  touched `apps/mobile/**`, the `testflight` job also archives, signs, and
-  uploads the staging flavor to TestFlight (see §8).
+  automatically (build web → Terraform → migrate → deploy). If `mobile` is
+  Nx-affected since the last successful TestFlight build, the `testflight`
+  job also archives, signs, and uploads the staging flavor to TestFlight (see
+  §8).
 - **Production**: when staging looks good, cut a release:
   ```bash
   git tag v0.2.0 && git push origin v0.2.0
@@ -275,9 +286,11 @@ cd apps/api && pnpm wrangler tail --env staging        # live logs
   client, keyed on the `apps/mobile` sources — a backend/infra-only deploy
   restores the last bundle instead of rebuilding Flutter. Changing anything
   under `apps/mobile` busts that cache and forces a rebuild.
-- **TestFlight is change-gated, not cached**: the `testflight` job diffs
-  `apps/mobile/**` against the parent commit and skips the archive/sign/upload
-  steps entirely when nothing changed, rather than restoring a previous
-  `.ipa` (there's nothing useful to "restore" — every build must get a fresh,
-  strictly-increasing build number). This keeps macOS runner minutes and
-  TestFlight build clutter tied to real client changes.
+- **TestFlight is change-gated, not cached**: `check-mobile-changed` runs Nx
+  affected-detection against the last commit that successfully reached
+  TestFlight and skips the whole `testflight` job (job-level `if`, shows as
+  skipped in the UI) when `mobile` isn't affected, rather than restoring a
+  previous `.ipa` (there's nothing useful to "restore" — every build must get
+  a fresh, strictly-increasing build number). This keeps macOS runner minutes
+  and TestFlight build clutter tied to real client changes, and a skip is
+  never mistaken for a successful build in the run history.

@@ -19,6 +19,8 @@
   <meta charset="UTF-8">
   <meta content="IE=Edge" http-equiv="X-UA-Compatible">
   <meta name="description" content="A new Flutter project.">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#15121B">
 
   <!-- iOS meta tags & icons -->
   <meta name="mobile-web-app-capable" content="yes">
@@ -31,6 +33,17 @@
 
   <title>caretaker_app</title>
   <link rel="manifest" href="manifest.json">
+
+  <style>
+    /* Match the app's dark theme (AppColors.bg) so Safari's elastic
+       overscroll bounce reveals this instead of the browser's white
+       default behind the header/footer. */
+    html, body {
+      background-color: #15121B;
+      height: 100%;
+      overscroll-behavior: none;
+    }
+  </style>
 </head>
 <body>
   <!--

@@ -269,7 +269,10 @@ export const CreateFamilyMemberInput = z.object({
   isCaretaker: z.boolean().default(false),
   isAdmin: z.boolean().default(false),
   requiresCaretaker: z.boolean().default(false),
-  generatesFamilyTasks: z.boolean().default(true),
+  // No flat default: caretakers default to not generating family tasks (their
+  // events aren't logistics for someone else to claim), dependents default to
+  // generating them. Resolved from `isCaretaker` server-side when omitted.
+  generatesFamilyTasks: z.boolean().optional(),
   color: HexColor.optional(),
   userId: Id.optional(),
 });
