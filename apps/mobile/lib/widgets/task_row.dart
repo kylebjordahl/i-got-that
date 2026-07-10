@@ -15,6 +15,8 @@ class TaskRow extends StatelessWidget {
     required this.personName,
     required this.personColor,
     required this.subtitle,
+    this.sourceInitial,
+    this.sourceColor,
     this.ownedColor,
     this.trailing,
     this.onTap,
@@ -27,6 +29,11 @@ class TaskRow extends StatelessWidget {
   final String personName;
   final Color personColor;
   final String subtitle;
+
+  /// A small corner badge on the icon tile naming the source person whose
+  /// calendar the task came from (6b) — distinct from the claimer. Null ⇒ none.
+  final String? sourceInitial;
+  final Color? sourceColor;
 
   /// Solid left-bar color when owned; null ⇒ dashed "needs an owner" bar.
   final Color? ownedColor;
@@ -59,7 +66,7 @@ class TaskRow extends StatelessWidget {
                   padding: const EdgeInsets.fromLTRB(19, 12, 14, 12),
                   child: Row(
                     children: [
-                      IconTile(icon: icon, color: iconColor, size: 42),
+                      _iconTile(),
                       const SizedBox(width: 12),
                       Expanded(child: _titleBlock()),
                       if (trailing != null) ...[
@@ -82,6 +89,41 @@ class TaskRow extends StatelessWidget {
             ),
           ],
         ),
+      ),
+    );
+  }
+
+  /// The task-type icon tile, with an optional source-person initial badge
+  /// clipped to its bottom-right corner (6b).
+  Widget _iconTile() {
+    final tile = IconTile(icon: icon, color: iconColor, size: 42);
+    if (sourceInitial == null || sourceColor == null) return tile;
+    return SizedBox(
+      width: 42,
+      height: 42,
+      child: Stack(
+        clipBehavior: Clip.none,
+        children: [
+          tile,
+          Positioned(
+            right: -3,
+            bottom: -3,
+            child: Container(
+              width: 18,
+              height: 18,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                color: sourceColor,
+                shape: BoxShape.circle,
+                border: Border.all(color: AppColors.card, width: 2),
+              ),
+              child: Text(
+                sourceInitial!,
+                style: font(kBodyFont, 8.5, 800, color: const Color(0xFF17162B)),
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
