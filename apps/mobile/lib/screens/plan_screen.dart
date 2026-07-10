@@ -481,6 +481,7 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
 
     showModalBottomSheet<void>(
       context: context,
+      useRootNavigator: true,
       showDragHandle: true,
       isScrollControlled: true,
       builder: (_) => StatefulBuilder(
