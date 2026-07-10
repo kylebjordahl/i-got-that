@@ -1,3 +1,4 @@
+import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -130,14 +131,15 @@ class MeScreen extends ConsumerWidget {
                 title: 'Add an email login',
                 onTap: () => showAddLoginMethodDialog(context, ref),
               ),
-              // Apple linking on web uses the redirect flow; hide once linked.
-              if (kIsWeb && !identities.any((i) => i.provider == 'apple')) ...[
+              // Offer Apple until one is linked (web redirects; native uses the
+              // OS sheet).
+              if (!identities.any((i) => i.provider == 'apple')) ...[
                 const Divider(height: 20),
                 SettingRow(
                   icon: Icons.apple,
                   iconColor: AppColors.textPrimary,
                   title: 'Link Sign in with Apple',
-                  onTap: () => ref.read(authControllerProvider.notifier).linkWithApple(),
+                  onTap: () => _linkApple(context, ref),
                 ),
               ],
             ],
@@ -235,6 +237,32 @@ class MeScreen extends ConsumerWidget {
     try {
       await ref.read(apiClientProvider).unlinkIdentity(id.id);
       ref.invalidate(loginIdentitiesProvider);
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed: $e')));
+      }
+    }
+  }
+
+  Future<void> _linkApple(BuildContext context, WidgetRef ref) async {
+    final auth = ref.read(authControllerProvider.notifier);
+    // Web can't get a token in-page — a full-page redirect links Apple and the
+    // reload refreshes the list. Native drives the OS sheet inline.
+    if (kIsWeb) {
+      auth.linkWithApple();
+      return;
+    }
+    try {
+      await auth.linkWithAppleNative();
+      ref.invalidate(loginIdentitiesProvider);
+    } on DioException catch (e) {
+      final code = (e.response?.data as Map<String, dynamic>?)?['error'];
+      final msg = code == 'identity_linked_to_other_user'
+          ? 'That Apple ID is already linked to a different account.'
+          : 'Failed: $e';
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+      }
     } catch (e) {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed: $e')));
