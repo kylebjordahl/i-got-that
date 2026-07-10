@@ -234,6 +234,14 @@ jobs:
         with:
           ref: ${{ inputs.ref }}
 
+      # The runner's default Xcode (16.4, iOS 18.5 SDK) is no longer accepted
+      # by App Store Connect: "All iOS and iPadOS apps must be built with the
+      # iOS 26 SDK or later". Xcode 26.3 ships preinstalled alongside it —
+      # just not selected — so point DEVELOPER_DIR at it instead of waiting
+      # on `macos-latest` to move its default.
+      - name: Select Xcode 26
+        run: sudo xcode-select -s /Applications/Xcode_26.3.app
+
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
