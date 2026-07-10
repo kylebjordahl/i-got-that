@@ -310,6 +310,7 @@ Future<bool?> showTaskRuleSheet(
 }) {
   return showModalBottomSheet<bool>(
     context: context,
+    useRootNavigator: true,
     showDragHandle: true,
     isScrollControlled: true,
     builder: (_) => _TaskRuleSheet(member: member, activeLinkId: activeLinkId, existing: existing),
