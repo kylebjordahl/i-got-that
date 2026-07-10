@@ -328,6 +328,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       context: context,
       showDragHandle: true,
       isScrollControlled: true,
+      useRootNavigator: true,
       builder: (_) => StatefulBuilder(
         builder: (context, setSheet) {
           void toggle(Set<String> set, String key) => setSheet(() {
