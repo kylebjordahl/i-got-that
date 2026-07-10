@@ -2,6 +2,7 @@ import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import '../models.dart';
 import '../state/auth.dart';
 import '../state/family.dart';
@@ -276,11 +277,13 @@ class MeScreen extends ConsumerWidget {
   Color _identityColor(String provider) =>
       provider == 'apple' ? AppColors.textPrimary : AppColors.indigo;
 
-  void _showAbout(BuildContext context) {
+  Future<void> _showAbout(BuildContext context) async {
+    final info = await PackageInfo.fromPlatform();
+    if (!context.mounted) return;
     showAboutDialog(
       context: context,
       applicationName: 'I Got That',
-      applicationVersion: '0.1.0',
+      applicationVersion: '${info.version} (${info.buildNumber})',
       children: const [
         Padding(
           padding: EdgeInsets.only(top: 8),
