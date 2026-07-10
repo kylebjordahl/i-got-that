@@ -2,6 +2,61 @@
 
 Two login methods feed the same session model (a `sessions` row → bearer token).
 
+## Linking login methods (one user, many identities)
+
+A user is a login account with one or more **identities** (`identities` rows,
+`(provider, provider_ref)` unique). Sign-in resolves the identity → its `userId`,
+so once several methods point at the same user, logging in with any of them lands
+on the same account. This is how "Apple on one device, magic link on another"
+threads together.
+
+New logins create a fresh user; to make a *second* method resolve to an
+*existing* account, the signed-in user links it. All linking routes require a
+session (`authMiddleware`) and attach a **verified** credential to the current
+user:
+
+| Route | What it does |
+| --- | --- |
+| `GET /auth/identities` | List the caller's linked methods (`{ id, provider, providerRef }`). |
+| `POST /auth/link/magic-link` `{ token }` | Request a magic link for the new email as usual, then post that token here (instead of `/magic-link/verify`) to attach the `magic_link` identity to the current user. |
+| `POST /auth/link/apple` `{ identityToken }` | Verify a native Apple token (same as `/apple`) and attach the `apple` identity. |
+| `DELETE /auth/identities/:id` | Unlink a method. Blocked (`409 last_identity`) when it's the only one — removing it would orphan the account. |
+
+Linking is **idempotent** for the caller (`already_linked`) and refuses to steal
+an identity already threaded to a different user (`409
+identity_linked_to_other_user`). On **web**, Apple can't produce a token in-page,
+so `GET /auth/apple/start?link=1` reuses the redirect flow: the same-origin
+`igt_session` cookie rides along, the callback threads Apple onto the current
+user (no new session) and returns to `/app/#linked=apple`.
+
+The Flutter client surfaces all of this on the **Me** tab under "Login methods"
+(list + add email + link Apple on web + unlink), following the account-card UI
+pattern.
+
+## Session persistence on web (surviving a page refresh)
+
+The Flutter web SPA keeps its session token in memory only (`AuthState` in
+`lib/state/auth.dart`) — it's never written to `localStorage`/`sessionStorage`,
+which JS-side XSS could read. Instead, every route that issues a session
+(`POST /auth/apple`, `POST /auth/apple/callback`, `POST /auth/magic-link/verify`)
+also mirrors the token into an **`igt_session`** cookie — `HttpOnly` (invisible
+to JS), `Secure`, `SameSite=Lax`, set in `apps/api/src/lib/session-cookie.ts`.
+`authMiddleware` (`apps/api/src/middleware/auth.ts`) accepts either the
+`Authorization: Bearer` header (native) or this cookie (web) — whichever is
+present.
+
+On startup, before falling back to the login screen, the web client calls
+`GET /me` with the cookie attached (`credentials: 'include'`, wired via
+`apps/mobile/lib/api/dio_credentials_html.dart`); a valid cookie restores the
+session with no token ever touching JS. `POST /auth/logout` invalidates the
+session server-side and clears the cookie.
+
+`SameSite=Lax` is enough because deployed envs serve the SPA and API
+same-origin (see below), and local dev (`flutter run` on one port, `wrangler
+dev` on `:8787`) is still "same-site" (same `localhost` host, different port).
+Cross-origin dev CORS (`apps/api/src/index.ts`) reflects the request `Origin`
+and sets `credentials: true`, which a wildcard `origin: '*'` can't do.
+
 | Method | State | Notes |
 | --- | --- | --- |
 | **Magic link** (email) | Fully implemented | Needs outbound email, which is **off** (no paid plan). In **dev/staging** the request endpoint returns the token directly (`devToken`) so you can log in without a mailbox; in **production** it does not. |

@@ -40,41 +40,49 @@ class MemberDetailScreen extends ConsumerWidget {
 
     return Scaffold(
       body: SafeArea(
-        child: ListView(
-          padding: const EdgeInsets.fromLTRB(22, 12, 22, 40),
+        child: Column(
           children: [
-            const SubPageHeader(title: 'Family member'),
-            const SizedBox(height: 20),
-            DetailProfileCard(
-              avatar: PersonAvatar(
-                  initial: initialFor(member.relationName), color: color, size: 54),
-              name: member.relationName,
-              subtitle: '$grouping · ● ${_colorName(color)}',
-              onEdit: (isAdmin || isSelf)
-                  ? () => showMemberEditor(context, ref, member)
-                  : null,
+            const Padding(
+              padding: EdgeInsets.fromLTRB(22, 12, 22, 20),
+              child: SubPageHeader(title: 'Family member'),
             ),
-            const SizedBox(height: 24),
-            _AccentSection(
-              color: AppColors.feedBlue,
-              child: _SourceCalendarsSection(member: member, canEdit: isAdmin),
-            ),
-            const SizedBox(height: 24),
-            _AccentSection(
-              color: AppColors.green,
-              child: _UnifiedCalendarSection(member: member, canEdit: canEditTarget),
-            ),
-            const SizedBox(height: 24),
-            _AccentSection(
-              color: AppColors.amber,
-              child: _FamilyLogisticsSection(member: member, canEdit: isAdmin),
-            ),
-            const SizedBox(height: 28),
-            if (isAdmin && !isSelf)
-              _RemoveButton(
-                label: 'Remove from family',
-                onTap: () => _confirmRemove(context, ref, member),
+            Expanded(
+              child: ListView(
+                padding: const EdgeInsets.fromLTRB(22, 0, 22, 150),
+                children: [
+                  DetailProfileCard(
+                    avatar: PersonAvatar(
+                        initial: initialFor(member.relationName), color: color, size: 54),
+                    name: member.relationName,
+                    subtitle: '$grouping · ● ${_colorName(color)}',
+                    onEdit: (isAdmin || isSelf)
+                        ? () => showMemberEditor(context, ref, member)
+                        : null,
+                  ),
+                  const SizedBox(height: 24),
+                  _AccentSection(
+                    color: AppColors.feedBlue,
+                    child: _SourceCalendarsSection(member: member, canEdit: isAdmin),
+                  ),
+                  const SizedBox(height: 24),
+                  _AccentSection(
+                    color: AppColors.green,
+                    child: _UnifiedCalendarSection(member: member, canEdit: canEditTarget),
+                  ),
+                  const SizedBox(height: 24),
+                  _AccentSection(
+                    color: AppColors.amber,
+                    child: _FamilyLogisticsSection(member: member, canEdit: isAdmin),
+                  ),
+                  const SizedBox(height: 28),
+                  if (isAdmin && !isSelf)
+                    _RemoveButton(
+                      label: 'Remove from family',
+                      onTap: () => _confirmRemove(context, ref, member),
+                    ),
+                ],
               ),
+            ),
           ],
         ),
       ),
@@ -421,6 +429,7 @@ class _UnifiedCalendarSection extends ConsumerWidget {
     if (accounts.isEmpty) return;
     await showModalBottomSheet<void>(
       context: context,
+      useRootNavigator: true,
       showDragHandle: true,
       isScrollControlled: true,
       builder: (sheetCtx) =>

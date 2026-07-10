@@ -10,6 +10,7 @@ import {
   getDb,
   inArray,
   memberCalendars,
+  tasks,
 } from '@igt/db';
 import {
   CalDavProvider,
@@ -181,6 +182,29 @@ async function linkTimezones(db: Db, familyId: string): Promise<Map<string, stri
 }
 
 /**
+ * IANA timezone per task id, for `claimed_task` events — those have no
+ * `linkId` of their own (they're on the CLAIMER's calendar, not the source
+ * calendar's), so they'd otherwise always mirror in bare UTC. Resolved via
+ * the task's originating event (`tasks.calendarEventId` is deliberately not
+ * an FK, so a vanished source just means the task is absent from this map —
+ * no worse than the UTC fallback it'd otherwise get).
+ */
+async function claimedTaskTimezones(db: Db, familyId: string): Promise<Map<string, string>> {
+  const rows = await db
+    .select({ taskId: tasks.id, timezone: feeds.timezone })
+    .from(tasks)
+    .innerJoin(calendarEvents, eq(calendarEvents.id, tasks.calendarEventId))
+    .innerJoin(familyMemberFeeds, eq(familyMemberFeeds.id, calendarEvents.linkId))
+    .innerJoin(feeds, eq(feeds.id, familyMemberFeeds.feedId))
+    .where(eq(tasks.familyId, familyId));
+  const map = new Map<string, string>();
+  for (const r of rows) {
+    if (r.timezone) map.set(r.taskId, r.timezone);
+  }
+  return map;
+}
+
+/**
  * Reconcile one member's target calendar so it reflects exactly their
  * unified calendar's synthesized + claimed events. Mirror rows deliberately
  * outlive their events (no FK): a vanished event is remote-cancelled here,
@@ -222,6 +246,7 @@ export async function syncMemberMirror(
     : [];
   const desiredById = new Map(desired.map((e) => [e.id, e]));
   const timezones = await linkTimezones(db, cal.familyId);
+  const claimedTimezones = await claimedTaskTimezones(db, cal.familyId);
 
   const existing = await db
     .select()
@@ -258,7 +283,11 @@ export async function syncMemberMirror(
   const alertMinutes = cal.alertMinutes ?? [];
   for (const event of desired) {
     const summary = mirroredSummary(event);
-    const timezone = event.linkId ? timezones.get(event.linkId) : undefined;
+    const timezone = event.linkId
+      ? timezones.get(event.linkId)
+      : event.taskId
+        ? claimedTimezones.get(event.taskId)
+        : undefined;
     const hash = hashMirrorPayload(summary, event, alertMinutes, timezone);
     const prior = existingByEvent.get(event.id);
     if (prior && prior.payloadHash === hash) continue;

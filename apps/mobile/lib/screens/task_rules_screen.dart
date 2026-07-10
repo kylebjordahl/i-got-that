@@ -56,38 +56,46 @@ class _TaskRulesScreenState extends ConsumerState<TaskRulesScreen> {
 
     return Scaffold(
       body: SafeArea(
-        child: ListView(
-          padding: const EdgeInsets.fromLTRB(22, 12, 22, 40),
+        child: Column(
           children: [
-            SubPageHeader(title: 'Task rules', subtitle: widget.member.relationName),
-            const SizedBox(height: 18),
-            Text('ACTIVE CALENDAR', style: AppText.eyebrow()),
-            const SizedBox(height: 10),
-            SizedBox(
-              height: 38,
+            Padding(
+              padding: const EdgeInsets.fromLTRB(22, 12, 22, 18),
+              child: SubPageHeader(title: 'Task rules', subtitle: widget.member.relationName),
+            ),
+            Expanded(
               child: ListView(
-                scrollDirection: Axis.horizontal,
+                padding: const EdgeInsets.fromLTRB(22, 0, 22, 150),
                 children: [
-                  for (final (label, linkId) in calendars)
-                    Padding(
-                      padding: const EdgeInsets.only(right: 8),
-                      child: _CalChip(
-                        label: label,
-                        selected: _activeLinkId == linkId,
-                        onTap: () => setState(() => _activeLinkId = linkId),
-                      ),
+                  Text('ACTIVE CALENDAR', style: AppText.eyebrow()),
+                  const SizedBox(height: 10),
+                  SizedBox(
+                    height: 38,
+                    child: ListView(
+                      scrollDirection: Axis.horizontal,
+                      children: [
+                        for (final (label, linkId) in calendars)
+                          Padding(
+                            padding: const EdgeInsets.only(right: 8),
+                            child: _CalChip(
+                              label: label,
+                              selected: _activeLinkId == linkId,
+                              onTap: () => setState(() => _activeLinkId = linkId),
+                            ),
+                          ),
+                      ],
                     ),
+                  ),
+                  const SizedBox(height: 20),
+                  setAsync.when(
+                    loading: () => const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 40),
+                      child: Center(child: CircularProgressIndicator()),
+                    ),
+                    error: (e, _) => Text('$e', style: font(kBodyFont, 13, 500, color: AppColors.coral)),
+                    data: (ruleSet) => _pipeline(ruleSet),
+                  ),
                 ],
               ),
-            ),
-            const SizedBox(height: 20),
-            setAsync.when(
-              loading: () => const Padding(
-                padding: EdgeInsets.symmetric(vertical: 40),
-                child: Center(child: CircularProgressIndicator()),
-              ),
-              error: (e, _) => Text('$e', style: font(kBodyFont, 13, 500, color: AppColors.coral)),
-              data: (ruleSet) => _pipeline(ruleSet),
             ),
           ],
         ),
@@ -158,6 +166,7 @@ class _TaskRulesScreenState extends ConsumerState<TaskRulesScreen> {
             border: Border.all(color: AppColors.amber.withValues(alpha: 0.35)),
           ),
           child: Column(
+            key: ValueKey(_activeLinkId),
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text('No matches → default', style: AppText.eyebrow(AppColors.amber)),
@@ -166,6 +175,18 @@ class _TaskRulesScreenState extends ConsumerState<TaskRulesScreen> {
                 value: dfault.resultType,
                 onChanged: (v) => _saveDefault(v),
               ),
+              if (dfault.resultType == 'transition') ...[
+                const SizedBox(height: 12),
+                _DefaultWindowFields(
+                  dropoffWindowMin: dfault.dropoffWindowMin,
+                  pickupWindowMin: dfault.pickupWindowMin,
+                  onSave: (dropoff, pickup) => _saveDefault(
+                    dfault.resultType,
+                    dropoffWindowMin: dropoff,
+                    pickupWindowMin: pickup,
+                  ),
+                ),
+              ],
             ],
           ),
         ),
@@ -184,13 +205,19 @@ class _TaskRulesScreenState extends ConsumerState<TaskRulesScreen> {
     if (changed == true) _refresh();
   }
 
-  Future<void> _saveDefault(String resultType) async {
+  Future<void> _saveDefault(
+    String resultType, {
+    int? dropoffWindowMin,
+    int? pickupWindowMin,
+  }) async {
     final familyId = await ref.read(familyProvider.future);
     await ref.read(apiClientProvider).setTaskDefault(
           familyId,
           widget.member.id,
           linkId: _activeLinkId,
           defaultResultType: resultType,
+          dropoffWindowMin: dropoffWindowMin,
+          pickupWindowMin: pickupWindowMin,
         );
     _refresh();
   }
@@ -292,6 +319,78 @@ class _ResultSegmented extends StatelessWidget {
   }
 }
 
+/// Window-size inputs for the calendar's terminal default, shown only when
+/// that default resolves to a transition (drop-off & pickup) task.
+class _DefaultWindowFields extends StatefulWidget {
+  const _DefaultWindowFields({
+    required this.dropoffWindowMin,
+    required this.pickupWindowMin,
+    required this.onSave,
+  });
+
+  final int dropoffWindowMin;
+  final int pickupWindowMin;
+  final void Function(int dropoffWindowMin, int pickupWindowMin) onSave;
+
+  @override
+  State<_DefaultWindowFields> createState() => _DefaultWindowFieldsState();
+}
+
+class _DefaultWindowFieldsState extends State<_DefaultWindowFields> {
+  late final _dropoff = TextEditingController(text: '${widget.dropoffWindowMin}');
+  late final _pickup = TextEditingController(text: '${widget.pickupWindowMin}');
+  bool _dirty = false;
+
+  @override
+  void dispose() {
+    _dropoff.dispose();
+    _pickup.dispose();
+    super.dispose();
+  }
+
+  void _commit() {
+    final dropoff = int.tryParse(_dropoff.text.trim());
+    final pickup = int.tryParse(_pickup.text.trim());
+    if (dropoff == null || pickup == null) return;
+    widget.onSave(dropoff, pickup);
+    setState(() => _dirty = false);
+  }
+
+  Widget _numField(TextEditingController c, String label) => TextField(
+        controller: c,
+        keyboardType: TextInputType.number,
+        onChanged: (_) => setState(() => _dirty = true),
+        onSubmitted: (_) => _commit(),
+        decoration: InputDecoration(labelText: label),
+      );
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('The time window allowed for each task (in minutes).', style: AppText.subtitle),
+        const SizedBox(height: 10),
+        Row(
+          children: [
+            Expanded(child: _numField(_dropoff, 'Drop-off')),
+            const SizedBox(width: 12),
+            Expanded(child: _numField(_pickup, 'Pickup')),
+          ],
+        ),
+        if (_dirty) ...[
+          const SizedBox(height: 10),
+          Align(
+            alignment: Alignment.centerRight,
+            child: PillButton(
+                label: 'Save', variant: PillVariant.amber, compact: true, onPressed: _commit),
+          ),
+        ],
+      ],
+    );
+  }
+}
+
 /// Task-rule edit sheet (6n). Returns true when something changed.
 Future<bool?> showTaskRuleSheet(
   BuildContext context,
@@ -302,6 +401,7 @@ Future<bool?> showTaskRuleSheet(
 }) {
   return showModalBottomSheet<bool>(
     context: context,
+    useRootNavigator: true,
     showDragHandle: true,
     isScrollControlled: true,
     builder: (_) => _TaskRuleSheet(member: member, activeLinkId: activeLinkId, existing: existing),

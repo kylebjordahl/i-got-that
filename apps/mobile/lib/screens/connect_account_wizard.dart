@@ -142,7 +142,7 @@ class _ConnectAccountWizardState extends ConsumerState<ConnectAccountWizard> {
     return Scaffold(
       body: SafeArea(
         child: ListView(
-          padding: const EdgeInsets.fromLTRB(22, 12, 22, 40),
+          padding: const EdgeInsets.fromLTRB(22, 12, 22, 150),
           children: [
             Row(
               children: [

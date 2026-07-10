@@ -1,7 +1,54 @@
 import 'dart:ui' show ImageFilter;
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../screens/family_screen.dart' show showAddMemberSheet;
+import '../state/family.dart';
+import '../state/nav.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_text.dart';
+
+/// The floating nav, mounted once above the inner content Navigator (see
+/// `_AuthedRoot` in main.dart) instead of inside any pushed route's own
+/// Scaffold. That keeps the pill itself stationary through every push/pop
+/// transition between [AppShell] and its sub-screens (member detail, feed
+/// setup, task rules, connect-account) — only that route's content slides,
+/// the way a per-route `bottomNavigationBar` used to make the whole pill
+/// slide along with it. Bottom sheets/dialogs still render above the pill
+/// (rather than being hidden behind it) because they open with
+/// `useRootNavigator: true`, landing on MaterialApp's outer Navigator, one
+/// Stack layer above this whole screen-content-plus-nav unit.
+class PersistentAppNav extends ConsumerWidget {
+  const PersistentAppNav({super.key});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final index = ref.watch(navIndexProvider);
+    final isAdmin = ref.watch(currentMemberProvider).valueOrNull?.isAdmin ?? false;
+    return Positioned(
+      left: 0,
+      right: 0,
+      bottom: MediaQuery.of(context).viewInsets.bottom,
+      child: SafeArea(
+        top: false,
+        child: ValueListenableBuilder<int>(
+          valueListenable: routeDepthNotifier,
+          builder: (context, depth, _) => AppBottomNav(
+            currentIndex: index,
+            onAdd: depth == 0 && index == 2 && isAdmin
+                ? () => showAddMemberSheet(rootNavigatorKey.currentContext!, ref)
+                : null,
+            onSelect: (i) {
+              ref.read(navIndexProvider.notifier).state = i;
+              if (depth > 0) {
+                rootNavigatorKey.currentState!.popUntil((route) => route.isFirst);
+              }
+            },
+          ),
+        ),
+      ),
+    );
+  }
+}
 
 /// The shared floating nav: a blurred pill with Home / Plan / Family / Me (active
 /// tab pill-filled indigo). The circular "+" quick-add appears **only** when
