@@ -316,6 +316,65 @@ class TaskFilterChip extends StatelessWidget {
   }
 }
 
+/// A Plan unified-calendar chip (6c): a color-bordered pill carrying the
+/// member's initial avatar + name. The "Everyone" chip has no avatar. Selected
+/// fills with the member's tint (indigo for Everyone); unselected is a bare
+/// outline.
+class MemberChip extends StatelessWidget {
+  const MemberChip({
+    super.key,
+    required this.label,
+    required this.selected,
+    required this.onTap,
+    this.initial,
+    this.color,
+  });
+
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+
+  /// Null ⇒ the "Everyone" chip (no avatar).
+  final String? initial;
+  final Color? color;
+
+  @override
+  Widget build(BuildContext context) {
+    final accent = color ?? AppColors.indigo;
+    final Color bg, fg, border;
+    if (selected) {
+      bg = AppColors.tint(accent, 0.18);
+      fg = AppColors.textPrimary;
+      border = accent;
+    } else {
+      bg = Colors.transparent;
+      fg = AppColors.textSecondary;
+      border = AppColors.border;
+    }
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: EdgeInsets.fromLTRB(initial == null ? 14 : 6, 6, 14, 6),
+        decoration: BoxDecoration(
+          color: bg,
+          borderRadius: BorderRadius.circular(999),
+          border: Border.all(color: border),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (initial != null) ...[
+              PersonAvatar(initial: initial!, color: accent, size: 24),
+              const SizedBox(width: 8),
+            ],
+            Text(label, style: font(kBodyFont, 13, 600, color: fg)),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 /// The toolbar "Filters" pill with a count badge — opens a screen's filter
 /// sheet. Shared by Home and Plan.
 class FiltersButton extends StatelessWidget {

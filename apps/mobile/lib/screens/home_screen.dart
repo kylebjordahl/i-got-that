@@ -43,9 +43,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       (_exTypes.isNotEmpty ? 1 : 0) +
       (_onlyMyKids ? 1 : 0);
 
-  bool _passesFilter(TaskItem t, Set<String> myKids) {
+  // The child / task-type / only-my-kids axes. The owner axis is applied
+  // separately when partitioning into the "Needs an owner" vs "You're covering"
+  // sections (6b), so it isn't checked here.
+  bool _passesBase(TaskItem t, Set<String> myKids) {
     if (_exChildren.contains(t.familyMemberId)) return false;
-    if (!t.isUnowned && !_incOwners.contains(t.ownerMemberId)) return false;
     final group = t.type == 'attendance' ? 'attendance' : 'transition';
     if (_exTypes.contains(group)) return false;
     if (_onlyMyKids && !myKids.contains(t.familyMemberId)) return false;
@@ -103,23 +105,33 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         if (t.ownerMemberId == me?.id) t.familyMemberId
     };
 
-    // Unowned tasks by default, plus any owners opted into via Filters,
-    // upcoming only (no past tasks, regardless of claim state), grouped by day.
-    final visible = [
+    // Upcoming tasks passing the base filters (child / type / only-my-kids).
+    // The mockup shows a single day, but this flexes to however many days of
+    // claimable work exist — each day keeps its own sticky header.
+    final upcoming = [
       for (final t in rawTasks)
         if ((_showCompleted || !t.isDismissed) &&
             !t.start.isBefore(now) &&
-            _passesFilter(t, myKids))
+            _passesBase(t, myKids))
           t
     ];
-    final byDay = <DateTime, List<TaskItem>>{};
-    for (final t in visible) {
-      (byDay[dayKey(t.start)] ??= []).add(t);
-    }
-    for (final list in byDay.values) {
-      list.sort((a, b) => a.start.compareTo(b.start));
-    }
-    final days = byDay.keys.toList()..sort();
+    // The two 6b buckets. "Needs an owner" is everything unclaimed; "You're
+    // covering" is what I own — plus any other caretakers opted into via
+    // Filters. My own claimed tasks always show.
+    final unowned = [for (final t in upcoming) if (t.isUnowned) t];
+    final covering = [
+      for (final t in upcoming)
+        if (!t.isUnowned &&
+            !t.isDismissed &&
+            (t.ownerMemberId == me?.id || _incOwners.contains(t.ownerMemberId)))
+          t
+    ];
+
+    final unownedByDay = _groupByDay(unowned);
+    final coveringByDay = _groupByDay(covering);
+    final unownedDays = unownedByDay.keys.toList()..sort();
+    final coveringDays = coveringByDay.keys.toList()..sort();
+    final nothing = decisions.isEmpty && unowned.isEmpty && covering.isEmpty;
 
     return RefreshIndicator(
       onRefresh: () async {
@@ -157,43 +169,110 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                     ],
                     const SizedBox(height: 8),
                   ],
-                  const _HintChip(),
-                  const SizedBox(height: 8),
                 ],
               ),
             ),
           ),
           if (allAsync.hasError)
             SliverToBoxAdapter(child: _pad(_error('${allAsync.error}')))
-          else if (days.isEmpty)
+          else if (nothing)
             SliverToBoxAdapter(
               child: _pad(_empty(allAsync.isLoading
                   ? 'Loading…'
                   : 'Nothing to cover — all clear 🎉')))
-          else
-            // Each day is its own SliverMainAxisGroup so its header stays pinned
-            // only within that day — the next day's header pushes it out instead
-            // of the headers stacking at the top.
-            for (final day in days)
-              SliverMainAxisGroup(
-                slivers: [
-                  SliverPersistentHeader(
-                    pinned: true,
-                    delegate: _DayHeaderDelegate(
-                      label: homeDayHeader(day, now),
-                      openCount: byDay[day]!.where((t) => t.status == 'unowned').length,
-                    ),
-                  ),
-                  SliverPadding(
-                    padding: const EdgeInsets.fromLTRB(22, 0, 22, 8),
-                    sliver: _daySliver(byDay[day]!, byId, eventsById, me, threshold),
-                  ),
-                ],
+          else ...[
+            // Needs an owner — the claim queue, threaded, day-grouped.
+            if (unowned.isNotEmpty)
+              ..._section(
+                label: 'Needs an owner',
+                labelColor: AppColors.textPrimary,
+                trailing: Text('${unowned.length}', style: AppText.secondary),
+                byDay: unownedByDay,
+                days: unownedDays,
+                showOpen: true,
+                thread: true,
+                now: now,
+                byId: byId,
+                eventsById: eventsById,
+                me: me,
+                threshold: threshold,
               ),
+            // You're covering — tasks I (or opted-in caretakers) already own.
+            if (covering.isNotEmpty)
+              ..._section(
+                label: "You're covering",
+                labelColor: AppColors.textMuted,
+                trailing: null,
+                byDay: coveringByDay,
+                days: coveringDays,
+                showOpen: false,
+                thread: false,
+                now: now,
+                byId: byId,
+                eventsById: eventsById,
+                me: me,
+                threshold: threshold,
+              ),
+          ],
           const SliverToBoxAdapter(child: SizedBox(height: 120)),
         ],
       ),
     );
+  }
+
+  Map<DateTime, List<TaskItem>> _groupByDay(List<TaskItem> tasks) {
+    final byDay = <DateTime, List<TaskItem>>{};
+    for (final t in tasks) {
+      (byDay[dayKey(t.start)] ??= []).add(t);
+    }
+    for (final list in byDay.values) {
+      list.sort((a, b) => a.start.compareTo(b.start));
+    }
+    return byDay;
+  }
+
+  /// A 6b section: an eyebrow header, then the tasks grouped by day. Each day is
+  /// its own SliverMainAxisGroup so its header stays pinned only within that day
+  /// — the next day's header pushes it out instead of stacking.
+  List<Widget> _section({
+    required String label,
+    required Color labelColor,
+    required Widget? trailing,
+    required Map<DateTime, List<TaskItem>> byDay,
+    required List<DateTime> days,
+    required bool showOpen,
+    required bool thread,
+    required DateTime now,
+    required Map<String, Member> byId,
+    required Map<String, CalendarEventItem> eventsById,
+    required Member? me,
+    required int threshold,
+  }) {
+    return [
+      SliverToBoxAdapter(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(22, 6, 22, 8),
+          child: SectionEyebrow(label, color: labelColor, trailing: trailing),
+        ),
+      ),
+      for (final day in days)
+        SliverMainAxisGroup(
+          slivers: [
+            SliverPersistentHeader(
+              pinned: true,
+              delegate: _DayHeaderDelegate(
+                label: homeDayHeader(day, now),
+                trailing: showOpen ? '${byDay[day]!.length} open' : null,
+              ),
+            ),
+            SliverPadding(
+              padding: const EdgeInsets.fromLTRB(22, 0, 22, 8),
+              sliver: _daySliver(byDay[day]!, byId, eventsById, me, threshold,
+                  thread: thread),
+            ),
+          ],
+        ),
+    ];
   }
 
   /// Stitch a day's tasks into threaded chains: consecutive tasks whose gap is
@@ -219,7 +298,17 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   }
 
   Widget _daySliver(List<TaskItem> tasks, Map<String, Member> byId,
-      Map<String, CalendarEventItem> eventsById, Member? me, int threshold) {
+      Map<String, CalendarEventItem> eventsById, Member? me, int threshold,
+      {bool thread = true}) {
+    // "You're covering" rows aren't threaded — they're already claimed, so the
+    // "same trip / claim both" affordance doesn't apply.
+    if (!thread) {
+      return SliverList.separated(
+        itemCount: tasks.length,
+        separatorBuilder: (_, __) => const SizedBox(height: 11),
+        itemBuilder: (_, i) => _row(tasks[i], byId, eventsById, me),
+      );
+    }
     final chains = _chains(tasks, threshold);
     return SliverList.separated(
       itemCount: chains.length,
@@ -322,7 +411,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final members = ref.read(membersProvider).valueOrNull ?? const <Member>[];
     final me = ref.read(currentMemberProvider).valueOrNull;
     final children = members.where((m) => m.requiresCaretaker).toList();
-    final caretakers = members.where((m) => m.isCaretaker).toList();
+    // My own covered tasks always show under "You're covering", so the opt-in
+    // list is only the *other* caretakers.
+    final caretakers =
+        members.where((m) => m.isCaretaker && m.id != me?.id).toList();
 
     showModalBottomSheet<void>(
       context: context,
@@ -467,18 +559,31 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final child = byId[t.familyMemberId];
     final color = child != null ? personColor(child) : AppColors.textSecondary;
     final owned = t.status == 'owned';
-    final meColor = me == null ? AppColors.indigo : personColor(me);
+    final owner = owned ? byId[t.ownerMemberId] : null;
+    final ownerColor = owner != null ? personColor(owner) : AppColors.indigo;
+    final isMine = owner?.id == me?.id;
     return TaskRow(
       icon: taskIcon(t.type),
       iconColor: color,
+      // The source-person badge names whose calendar the task came from (6b).
+      // Only on the unclaimed rows, where the trailing chip isn't already an
+      // avatar of a person.
+      sourceInitial: !owned && child != null ? initialFor(child.relationName) : null,
+      sourceColor: !owned && child != null ? color : null,
       typeLabel: taskTitle(t, eventsById[t.calendarEventId]),
       personName: child?.relationName ?? 'child',
       personColor: color,
       subtitle: '${taskCategory(t.type)} · ${friendlyTime(t.start)}',
-      ownedColor: owned ? meColor : null,
+      ownedColor: owned ? ownerColor : null,
       onTap: () => showTaskActions(context, ref, t),
       trailing: owned
-          ? YouChip(initial: initialFor(me?.relationName ?? '?'), color: meColor)
+          ? (isMine
+              ? YouChip(
+                  initial: initialFor(me?.relationName ?? '?'), color: ownerColor)
+              : _CoveredByChip(
+                  initial: initialFor(owner?.relationName ?? '?'),
+                  name: owner?.relationName ?? 'them',
+                  color: ownerColor))
           : PillButton(label: 'Claim', dense: true, onPressed: () => _claim(t.id)),
     );
   }
@@ -646,38 +751,37 @@ class _ThreadedChain extends StatelessWidget {
   }
 }
 
-/// The discoverability hint for the long-press quick-actions.
-class _HintChip extends StatelessWidget {
-  const _HintChip();
+/// The trailing chip on a "You're covering" row when the owner isn't me: the
+/// covering caretaker's avatar + name.
+class _CoveredByChip extends StatelessWidget {
+  const _CoveredByChip({
+    required this.initial,
+    required this.name,
+    required this.color,
+  });
+  final String initial;
+  final String name;
+  final Color color;
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-      decoration: BoxDecoration(
-        color: AppColors.card,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: AppColors.borderSubtle),
-      ),
-      child: Row(
-        children: [
-          const Icon(Icons.touch_app_outlined, size: 17, color: AppColors.textTertiary),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Text('Tap a task to reassign, change its type, or mark it not needed',
-                style: font(kBodyFont, 12.5, 500, color: AppColors.textSecondary)),
-          ),
-        ],
-      ),
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        PersonAvatar(initial: initial, color: color, size: 24),
+        const SizedBox(width: 6),
+        Text(name, style: font(kBodyFont, 12.5, 600, color: AppColors.textSecondary)),
+      ],
     );
   }
 }
 
-/// Sticky per-day header: "TODAY · TUE JUL 1" with the open (unclaimed) count.
+/// Sticky per-day header: "TODAY · TUE JUL 1" with an optional trailing note
+/// (the open-count on the claim queue; nothing on the covering list).
 class _DayHeaderDelegate extends SliverPersistentHeaderDelegate {
-  _DayHeaderDelegate({required this.label, required this.openCount});
+  _DayHeaderDelegate({required this.label, this.trailing});
   final String label;
-  final int openCount;
+  final String? trailing;
 
   @override
   double get minExtent => 42;
@@ -693,7 +797,7 @@ class _DayHeaderDelegate extends SliverPersistentHeaderDelegate {
       child: Row(
         children: [
           Expanded(child: Text(label, style: AppText.eyebrow(AppColors.amberHero))),
-          Text('$openCount open', style: AppText.secondary),
+          if (trailing != null) Text(trailing!, style: AppText.secondary),
         ],
       ),
     );
@@ -701,5 +805,5 @@ class _DayHeaderDelegate extends SliverPersistentHeaderDelegate {
 
   @override
   bool shouldRebuild(_DayHeaderDelegate old) =>
-      old.label != label || old.openCount != openCount;
+      old.label != label || old.trailing != trailing;
 }

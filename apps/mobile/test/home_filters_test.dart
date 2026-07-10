@@ -66,18 +66,22 @@ void main() {
         ),
       );
 
-  testWidgets('Home shows only unclaimed tasks by default — even my own claimed ones hide',
+  testWidgets('Home splits unclaimed work from what I am covering (6b)',
       (tester) async {
     await tester.pumpWidget(app());
     await tester.pumpAndSettle();
 
-    // Only the unowned task renders a claimable row; the two owned tasks
-    // (mine and Mom's) are both hidden until opted into via Filters.
+    // The unowned task is a claimable "Needs an owner" row; my own claimed
+    // task always shows under "You're covering" (trailing "You"). Mom's claimed
+    // task stays hidden until opted into via Filters.
+    expect(find.text('NEEDS AN OWNER'), findsOneWidget);
+    expect(find.text("YOU'RE COVERING"), findsOneWidget);
     expect(find.text('Claim'), findsOneWidget);
-    expect(find.text('You'), findsNothing);
+    expect(find.text('You'), findsOneWidget);
+    expect(find.text('Mom'), findsNothing);
   });
 
-  testWidgets("Filters lets a caretaker's claimed tasks back in, opt-in per person",
+  testWidgets("Filters opts another caretaker's claimed tasks into You're covering",
       (tester) async {
     await tester.pumpWidget(app());
     await tester.pumpAndSettle();
@@ -86,8 +90,9 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Also show claimed by'), findsOneWidget);
 
-    // Opt into Dad's (my own) claimed tasks via the "You" chip.
-    await tester.tap(find.text('You'));
+    // Opt into Mom's claimed tasks (my own are always shown, so the opt-in list
+    // only contains other caretakers).
+    await tester.tap(find.text('Mom'));
     await tester.pumpAndSettle();
 
     final applyFinder = find.textContaining('Apply');
@@ -98,7 +103,8 @@ void main() {
     await tester.tap(applyFinder);
     await tester.pumpAndSettle();
 
-    // My claimed task now shows inline as "You"; Mom's stays hidden.
+    // Mom's claimed task now shows as a covering row; mine still shows as "You".
+    expect(find.text('Mom'), findsOneWidget);
     expect(find.text('You'), findsOneWidget);
     expect(find.text('Claim'), findsOneWidget); // still just the unowned row
   });
