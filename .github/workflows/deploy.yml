@@ -79,6 +79,10 @@ jobs:
       # sources: a backend/infra-only deploy restores it and skips the Flutter
       # SDK download + web build (the slowest part of the deploy). Only a change
       # under apps/mobile busts the cache and triggers a rebuild.
+      #
+      # --build-number matches the `testflight` job below (same
+      # github.run_number), so the build number shown in-app (Me → Help &
+      # about) lines up with the TestFlight build for the same workflow run.
       - name: Restore built web client
         id: web-client-cache
         uses: actions/cache@v4
@@ -98,7 +102,8 @@ jobs:
         run: |
           flutter create . --platforms=web --project-name caretaker_app
           flutter pub get
-          flutter build web --base-href /app/ --dart-define=API_BASE_URL=/api
+          flutter build web --base-href /app/ --dart-define=API_BASE_URL=/api \
+            --build-number=${{ github.run_number }}
       - name: Stage web assets
         if: steps.web-client-cache.outputs.cache-hit != 'true'
         run: |
