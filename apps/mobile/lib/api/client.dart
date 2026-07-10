@@ -42,6 +42,15 @@ class ApiClient {
     return data;
   }
 
+  /// Native Sign in with Apple: exchange the identity token from
+  /// `SignInWithApple.getAppleIDCredential` for a session.
+  Future<Map<String, dynamic>> signInWithApple(String identityToken) async {
+    final res = await _dio.post('/auth/apple', data: {'identityToken': identityToken});
+    final data = _obj(res);
+    _sessionToken = data['sessionToken'] as String;
+    return data;
+  }
+
   Future<Map<String, dynamic>> me() async => _obj(await _dio.get('/me', options: _auth));
 
   /// Invalidate the session server-side and clear the web session cookie.
