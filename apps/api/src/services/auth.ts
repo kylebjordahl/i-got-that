@@ -7,6 +7,7 @@ import {
   sessions,
   users,
 } from '@igt/db';
+import type { IdentityProvider } from '@igt/domain';
 import type { AppleNotificationEvent } from '../lib/apple.js';
 import { randomToken, sha256hex } from '../lib/crypto.js';
 
@@ -117,6 +118,141 @@ export async function handleAppleAccountEvent(
     case 'email-enabled':
       break;
   }
+}
+
+// --- Identity linking (thread multiple login methods into one user) -------
+
+/** A login method attached to a user, as returned by the account UI. */
+export type IdentitySummary = {
+  id: string;
+  provider: IdentityProvider;
+  // Apple's opaque subject, or the magic-link email — a label for the UI.
+  providerRef: string;
+  createdAt: number;
+};
+
+/** Every login method threaded to `userId`, newest last. */
+export async function listIdentities(
+  db: Db,
+  userId: string,
+): Promise<IdentitySummary[]> {
+  const rows = await db
+    .select()
+    .from(identities)
+    .where(eq(identities.userId, userId));
+  return rows
+    .map((r) => ({
+      id: r.id,
+      provider: r.provider,
+      providerRef: r.providerRef,
+      createdAt: r.createdAt.getTime(),
+    }))
+    .sort((a, b) => a.createdAt - b.createdAt);
+}
+
+/**
+ * Attach a verified `(provider, providerRef)` to `userId`. Idempotent for that
+ * user; refuses to steal an identity already threaded to someone else (the
+ * caller surfaces that as a conflict).
+ */
+async function attachIdentity(
+  db: Db,
+  userId: string,
+  provider: IdentityProvider,
+  providerRef: string,
+): Promise<'linked' | 'already_linked' | 'conflict'> {
+  const existing = await db
+    .select()
+    .from(identities)
+    .where(
+      and(
+        eq(identities.provider, provider),
+        eq(identities.providerRef, providerRef),
+      ),
+    )
+    .limit(1);
+  const row = existing[0];
+  if (row) return row.userId === userId ? 'already_linked' : 'conflict';
+
+  await db.insert(identities).values({ userId, provider, providerRef });
+  return 'linked';
+}
+
+export type LinkResult =
+  | { ok: true; status: 'linked' | 'already_linked' }
+  | { ok: false; error: 'invalid_token' | 'identity_linked_to_other_user' };
+
+/**
+ * Consume a magic-link token and thread its email onto `userId` as a
+ * `magic_link` identity — the same token flow as login, but attaching to the
+ * already-signed-in user instead of finding/creating one.
+ */
+export async function linkMagicLinkIdentity(
+  db: Db,
+  userId: string,
+  rawToken: string,
+): Promise<LinkResult> {
+  const tokenHash = await sha256hex(rawToken);
+  const rows = await db
+    .select()
+    .from(authTokens)
+    .where(eq(authTokens.tokenHash, tokenHash))
+    .limit(1);
+  const row = rows[0];
+  if (!row || row.consumedAt || row.expiresAt.getTime() < Date.now()) {
+    return { ok: false, error: 'invalid_token' };
+  }
+  await db
+    .update(authTokens)
+    .set({ consumedAt: new Date() })
+    .where(eq(authTokens.id, row.id));
+
+  const status = await attachIdentity(db, userId, 'magic_link', row.email);
+  if (status === 'conflict') {
+    return { ok: false, error: 'identity_linked_to_other_user' };
+  }
+  return { ok: true, status };
+}
+
+/**
+ * Thread a verified Apple `sub` onto `userId` as an `apple` identity. The caller
+ * verifies the identity token first (native `/auth/link/apple` or the web
+ * link-redirect callback).
+ */
+export async function linkAppleIdentity(
+  db: Db,
+  userId: string,
+  sub: string,
+): Promise<LinkResult> {
+  const status = await attachIdentity(db, userId, 'apple', sub);
+  if (status === 'conflict') {
+    return { ok: false, error: 'identity_linked_to_other_user' };
+  }
+  return { ok: true, status };
+}
+
+/**
+ * Detach a login method from `userId`. Guards against removing the last one
+ * (which would orphan the account, leaving no way back in).
+ */
+export async function unlinkIdentity(
+  db: Db,
+  userId: string,
+  identityId: string,
+): Promise<'ok' | 'not_found' | 'last_identity'> {
+  const rows = await db
+    .select()
+    .from(identities)
+    .where(eq(identities.userId, userId));
+  if (!rows.some((r) => r.id === identityId)) return 'not_found';
+  if (rows.length <= 1) return 'last_identity';
+
+  await db
+    .delete(identities)
+    .where(
+      and(eq(identities.id, identityId), eq(identities.userId, userId)),
+    );
+  return 'ok';
 }
 
 /** Create a session for a user; returns the raw session token. */

@@ -288,7 +288,6 @@ class _OverridePipeline extends ConsumerWidget {
             style: AppText.subtitle),
         const SizedBox(height: 12),
         AppCard(
-          padding: EdgeInsets.zero,
           child: SettingRow(
             icon: Icons.input_rounded,
             iconColor: AppColors.feedBlue,

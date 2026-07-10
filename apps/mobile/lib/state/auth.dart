@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:sign_in_with_apple/sign_in_with_apple.dart';
 import '../api/client.dart';
 import '../util/web_auth.dart';
 
@@ -46,7 +47,11 @@ class AuthController extends StateNotifier<AuthState> {
   /// page refresh doesn't force a re-login. No-op on native / when neither
   /// yields anything.
   Future<void> _restore() async {
-    final (:session, :error) = consumeAppleAuthFragment();
+    // The third field (`linked`) is the web link-a-method redirect
+    // (`#linked=apple`); it leaves the existing session cookie in place, so we
+    // just let it strip the fragment and fall through to the cookie restore
+    // below — the freshly linked identity is picked up on the reload.
+    final (:session, :error, linked: _) = consumeAppleAuthFragment();
     if (session != null) {
       _api.setSession(session);
       try {
@@ -86,8 +91,58 @@ class AuthController extends StateNotifier<AuthState> {
 
   /// Web: begin Sign in with Apple by navigating to the API's redirect endpoint;
   /// Apple sends the browser back to `/app/#session=…`, picked up on reload by
-  /// [_restore]. Native wiring uses `sign_in_with_apple` (TODO).
+  /// [_restore].
   void loginWithApple() => startWebRedirect('$apiBaseUrl/auth/apple/start');
+
+  /// Web: link Sign in with Apple to the *current* user (rather than logging in
+  /// afresh). The session cookie rides along on the redirect, so the callback
+  /// threads Apple onto this account and sends the browser back to
+  /// `/app/#linked=apple`. Native uses [linkWithAppleNative].
+  void linkWithApple() => startWebRedirect('$apiBaseUrl/auth/apple/start?link=1');
+
+  /// Native (iOS): request an Apple ID credential from the OS sheet and post
+  /// its identity token to `/auth/apple` to obtain a session.
+  Future<void> loginWithAppleNative() async {
+    final identityToken = await _requestAppleIdentityToken();
+    if (identityToken == null) return; // user dismissed the sheet
+    final res = await _api.signInWithApple(identityToken);
+    state = AuthState(
+      sessionToken: res['sessionToken'] as String,
+      user: res['user'] as Map<String, dynamic>,
+    );
+  }
+
+  /// Native (iOS): link Sign in with Apple to the *current* user by posting a
+  /// fresh identity token to `/auth/link/apple`. The session is unchanged; the
+  /// caller refreshes the identity list.
+  Future<void> linkWithAppleNative() async {
+    final identityToken = await _requestAppleIdentityToken();
+    if (identityToken == null) return; // user dismissed the sheet
+    await _api.linkApple(identityToken);
+  }
+
+  /// Drive the native Apple OS sheet and return the identity token, or null if
+  /// the user dismissed it.
+  Future<String?> _requestAppleIdentityToken() async {
+    AuthorizationCredentialAppleID cred;
+    try {
+      cred = await SignInWithApple.getAppleIDCredential(
+        scopes: [
+          AppleIDAuthorizationScopes.email,
+          AppleIDAuthorizationScopes.fullName,
+        ],
+      );
+    } on SignInWithAppleAuthorizationException catch (e) {
+      // User dismissed the OS sheet — not an error worth surfacing.
+      if (e.code == AuthorizationErrorCode.canceled) return null;
+      rethrow;
+    }
+    final identityToken = cred.identityToken;
+    if (identityToken == null) {
+      throw Exception('Apple did not return an identity token.');
+    }
+    return identityToken;
+  }
 
   /// Dev flow: request a magic link and immediately verify with the returned
   /// dev token. In production the token is emailed and this would instead deep-
