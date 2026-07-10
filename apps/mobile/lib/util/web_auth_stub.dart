@@ -4,7 +4,7 @@
 /// the web.
 void startWebRedirect(String url) {}
 
-/// Consume `session` / `auth_error` from the URL fragment Apple's callback set,
-/// clearing it so the token doesn't linger. Always empty off the web.
-({String? session, String? error}) consumeAppleAuthFragment() =>
-    (session: null, error: null);
+/// Consume `session` / `auth_error` / `linked` from the URL fragment Apple's
+/// callback set, clearing it so nothing lingers. Always empty off the web.
+({String? session, String? error, String? linked}) consumeAppleAuthFragment() =>
+    (session: null, error: null, linked: null);

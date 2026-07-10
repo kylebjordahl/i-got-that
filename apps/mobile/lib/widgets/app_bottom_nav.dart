@@ -7,13 +7,16 @@ import '../state/nav.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_text.dart';
 
-/// The floating nav, mounted once above the app's Navigator (see
-/// `CaretakerApp`'s `builder` in main.dart) instead of inside any pushed
-/// route's own Scaffold. That keeps the pill itself stationary through every
-/// push/pop transition between [AppShell] and its sub-screens (member detail,
-/// feed setup, task rules, connect-account) — only that route's content
-/// slides, the way a per-route `bottomNavigationBar` used to make the whole
-/// pill slide along with it.
+/// The floating nav, mounted once above the inner content Navigator (see
+/// `_AuthedRoot` in main.dart) instead of inside any pushed route's own
+/// Scaffold. That keeps the pill itself stationary through every push/pop
+/// transition between [AppShell] and its sub-screens (member detail, feed
+/// setup, task rules, connect-account) — only that route's content slides,
+/// the way a per-route `bottomNavigationBar` used to make the whole pill
+/// slide along with it. Bottom sheets/dialogs still render above the pill
+/// (rather than being hidden behind it) because they open with
+/// `useRootNavigator: true`, landing on MaterialApp's outer Navigator, one
+/// Stack layer above this whole screen-content-plus-nav unit.
 class PersistentAppNav extends ConsumerWidget {
   const PersistentAppNav({super.key});
 

@@ -283,7 +283,7 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
         ),
         _PillIconButton(icon: Icons.schedule_rounded, label: 'Today', onTap: _goToToday),
         const SizedBox(width: 8),
-        _FiltersButton(count: _filterCount, onTap: () => _openFilters(caretakersFor())),
+        FiltersButton(count: _filterCount, onTap: () => _openFilters(caretakersFor())),
         const SizedBox(width: 8),
         RefreshFeedsButton(busy: _refreshingFeeds, onTap: _refreshFeeds, size: 36),
       ],
@@ -305,7 +305,7 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
         children: [
           Padding(
             padding: const EdgeInsets.only(right: 8),
-            child: _FilterChip(
+            child: TaskFilterChip(
               label: 'Everyone',
               selected: _selectedMemberId == null,
               onTap: () => setState(() => _selectedMemberId = null),
@@ -314,7 +314,7 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
           for (final m in members)
             Padding(
               padding: const EdgeInsets.only(right: 8),
-              child: _FilterChip(
+              child: TaskFilterChip(
                 label: m.relationName,
                 dotColor: personColor(m),
                 selected: _selectedMemberId == m.id,
@@ -481,6 +481,7 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
 
     showModalBottomSheet<void>(
       context: context,
+      useRootNavigator: true,
       showDragHandle: true,
       isScrollControlled: true,
       builder: (_) => StatefulBuilder(
@@ -519,7 +520,7 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
                 const SizedBox(height: 10),
                 Wrap(spacing: 8, runSpacing: 8, children: [
                   for (final c in children)
-                    _FilterChip(
+                    TaskFilterChip(
                       label: c.relationName,
                       dotColor: personColor(c),
                       selected: !_exChildren.contains(c.id),
@@ -531,13 +532,13 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
                 const SizedBox(height: 10),
                 Wrap(spacing: 8, runSpacing: 8, children: [
                   for (final m in caretakers)
-                    _FilterChip(
+                    TaskFilterChip(
                       label: m.id == me?.id ? 'You' : m.relationName,
                       dotColor: personColor(m),
                       selected: !_exOwners.contains(m.id),
                       onTap: () => toggle(_exOwners, m.id),
                     ),
-                  _FilterChip(
+                  TaskFilterChip(
                     label: 'Unowned',
                     dotColor: AppColors.textSecondary,
                     selected: !_exOwners.contains('__unowned__'),
@@ -548,12 +549,12 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
                 Text('Task type', style: AppText.eyebrow()),
                 const SizedBox(height: 10),
                 Wrap(spacing: 8, runSpacing: 8, children: [
-                  _FilterChip(
+                  TaskFilterChip(
                     label: 'Transitions',
                     selected: !_exTypes.contains('transition'),
                     onTap: () => toggle(_exTypes, 'transition'),
                   ),
-                  _FilterChip(
+                  TaskFilterChip(
                     label: 'Attendance',
                     selected: !_exTypes.contains('attendance'),
                     onTap: () => toggle(_exTypes, 'attendance'),
@@ -867,63 +868,6 @@ class _HourLine extends StatelessWidget {
   }
 }
 
-/// A filter chip. Person chips (with a [dotColor]) tint to that color when
-/// selected and show a colored dot; type chips fill solid indigo.
-class _FilterChip extends StatelessWidget {
-  const _FilterChip({
-    required this.label,
-    required this.selected,
-    required this.onTap,
-    this.dotColor,
-  });
-
-  final String label;
-  final bool selected;
-  final VoidCallback onTap;
-  final Color? dotColor;
-
-  @override
-  Widget build(BuildContext context) {
-    final person = dotColor != null;
-    final accent = dotColor ?? AppColors.indigo;
-    final Color bg, fg, border;
-    if (selected) {
-      bg = person ? AppColors.tint(accent, 0.18) : AppColors.indigo;
-      fg = person ? AppColors.textPrimary : const Color(0xFF17162B);
-      border = accent;
-    } else {
-      bg = Colors.transparent;
-      fg = AppColors.textSecondary;
-      border = AppColors.border;
-    }
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
-        decoration: BoxDecoration(
-          color: bg,
-          borderRadius: BorderRadius.circular(999),
-          border: Border.all(color: border),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            if (person && selected) ...[
-              Container(
-                width: 7,
-                height: 7,
-                decoration: BoxDecoration(color: accent, shape: BoxShape.circle),
-              ),
-              const SizedBox(width: 7),
-            ],
-            Text(label, style: font(kBodyFont, 13, 600, color: fg)),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
 /// A compact outlined pill with an icon + label (the Plan "Today" button).
 class _PillIconButton extends StatelessWidget {
   const _PillIconButton({required this.icon, required this.label, required this.onTap});
@@ -951,47 +895,6 @@ class _PillIconButton extends StatelessWidget {
               Icon(icon, size: 16, color: AppColors.textSecondary),
               const SizedBox(width: 7),
               Text(label, style: font(kBodyFont, 13.5, 600, color: AppColors.textSecondary)),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _FiltersButton extends StatelessWidget {
-  const _FiltersButton({required this.count, required this.onTap});
-  final int count;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return Material(
-      color: AppColors.card,
-      borderRadius: BorderRadius.circular(999),
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(999),
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(999),
-            border: Border.all(color: AppColors.border),
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Icon(Icons.tune_rounded, size: 17, color: AppColors.textSecondary),
-              const SizedBox(width: 7),
-              Text('Filters', style: font(kBodyFont, 13.5, 600, color: AppColors.textSecondary)),
-              if (count > 0) ...[
-                const SizedBox(width: 8),
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
-                  decoration: BoxDecoration(color: AppColors.indigo, borderRadius: BorderRadius.circular(999)),
-                  child: Text('$count', style: font(kBodyFont, 11, 700, color: const Color(0xFF17162B))),
-                ),
-              ],
             ],
           ),
         ),

@@ -9,6 +9,7 @@ import '../theme/person_colors.dart';
 import '../util/format.dart';
 import '../util/task_visuals.dart';
 import '../widgets/primitives.dart';
+import '../widgets/settings.dart';
 import '../widgets/task_row.dart';
 import 'feed_baseline_screen.dart';
 import 'task_actions_sheet.dart';
@@ -25,6 +26,31 @@ class HomeScreen extends ConsumerStatefulWidget {
 
 class _HomeScreenState extends ConsumerState<HomeScreen> {
   bool _refreshingFeeds = false;
+
+  // Children and task-type filters are stored as *exclusions* (empty ⇒ show
+  // all), same as Plan. The owner axis is inverted on purpose: Home is the
+  // claim hub, so unowned tasks always show and `_incOwners` is an opt-*in*
+  // set — a caretaker's claimed tasks only appear once you pick them here.
+  final Set<String> _exChildren = {};
+  final Set<String> _incOwners = {};
+  final Set<String> _exTypes = {};
+  bool _showCompleted = false;
+  bool _onlyMyKids = false;
+
+  int get _filterCount =>
+      (_exChildren.isNotEmpty ? 1 : 0) +
+      (_incOwners.isNotEmpty ? 1 : 0) +
+      (_exTypes.isNotEmpty ? 1 : 0) +
+      (_onlyMyKids ? 1 : 0);
+
+  bool _passesFilter(TaskItem t, Set<String> myKids) {
+    if (_exChildren.contains(t.familyMemberId)) return false;
+    if (!t.isUnowned && !_incOwners.contains(t.ownerMemberId)) return false;
+    final group = t.type == 'attendance' ? 'attendance' : 'transition';
+    if (_exTypes.contains(group)) return false;
+    if (_onlyMyKids && !myKids.contains(t.familyMemberId)) return false;
+    return true;
+  }
 
   void _refresh() {
     ref.invalidate(unownedTasksProvider);
@@ -70,14 +96,20 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final eventsById = {for (final e in events) e.id: e};
     final byId = {for (final m in members) m.id: m};
     final now = DateTime.now();
+    final rawTasks = allAsync.valueOrNull ?? const <TaskItem>[];
+    // Children I'm covering (for the "only my kids" filter): kids with a task I own.
+    final myKids = {
+      for (final t in rawTasks)
+        if (t.ownerMemberId == me?.id) t.familyMemberId
+    };
 
-    // Unowned tasks + my own claimed tasks, upcoming only (no past tasks,
-    // regardless of claim state), grouped by day.
+    // Unowned tasks by default, plus any owners opted into via Filters,
+    // upcoming only (no past tasks, regardless of claim state), grouped by day.
     final visible = [
-      for (final t in allAsync.valueOrNull ?? const <TaskItem>[])
-        if (!t.isDismissed &&
+      for (final t in rawTasks)
+        if ((_showCompleted || !t.isDismissed) &&
             !t.start.isBefore(now) &&
-            (t.status == 'unowned' || t.ownerMemberId == me?.id))
+            _passesFilter(t, myKids))
           t
     ];
     final byDay = <DateTime, List<TaskItem>>{};
@@ -275,8 +307,157 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             ],
           ),
         ),
+        FiltersButton(count: _filterCount, onTap: _openFilters),
+        const SizedBox(width: 8),
         RefreshFeedsButton(busy: _refreshingFeeds, onTap: _refreshFeeds),
       ],
+    );
+  }
+
+  /// Same filter categories as Plan (children / task type / show completed /
+  /// only my kids); the "Caretakers" section is opt-*in* here instead of
+  /// opt-out — Home only ever shows a claimed task once you pick its owner,
+  /// since the whole point of this screen is what's still unclaimed.
+  void _openFilters() {
+    final members = ref.read(membersProvider).valueOrNull ?? const <Member>[];
+    final me = ref.read(currentMemberProvider).valueOrNull;
+    final children = members.where((m) => m.requiresCaretaker).toList();
+    final caretakers = members.where((m) => m.isCaretaker).toList();
+
+    showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      builder: (_) => StatefulBuilder(
+        builder: (context, setSheet) {
+          void toggle(Set<String> set, String key) => setSheet(() {
+                set.contains(key) ? set.remove(key) : set.add(key);
+                setState(() {});
+              });
+          return DraggableScrollableSheet(
+            expand: false,
+            initialChildSize: 0.72,
+            maxChildSize: 0.92,
+            builder: (context, scroll) => ListView(
+              controller: scroll,
+              padding: const EdgeInsets.fromLTRB(22, 4, 22, 28),
+              children: [
+                Row(
+                  children: [
+                    Text('Filters', style: AppText.subPageTitle),
+                    const Spacer(),
+                    TextButton(
+                      onPressed: () => setSheet(() {
+                        _exChildren.clear();
+                        _incOwners.clear();
+                        _exTypes.clear();
+                        _showCompleted = false;
+                        _onlyMyKids = false;
+                        setState(() {});
+                      }),
+                      child: const Text('Reset'),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                Text('Children', style: AppText.eyebrow()),
+                const SizedBox(height: 10),
+                Wrap(spacing: 8, runSpacing: 8, children: [
+                  for (final c in children)
+                    TaskFilterChip(
+                      label: c.relationName,
+                      dotColor: personColor(c),
+                      selected: !_exChildren.contains(c.id),
+                      onTap: () => toggle(_exChildren, c.id),
+                    ),
+                ]),
+                const SizedBox(height: 18),
+                Text('Also show claimed by', style: AppText.eyebrow()),
+                const SizedBox(height: 10),
+                Wrap(spacing: 8, runSpacing: 8, children: [
+                  for (final m in caretakers)
+                    TaskFilterChip(
+                      label: m.id == me?.id ? 'You' : m.relationName,
+                      dotColor: personColor(m),
+                      selected: _incOwners.contains(m.id),
+                      onTap: () => toggle(_incOwners, m.id),
+                    ),
+                ]),
+                const SizedBox(height: 18),
+                Text('Task type', style: AppText.eyebrow()),
+                const SizedBox(height: 10),
+                Wrap(spacing: 8, runSpacing: 8, children: [
+                  TaskFilterChip(
+                    label: 'Transitions',
+                    selected: !_exTypes.contains('transition'),
+                    onTap: () => toggle(_exTypes, 'transition'),
+                  ),
+                  TaskFilterChip(
+                    label: 'Attendance',
+                    selected: !_exTypes.contains('attendance'),
+                    onTap: () => toggle(_exTypes, 'attendance'),
+                  ),
+                ]),
+                const SizedBox(height: 20),
+                AppCard(
+                  child: Column(
+                    children: [
+                      SwitchRow(
+                        icon: Icons.check_circle_outline_rounded,
+                        iconColor: AppColors.green,
+                        title: 'Show completed',
+                        subtitle: 'Include tasks already done',
+                        value: _showCompleted,
+                        onChanged: (v) => setSheet(() {
+                          _showCompleted = v;
+                          setState(() {});
+                        }),
+                      ),
+                      const Divider(height: 20),
+                      SwitchRow(
+                        icon: Icons.person_outline_rounded,
+                        iconColor: AppColors.indigo,
+                        title: 'Only my kids',
+                        subtitle: "Hide children I don't cover",
+                        value: _onlyMyKids,
+                        onChanged: (v) => setSheet(() {
+                          _onlyMyKids = v;
+                          setState(() {});
+                        }),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 20),
+                Row(
+                  children: [
+                    PillButton(
+                      label: 'Clear',
+                      variant: PillVariant.ghost,
+                      onPressed: () => setSheet(() {
+                        _exChildren.clear();
+                        _incOwners.clear();
+                        _exTypes.clear();
+                        _showCompleted = false;
+                        _onlyMyKids = false;
+                        setState(() {});
+                      }),
+                    ),
+                    const Spacer(),
+                    PillButton(
+                      label: _filterCount == 0
+                          ? 'Apply'
+                          : 'Apply · $_filterCount filter${_filterCount == 1 ? '' : 's'}',
+                      variant: PillVariant.amber,
+                      onPressed: () => Navigator.of(context).pop(),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          );
+        },
+      ),
     );
   }
 

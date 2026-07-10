@@ -45,20 +45,28 @@ function toTaskRuleLike(r: typeof taskRules.$inferSelect): TaskRuleLike {
   };
 }
 
-/** Heal an existing task's anchor/location if the event moved; keep its window. */
+/**
+ * Heal an existing task's anchor/window/location if the event moved. Callers
+ * pass the task's own current `dtend` to leave it untouched (manual tasks,
+ * whose window is user-set) or a freshly recomputed one to keep it in step
+ * with the anchor (generated tasks) — otherwise a healed dtstart would drift
+ * out of sync with a stale dtend still anchored to the event's old time.
+ */
 async function healTask(
   db: Db,
   task: TaskRow,
   dtstart: Date,
+  dtend: Date | null,
   location: string | null,
 ): Promise<void> {
   if (
     task.dtstart.getTime() === dtstart.getTime() &&
+    (task.dtend?.getTime() ?? null) === (dtend?.getTime() ?? null) &&
     (task.location ?? null) === (location ?? null)
   ) {
     return;
   }
-  await db.update(tasks).set({ dtstart, location }).where(eq(tasks.id, task.id));
+  await db.update(tasks).set({ dtstart, dtend, location }).where(eq(tasks.id, task.id));
 }
 
 /** The start anchor a given task type takes on an event (for manual healing). */
@@ -173,7 +181,7 @@ export async function buildMemberTasks(
     const manual = existing.filter((t) => t.createdVia === 'manual');
     if (manual.length > 0) {
       for (const t of manual) {
-        await healTask(db, t, anchorStart(event, t.type), event.location);
+        await healTask(db, t, anchorStart(event, t.type), t.dtend, event.location);
       }
     } else {
       const desiredByType = new Map(intents.map((i) => [i.type, i]));
@@ -187,7 +195,7 @@ export async function buildMemberTasks(
       for (const intent of intents) {
         const prior = existingByType.get(intent.type);
         if (prior) {
-          await healTask(db, prior, intent.dtstart, intent.location);
+          await healTask(db, prior, intent.dtstart, intent.dtend, intent.location);
         } else {
           await db.insert(tasks).values({
             familyId: event.familyId,

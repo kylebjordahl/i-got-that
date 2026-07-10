@@ -17,6 +17,8 @@ dependencies:
   # Persists the session token in the iOS Keychain (and platform-equivalent on
   # web/other targets) so login survives app restarts.
   flutter_secure_storage: ^9.2.2
+  package_info_plus: ^8.1.0
+  sign_in_with_apple: ^6.0.0
 
 dev_dependencies:
   flutter_test:
