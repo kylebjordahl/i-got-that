@@ -10,9 +10,13 @@ final navIndexProvider = StateProvider<int>((_) => 0);
 /// backend permission is wired yet.
 final pushNotificationsProvider = StateProvider<bool>((_) => true);
 
-/// The app's single Navigator, keyed so [PersistentAppNav] — which lives above
-/// the Navigator in a Stack, not inside it, so it never re-animates with a
-/// pushed screen — can pop it without a BuildContext descended from it.
+/// The inner content Navigator hosting [AppShell] and everything pushed on
+/// top of it (member detail, feed setup, etc.) — see `_AuthedRoot` in
+/// main.dart. Keyed so [PersistentAppNav], which lives one Stack layer above
+/// it rather than inside it (so it never re-animates with a pushed screen),
+/// can pop it without a BuildContext descended from it. Bottom sheets/dialogs
+/// intentionally skip this Navigator (`useRootNavigator: true`) for the outer
+/// one MaterialApp owns, so they render above the nav rather than below it.
 final rootNavigatorKey = GlobalKey<NavigatorState>();
 
 /// How many routes are pushed on top of [AppShell] (0 = showing a root tab).
