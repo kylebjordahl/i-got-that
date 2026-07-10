@@ -26,6 +26,19 @@ dev` on `:8787`) is still "same-site" (same `localhost` host, different port).
 Cross-origin dev CORS (`apps/api/src/index.ts`) reflects the request `Origin`
 and sets `credentials: true`, which a wildcard `origin: '*'` can't do.
 
+## Session persistence on native (surviving an app relaunch)
+
+Native has no cookie jar, so it persists the bearer token itself: on a
+successful login, `AuthController` (`lib/state/auth.dart`) writes the
+`sessionToken` to the platform Keychain/Keystore via
+[`flutter_secure_storage`](https://pub.dev/packages/flutter_secure_storage)
+(`pubspec.yaml`); `logout()` deletes it. On startup, before falling back to
+the login screen, native reads that stored token and validates it against
+`GET /me`, discarding it on any failure (missing, expired, revoked, Keychain
+unreadable) rather than getting stuck. This mirrors the web cookie flow one
+layer down the stack — same "never trust a token you can't currently verify"
+shape, different storage primitive per platform.
+
 | Method | State | Notes |
 | --- | --- | --- |
 | **Magic link** (email) | Fully implemented | Needs outbound email, which is **off** (no paid plan). In **dev/staging** the request endpoint returns the token directly (`devToken`) so you can log in without a mailbox; in **production** it does not. |

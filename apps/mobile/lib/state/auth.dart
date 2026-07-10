@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import '../api/client.dart';
 import '../util/web_auth.dart';
 
@@ -9,6 +10,13 @@ const apiBaseUrl = String.fromEnvironment(
   'API_BASE_URL',
   defaultValue: 'http://localhost:8787',
 );
+
+/// Native-only session persistence (iOS Keychain / Android Keystore). Web
+/// deliberately never writes the token here — see docs/AUTH.md's note on
+/// keeping it out of localStorage/sessionStorage — web restores via the
+/// HttpOnly `igt_session` cookie instead.
+const _sessionStorageKey = 'session_token';
+const _storage = FlutterSecureStorage();
 
 final apiClientProvider = Provider<ApiClient>(
   (ref) => ApiClient(baseUrl: apiBaseUrl),
@@ -22,9 +30,9 @@ class AuthState {
   /// A login error to surface (e.g. an `auth_error` from the Apple callback).
   final String? error;
 
-  /// True while startup restore (fragment or cookie) is in flight — lets the
-  /// UI hold off rendering the login screen for the one round trip it takes to
-  /// find out whether the web session cookie is still valid.
+  /// True while startup restore (fragment, cookie, or Keychain) is in flight
+  /// — lets the UI hold off rendering the login screen for the one round trip
+  /// it takes to find out whether a previous session is still valid.
   final bool restoring;
 
   /// Web sessions restored from the `igt_session` cookie never populate
@@ -39,12 +47,13 @@ class AuthController extends StateNotifier<AuthState> {
   }
   final ApiClient _api;
 
-  /// On web startup: first pick up a session (or error) the Apple callback
-  /// left in the URL fragment; failing that, ask the server whether the
-  /// `igt_session` cookie (set on login, HttpOnly so JS never touches the raw
-  /// token — see docs/AUTH.md) still identifies a valid session, so a plain
-  /// page refresh doesn't force a re-login. No-op on native / when neither
-  /// yields anything.
+  /// On startup: first pick up a session (or error) the Apple callback left in
+  /// the URL fragment (web only); failing that, restore per platform — web
+  /// asks the server whether the `igt_session` cookie (HttpOnly so JS never
+  /// touches the raw token — see docs/AUTH.md) still identifies a valid
+  /// session, native reads the token it persisted to the Keychain on a
+  /// previous login — so neither a page refresh nor relaunching the app
+  /// forces a re-login.
   Future<void> _restore() async {
     final (:session, :error) = consumeAppleAuthFragment();
     if (session != null) {
@@ -66,11 +75,33 @@ class AuthController extends StateNotifier<AuthState> {
       return;
     }
 
-    // Native has no cookie to restore from (and no persisted token yet — see
-    // docs/AUTH.md's native TODO), so skip the round trip and go straight to
-    // the login screen.
     if (!kIsWeb) {
-      state = const AuthState();
+      String? stored;
+      try {
+        stored = await _storage.read(key: _sessionStorageKey);
+      } catch (_) {
+        // Keychain unavailable/unreadable — treat as no persisted session
+        // rather than leaving the UI stuck on the restoring scaffold.
+        stored = null;
+      }
+      if (stored == null) {
+        state = const AuthState();
+        return;
+      }
+      _api.setSession(stored);
+      try {
+        final me = await _api.me();
+        state = AuthState(
+          sessionToken: stored,
+          user: me['user'] as Map<String, dynamic>?,
+        );
+      } catch (_) {
+        // Stored token no longer valid (expired/revoked) — discard it and
+        // fall through to the ordinary logged-out state.
+        _api.setSession(null);
+        await _storage.delete(key: _sessionStorageKey);
+        state = const AuthState();
+      }
       return;
     }
 
@@ -100,10 +131,19 @@ class AuthController extends StateNotifier<AuthState> {
       );
     }
     final res = await _api.verifyMagicLink(devToken);
+    final token = res['sessionToken'] as String;
     state = AuthState(
-      sessionToken: res['sessionToken'] as String,
+      sessionToken: token,
       user: res['user'] as Map<String, dynamic>,
     );
+    if (!kIsWeb) {
+      try {
+        await _storage.write(key: _sessionStorageKey, value: token);
+      } catch (_) {
+        // Best-effort persistence; the session is still usable this launch
+        // even if the Keychain write failed.
+      }
+    }
   }
 
   Future<void> logout() async {
@@ -111,6 +151,13 @@ class AuthController extends StateNotifier<AuthState> {
       await _api.logout();
     } catch (_) {
       // Best-effort server-side invalidation; clear local state regardless.
+    }
+    if (!kIsWeb) {
+      try {
+        await _storage.delete(key: _sessionStorageKey);
+      } catch (_) {
+        // Best-effort local cleanup; state is cleared regardless below.
+      }
     }
     state = const AuthState();
   }
