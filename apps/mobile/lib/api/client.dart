@@ -61,6 +61,29 @@ class ApiClient {
     _sessionToken = null;
   }
 
+  // --- Login methods (thread multiple identities into one account) --------
+
+  /// The login methods threaded to the current user.
+  Future<List<dynamic>> listIdentities() async =>
+      _list(await _dio.get('/auth/identities', options: _auth), 'identities');
+
+  /// Thread a magic-link email onto the current user: request a token for the
+  /// new email, then link it (rather than starting a new account).
+  Future<void> linkMagicLink(String token) async {
+    await _dio.post('/auth/link/magic-link', data: {'token': token}, options: _auth);
+  }
+
+  /// Thread a native Sign in with Apple identity onto the current user.
+  Future<void> linkApple(String identityToken) async {
+    await _dio.post('/auth/link/apple',
+        data: {'identityToken': identityToken}, options: _auth);
+  }
+
+  /// Detach a login method (the server blocks removing the last one).
+  Future<void> unlinkIdentity(String identityId) async {
+    await _dio.delete('/auth/identities/$identityId', options: _auth);
+  }
+
   Future<Map<String, dynamic>> createFamily(String name) async =>
       _obj(await _dio.post('/families', data: {'name': name}, options: _auth));
 
