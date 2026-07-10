@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models.dart';
 import '../state/auth.dart';
 import '../state/family.dart';
+import '../state/nav.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_text.dart';
 import '../theme/person_colors.dart';
@@ -190,10 +191,16 @@ Future<void> _createAndOpen(BuildContext context, WidgetRef ref, {required bool 
           isCaretaker: !isChild,
           requiresCaretaker: isChild,
         );
+    // Wait for the refetch to land (not a fire-and-forget invalidate) so the
+    // detail screen finds the new member on its very first build.
     ref.invalidate(membersProvider);
+    await ref.read(membersProvider.future);
     final id = (res['member'] as Map<String, dynamic>)['id'] as String;
-    if (!context.mounted) return;
-    Navigator.of(context).push(
+    // `context` here traces back to `rootNavigatorKey.currentContext` (the
+    // nav "+" button, above the inner content Navigator) — `Navigator.of` on
+    // that exact context resolves to MaterialApp's outer Navigator, not the
+    // inner one, so push explicitly onto the inner Navigator by key instead.
+    rootNavigatorKey.currentState!.push(
       MaterialPageRoute(builder: (_) => MemberDetailScreen(memberId: id)),
     );
   } catch (e) {
