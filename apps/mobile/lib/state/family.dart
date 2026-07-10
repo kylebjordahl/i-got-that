@@ -174,3 +174,10 @@ final accountsProvider = FutureProvider<List<ExternalAccount>>((ref) async {
   final rows = await api.listAccounts();
   return rows.map((e) => ExternalAccount.fromJson(e as Map<String, dynamic>)).toList();
 });
+
+/// The login methods threaded to the current user (Apple + magic-link emails).
+final loginIdentitiesProvider = FutureProvider<List<LoginIdentity>>((ref) async {
+  final api = ref.watch(apiClientProvider);
+  final rows = await api.listIdentities();
+  return rows.map((e) => LoginIdentity.fromJson(e as Map<String, dynamic>)).toList();
+});

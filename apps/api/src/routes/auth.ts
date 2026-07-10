@@ -11,12 +11,18 @@ import { verifyAppleIdentityToken, verifyAppleNotificationToken } from '../lib/a
 import { randomToken } from '../lib/crypto.js';
 import { getMailer } from '../lib/mailer.js';
 import { clearSessionCookie, sessionToken, setSessionCookie } from '../lib/session-cookie.js';
+import { authMiddleware } from '../middleware/auth.js';
 import {
   createSession,
   deleteSession,
   findOrCreateUserByApple,
+  getUserBySessionToken,
   handleAppleAccountEvent,
+  linkAppleIdentity,
+  linkMagicLinkIdentity,
+  listIdentities,
   requestMagicLink,
+  unlinkIdentity,
   verifyMagicLink,
 } from '../services/auth.js';
 
@@ -124,9 +130,20 @@ authRoutes.get('/apple/start', async (c) => {
     return c.json({ error: 'apple_web_not_configured' }, 501);
   }
 
+  // Optional link mode: when `?link=1` and a valid session rides along (the web
+  // SPA is same-origin, so the `igt_session` cookie is sent on this navigation),
+  // the callback threads Apple onto the current user instead of starting a fresh
+  // session. Without a session it degrades to a normal login.
+  let linkUserId = '';
+  if (c.req.query('link') === '1') {
+    const token = sessionToken(c);
+    const user = token ? await getUserBySessionToken(getDb(c.env.DB), token) : null;
+    if (user) linkUserId = user.id;
+  }
+
   const state = randomToken();
   const nonce = randomToken();
-  await setSignedCookie(c, APPLE_OAUTH_COOKIE, `${state}.${nonce}`, cookieSecret(c.env), {
+  await setSignedCookie(c, APPLE_OAUTH_COOKIE, `${state}.${nonce}.${linkUserId}`, cookieSecret(c.env), {
     httpOnly: true,
     secure: true,
     // Apple's form-POST is a cross-site top-level navigation, so the cookie must
@@ -183,7 +200,8 @@ authRoutes.post('/apple/callback', async (c) => {
   if (errorParam) return back(`auth_error=${encodeURIComponent(errorParam)}`);
 
   // CSRF guard: the echoed `state` must match the one bound to this browser.
-  const [expectedState, nonce] = (cookie || '').split('.');
+  // A third segment (possibly empty) carries the user id for link mode.
+  const [expectedState, nonce, linkUserId] = (cookie || '').split('.');
   if (!cookie || !state || !expectedState || state !== expectedState) {
     return back('auth_error=state_mismatch');
   }
@@ -197,6 +215,14 @@ authRoutes.post('/apple/callback', async (c) => {
   }
 
   const db = getDb(c.env.DB);
+
+  // Link mode: thread Apple onto the already-signed-in user; keep their session.
+  if (linkUserId) {
+    const result = await linkAppleIdentity(db, linkUserId, identity.sub);
+    if (!result.ok) return back(`auth_error=${result.error}`);
+    return back('linked=apple');
+  }
+
   const user = await findOrCreateUserByApple(db, identity.sub, identity.email);
   const token = await createSession(db, user.id);
   setSessionCookie(c, token);
@@ -261,5 +287,67 @@ authRoutes.post('/logout', async (c) => {
   const token = sessionToken(c);
   if (token) await deleteSession(getDb(c.env.DB), token);
   clearSessionCookie(c);
+  return c.json({ ok: true });
+});
+
+// --- Identity linking (thread multiple login methods into one user) -------
+
+/** The login methods threaded to the current user (Apple + magic-link emails). */
+authRoutes.get('/identities', authMiddleware, async (c) => {
+  const user = c.get('user');
+  const identityList = await listIdentities(getDb(c.env.DB), user.id);
+  return c.json({ identities: identityList });
+});
+
+/**
+ * Link a magic-link email to the current user. The client requests a magic link
+ * for the new email as usual, then posts that token here (instead of to
+ * `/magic-link/verify`) so it attaches to the signed-in user rather than
+ * starting a new account.
+ */
+authRoutes.post('/link/magic-link', authMiddleware, async (c) => {
+  const user = c.get('user');
+  const parsed = MagicLinkVerifyInput.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) return c.json({ error: 'invalid' }, 400);
+
+  const result = await linkMagicLinkIdentity(getDb(c.env.DB), user.id, parsed.data.token);
+  if (!result.ok) {
+    return c.json({ error: result.error }, result.error === 'invalid_token' ? 401 : 409);
+  }
+  return c.json({ ok: true, status: result.status });
+});
+
+/**
+ * Link a native Sign in with Apple identity to the current user. Same token
+ * verification as `/apple`, but attaches to the signed-in user. (Web links via
+ * the `/apple/start?link=1` redirect.)
+ */
+authRoutes.post('/link/apple', authMiddleware, async (c) => {
+  const audience = appleAudience(c.env);
+  if (audience.length === 0) {
+    return c.json({ error: 'apple_not_configured' }, 501);
+  }
+  const user = c.get('user');
+  const parsed = AppleSignInInput.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) return c.json({ error: 'invalid' }, 400);
+
+  let identity;
+  try {
+    identity = await verifyAppleIdentityToken(parsed.data.identityToken, { audience });
+  } catch (err) {
+    return c.json({ error: 'invalid_apple_token', message: String(err) }, 401);
+  }
+
+  const result = await linkAppleIdentity(getDb(c.env.DB), user.id, identity.sub);
+  if (!result.ok) return c.json({ error: result.error }, 409);
+  return c.json({ ok: true, status: result.status });
+});
+
+/** Unlink a login method (can't remove the last one — that would orphan you). */
+authRoutes.delete('/identities/:id', authMiddleware, async (c) => {
+  const user = c.get('user');
+  const result = await unlinkIdentity(getDb(c.env.DB), user.id, c.req.param('id'));
+  if (result === 'not_found') return c.json({ error: 'identity_not_found' }, 404);
+  if (result === 'last_identity') return c.json({ error: 'last_identity' }, 409);
   return c.json({ ok: true });
 });

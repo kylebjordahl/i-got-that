@@ -37,6 +37,20 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     }
   }
 
+  Future<void> _submitAppleNative() async {
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      await ref.read(authControllerProvider.notifier).loginWithAppleNative();
+    } catch (e) {
+      setState(() => _error = '$e');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final redirectError = ref.watch(authControllerProvider).error;
@@ -88,24 +102,24 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                     busy: _busy,
                     onPressed: _busy ? null : _submit,
                   ),
-                  if (kIsWeb) ...[
-                    const SizedBox(height: 12),
-                    OutlinedButton.icon(
-                      style: OutlinedButton.styleFrom(
-                        foregroundColor: AppColors.textPrimary,
-                        side: const BorderSide(color: AppColors.border),
-                        padding: const EdgeInsets.symmetric(vertical: 14),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(999),
-                        ),
+                  const SizedBox(height: 12),
+                  OutlinedButton.icon(
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: AppColors.textPrimary,
+                      side: const BorderSide(color: AppColors.border),
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(999),
                       ),
-                      onPressed: _busy
-                          ? null
-                          : () => ref.read(authControllerProvider.notifier).loginWithApple(),
-                      icon: const Icon(Icons.apple),
-                      label: const Text('Continue with Apple'),
                     ),
-                  ],
+                    onPressed: _busy
+                        ? null
+                        : () => kIsWeb
+                            ? ref.read(authControllerProvider.notifier).loginWithApple()
+                            : _submitAppleNative(),
+                    icon: const Icon(Icons.apple),
+                    label: const Text('Continue with Apple'),
+                  ),
                   if (error != null) ...[
                     const SizedBox(height: 16),
                     Text(error,

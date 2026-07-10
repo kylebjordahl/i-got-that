@@ -2,6 +2,37 @@
 
 Two login methods feed the same session model (a `sessions` row → bearer token).
 
+## Linking login methods (one user, many identities)
+
+A user is a login account with one or more **identities** (`identities` rows,
+`(provider, provider_ref)` unique). Sign-in resolves the identity → its `userId`,
+so once several methods point at the same user, logging in with any of them lands
+on the same account. This is how "Apple on one device, magic link on another"
+threads together.
+
+New logins create a fresh user; to make a *second* method resolve to an
+*existing* account, the signed-in user links it. All linking routes require a
+session (`authMiddleware`) and attach a **verified** credential to the current
+user:
+
+| Route | What it does |
+| --- | --- |
+| `GET /auth/identities` | List the caller's linked methods (`{ id, provider, providerRef }`). |
+| `POST /auth/link/magic-link` `{ token }` | Request a magic link for the new email as usual, then post that token here (instead of `/magic-link/verify`) to attach the `magic_link` identity to the current user. |
+| `POST /auth/link/apple` `{ identityToken }` | Verify a native Apple token (same as `/apple`) and attach the `apple` identity. |
+| `DELETE /auth/identities/:id` | Unlink a method. Blocked (`409 last_identity`) when it's the only one — removing it would orphan the account. |
+
+Linking is **idempotent** for the caller (`already_linked`) and refuses to steal
+an identity already threaded to a different user (`409
+identity_linked_to_other_user`). On **web**, Apple can't produce a token in-page,
+so `GET /auth/apple/start?link=1` reuses the redirect flow: the same-origin
+`igt_session` cookie rides along, the callback threads Apple onto the current
+user (no new session) and returns to `/app/#linked=apple`.
+
+The Flutter client surfaces all of this on the **Me** tab under "Login methods"
+(list + add email + link Apple on web + unlink), following the account-card UI
+pattern.
+
 ## Session persistence on web (surviving a page refresh)
 
 The Flutter web SPA keeps its session token in memory only (`AuthState` in
