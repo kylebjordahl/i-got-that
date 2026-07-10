@@ -257,6 +257,108 @@ class RefreshFeedsButton extends StatelessWidget {
   }
 }
 
+/// A filter chip. Person chips (with a [dotColor]) tint to that color when
+/// selected and show a colored dot; type chips fill solid indigo. Shared by
+/// the Home and Plan filter sheets so both read as one filtering system.
+class TaskFilterChip extends StatelessWidget {
+  const TaskFilterChip({
+    super.key,
+    required this.label,
+    required this.selected,
+    required this.onTap,
+    this.dotColor,
+  });
+
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+  final Color? dotColor;
+
+  @override
+  Widget build(BuildContext context) {
+    final person = dotColor != null;
+    final accent = dotColor ?? AppColors.indigo;
+    final Color bg, fg, border;
+    if (selected) {
+      bg = person ? AppColors.tint(accent, 0.18) : AppColors.indigo;
+      fg = person ? AppColors.textPrimary : const Color(0xFF17162B);
+      border = accent;
+    } else {
+      bg = Colors.transparent;
+      fg = AppColors.textSecondary;
+      border = AppColors.border;
+    }
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+        decoration: BoxDecoration(
+          color: bg,
+          borderRadius: BorderRadius.circular(999),
+          border: Border.all(color: border),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (person && selected) ...[
+              Container(
+                width: 7,
+                height: 7,
+                decoration: BoxDecoration(color: accent, shape: BoxShape.circle),
+              ),
+              const SizedBox(width: 7),
+            ],
+            Text(label, style: font(kBodyFont, 13, 600, color: fg)),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// The toolbar "Filters" pill with a count badge — opens a screen's filter
+/// sheet. Shared by Home and Plan.
+class FiltersButton extends StatelessWidget {
+  const FiltersButton({super.key, required this.count, required this.onTap});
+  final int count;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: AppColors.card,
+      borderRadius: BorderRadius.circular(999),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(999),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(999),
+            border: Border.all(color: AppColors.border),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.tune_rounded, size: 17, color: AppColors.textSecondary),
+              const SizedBox(width: 7),
+              Text('Filters', style: font(kBodyFont, 13.5, 600, color: AppColors.textSecondary)),
+              if (count > 0) ...[
+                const SizedBox(width: 8),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                  decoration: BoxDecoration(color: AppColors.indigo, borderRadius: BorderRadius.circular(999)),
+                  child: Text('$count', style: font(kBodyFont, 11, 700, color: const Color(0xFF17162B))),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 /// Pill buttons in the three design variants.
 enum PillVariant { amber, white, ghost, indigo }
 
