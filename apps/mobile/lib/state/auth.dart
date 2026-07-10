@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:sign_in_with_apple/sign_in_with_apple.dart';
 import '../api/client.dart';
 import '../util/web_auth.dart';
 
@@ -86,8 +87,35 @@ class AuthController extends StateNotifier<AuthState> {
 
   /// Web: begin Sign in with Apple by navigating to the API's redirect endpoint;
   /// Apple sends the browser back to `/app/#session=…`, picked up on reload by
-  /// [_restore]. Native wiring uses `sign_in_with_apple` (TODO).
+  /// [_restore].
   void loginWithApple() => startWebRedirect('$apiBaseUrl/auth/apple/start');
+
+  /// Native (iOS): request an Apple ID credential from the OS sheet and post
+  /// its identity token to `/auth/apple` to obtain a session.
+  Future<void> loginWithAppleNative() async {
+    AuthorizationCredentialAppleID cred;
+    try {
+      cred = await SignInWithApple.getAppleIDCredential(
+        scopes: [
+          AppleIDAuthorizationScopes.email,
+          AppleIDAuthorizationScopes.fullName,
+        ],
+      );
+    } on SignInWithAppleAuthorizationException catch (e) {
+      // User dismissed the OS sheet — not an error worth surfacing.
+      if (e.code == AuthorizationErrorCode.canceled) return;
+      rethrow;
+    }
+    final identityToken = cred.identityToken;
+    if (identityToken == null) {
+      throw Exception('Apple did not return an identity token.');
+    }
+    final res = await _api.signInWithApple(identityToken);
+    state = AuthState(
+      sessionToken: res['sessionToken'] as String,
+      user: res['user'] as Map<String, dynamic>,
+    );
+  }
 
   /// Dev flow: request a magic link and immediately verify with the returned
   /// dev token. In production the token is emailed and this would instead deep-
