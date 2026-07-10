@@ -46,7 +46,11 @@ class AuthController extends StateNotifier<AuthState> {
   /// page refresh doesn't force a re-login. No-op on native / when neither
   /// yields anything.
   Future<void> _restore() async {
-    final (:session, :error) = consumeAppleAuthFragment();
+    // The third field (`linked`) is the web link-a-method redirect
+    // (`#linked=apple`); it leaves the existing session cookie in place, so we
+    // just let it strip the fragment and fall through to the cookie restore
+    // below — the freshly linked identity is picked up on the reload.
+    final (:session, :error, linked: _) = consumeAppleAuthFragment();
     if (session != null) {
       _api.setSession(session);
       try {
@@ -88,6 +92,12 @@ class AuthController extends StateNotifier<AuthState> {
   /// Apple sends the browser back to `/app/#session=…`, picked up on reload by
   /// [_restore]. Native wiring uses `sign_in_with_apple` (TODO).
   void loginWithApple() => startWebRedirect('$apiBaseUrl/auth/apple/start');
+
+  /// Web: link Sign in with Apple to the *current* user (rather than logging in
+  /// afresh). The session cookie rides along on the redirect, so the callback
+  /// threads Apple onto this account and sends the browser back to
+  /// `/app/#linked=apple`. Native uses [ApiClient.linkApple] with a token.
+  void linkWithApple() => startWebRedirect('$apiBaseUrl/auth/apple/start?link=1');
 
   /// Dev flow: request a magic link and immediately verify with the returned
   /// dev token. In production the token is emailed and this would instead deep-

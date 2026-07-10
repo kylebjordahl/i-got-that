@@ -1,3 +1,4 @@
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models.dart';
@@ -40,6 +41,19 @@ Future<bool> showRedeemInviteDialog(BuildContext context, WidgetRef ref) async {
     ref.invalidate(membersProvider);
     ref.invalidate(currentMemberProvider);
   }
+  return ok == true;
+}
+
+/// Link another magic-link email to the current account. Mirrors the login
+/// magic-link flow (request → verify with the dev token), but attaches the
+/// email to the signed-in user instead of starting a new account. Returns true
+/// when a method was linked.
+Future<bool> showAddLoginMethodDialog(BuildContext context, WidgetRef ref) async {
+  final ok = await showDialog<bool>(
+    context: context,
+    builder: (_) => const _AddLoginMethodDialog(),
+  );
+  if (ok == true) ref.invalidate(loginIdentitiesProvider);
   return ok == true;
 }
 
@@ -187,6 +201,100 @@ class _EditNameDialogState extends ConsumerState<_EditNameDialog> {
           label: 'Save',
           variant: PillVariant.amber,
           onPressed: _busy ? null : _save,
+        ),
+      ],
+    );
+  }
+}
+
+class _AddLoginMethodDialog extends ConsumerStatefulWidget {
+  const _AddLoginMethodDialog();
+  @override
+  ConsumerState<_AddLoginMethodDialog> createState() => _AddLoginMethodDialogState();
+}
+
+class _AddLoginMethodDialogState extends ConsumerState<_AddLoginMethodDialog> {
+  final _email = TextEditingController();
+  bool _busy = false;
+  String? _error;
+
+  @override
+  void dispose() {
+    _email.dispose();
+    super.dispose();
+  }
+
+  Future<void> _link() async {
+    final email = _email.text.trim();
+    if (email.isEmpty) {
+      setState(() => _error = 'Enter an email');
+      return;
+    }
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      final api = ref.read(apiClientProvider);
+      final devToken = await api.requestMagicLink(email);
+      if (devToken == null) {
+        // Production sends the link by email; there's no in-app token to attach.
+        throw Exception('Magic link sent — open it on this device to finish.');
+      }
+      await api.linkMagicLink(devToken);
+      if (mounted) Navigator.of(context).pop(true);
+    } on DioException catch (e) {
+      final code = (e.response?.data as Map<String, dynamic>?)?['error'];
+      setState(() => _error = code == 'identity_linked_to_other_user'
+          ? 'That email is already linked to a different account.'
+          : '$e');
+    } catch (e) {
+      setState(() => _error = '$e');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Add a login method'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Link another email so you can sign in with it and land on this same '
+            'account.',
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _email,
+            autofocus: true,
+            keyboardType: TextInputType.emailAddress,
+            decoration: const InputDecoration(
+              labelText: 'Email',
+              hintText: 'you@example.com',
+            ),
+            onSubmitted: (_) => _link(),
+          ),
+          if (_error != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 10),
+              child: Text(_error!, style: const TextStyle(color: AppColors.coral)),
+            ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: _busy ? null : () => Navigator.of(context).pop(false),
+          child: const Text('Cancel'),
+        ),
+        PillButton(
+          label: _busy ? 'Linking…' : 'Link',
+          variant: PillVariant.amber,
+          onPressed: _busy ? null : _link,
         ),
       ],
     );

@@ -64,4 +64,26 @@ void main() {
       expect(dt.millisecondsSinceEpoch, 1783043200000);
     });
   });
+
+  group('LoginIdentity.fromJson', () {
+    test('a magic-link identity labels with its email', () {
+      final id = LoginIdentity.fromJson({
+        'id': 'i1',
+        'provider': 'magic_link',
+        'providerRef': 'me@example.com',
+      });
+      expect(id.kindLabel, 'Magic link');
+      expect(id.label, 'me@example.com');
+    });
+
+    test('an Apple identity labels generically, not by its opaque subject', () {
+      final id = LoginIdentity.fromJson({
+        'id': 'i2',
+        'provider': 'apple',
+        'providerRef': 'apple-sub-abc',
+      });
+      expect(id.kindLabel, 'Apple');
+      expect(id.label, 'Sign in with Apple');
+    });
+  });
 }

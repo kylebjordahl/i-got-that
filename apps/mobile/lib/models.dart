@@ -96,6 +96,38 @@ class ExternalAccount {
       );
 }
 
+/// A login method threaded to the current user (Sign in with Apple, or a
+/// magic-link email). Multiple identities resolve to one account — see
+/// docs/AUTH.md.
+class LoginIdentity {
+  LoginIdentity({
+    required this.id,
+    required this.provider,
+    required this.providerRef,
+  });
+
+  final String id;
+  final String provider; // 'apple' | 'magic_link'
+  // Apple's opaque subject, or the magic-link email (shown for that provider).
+  final String providerRef;
+
+  String get label => switch (provider) {
+        'apple' => 'Sign in with Apple',
+        _ => providerRef,
+      };
+
+  String get kindLabel => switch (provider) {
+        'apple' => 'Apple',
+        _ => 'Magic link',
+      };
+
+  factory LoginIdentity.fromJson(Map<String, dynamic> j) => LoginIdentity(
+        id: j['id'] as String,
+        provider: j['provider'] as String,
+        providerRef: j['providerRef'] as String,
+      );
+}
+
 class TaskItem {
   TaskItem({
     required this.id,

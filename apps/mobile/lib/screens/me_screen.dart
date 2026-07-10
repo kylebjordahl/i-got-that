@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models.dart';
@@ -24,6 +25,8 @@ class MeScreen extends ConsumerWidget {
     final email = user?['email'] as String? ?? 'you@example.com';
     final familyCount = ref.watch(familyInfoProvider).valueOrNull?.count ?? 1;
     final accounts = ref.watch(accountsProvider).valueOrNull ?? const <ExternalAccount>[];
+    final identities =
+        ref.watch(loginIdentitiesProvider).valueOrNull ?? const <LoginIdentity>[];
     final name = me?.relationName ?? 'Me';
     final color = me == null ? AppColors.indigo : personColor(me);
     final pushOn = ref.watch(pushNotificationsProvider);
@@ -84,6 +87,59 @@ class MeScreen extends ConsumerWidget {
                   ref.invalidate(accountsProvider);
                 },
               ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 24),
+        const SectionEyebrow('Login methods', color: AppColors.purple),
+        const SizedBox(height: 8),
+        Text(
+          'Sign in with any of these and land on this same account — link a new '
+          'one on each device you use.',
+          style: AppText.subtitle,
+        ),
+        const SizedBox(height: 12),
+        AppCard(
+          child: Column(
+            children: [
+              if (identities.isEmpty)
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 8),
+                  child: Text('No login methods yet', style: AppText.subtitle),
+                )
+              else
+                for (final id in identities) ...[
+                  SettingRow(
+                    icon: _identityIcon(id.provider),
+                    iconColor: _identityColor(id.provider),
+                    title: id.kindLabel,
+                    subtitle: id.label,
+                    // The last method can't be removed (it would lock you out).
+                    trailing: identities.length > 1
+                        ? const Icon(Icons.close_rounded, color: AppColors.textMuted, size: 20)
+                        : null,
+                    onTap: identities.length > 1
+                        ? () => _unlinkIdentity(context, ref, id)
+                        : null,
+                  ),
+                  const Divider(height: 20),
+                ],
+              SettingRow(
+                icon: Icons.alternate_email_rounded,
+                iconColor: AppColors.indigo,
+                title: 'Add an email login',
+                onTap: () => showAddLoginMethodDialog(context, ref),
+              ),
+              // Apple linking on web uses the redirect flow; hide once linked.
+              if (kIsWeb && !identities.any((i) => i.provider == 'apple')) ...[
+                const Divider(height: 20),
+                SettingRow(
+                  icon: Icons.apple,
+                  iconColor: AppColors.textPrimary,
+                  title: 'Link Sign in with Apple',
+                  onTap: () => ref.read(authControllerProvider.notifier).linkWithApple(),
+                ),
+              ],
             ],
           ),
         ),
@@ -156,6 +212,41 @@ class MeScreen extends ConsumerWidget {
       }
     }
   }
+
+  Future<void> _unlinkIdentity(
+      BuildContext context, WidgetRef ref, LoginIdentity id) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Remove login method?'),
+        content: Text("You'll no longer be able to sign in with ${id.kindLabel} "
+            '(${id.label}). Your other methods keep working.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Cancel')),
+          PillButton(
+            label: 'Remove',
+            variant: PillVariant.white,
+            onPressed: () => Navigator.of(context).pop(true),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    try {
+      await ref.read(apiClientProvider).unlinkIdentity(id.id);
+      ref.invalidate(loginIdentitiesProvider);
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed: $e')));
+      }
+    }
+  }
+
+  IconData _identityIcon(String provider) =>
+      provider == 'apple' ? Icons.apple : Icons.alternate_email_rounded;
+
+  Color _identityColor(String provider) =>
+      provider == 'apple' ? AppColors.textPrimary : AppColors.indigo;
 
   void _showAbout(BuildContext context) {
     showAboutDialog(
