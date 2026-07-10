@@ -48,6 +48,7 @@ Future<void> showTaskActions(BuildContext context, WidgetRef ref, TaskItem task)
 
   await showModalBottomSheet<void>(
     context: context,
+    useRootNavigator: true,
     showDragHandle: true,
     builder: (sheetCtx) => SingleChildScrollView(
       padding: const EdgeInsets.fromLTRB(22, 4, 22, 28),
@@ -177,6 +178,7 @@ Future<void> _pickAndAssign(
   final options = caretakers.where((m) => m.id != task.ownerMemberId).toList();
   await showModalBottomSheet<void>(
     context: context,
+    useRootNavigator: true,
     showDragHandle: true,
     builder: (sheetCtx) => SingleChildScrollView(
       padding: const EdgeInsets.fromLTRB(22, 4, 22, 28),
