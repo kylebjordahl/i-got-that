@@ -10,9 +10,21 @@ import '../util/format.dart';
 import '../util/task_visuals.dart';
 import '../widgets/primitives.dart';
 
-/// Long-press quick-actions for a timeline task (Home rows + Plan blocks): change
-/// its type (transition / attendance / both), claim it, or mark it not needed.
-Future<void> showTaskActions(BuildContext context, WidgetRef ref, TaskItem task) async {
+/// Quick-actions for a timeline task (Home rows + Plan blocks/tags): change its
+/// type (transition / attendance / both), (re)assign or unassign it, or mark it
+/// not needed.
+///
+/// [scopeTasks] scopes the assign / unassign / dismiss actions: pass the whole
+/// event group (a Plan block tap) to act on the drop-off *and* pick-up at once,
+/// or omit it (a tag tap / Home row) to act on [task] alone. [titleOverride]
+/// replaces the header's type label with the event's own summary.
+Future<void> showTaskActions(
+  BuildContext context,
+  WidgetRef ref,
+  TaskItem task, {
+  List<TaskItem>? scopeTasks,
+  String? titleOverride,
+}) async {
   final members = ref.read(membersProvider).valueOrNull ?? const <Member>[];
   final byId = {for (final m in members) m.id: m};
   final caretakers = members.where((m) => m.isCaretaker).toList();
@@ -22,11 +34,16 @@ Future<void> showTaskActions(BuildContext context, WidgetRef ref, TaskItem task)
   // Any caretaker may reassign; a non-caretaker admin can still route work.
   final canAssign = canClaim || isAdmin;
   final child = byId[task.familyMemberId];
-  final owner = task.ownerMemberId != null ? byId[task.ownerMemberId] : null;
   final color = child != null ? personColor(child) : AppColors.textSecondary;
   // Only event-derived tasks are convertible (fully-manual ones have no event).
   final isFeedTask = task.calendarEventId != null;
-  final unowned = task.status == 'unowned';
+
+  // Tasks the assign/unassign/dismiss actions operate on (the event's whole
+  // group for a block tap; just this task otherwise).
+  final scope = (scopeTasks == null || scopeTasks.isEmpty) ? [task] : scopeTasks;
+  final anyUnowned = scope.any((t) => t.status == 'unowned');
+  final anyOwned = scope.any((t) => t.status == 'owned');
+  final allUnowned = scope.every((t) => t.status == 'unowned');
 
   // Derive the current change-type segment from the whole event group.
   final all = ref.read(allTasksProvider).valueOrNull ?? const <TaskItem>[];
@@ -44,7 +61,14 @@ Future<void> showTaskActions(BuildContext context, WidgetRef ref, TaskItem task)
         _ => [transSub],
       };
 
-  final statusText = unowned ? 'unclaimed' : (owner?.relationName ?? 'owned');
+  final owners = scope
+      .where((t) => t.status == 'owned')
+      .map((t) => byId[t.ownerMemberId]?.relationName)
+      .whereType<String>()
+      .toSet();
+  final statusText = allUnowned
+      ? 'unclaimed'
+      : (owners.length == 1 ? owners.first : '${owners.length} assigned');
 
   await showModalBottomSheet<void>(
     context: context,
@@ -64,7 +88,7 @@ Future<void> showTaskActions(BuildContext context, WidgetRef ref, TaskItem task)
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text('${taskTypeLabel(task.type)} · ${child?.relationName ?? 'child'}',
+                    Text('${titleOverride ?? taskTypeLabel(task.type)} · ${child?.relationName ?? 'child'}',
                         style: AppText.sectionItemTitle),
                     const SizedBox(height: 2),
                     Text('${taskCategory(task.type)} · ${friendlyTime(task.start)} · $statusText',
@@ -110,39 +134,47 @@ Future<void> showTaskActions(BuildContext context, WidgetRef ref, TaskItem task)
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
             child: Column(
               children: [
-                if (unowned && canClaim) ...[
+                if (anyUnowned && canClaim) ...[
                   _ActionRow(
                     icon: Icons.check_circle_outline_rounded,
                     iconColor: AppColors.indigo,
                     label: 'Claim for myself',
                     onTap: () {
                       Navigator.of(sheetCtx).pop();
-                      _run(context, ref, (api, fid) => api.assignTask(fid, task.id),
+                      _runScope(
+                          context,
+                          ref,
+                          scope.where((t) => t.status == 'unowned'),
+                          (api, fid, t) => api.assignTask(fid, t.id),
                           'Claimed');
                     },
                   ),
                   const Divider(height: 18),
                 ],
-                if (canAssign && caretakers.length > (unowned ? 0 : 1)) ...[
+                if (canAssign && caretakers.length > (allUnowned ? 0 : 1)) ...[
                   _ActionRow(
                     icon: Icons.person_add_alt_1_rounded,
                     iconColor: AppColors.blue,
-                    label: unowned ? 'Assign to someone…' : 'Reassign to someone…',
+                    label: allUnowned ? 'Assign to someone…' : 'Reassign to someone…',
                     onTap: () {
                       Navigator.of(sheetCtx).pop();
-                      _pickAndAssign(context, ref, task, caretakers);
+                      _pickAndAssign(context, ref, scope, caretakers);
                     },
                   ),
                   const Divider(height: 18),
                 ],
-                if (!unowned && canAssign) ...[
+                if (anyOwned && canAssign) ...[
                   _ActionRow(
                     icon: Icons.person_off_outlined,
                     iconColor: AppColors.textSecondary,
                     label: 'Unassign',
                     onTap: () {
                       Navigator.of(sheetCtx).pop();
-                      _run(context, ref, (api, fid) => api.unassignTask(fid, task.id),
+                      _runScope(
+                          context,
+                          ref,
+                          scope.where((t) => t.status == 'owned'),
+                          (api, fid, t) => api.unassignTask(fid, t.id),
                           'Returned to the queue');
                     },
                   ),
@@ -155,7 +187,8 @@ Future<void> showTaskActions(BuildContext context, WidgetRef ref, TaskItem task)
                   destructive: true,
                   onTap: () {
                     Navigator.of(sheetCtx).pop();
-                    _run(context, ref, (api, fid) => api.dismissTask(fid, task.id),
+                    _runScope(context, ref, scope,
+                        (api, fid, t) => api.dismissTask(fid, t.id),
                         'Marked not needed');
                   },
                 ),
@@ -168,14 +201,17 @@ Future<void> showTaskActions(BuildContext context, WidgetRef ref, TaskItem task)
   );
 }
 
-/// Pick a caretaker to (re)assign the task to.
+/// Pick a caretaker to (re)assign the scope's tasks to. Hides a caretaker only
+/// when they already own every task in the scope (nothing to move to them).
 Future<void> _pickAndAssign(
   BuildContext context,
   WidgetRef ref,
-  TaskItem task,
+  List<TaskItem> scope,
   List<Member> caretakers,
 ) async {
-  final options = caretakers.where((m) => m.id != task.ownerMemberId).toList();
+  final options = caretakers
+      .where((m) => !scope.every((t) => t.ownerMemberId == m.id))
+      .toList();
   await showModalBottomSheet<void>(
     context: context,
     useRootNavigator: true,
@@ -192,7 +228,8 @@ Future<void> _pickAndAssign(
             InkWell(
               onTap: () {
                 Navigator.of(sheetCtx).pop();
-                _run(context, ref, (api, fid) => api.assignTask(fid, task.id, memberId: m.id),
+                _runScope(context, ref, scope,
+                    (api, fid, t) => api.assignTask(fid, t.id, memberId: m.id),
                     'Assigned to ${m.relationName}');
               },
               borderRadius: BorderRadius.circular(14),
@@ -223,6 +260,35 @@ Future<void> _run(
   try {
     final familyId = await ref.read(familyProvider.future);
     await action(ref.read(apiClientProvider), familyId);
+    ref.invalidate(unownedTasksProvider);
+    ref.invalidate(allTasksProvider);
+    // Claims move events between calendars (the recursion) — refresh Plan too.
+    ref.invalidate(calendarEventsProvider);
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(success)));
+    }
+  } catch (e) {
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed: $e')));
+    }
+  }
+}
+
+/// Run a per-task [action] across every task in a scope (a Plan block's group),
+/// then refresh once. A single snackbar reports the whole batch.
+Future<void> _runScope(
+  BuildContext context,
+  WidgetRef ref,
+  Iterable<TaskItem> tasks,
+  Future<void> Function(dynamic api, String familyId, TaskItem task) action,
+  String success,
+) async {
+  try {
+    final familyId = await ref.read(familyProvider.future);
+    final api = ref.read(apiClientProvider);
+    for (final t in tasks) {
+      await action(api, familyId, t);
+    }
     ref.invalidate(unownedTasksProvider);
     ref.invalidate(allTasksProvider);
     // Claims move events between calendars (the recursion) — refresh Plan too.
