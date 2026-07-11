@@ -84,8 +84,16 @@ class ApiClient {
     await _dio.delete('/auth/identities/$identityId', options: _auth);
   }
 
-  Future<Map<String, dynamic>> createFamily(String name) async =>
-      _obj(await _dio.post('/families', data: {'name': name}, options: _auth));
+  /// Create a family. An optional [relationName] names the creator's own
+  /// (admin) member in the same call — the first-run wizard's "create family +
+  /// name yourself" step (the route creates that member either way).
+  Future<Map<String, dynamic>> createFamily(String name, {String? relationName}) async =>
+      _obj(await _dio.post('/families',
+          data: {
+            'name': name,
+            if (relationName != null) 'relationName': relationName,
+          },
+          options: _auth));
 
   /// The family row (carries `threadingThresholdMinutes`).
   Future<Map<String, dynamic>> getFamily(String familyId) async =>
