@@ -249,4 +249,86 @@ void main() {
     expect(find.text('Claim'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets('a claimed attendance dedupes to one block carrying both attendees',
+      (tester) async {
+    final now = DateTime.now();
+    DateTime at(int h, int m) => DateTime(now.year, now.month, now.day, h, m);
+    // The child's synthesized practice and the mirrored copy on the caretaker's
+    // calendar after they claim it — the same practice, twice on the grid before
+    // the dedup.
+    final events = [
+      CalendarEventItem(id: 'fs', familyMemberId: 'delbert', provenance: 'synthesized', start: at(15, 15), end: at(16, 15), allDay: false, summary: 'Fiddle practice'),
+      CalendarEventItem(id: 'fc', familyMemberId: 'kyle', provenance: 'claimed_task', start: at(15, 15), end: at(16, 15), allDay: false, summary: 'Fiddle practice', taskId: 'tf'),
+    ];
+    final tasks = [
+      TaskItem(id: 'tf', familyMemberId: 'delbert', type: 'attendance', start: at(15, 15), end: at(16, 15), status: 'owned', ownerMemberId: 'kyle', createdVia: 'generated', calendarEventId: 'fs'),
+    ];
+    await tester.pumpWidget(ProviderScope(
+      overrides: [
+        membersProvider.overrideWith((ref) async => [
+              _m('kyle', 'Kyle', caretaker: true),
+              _m('delbert', 'delbert', child: true),
+            ]),
+        currentMemberProvider.overrideWith((ref) async => _m('kyle', 'Kyle', caretaker: true)),
+        allTasksProvider.overrideWith((ref) async => tasks),
+        calendarEventsProvider.overrideWith((ref) async => events),
+        pendingDecisionsProvider.overrideWith((ref) async => const []),
+        threadingThresholdProvider.overrideWith((ref) async => 30),
+      ],
+      child: MaterialApp(
+        theme: buildAppTheme(),
+        themeMode: ThemeMode.dark,
+        home: const Scaffold(body: SafeArea(child: PlanScreen())),
+      ),
+    ));
+    await tester.pumpAndSettle();
+
+    // Only the source-event block survives (its subtitle appears once, not
+    // twice), and it carries the claimer as a second attendee avatar.
+    expect(find.text('Attendance · 3:15 – 4:15 PM'), findsOneWidget);
+    expect(find.text('K'), findsOneWidget); // the claimer's attendee avatar
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('tapping an event block manages its whole task group', (tester) async {
+    final now = DateTime.now();
+    DateTime at(int h, int m) => DateTime(now.year, now.month, now.day, h, m);
+    final me = _m('dad', 'Dad', caretaker: true);
+    final events = [
+      CalendarEventItem(id: 'school', familyMemberId: 'theo', provenance: 'synthesized', start: at(8, 30), end: at(15, 0), allDay: false, summary: 'School day'),
+    ];
+    // The block's event generates an (unowned) drop-off and pick-up.
+    final tasks = [
+      TaskItem(id: 'drop', familyMemberId: 'theo', type: 'dropoff', start: at(8, 0), status: 'unowned', createdVia: 'generated', calendarEventId: 'school'),
+      TaskItem(id: 'pick', familyMemberId: 'theo', type: 'pickup', start: at(15, 0), status: 'unowned', createdVia: 'generated', calendarEventId: 'school'),
+    ];
+    await tester.pumpWidget(ProviderScope(
+      overrides: [
+        membersProvider.overrideWith((ref) async => [me, _m('theo', 'Theo', child: true)]),
+        currentMemberProvider.overrideWith((ref) async => me),
+        allTasksProvider.overrideWith((ref) async => tasks),
+        calendarEventsProvider.overrideWith((ref) async => events),
+        pendingDecisionsProvider.overrideWith((ref) async => const []),
+        threadingThresholdProvider.overrideWith((ref) async => 30),
+      ],
+      child: MaterialApp(
+        theme: buildAppTheme(),
+        themeMode: ThemeMode.dark,
+        home: const Scaffold(body: SafeArea(child: PlanScreen())),
+      ),
+    ));
+    await tester.pumpAndSettle();
+
+    // Tap the block body (its subtitle, clear of the edge tabs) — previously a
+    // plain event block had no task and tapping did nothing.
+    await tester.tap(find.text('Attendance · 8:30 AM – 3:00 PM'));
+    await tester.pumpAndSettle();
+
+    // The management sheet opens: change the event's type, and claim both the
+    // drop-off and pick-up at once.
+    expect(find.text('CHANGE TYPE'), findsOneWidget);
+    expect(find.text('Claim for myself'), findsOneWidget);
+    expect(find.text('Mark as not needed'), findsOneWidget);
+  });
 }

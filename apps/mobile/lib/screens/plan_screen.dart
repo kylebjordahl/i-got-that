@@ -14,6 +14,9 @@ import 'task_actions_sheet.dart';
 
 const _hourPx = 42.0;
 const _labelWidth = 46.0;
+// Edge-tab (drop-off / pick-up) height. Tall enough for the compact "Claim"
+// pill; tabs straddle their block's edge by half this and stack by the full.
+const _tabHeight = 32.0;
 // The grid always shows at least this window, then expands to fit the day's
 // events (and the now-line) so nothing is clipped — the page scrolls to reveal
 // the extra hours.
@@ -184,16 +187,6 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
         if (_showCompleted || !t.isDismissed) t
     ];
 
-    final taskById = {for (final t in rawTasks) t.id: t};
-
-    // A claimed drop-off/pick-up is an event on the owner's calendar; it renders
-    // as an edge tab, not a block, so keep it out of the block set.
-    bool isClaimedTransitionEvent(CalendarEventItem e) {
-      if (!e.isClaimedTask || e.taskId == null) return false;
-      final tk = taskById[e.taskId];
-      return tk != null && tk.type != 'attendance';
-    }
-
     bool taskVisible(TaskItem t) =>
         dayKey(t.start) == _selected &&
         !_exChildren.contains(t.familyMemberId) &&
@@ -229,13 +222,16 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
       if (!list.any((m) => m.id == owner.id)) list.add(owner);
     }
 
-    // Blocks: calendar events (minus claimed transitions) + unowned attendance
-    // tasks. Transitions are tabs, above.
+    // Blocks: calendar events (minus every claimed-task event) + unowned
+    // attendance tasks. A claimed task already shows up on its *source* event —
+    // as an owner avatar on that block (attendance) or a solid edge tab
+    // (transition) — so rendering the claimer's mirrored copy too would
+    // duplicate it (two "Fiddle practice" blocks for one claimed practice).
     final dayItems = <_PlanItem>[
       for (final e in events)
         if (dayKey(e.start) == _selected &&
             !_exChildren.contains(e.familyMemberId) &&
-            !isClaimedTransitionEvent(e))
+            !e.isClaimedTask)
           _PlanItem.event(e),
       for (final t in allTasks)
         if (t.isUnowned && t.type == 'attendance' && taskVisible(t))
@@ -388,6 +384,24 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
   String? _eventIdOf(_PlanItem it) =>
       it.isEvent ? it.event!.id : it.task!.calendarEventId;
 
+  /// Every (non-dismissed) task an item's event generated — the drop-off,
+  /// pick-up and/or attendance the block manages as one. Falls back to the
+  /// item's own task when it isn't tied to a calendar event (a manual task).
+  List<TaskItem> _groupTasksFor(_PlanItem it) {
+    final eid = _eventIdOf(it);
+    if (eid == null) return it.task != null ? [it.task!] : const [];
+    final all = ref.read(allTasksProvider).valueOrNull ?? const <TaskItem>[];
+    final group =
+        all.where((t) => t.calendarEventId == eid && !t.isDismissed).toList();
+    if (group.isEmpty && it.task != null) return [it.task!];
+    return group;
+  }
+
+  /// The task that best represents a group in the actions sheet header —
+  /// the attendance one if present, else the first transition.
+  TaskItem _repTask(List<TaskItem> group) =>
+      group.firstWhere((t) => t.type == 'attendance', orElse: () => group.first);
+
   Widget _grid(
     List<_Placed> placed,
     Map<String, Member> byId,
@@ -421,12 +435,13 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
           top: top,
           left: left,
           width: width,
-          height: 24,
+          height: _tabHeight,
           child: _EdgeTab(
             task: t,
             accent: personColor(byId[t.familyMemberId] ?? _fallbackMember),
             owner: t.status == 'owned' ? byId[t.ownerMemberId] : null,
             onClaim: t.isUnowned ? () => _claim(t.id) : null,
+            // Tapping a tag manages just this one drop-off / pick-up task.
             onTap: () => showTaskActions(context, ref, t),
           ),
         );
@@ -458,22 +473,27 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
             hasTopTab: dropoffs.isNotEmpty,
             hasBottomTab: pickups.isNotEmpty,
             onClaim: p.item.task != null ? () => _claim(p.item.task!.id) : null,
+            // Tapping the event block manages every task the event generates —
+            // switch its type and (re)assign both the drop-off and pick-up.
             onTapBlock: () {
-              final task = p.item.task ?? _taskFor(p.item.event);
-              if (task != null) showTaskActions(context, ref, task);
+              final group = _groupTasksFor(p.item);
+              if (group.isEmpty) return;
+              showTaskActions(context, ref, _repTask(group),
+                  scopeTasks: group, titleOverride: p.item.event?.displaySummary);
             },
           ),
         ));
         for (var i = 0; i < dropoffs.length; i++) {
-          tabs.add(tab(dropoffs[i], left, width, p.top - 12 - i * 24));
+          tabs.add(tab(dropoffs[i], left, width, p.top - _tabHeight / 2 - i * _tabHeight));
         }
         for (var i = 0; i < pickups.length; i++) {
-          tabs.add(tab(pickups[i], left, width, p.top + p.height - 12 + i * 24));
+          tabs.add(tab(pickups[i], left, width,
+              p.top + p.height - _tabHeight / 2 + i * _tabHeight));
         }
       }
       // Transitions whose source event isn't on the grid: a standalone pill.
       for (final t in orphanTabs) {
-        tabs.add(tab(t, laneLeft, laneWidth - 6, taskTop(t.start) - 12));
+        tabs.add(tab(t, laneLeft, laneWidth - 6, taskTop(t.start) - _tabHeight / 2));
       }
 
       return SizedBox(
@@ -1138,7 +1158,7 @@ class _EdgeTab extends StatelessWidget {
     // is never cut by the pill's rounded end. The unclaimed tab keeps a wider
     // right inset so the Claim pill sits inside the dashed outline.
     final inner = Padding(
-      padding: EdgeInsets.fromLTRB(10, 3, claimed ? 10 : 14, 3),
+      padding: EdgeInsets.fromLTRB(10, 2, claimed ? 10 : 14, 2),
       child: row,
     );
 
