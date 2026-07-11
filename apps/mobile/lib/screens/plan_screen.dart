@@ -177,6 +177,7 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
     final rawTasks = ref.watch(allTasksProvider).valueOrNull ?? const <TaskItem>[];
     final events =
         ref.watch(calendarEventsProvider).valueOrNull ?? const <CalendarEventItem>[];
+    final eventsById = {for (final e in events) e.id: e};
     // Children I'm covering (for the "only my kids" filter): kids with a task I own.
     final myKids = {
       for (final t in rawTasks)
@@ -222,7 +223,18 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
       if (!list.any((m) => m.id == owner.id)) list.add(owner);
     }
 
-    // Blocks: calendar events (minus every claimed-task event) + unowned
+    // An unowned attendance task's own block stands in for its source event
+    // (below) so it can carry the dashed/claimable treatment — rendering the
+    // source event too would duplicate it (the real "Fiddle practice" event
+    // plus a second, generic "Attendance" block for the same time).
+    final unownedAttendanceEventIds = {
+      for (final t in allTasks)
+        if (t.isUnowned && t.type == 'attendance' && taskVisible(t) && t.calendarEventId != null)
+          t.calendarEventId!
+    };
+
+    // Blocks: calendar events (minus every claimed-task event and every event
+    // already represented by an unowned attendance task below) + unowned
     // attendance tasks. A claimed task already shows up on its *source* event —
     // as an owner avatar on that block (attendance) or a solid edge tab
     // (transition) — so rendering the claimer's mirrored copy too would
@@ -231,7 +243,8 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
       for (final e in events)
         if (dayKey(e.start) == _selected &&
             !_exChildren.contains(e.familyMemberId) &&
-            !e.isClaimedTask)
+            !e.isClaimedTask &&
+            !unownedAttendanceEventIds.contains(e.id))
           _PlanItem.event(e),
       for (final t in allTasks)
         if (t.isUnowned && t.type == 'attendance' && taskVisible(t))
@@ -281,7 +294,7 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
               SingleChildScrollView(
                 controller: _gridScroll,
                 padding: const EdgeInsets.fromLTRB(22, 0, 22, 130),
-                child: _grid(placed, byId, tabsByEvent, ownersByEvent, orphanTabs),
+                child: _grid(placed, byId, tabsByEvent, ownersByEvent, orphanTabs, eventsById),
               ),
               _EdgeGlow(controller: _gridScroll, placed: placed, top: true),
               _EdgeGlow(controller: _gridScroll, placed: placed, top: false),
@@ -408,6 +421,7 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
     Map<String, List<TaskItem>> tabsByEvent,
     Map<String, List<Member>> ownersByEvent,
     List<TaskItem> orphanTabs,
+    Map<String, CalendarEventItem> eventsById,
   ) {
     final now = DateTime.now();
     final showNow = _selected == _dateOnly(now) &&
@@ -459,6 +473,10 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
         final edgeTabs = eid == null ? const <TaskItem>[] : (tabsByEvent[eid] ?? const []);
         final dropoffs = [for (final t in edgeTabs) if (t.type == 'dropoff') t];
         final pickups = [for (final t in edgeTabs) if (t.type != 'dropoff') t];
+        // The block's own event when it wraps one, else the source event of the
+        // task it wraps (so an unowned attendance task still reads as the
+        // child's real event title, not the generic "Attendance" fallback).
+        final sourceEvent = p.item.event ?? (eid == null ? null : eventsById[eid]);
         final left = colLeft(p);
         final width = colWidth(p);
         blocks.add(Positioned(
@@ -468,6 +486,7 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
           height: p.height,
           child: _ItemBlock(
             placed: p,
+            sourceEvent: sourceEvent,
             accent: personColor(_childOf(p.item, byId) ?? _fallbackMember),
             attendees: attendeesOf(p.item),
             hasTopTab: dropoffs.isNotEmpty,
@@ -479,7 +498,7 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
               final group = _groupTasksFor(p.item);
               if (group.isEmpty) return;
               showTaskActions(context, ref, _repTask(group),
-                  scopeTasks: group, titleOverride: p.item.event?.displaySummary);
+                  scopeTasks: group, titleOverride: sourceEvent?.displaySummary);
             },
           ),
         ));
@@ -995,9 +1014,14 @@ class _ItemBlock extends StatelessWidget {
     required this.hasTopTab,
     required this.hasBottomTab,
     required this.onClaim,
+    this.sourceEvent,
     this.onTapBlock,
   });
   final _Placed placed;
+  // The block's own event, or — when it wraps a task instead — that task's
+  // source event, so the title always reads as the real event, not a
+  // generic type label like "Attendance".
+  final CalendarEventItem? sourceEvent;
   final Color accent;
   final List<Member> attendees;
   final bool hasTopTab;
@@ -1012,10 +1036,10 @@ class _ItemBlock extends StatelessWidget {
     final t = it.task;
     final start = it.start;
     final end = it.end;
-    final human = e?.isHuman ?? false;
+    final human = e?.isHuman ?? sourceEvent?.isHuman ?? false;
     final claimable = t != null && t.isUnowned;
 
-    final summary = e != null ? e.displaySummary : taskTypeLabel(t!.type);
+    final summary = e != null ? e.displaySummary : taskTitle(t!, sourceEvent);
     final personName = attendees.isNotEmpty ? attendees.first.relationName : 'child';
 
     final hasRange = end != null && end.isAfter(start);
