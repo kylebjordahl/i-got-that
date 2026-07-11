@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models.dart';
 import '../state/auth.dart';
@@ -60,6 +61,13 @@ class MemberDetailScreen extends ConsumerWidget {
                         : null,
                   ),
                   const SizedBox(height: 24),
+                  if (isAdmin && !member.hasLogin) ...[
+                    _AccentSection(
+                      color: AppColors.indigo,
+                      child: _InviteSection(member: member),
+                    ),
+                    const SizedBox(height: 24),
+                  ],
                   _AccentSection(
                     color: AppColors.feedBlue,
                     child: _SourceCalendarsSection(member: member, canEdit: isAdmin),
@@ -223,6 +231,136 @@ class _SourceCalendarsSection extends ConsumerWidget {
       builder: (_) =>
           FeedBaselineScreen(member: member, feed: feed, existingLink: link),
     ));
+  }
+}
+
+/// "Invite link" — for a member with no login yet (a pre-created caretaker
+/// slot), an admin can issue a one-time code that links a real account to this
+/// member. Shown only while the slot is unclaimed; once linked this section
+/// disappears (gated by `!member.hasLogin` in the parent build).
+class _InviteSection extends ConsumerStatefulWidget {
+  const _InviteSection({required this.member});
+  final Member member;
+
+  @override
+  ConsumerState<_InviteSection> createState() => _InviteSectionState();
+}
+
+class _InviteSectionState extends ConsumerState<_InviteSection> {
+  String? _token;
+  DateTime? _expiresAt;
+  bool _busy = false;
+  String? _error;
+
+  Future<void> _generate() async {
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      final familyId = await ref.read(familyProvider.future);
+      final res =
+          await ref.read(apiClientProvider).issueMemberInvite(familyId, widget.member.id);
+      final expires = res['expiresAt'];
+      setState(() {
+        _token = res['token'] as String;
+        _expiresAt = expires is String ? DateTime.tryParse(expires) : null;
+      });
+    } catch (e) {
+      setState(() => _error = 'Could not generate an invite: $e');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  void _copy() {
+    final token = _token;
+    if (token == null) return;
+    Clipboard.setData(ClipboardData(text: token));
+    ScaffoldMessenger.of(context)
+        .showSnackBar(const SnackBar(content: Text('Invite link copied')));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const SectionEyebrow('Invite link', color: AppColors.indigo),
+        const SizedBox(height: 8),
+        Text(
+          '${widget.member.relationName} has no login yet. Generate a link so '
+          'they can sign in and claim this profile.',
+          style: AppText.subtitle,
+        ),
+        const SizedBox(height: 12),
+        if (_token == null)
+          AppCard(
+            child: Row(
+              children: [
+                const IconTile(icon: Icons.link_rounded, color: AppColors.indigo),
+                const SizedBox(width: 14),
+                Expanded(
+                  child: Text('No active invite yet', style: AppText.sectionItemTitle),
+                ),
+                PillButton(
+                  label: _busy ? 'Generating…' : 'Generate',
+                  variant: PillVariant.indigo,
+                  onPressed: _busy ? null : _generate,
+                ),
+              ],
+            ),
+          )
+        else
+          AppCard(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: SelectableText(
+                        _token!,
+                        style: const TextStyle(fontFamily: 'monospace', fontSize: 14),
+                      ),
+                    ),
+                    IconButton(
+                      tooltip: 'Copy',
+                      icon: const Icon(Icons.copy_rounded, color: AppColors.textMuted),
+                      onPressed: _copy,
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  'Share this with ${widget.member.relationName}. Once they sign '
+                  'in, they can paste it under "Redeem invite code" on the Me tab'
+                  '${_expiresAt != null ? ' — it expires ${_formatExpiry(_expiresAt!)}' : ''}.',
+                  style: AppText.subtitle,
+                ),
+                const SizedBox(height: 10),
+                SettingRow(
+                  icon: Icons.refresh_rounded,
+                  iconColor: AppColors.indigo,
+                  title: 'Generate a new link',
+                  onTap: _busy ? null : _generate,
+                ),
+              ],
+            ),
+          ),
+        if (_error != null) ...[
+          const SizedBox(height: 8),
+          Text(_error!, style: font(kBodyFont, 13, 500, color: AppColors.coral)),
+        ],
+      ],
+    );
+  }
+
+  String _formatExpiry(DateTime expiresAt) {
+    final days = expiresAt.toLocal().difference(DateTime.now()).inDays;
+    if (days <= 0) return 'soon';
+    if (days == 1) return 'in 1 day';
+    return 'in $days days';
   }
 }
 
