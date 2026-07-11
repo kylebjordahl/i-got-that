@@ -209,4 +209,44 @@ void main() {
     // No RenderFlex overflow was thrown while laying out the crowded 3:15 column.
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets('drop-off / pick-up render as edge tabs on their event (6c)',
+      (tester) async {
+    final now = DateTime.now();
+    DateTime at(int h, int m) => DateTime(now.year, now.month, now.day, h, m);
+    final events = [
+      CalendarEventItem(id: 'school', familyMemberId: 'theo', provenance: 'synthesized', start: at(8, 30), end: at(15, 0), allDay: false, summary: 'School day'),
+    ];
+    final tasks = [
+      // A claimed drop-off (top tab, owner avatar) and an unowned pick-up
+      // (bottom tab, Claim) — both attached to the school event, not blocks.
+      TaskItem(id: 'drop', familyMemberId: 'theo', type: 'dropoff', start: at(8, 0), status: 'owned', ownerMemberId: 'dad', createdVia: 'generated', calendarEventId: 'school'),
+      TaskItem(id: 'pick', familyMemberId: 'theo', type: 'pickup', start: at(15, 0), status: 'unowned', createdVia: 'generated', calendarEventId: 'school'),
+    ];
+    await tester.pumpWidget(ProviderScope(
+      overrides: [
+        membersProvider.overrideWith((ref) async => [
+              _m('dad', 'Dad', caretaker: true),
+              _m('theo', 'Theo', child: true),
+            ]),
+        currentMemberProvider.overrideWith((ref) async => _m('dad', 'Dad', caretaker: true)),
+        allTasksProvider.overrideWith((ref) async => tasks),
+        calendarEventsProvider.overrideWith((ref) async => events),
+        pendingDecisionsProvider.overrideWith((ref) async => const []),
+        threadingThresholdProvider.overrideWith((ref) async => 30),
+      ],
+      child: MaterialApp(
+        theme: buildAppTheme(),
+        themeMode: ThemeMode.dark,
+        home: const Scaffold(body: SafeArea(child: PlanScreen())),
+      ),
+    ));
+    await tester.pumpAndSettle();
+
+    // Both transitions are edge tabs; only the unowned pick-up carries a Claim.
+    expect(find.text('Drop-off · 8:00'), findsOneWidget);
+    expect(find.text('Pick-up · 3:00'), findsOneWidget);
+    expect(find.text('Claim'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
 }

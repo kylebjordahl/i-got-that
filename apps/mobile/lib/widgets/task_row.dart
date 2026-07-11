@@ -43,51 +43,39 @@ class TaskRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final muted = ownedColor != null;
+    final owned = ownedColor != null;
+    // Uniform border (no left-only accent bar); owned rows tint it to the
+    // covering person's colour so "You're covering" still reads distinctly.
+    final borderColor = owned
+        ? ownedColor!.withValues(alpha: 0.5)
+        : AppColors.borderSubtle;
     return Opacity(
-      opacity: muted ? 0.94 : 1,
-      child: DecoratedBox(
-        decoration: BoxDecoration(
-          color: AppColors.card,
+      opacity: owned ? 0.96 : 1,
+      child: Material(
+        color: AppColors.card,
+        borderRadius: BorderRadius.circular(18),
+        child: InkWell(
+          onTap: onTap,
+          onLongPress: onLongPress,
           borderRadius: BorderRadius.circular(18),
-          border: Border.all(color: AppColors.borderSubtle),
-        ),
-        child: Stack(
-          children: [
-            // Content sizes the stack; the accent bar is overlaid, inset from the
-            // corners so its rounded ends aren't clipped by the card radius.
-            Material(
-              color: Colors.transparent,
-              child: InkWell(
-                onTap: onTap,
-                onLongPress: onLongPress,
-                borderRadius: BorderRadius.circular(18),
-                child: Padding(
-                  padding: const EdgeInsets.fromLTRB(19, 12, 14, 12),
-                  child: Row(
-                    children: [
-                      _iconTile(),
-                      const SizedBox(width: 12),
-                      Expanded(child: _titleBlock()),
-                      if (trailing != null) ...[
-                        const SizedBox(width: 10),
-                        trailing!,
-                      ],
-                    ],
-                  ),
-                ),
-              ),
+          child: Container(
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(18),
+              border: Border.all(color: borderColor),
             ),
-            Positioned(
-              left: 8,
-              top: 12,
-              bottom: 12,
-              width: 3,
-              child: IgnorePointer(
-                child: CustomPaint(painter: _LeftBarPainter(color: ownedColor)),
-              ),
+            padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+            child: Row(
+              children: [
+                _iconTile(),
+                const SizedBox(width: 12),
+                Expanded(child: _titleBlock()),
+                if (trailing != null) ...[
+                  const SizedBox(width: 10),
+                  trailing!,
+                ],
+              ],
             ),
-          ],
+          ),
         ),
       ),
     );
@@ -155,39 +143,6 @@ class TaskRow extends StatelessWidget {
       ],
     );
   }
-}
-
-/// Paints the row's left bar: a solid fill when [color] is set, otherwise a
-/// dashed neutral bar (the "needs an owner" treatment).
-class _LeftBarPainter extends CustomPainter {
-  _LeftBarPainter({this.color});
-  final Color? color;
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final paint = Paint()
-      ..color = color ?? const Color(0x52FFFFFF) // rgba(255,255,255,.32)
-      ..strokeWidth = size.width
-      ..strokeCap = StrokeCap.round;
-    final x = size.width / 2;
-    // Keep the round caps inside the box so the bar reads as rounded top/bottom.
-    final r = size.width / 2;
-    final top = r, bottom = size.height - r;
-    if (bottom <= top) return;
-    if (color != null) {
-      canvas.drawLine(Offset(x, top), Offset(x, bottom), paint);
-      return;
-    }
-    const dash = 4.0, gap = 7.0; // wider-spaced dashes
-    var y = top;
-    while (y <= bottom) {
-      canvas.drawLine(Offset(x, y), Offset(x, (y + dash).clamp(top, bottom)), paint);
-      y += dash + gap;
-    }
-  }
-
-  @override
-  bool shouldRepaint(_LeftBarPainter old) => old.color != color;
 }
 
 /// The trailing "You" chip shown on owned rows (small avatar + "You").

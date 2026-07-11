@@ -51,9 +51,6 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
   late final DateTime _today = _dateOnly(DateTime.now());
   late DateTime _selected = _today;
 
-  /// The member whose unified calendar is shown; null ⇒ Everyone (merged).
-  String? _selectedMemberId;
-
   // Filters are stored as *exclusions* (empty ⇒ show all): a chip is selected
   // when it's NOT in the set, so a category only constrains once you deselect
   // something. `_exOwners` uses caretaker ids + the sentinel `__unowned__`;
@@ -187,26 +184,82 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
         if (_showCompleted || !t.isDismissed) t
     ];
 
-    bool memberVisible(String memberId) =>
-        _selectedMemberId == null || _selectedMemberId == memberId;
+    final taskById = {for (final t in rawTasks) t.id: t};
 
-    // The grid merges the selected unified calendar(s) with the day's unowned
-    // tasks. Owned tasks aren't drawn directly — they appear as claimed events
-    // on their owner's calendar.
+    // A claimed drop-off/pick-up is an event on the owner's calendar; it renders
+    // as an edge tab, not a block, so keep it out of the block set.
+    bool isClaimedTransitionEvent(CalendarEventItem e) {
+      if (!e.isClaimedTask || e.taskId == null) return false;
+      final tk = taskById[e.taskId];
+      return tk != null && tk.type != 'attendance';
+    }
+
+    bool taskVisible(TaskItem t) =>
+        dayKey(t.start) == _selected &&
+        !_exChildren.contains(t.familyMemberId) &&
+        _passesFilter(t, myKids);
+
+    // Drop-off / pick-up tasks (claimed or not) attach to their source event as
+    // edge tabs rather than taking their own grid column (6c).
+    final tabsByEvent = <String, List<TaskItem>>{};
+    // Transitions with no source event (e.g. a manual pick-up) can't attach to a
+    // block, so they float standalone at their time.
+    final looseTransitions = <TaskItem>[];
+    for (final t in allTasks) {
+      if (t.type == 'attendance') continue;
+      if (!taskVisible(t)) continue;
+      if (t.calendarEventId == null) {
+        looseTransitions.add(t);
+      } else {
+        (tabsByEvent[t.calendarEventId!] ??= []).add(t);
+      }
+    }
+    for (final list in tabsByEvent.values) {
+      list.sort((a, b) => a.start.compareTo(b.start));
+    }
+
+    // Attendee avatars on an event = the child whose calendar it's on plus any
+    // caretaker who has claimed a task generated from it.
+    final ownersByEvent = <String, List<Member>>{};
+    for (final t in rawTasks) {
+      if (t.status != 'owned' || t.calendarEventId == null) continue;
+      final owner = byId[t.ownerMemberId];
+      if (owner == null) continue;
+      final list = ownersByEvent[t.calendarEventId!] ??= [];
+      if (!list.any((m) => m.id == owner.id)) list.add(owner);
+    }
+
+    // Blocks: calendar events (minus claimed transitions) + unowned attendance
+    // tasks. Transitions are tabs, above.
     final dayItems = <_PlanItem>[
       for (final e in events)
         if (dayKey(e.start) == _selected &&
-            memberVisible(e.familyMemberId) &&
-            !_exChildren.contains(e.familyMemberId))
+            !_exChildren.contains(e.familyMemberId) &&
+            !isClaimedTransitionEvent(e))
           _PlanItem.event(e),
       for (final t in allTasks)
-        if (t.isUnowned &&
-            dayKey(t.start) == _selected &&
-            memberVisible(t.familyMemberId) &&
-            _passesFilter(t, myKids))
+        if (t.isUnowned && t.type == 'attendance' && taskVisible(t))
           _PlanItem.task(t),
     ];
-    _computeRange(dayItems);
+    final blockEventIds = {
+      for (final it in dayItems)
+        if (it.isEvent) it.event!.id
+    };
+    // Tabs whose source event isn't on the grid (plus the loose transitions)
+    // render standalone at their time.
+    final orphanTabs = <TaskItem>[
+      ...looseTransitions,
+      for (final entry in tabsByEvent.entries)
+        if (!blockEventIds.contains(entry.key)) ...entry.value
+    ];
+
+    // Range must cover the tab times too, not just the block times.
+    _computeRange([
+      ...dayItems,
+      for (final t in looseTransitions) _PlanItem.task(t),
+      for (final list in tabsByEvent.values)
+        for (final t in list) _PlanItem.task(t),
+    ]);
     final placed = _layout(dayItems);
     // Default the grid's scroll to the 7 AM–6 PM window (once per day change).
     _scheduleDefaultScroll();
@@ -218,12 +271,7 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
           padding: const EdgeInsets.fromLTRB(22, 14, 22, 0),
           child: _header(),
         ),
-        const SizedBox(height: 14),
-        Padding(
-          padding: const EdgeInsets.only(left: 22),
-          child: _memberChips(members),
-        ),
-        const SizedBox(height: 14),
+        const SizedBox(height: 16),
         Padding(
           padding: const EdgeInsets.only(left: 22),
           child: _dayScroller(allTasks, byId),
@@ -237,7 +285,7 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
               SingleChildScrollView(
                 controller: _gridScroll,
                 padding: const EdgeInsets.fromLTRB(22, 0, 22, 130),
-                child: _grid(placed, byId),
+                child: _grid(placed, byId, tabsByEvent, ownersByEvent, orphanTabs),
               ),
               _EdgeGlow(controller: _gridScroll, placed: placed, top: true),
               _EdgeGlow(controller: _gridScroll, placed: placed, top: false),
@@ -290,41 +338,6 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
           .where((m) => m.isCaretaker)
           .toList();
 
-  /// Unified-calendar chips: Everyone + one per member — kids AND caretakers
-  /// each have their own calendar (6c). Each member chip carries their initial
-  /// avatar in a color-bordered pill.
-  Widget _memberChips(List<Member> members) {
-    return SizedBox(
-      height: 40,
-      child: ListView(
-        scrollDirection: Axis.horizontal,
-        children: [
-          Padding(
-            padding: const EdgeInsets.only(right: 8),
-            child: MemberChip(
-              label: 'Everyone',
-              selected: _selectedMemberId == null,
-              onTap: () => setState(() => _selectedMemberId = null),
-            ),
-          ),
-          for (final m in members)
-            Padding(
-              padding: const EdgeInsets.only(right: 8),
-              child: MemberChip(
-                label: m.relationName,
-                initial: initialFor(m.relationName),
-                color: personColor(m),
-                selected: _selectedMemberId == m.id,
-                onTap: () => setState(() =>
-                    _selectedMemberId = _selectedMemberId == m.id ? null : m.id),
-              ),
-            ),
-          const SizedBox(width: 14),
-        ],
-      ),
-    );
-  }
-
   Widget _dayScroller(List<TaskItem> allTasks, Map<String, Member> byId) {
     final byDay = <DateTime, List<TaskItem>>{};
     for (final t in allTasks) {
@@ -361,19 +374,112 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
     );
   }
 
-  Widget _grid(List<_Placed> placed, Map<String, Member> byId) {
+  /// The source child a block belongs to (the claimer's calendar for a claimed
+  /// event still traces back to the child the task is about).
+  Member? _childOf(_PlanItem it, Map<String, Member> byId) {
+    if (it.isEvent) {
+      final e = it.event!;
+      final id = e.isClaimedTask ? _taskFor(e)?.familyMemberId : e.familyMemberId;
+      return byId[id];
+    }
+    return byId[it.task!.familyMemberId];
+  }
+
+  String? _eventIdOf(_PlanItem it) =>
+      it.isEvent ? it.event!.id : it.task!.calendarEventId;
+
+  Widget _grid(
+    List<_Placed> placed,
+    Map<String, Member> byId,
+    Map<String, List<TaskItem>> tabsByEvent,
+    Map<String, List<Member>> ownersByEvent,
+    List<TaskItem> orphanTabs,
+  ) {
     final now = DateTime.now();
     final showNow = _selected == _dateOnly(now) &&
         now.hour >= _gridStart &&
         now.hour < _gridEnd;
     final nowY = ((now.hour + now.minute / 60) - _gridStart) * _hourPx;
 
+    List<Member> attendeesOf(_PlanItem it) {
+      final res = <Member>[];
+      final c = _childOf(it, byId);
+      if (c != null) res.add(c);
+      final eid = _eventIdOf(it);
+      if (eid != null) {
+        for (final o in ownersByEvent[eid] ?? const <Member>[]) {
+          if (!res.any((m) => m.id == o.id)) res.add(o);
+        }
+      }
+      return res;
+    }
+
+    double taskTop(DateTime t) =>
+        ((t.toLocal().hour + t.toLocal().minute / 60) - _gridStart) * _hourPx;
+
+    Widget tab(TaskItem t, double left, double width, double top) => Positioned(
+          top: top,
+          left: left,
+          width: width,
+          height: 24,
+          child: _EdgeTab(
+            task: t,
+            accent: personColor(byId[t.familyMemberId] ?? _fallbackMember),
+            owner: t.status == 'owned' ? byId[t.ownerMemberId] : null,
+            onClaim: t.isUnowned ? () => _claim(t.id) : null,
+            onTap: () => showTaskActions(context, ref, t),
+          ),
+        );
+
     return LayoutBuilder(builder: (context, constraints) {
       const laneLeft = _labelWidth + 8;
       final laneWidth = constraints.maxWidth - laneLeft;
+      double colLeft(_Placed p) => laneLeft + p.colIndex * (laneWidth / p.colCount);
+      double colWidth(_Placed p) => laneWidth / p.colCount - 6;
+
+      final blocks = <Widget>[];
+      final tabs = <Widget>[];
+      for (final p in placed) {
+        final eid = _eventIdOf(p.item);
+        final edgeTabs = eid == null ? const <TaskItem>[] : (tabsByEvent[eid] ?? const []);
+        final dropoffs = [for (final t in edgeTabs) if (t.type == 'dropoff') t];
+        final pickups = [for (final t in edgeTabs) if (t.type != 'dropoff') t];
+        final left = colLeft(p);
+        final width = colWidth(p);
+        blocks.add(Positioned(
+          top: p.top,
+          left: left,
+          width: width,
+          height: p.height,
+          child: _ItemBlock(
+            placed: p,
+            accent: personColor(_childOf(p.item, byId) ?? _fallbackMember),
+            attendees: attendeesOf(p.item),
+            hasTopTab: dropoffs.isNotEmpty,
+            hasBottomTab: pickups.isNotEmpty,
+            onClaim: p.item.task != null ? () => _claim(p.item.task!.id) : null,
+            onTapBlock: () {
+              final task = p.item.task ?? _taskFor(p.item.event);
+              if (task != null) showTaskActions(context, ref, task);
+            },
+          ),
+        ));
+        for (var i = 0; i < dropoffs.length; i++) {
+          tabs.add(tab(dropoffs[i], left, width, p.top - 12 - i * 24));
+        }
+        for (var i = 0; i < pickups.length; i++) {
+          tabs.add(tab(pickups[i], left, width, p.top + p.height - 12 + i * 24));
+        }
+      }
+      // Transitions whose source event isn't on the grid: a standalone pill.
+      for (final t in orphanTabs) {
+        tabs.add(tab(t, laneLeft, laneWidth - 6, taskTop(t.start) - 12));
+      }
+
       return SizedBox(
         height: _gridHeight + 12,
         child: Stack(
+          clipBehavior: Clip.none,
           children: [
             // Hour gridlines + labels.
             for (var h = _gridStart; h <= _gridEnd; h++)
@@ -383,27 +489,7 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
                 right: 0,
                 child: _HourLine(label: _hourLabel(h)),
               ),
-            // Item blocks (events + unowned tasks).
-            for (final p in placed)
-              Positioned(
-                top: p.top,
-                left: laneLeft + p.colIndex * (laneWidth / p.colCount),
-                width: laneWidth / p.colCount - 6,
-                height: p.height,
-                child: _ItemBlock(
-                  placed: p,
-                  byId: byId,
-                  sourceChild: p.item.event?.isClaimedTask == true
-                      ? byId[_taskFor(p.item.event)?.familyMemberId]
-                      : null,
-                  onClaim:
-                      p.item.task != null ? () => _claim(p.item.task!.id) : null,
-                  onTapBlock: () {
-                    final task = p.item.task ?? _taskFor(p.item.event);
-                    if (task != null) showTaskActions(context, ref, task);
-                  },
-                ),
-              ),
+            ...blocks,
             // Now-line.
             if (showNow)
               Positioned(
@@ -417,11 +503,21 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
                   ],
                 ),
               ),
+            // Transition tabs float above their blocks.
+            ...tabs,
           ],
         ),
       );
     });
   }
+
+  static final Member _fallbackMember = Member(
+    id: '__none__',
+    relationName: '?',
+    isCaretaker: false,
+    isAdmin: false,
+    requiresCaretaker: false,
+  );
 
   /// The task behind a claimed event (so tapping it opens the quick actions).
   TaskItem? _taskFor(CalendarEventItem? event) {
@@ -867,60 +963,60 @@ class _PillIconButton extends StatelessWidget {
   }
 }
 
-/// A positioned grid item: a unified-calendar event block (solid, tinted to
-/// whose calendar it's on — a claimed task therefore renders in the OWNER's
-/// color, the recursion made visible) or an unowned task (dashed + Claim).
+/// A positioned grid block: an attendance event / task, drawn with a uniform
+/// source-colour border, "Summary · Person" title, a category + time-range
+/// subtitle, and its attendees as avatar badges top-right (6c). Drop-off /
+/// pick-up transitions are drawn separately as edge tabs, not here.
 class _ItemBlock extends StatelessWidget {
   const _ItemBlock({
     required this.placed,
-    required this.byId,
+    required this.accent,
+    required this.attendees,
+    required this.hasTopTab,
+    required this.hasBottomTab,
     required this.onClaim,
-    this.sourceChild,
     this.onTapBlock,
   });
   final _Placed placed;
-  final Map<String, Member> byId;
-
-  /// For a claimed-task event: the child whose calendar the task came from, so
-  /// the block can show both the child and the claiming owner (6c).
-  final Member? sourceChild;
+  final Color accent;
+  final List<Member> attendees;
+  final bool hasTopTab;
+  final bool hasBottomTab;
   final VoidCallback? onClaim;
   final VoidCallback? onTapBlock;
 
   @override
   Widget build(BuildContext context) {
-    final event = placed.item.event;
-    if (event != null) return _eventBlock(event);
-    return _taskBlock(placed.item.task!);
-  }
+    final it = placed.item;
+    final e = it.event;
+    final t = it.task;
+    final start = it.start;
+    final end = it.end;
+    final human = e?.isHuman ?? false;
+    final claimable = t != null && t.isUnowned;
 
-  Widget _eventBlock(CalendarEventItem e) {
-    final calendarOwner = byId[e.familyMemberId];
-    final accent =
-        calendarOwner != null ? personColor(calendarOwner) : AppColors.indigo;
-    final time = e.end != null
-        ? '${clockShort(e.start)} – ${clockShort(e.end!)}'
-        : clockShort(e.start);
-    final subtitle = e.isClaimedTask
-        ? "$time · on ${calendarOwner?.relationName ?? 'their'}'s calendar"
-        : time;
+    final summary = e != null ? e.displaySummary : taskTypeLabel(t!.type);
+    final personName = attendees.isNotEmpty ? attendees.first.relationName : 'child';
+
+    final hasRange = end != null && end.isAfter(start);
+    final subtitle =
+        '${hasRange ? 'Attendance · ${friendlyRange(start, end)}' : clockShort(start)}'
+        '${human ? ' · manual' : ''}';
 
     return GestureDetector(
       onTap: onTapBlock,
       behavior: HitTestBehavior.opaque,
       child: Container(
-        // Clip so a narrow column (several overlapping calendars) never bleeds
-        // its title / avatars / "manual" tag out over the neighbouring block.
         clipBehavior: Clip.antiAlias,
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
+        padding: EdgeInsets.fromLTRB(11, hasTopTab ? 17 : 9, 11, hasBottomTab ? 17 : 9),
         decoration: BoxDecoration(
           gradient: LinearGradient(
-            begin: Alignment.centerLeft,
-            end: Alignment.centerRight,
-            colors: [AppColors.tint(accent, 0.22), AppColors.tint(accent, 0.10)],
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [AppColors.tint(accent, 0.18), AppColors.tint(accent, 0.08)],
           ),
-          borderRadius: BorderRadius.circular(12),
-          border: Border(left: BorderSide(color: accent, width: 3)),
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: accent.withValues(alpha: 0.55)),
         ),
         child: Stack(
           fit: StackFit.expand,
@@ -929,10 +1025,30 @@ class _ItemBlock extends StatelessWidget {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(e.displaySummary,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: font(kBodyFont, 12.5, 600, color: AppColors.textPrimary)),
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(
+                      child: Text.rich(
+                        TextSpan(children: [
+                          TextSpan(
+                              text: summary,
+                              style: font(kBodyFont, 12.5, 600,
+                                  color: AppColors.textPrimary)),
+                          TextSpan(
+                              text: ' · $personName',
+                              style: font(kBodyFont, 12.5, 700, color: accent)),
+                        ]),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    if (attendees.isNotEmpty) ...[
+                      const SizedBox(width: 6),
+                      _attendeeAvatars(),
+                    ],
+                  ],
+                ),
                 const SizedBox(height: 2),
                 Text(subtitle,
                     maxLines: 1,
@@ -940,176 +1056,122 @@ class _ItemBlock extends StatelessWidget {
                     style: font(kBodyFont, 11, 500, color: AppColors.textTertiary)),
               ],
             ),
-            Align(
-              alignment: Alignment.bottomLeft,
-              child: Row(children: [
-                // A claimed task is an event on the owner's calendar generated
-                // for the child — show both, child then owner.
-                if (e.isClaimedTask && sourceChild != null && calendarOwner != null)
-                  AvatarCluster(
-                    avatars: [
-                      (initialFor(sourceChild!.relationName), personColor(sourceChild!)),
-                      (initialFor(calendarOwner.relationName), accent),
-                    ],
-                    size: 20,
-                    overlap: 9,
-                  )
-                else if (calendarOwner != null)
-                  PersonAvatar(
-                      initial: initialFor(calendarOwner.relationName),
-                      color: accent,
-                      size: 20),
-                if (e.isHuman) ...[
-                  const SizedBox(width: 6),
-                  Flexible(
-                    child: Text('manual',
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: font(kBodyFont, 10, 600, color: AppColors.textMuted)),
-                  ),
-                ],
-              ]),
-            ),
+            if (claimable)
+              Align(
+                alignment: Alignment.bottomRight,
+                child: PillButton(label: 'Claim', compact: true, onPressed: onClaim),
+              ),
           ],
         ),
       ),
     );
   }
 
-  Widget _taskBlock(TaskItem t) {
-    final child = byId[t.familyMemberId];
-    final accent = child != null ? personColor(child) : AppColors.indigo;
-    final isAtt = t.type == 'attendance';
-    final label = '${taskTypeLabel(t.type)} · ${child?.relationName ?? 'child'}';
-    final time = clockShort(t.start);
-
-    // Title pinned to the top, Claim to the bottom. A Stack (not a Column) so a
-    // too-short block can never throw a flex overflow.
-    final content = isAtt
-        ? Stack(
-            fit: StackFit.expand,
-            children: [
-              Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(label,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: font(kBodyFont, 12.5, 600, color: AppColors.textPrimary)),
-                  const SizedBox(height: 2),
-                  Text(time, style: font(kBodyFont, 11, 500, color: AppColors.textTertiary)),
-                ],
-              ),
-              Align(
-                alignment: Alignment.bottomLeft,
-                child: PillButton(label: 'Claim', compact: true, onPressed: onClaim),
-              ),
-            ],
-          )
-        : LayoutBuilder(builder: (context, c) {
-            // In a wide lane the transition reads as "• Type · Name · time
-            // [Claim]"; in a narrow column (many overlapping calendars) the
-            // label and the full Claim pill won't fit, so fall back to a compact
-            // icon-only claim and let the label ellipsize — never overflow.
-            final tight = c.maxWidth < 108;
-            return Row(
-              children: [
-                Container(
-                  width: 8,
-                  height: 8,
-                  decoration: BoxDecoration(color: accent, shape: BoxShape.circle),
-                ),
-                SizedBox(width: tight ? 5 : 8),
-                Expanded(
-                  child: Text('$label · $time',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: font(kBodyFont, 12, 600, color: AppColors.textPrimary)),
-                ),
-                const SizedBox(width: 5),
-                if (tight)
-                  _ClaimIconButton(onTap: onClaim)
-                else
-                  PillButton(label: 'Claim', compact: true, onPressed: onClaim),
-              ],
-            );
-          });
-
-    // Unowned blocks read as "not yet on anyone's calendar": a faint tint, a
-    // diagonal hatch, and a dashed accent border.
-    return GestureDetector(
-      onTap: onTapBlock,
-      behavior: HitTestBehavior.opaque,
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(12),
-        child: DecoratedBox(
-          decoration: BoxDecoration(color: AppColors.tint(accent, 0.06)),
-          child: CustomPaint(
-            painter: _HatchPainter(color: accent.withValues(alpha: 0.16)),
-            foregroundPainter: _DashedBox(color: accent.withValues(alpha: 0.7)),
-            child: Padding(
-              padding:
-                  EdgeInsets.symmetric(horizontal: 10, vertical: isAtt ? 9 : 4),
-              child: content,
-            ),
-          ),
-        ),
-      ),
+  Widget _attendeeAvatars() {
+    if (attendees.length == 1) {
+      final m = attendees.first;
+      return PersonAvatar(
+          initial: initialFor(m.relationName), color: personColor(m), size: 20);
+    }
+    return AvatarCluster(
+      avatars: [
+        for (final m in attendees) (initialFor(m.relationName), personColor(m)),
+      ],
+      size: 20,
+      overlap: 9,
     );
   }
 }
 
-/// A compact icon-only Claim button — the narrow-column fallback for the slim
-/// transition rows, where the full "Claim" pill wouldn't fit.
-class _ClaimIconButton extends StatelessWidget {
-  const _ClaimIconButton({required this.onTap});
+/// A drop-off / pick-up transition rendered as a tab clipped onto the top or
+/// bottom edge of its parent event block (6c). Solid in the source colour with
+/// the owner's avatar when claimed; a dashed amber outline with a "Claim" pill
+/// when it still needs an owner.
+class _EdgeTab extends StatelessWidget {
+  const _EdgeTab({
+    required this.task,
+    required this.accent,
+    required this.owner,
+    required this.onClaim,
+    this.onTap,
+  });
+  final TaskItem task;
+  final Color accent;
+  final Member? owner;
+  final VoidCallback? onClaim;
   final VoidCallback? onTap;
+
+  String get _label {
+    final kind = task.type == 'dropoff' ? 'Drop-off' : 'Pick-up';
+    return '$kind · ${clockShort(task.start)}';
+  }
 
   @override
   Widget build(BuildContext context) {
-    return Material(
-      color: AppColors.textPrimary,
-      shape: const CircleBorder(),
-      clipBehavior: Clip.antiAlias,
-      child: InkWell(
-        onTap: onTap,
-        child: const SizedBox(
-          width: 22,
-          height: 22,
-          child: Icon(Icons.add_rounded, size: 15, color: Color(0xFF17141C)),
+    final claimed = owner != null;
+    const onAccent = Color(0xFF17162B);
+    final glyph = Icon(taskIcon(task.type), size: 13,
+        color: claimed ? onAccent : AppColors.amber);
+    final labelStyle = font(kBodyFont, 11, 700,
+        color: claimed ? onAccent : AppColors.textPrimary);
+
+    final row = Row(
+      children: [
+        glyph,
+        const SizedBox(width: 6),
+        Expanded(
+          child: Text(_label,
+              maxLines: 1, overflow: TextOverflow.ellipsis, style: labelStyle),
         ),
-      ),
+        const SizedBox(width: 6),
+        if (claimed)
+          PersonAvatar(
+              initial: initialFor(owner!.relationName),
+              color: personColor(owner!),
+              size: 18)
+        else
+          PillButton(label: 'Claim', compact: true, onPressed: onClaim),
+      ],
+    );
+
+    // A rounded background (no hard clip) so the trailing Claim pill / avatar
+    // is never cut by the pill's rounded end. The unclaimed tab keeps a wider
+    // right inset so the Claim pill sits inside the dashed outline.
+    final inner = Padding(
+      padding: EdgeInsets.fromLTRB(10, 3, claimed ? 10 : 14, 3),
+      child: row,
+    );
+
+    return GestureDetector(
+      onTap: onTap,
+      behavior: HitTestBehavior.opaque,
+      child: claimed
+          ? DecoratedBox(
+              decoration: BoxDecoration(
+                color: accent,
+                borderRadius: BorderRadius.circular(999),
+              ),
+              child: inner,
+            )
+          : DecoratedBox(
+              decoration: BoxDecoration(
+                color: AppColors.bg.withValues(alpha: 0.9),
+                borderRadius: BorderRadius.circular(999),
+              ),
+              child: CustomPaint(
+                foregroundPainter: _DashedBox(color: AppColors.amber, radius: 999),
+                child: inner,
+              ),
+            ),
     );
   }
 }
 
-/// Diagonal (135°) hatch fill for the unowned Plan blocks — the "not claimed"
-/// treatment, matching the mockup's `repeating-linear-gradient`.
-class _HatchPainter extends CustomPainter {
-  _HatchPainter({required this.color});
-  final Color color;
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final paint = Paint()
-      ..color = color
-      ..strokeWidth = 1.0
-      ..style = PaintingStyle.stroke;
-    const gap = 7.0;
-    for (var x = -size.height; x <= size.width; x += gap) {
-      canvas.drawLine(Offset(x, 0), Offset(x + size.height, size.height), paint);
-    }
-  }
-
-  @override
-  bool shouldRepaint(_HatchPainter old) => old.color != color;
-}
-
-/// Dashed rounded-rect border for unowned Plan blocks.
+/// Dashed rounded-rect border (unowned Plan blocks and the unclaimed edge tabs).
 class _DashedBox extends CustomPainter {
-  _DashedBox({required this.color});
+  _DashedBox({required this.color, this.radius = 12});
   final Color color;
+  final double radius;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -1117,9 +1179,10 @@ class _DashedBox extends CustomPainter {
       ..color = color
       ..style = PaintingStyle.stroke
       ..strokeWidth = 1.4;
+    final r = radius >= 900 ? size.height / 2 : radius;
     final rrect = RRect.fromRectAndRadius(
       Offset.zero & size,
-      const Radius.circular(12),
+      Radius.circular(r),
     );
     final path = Path()..addRRect(rrect);
     const dash = 5.0, gap = 4.0;
@@ -1136,5 +1199,5 @@ class _DashedBox extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(_DashedBox old) => old.color != color;
+  bool shouldRepaint(_DashedBox old) => old.color != color || old.radius != radius;
 }
