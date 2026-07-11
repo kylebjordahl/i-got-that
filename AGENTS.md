@@ -140,3 +140,13 @@ paths in particular).
 - Match the surrounding code's style/idioms; keep changes focused.
 - Update `docs/` when you change deploy/auth/config behaviour.
 - Outstanding work is tracked as GitHub issues — check open issues before starting.
+- **Agents: open the PR and mark it ready for review yourselves.** Once the
+  work is actually done — tests/typecheck pass and the change is verified —
+  open the PR (draft is fine while work is in progress) and flip it out of
+  draft (`gh pr ready <PR#>`) rather than leaving it sitting as a draft. Do
+  this proactively; don't wait for the user to ask.
+- **Sync with `main` before marking ready.** This repo requires branches to be
+  up-to-date with `main` before merge, so an out-of-date branch blocks merging
+  even once marked ready. Update the branch first — `gh pr update-branch
+  <PR#>` (or `git fetch origin && git merge origin/main` and push) — then run
+  `gh pr ready <PR#>`.
