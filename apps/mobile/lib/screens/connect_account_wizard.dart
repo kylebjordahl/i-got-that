@@ -11,7 +11,16 @@ import '../widgets/settings.dart';
 /// provider, sign in / grant access, then pick calendars. Wired to the external-
 /// account API: iCloud/Outlook use CalDAV basic auth, Google uses OAuth.
 class ConnectAccountWizard extends ConsumerStatefulWidget {
-  const ConnectAccountWizard({super.key});
+  const ConnectAccountWizard({super.key, this.onConnected, this.skipCalendarStep = false});
+
+  /// Called with the freshly-connected account id once a connection succeeds.
+  /// The onboarding wizard uses this to pop straight back into its own flow.
+  final void Function(String accountId)? onConnected;
+
+  /// When true, the "choose calendars" step (3) is omitted — calendar selection
+  /// happens in context later (per-child / per-parent unified-calendar picks).
+  /// The wizard pops as soon as the account connects.
+  final bool skipCalendarStep;
 
   @override
   ConsumerState<ConnectAccountWizard> createState() => _ConnectAccountWizardState();
@@ -115,6 +124,13 @@ class _ConnectAccountWizardState extends ConsumerState<ConnectAccountWizard> {
       ref.invalidate(accountsProvider);
       _accountId = (res['account'] as Map<String, dynamic>?)?['id'] as String? ??
           (res['id'] as String?);
+      // Reused from onboarding: skip the calendar-selection step and hand the
+      // new account id straight back to the caller.
+      if (widget.skipCalendarStep) {
+        if (_accountId != null) widget.onConnected?.call(_accountId!);
+        if (mounted) Navigator.of(context).maybePop();
+        return;
+      }
       await _loadCalendars();
       if (mounted) setState(() => _step = 3);
     } catch (e) {

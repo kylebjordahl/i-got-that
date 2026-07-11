@@ -6,6 +6,17 @@ import 'auth.dart';
 /// family via the Family-screen switcher. Null ⇒ use the default.
 final selectedFamilyIdProvider = StateProvider<String?>((ref) => null);
 
+/// The first-run gate: whether the signed-in user already belongs to any
+/// family. Empty ⇒ they land in the onboarding wizard (which creates the family
+/// in step 1c) rather than [familyProvider]'s silent "My Family" fallback.
+/// Kept separate from [familyProvider] so onboarding can invalidate just this
+/// signal when the family is created without tripping the auto-create path.
+final hasFamilyProvider = FutureProvider<bool>((ref) async {
+  final api = ref.watch(apiClientProvider);
+  final me = await api.me();
+  return (me['families'] as List<dynamic>).isNotEmpty;
+});
+
 /// The current family id — the selected family, else the user's first family, or
 /// a freshly created one.
 final familyProvider = FutureProvider<String>((ref) async {
@@ -104,6 +115,23 @@ final feedsProvider = FutureProvider<List<FeedItem>>((ref) async {
   final familyId = await ref.watch(familyProvider.future);
   final rows = await api.listFeeds(familyId);
   return rows.map((e) => FeedItem.fromJson(e as Map<String, dynamic>)).toList();
+});
+
+/// The feeds linked to one member (child) — powers the onboarding per-child
+/// sources step (1e). Derived by scanning each feed's member links.
+final memberFeedsProvider =
+    FutureProvider.family<List<FeedItem>, String>((ref, memberId) async {
+  final api = ref.watch(apiClientProvider);
+  final familyId = await ref.watch(familyProvider.future);
+  final feeds = await ref.watch(feedsProvider.future);
+  final out = <FeedItem>[];
+  for (final f in feeds) {
+    final links = await api.listMemberLinks(familyId, f.id);
+    if (links.any((l) => (l as Map<String, dynamic>)['familyMemberId'] == memberId)) {
+      out.add(f);
+    }
+  }
+  return out;
 });
 
 /// Member links (with baselines) for a specific feed.

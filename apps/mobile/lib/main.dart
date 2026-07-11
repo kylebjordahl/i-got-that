@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'app_shell.dart';
-import 'screens/login_screen.dart';
+import 'onboarding/join/join_flow.dart';
+import 'onboarding/onboarding_entry.dart';
+import 'onboarding/steps/welcome_step.dart';
 import 'state/auth.dart';
 import 'state/nav.dart';
 import 'theme/app_theme.dart';
@@ -17,6 +19,14 @@ class CaretakerApp extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final auth = ref.watch(authControllerProvider);
+    // On sign-out, forget any latched onboarding decision so the next session
+    // re-determines whether the first-run wizard is needed.
+    ref.listen(authControllerProvider, (prev, next) {
+      if (!next.isAuthed) {
+        ref.read(onboardingActiveProvider.notifier).state = null;
+      }
+    });
+    final inviteToken = ref.watch(activeInviteTokenProvider);
     return MaterialApp(
       title: 'I Got That',
       debugShowCheckedModeBanner: false,
@@ -24,12 +34,18 @@ class CaretakerApp extends ConsumerWidget {
       themeMode: ThemeMode.dark,
       // While restoring (the one round trip to check the web session cookie —
       // see state/auth.dart), hold on a blank scaffold instead of flashing the
-      // login screen for an already-authed user.
+      // welcome screen for an already-authed user.
       home: auth.restoring
           ? const Scaffold()
-          : auth.isAuthed
-              ? const _AuthedRoot()
-              : const LoginScreen(),
+          // An invite link (web deep link) drives the second-parent join flow,
+          // whether or not the recipient is already signed in — it owns the
+          // screen until it finishes and clears the token.
+          : inviteToken != null
+              ? JoinFlow(token: inviteToken)
+              : auth.isAuthed
+                  // First-run wizard vs. the app, latched once (see OnboardingGate).
+                  ? OnboardingGate(appBuilder: (_) => const _AuthedRoot())
+                  : const WelcomeStep(),
     );
   }
 }
