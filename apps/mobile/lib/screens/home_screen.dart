@@ -181,12 +181,19 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                   ? 'Loading…'
                   : 'Nothing to cover — all clear 🎉')))
           else ...[
-            // Needs an owner — the claim queue, threaded, day-grouped.
+            // Needs an owner — the claim queue, threaded. On a single day the
+            // eyebrow carries the day + count ("Today · 3", as in 6b); across
+            // several days the per-day sticky headers take over.
             if (unowned.isNotEmpty)
               ..._section(
                 label: 'Needs an owner',
                 labelColor: AppColors.textPrimary,
-                trailing: Text('${unowned.length}', style: AppText.secondary),
+                trailing: Text(
+                  unownedDays.length == 1
+                      ? '${_relDayCap(unownedDays.first, now)} · ${unowned.length}'
+                      : '${unowned.length}',
+                  style: AppText.secondary,
+                ),
                 byDay: unownedByDay,
                 days: unownedDays,
                 showOpen: true,
@@ -248,6 +255,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     required Member? me,
     required int threshold,
   }) {
+    // A single day needs no sticky day header — the eyebrow already names it
+    // (matching 6b). Multiple days each get their own pinned header.
+    final showDayHeaders = days.length > 1;
     return [
       SliverToBoxAdapter(
         child: Padding(
@@ -256,23 +266,37 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         ),
       ),
       for (final day in days)
-        SliverMainAxisGroup(
-          slivers: [
-            SliverPersistentHeader(
-              pinned: true,
-              delegate: _DayHeaderDelegate(
-                label: homeDayHeader(day, now),
-                trailing: showOpen ? '${byDay[day]!.length} open' : null,
+        if (showDayHeaders)
+          SliverMainAxisGroup(
+            slivers: [
+              SliverPersistentHeader(
+                pinned: true,
+                delegate: _DayHeaderDelegate(
+                  label: homeDayHeader(day, now),
+                  trailing: showOpen ? '${byDay[day]!.length} open' : null,
+                ),
               ),
-            ),
-            SliverPadding(
-              padding: const EdgeInsets.fromLTRB(22, 0, 22, 8),
-              sliver: _daySliver(byDay[day]!, byId, eventsById, me, threshold,
-                  thread: thread),
-            ),
-          ],
-        ),
+              SliverPadding(
+                padding: const EdgeInsets.fromLTRB(22, 0, 22, 8),
+                sliver: _daySliver(byDay[day]!, byId, eventsById, me, threshold,
+                    thread: thread),
+              ),
+            ],
+          )
+        else
+          SliverPadding(
+            padding: const EdgeInsets.fromLTRB(22, 2, 22, 8),
+            sliver: _daySliver(byDay[day]!, byId, eventsById, me, threshold,
+                thread: thread),
+          ),
     ];
+  }
+
+  /// "Today" / "Tomorrow" / "Fri Jul 11" — the capitalized relative day used in
+  /// the single-day section eyebrow.
+  String _relDayCap(DateTime day, DateTime now) {
+    final r = relativeDayLower(day, now);
+    return r.isEmpty ? r : '${r[0].toUpperCase()}${r.substring(1)}';
   }
 
   /// Stitch a day's tasks into threaded chains: consecutive tasks whose gap is
@@ -573,7 +597,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       typeLabel: taskTitle(t, eventsById[t.calendarEventId]),
       personName: child?.relationName ?? 'child',
       personColor: color,
-      subtitle: '${taskCategory(t.type)} · ${friendlyTime(t.start)}',
+      subtitle: t.type == 'attendance' && t.end != null
+          ? 'Attendance · ${friendlyRange(t.start, t.end!)}'
+          : '${taskCategory(t.type)} · ${friendlyTime(t.start)}',
       ownedColor: owned ? ownerColor : null,
       onTap: () => showTaskActions(context, ref, t),
       trailing: owned

@@ -46,6 +46,19 @@ String clockShort(DateTime dt) {
   return '$h:$m';
 }
 
+/// A friendly start–end range, collapsing a shared meridiem: "4:00 – 5:00 PM"
+/// or, when they straddle noon, "11:30 AM – 1:00 PM".
+String friendlyRange(DateTime start, DateTime end) {
+  final s = start.toLocal();
+  final e = end.toLocal();
+  final sAm = s.hour < 12;
+  final eAm = e.hour < 12;
+  if (sAm == eAm) {
+    return '${clockShort(s)} – ${clockShort(e)} ${eAm ? 'AM' : 'PM'}';
+  }
+  return '${friendlyTime(s)} – ${friendlyTime(e)}';
+}
+
 /// Local date with time zeroed — used as a grouping key by day.
 DateTime dayKey(DateTime dt) {
   final l = dt.toLocal();

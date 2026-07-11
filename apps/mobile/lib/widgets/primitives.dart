@@ -316,65 +316,6 @@ class TaskFilterChip extends StatelessWidget {
   }
 }
 
-/// A Plan unified-calendar chip (6c): a color-bordered pill carrying the
-/// member's initial avatar + name. The "Everyone" chip has no avatar. Selected
-/// fills with the member's tint (indigo for Everyone); unselected is a bare
-/// outline.
-class MemberChip extends StatelessWidget {
-  const MemberChip({
-    super.key,
-    required this.label,
-    required this.selected,
-    required this.onTap,
-    this.initial,
-    this.color,
-  });
-
-  final String label;
-  final bool selected;
-  final VoidCallback onTap;
-
-  /// Null ⇒ the "Everyone" chip (no avatar).
-  final String? initial;
-  final Color? color;
-
-  @override
-  Widget build(BuildContext context) {
-    final accent = color ?? AppColors.indigo;
-    final Color bg, fg, border;
-    if (selected) {
-      bg = AppColors.tint(accent, 0.18);
-      fg = AppColors.textPrimary;
-      border = accent;
-    } else {
-      bg = Colors.transparent;
-      fg = AppColors.textSecondary;
-      border = AppColors.border;
-    }
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        padding: EdgeInsets.fromLTRB(initial == null ? 14 : 6, 6, 14, 6),
-        decoration: BoxDecoration(
-          color: bg,
-          borderRadius: BorderRadius.circular(999),
-          border: Border.all(color: border),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            if (initial != null) ...[
-              PersonAvatar(initial: initial!, color: accent, size: 24),
-              const SizedBox(width: 8),
-            ],
-            Text(label, style: font(kBodyFont, 13, 600, color: fg)),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
 /// The toolbar "Filters" pill with a count badge — opens a screen's filter
 /// sheet. Shared by Home and Plan.
 class FiltersButton extends StatelessWidget {
@@ -384,30 +325,32 @@ class FiltersButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    const onIndigo = Color(0xFF17162B);
     return Material(
-      color: AppColors.card,
+      color: AppColors.indigo,
       borderRadius: BorderRadius.circular(999),
       child: InkWell(
         onTap: onTap,
         borderRadius: BorderRadius.circular(999),
-        child: Container(
+        child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(999),
-            border: Border.all(color: AppColors.border),
-          ),
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Icon(Icons.tune_rounded, size: 17, color: AppColors.textSecondary),
+              const Icon(Icons.tune_rounded, size: 17, color: onIndigo),
               const SizedBox(width: 7),
-              Text('Filters', style: font(kBodyFont, 13.5, 600, color: AppColors.textSecondary)),
+              Text('Filters', style: font(kBodyFont, 13.5, 700, color: onIndigo)),
               if (count > 0) ...[
                 const SizedBox(width: 8),
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
-                  decoration: BoxDecoration(color: AppColors.indigo, borderRadius: BorderRadius.circular(999)),
-                  child: Text('$count', style: font(kBodyFont, 11, 700, color: const Color(0xFF17162B))),
+                  width: 18,
+                  height: 18,
+                  alignment: Alignment.center,
+                  decoration: const BoxDecoration(
+                    color: Color(0x33000000),
+                    shape: BoxShape.circle,
+                  ),
+                  child: Text('$count', style: font(kBodyFont, 11, 800, color: onIndigo)),
                 ),
               ],
             ],
