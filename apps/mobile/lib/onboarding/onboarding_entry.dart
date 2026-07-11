@@ -17,21 +17,30 @@ final onboardingActiveProvider = StateProvider<bool?>((ref) => null);
 final activeInviteTokenProvider =
     StateProvider<String?>((ref) => inviteTokenFromUrl());
 
-/// Pull an `invite` token from the launch URL (web deep link:
-/// `…/app/?invite=TOKEN` or `…/app/#invite=TOKEN`). Null on native / when absent.
+/// Pull an `invite` token from the web launch URL (`…/app/?invite=TOKEN` or
+/// `…/app/#invite=TOKEN`). Null on native (no meaningful [Uri.base]) — native
+/// invite links arrive asynchronously via `app_links` (see [inviteTokenFromUri]
+/// and the bootstrap in main.dart).
 String? inviteTokenFromUrl() {
   try {
-    final uri = Uri.base;
-    final q = uri.queryParameters['invite'];
-    if (q != null && q.isNotEmpty) return q;
-    final frag = uri.fragment;
-    if (frag.contains('invite=')) {
-      final params = Uri.splitQueryString(frag.contains('?') ? frag.split('?').last : frag);
-      final f = params['invite'];
-      if (f != null && f.isNotEmpty) return f;
-    }
+    return inviteTokenFromUri(Uri.base);
   } catch (_) {
-    // Non-web platforms have no meaningful launch URL — no token.
+    return null;
+  }
+}
+
+/// Extract an `invite` token from a URI, accepting both the query form
+/// (`…?invite=TOKEN`) and the fragment form (`…#invite=TOKEN` or
+/// `…#/path?invite=TOKEN`). Returns null when absent. Shared by the web launch
+/// parser and the native `app_links` handler so the two stay in lockstep.
+String? inviteTokenFromUri(Uri uri) {
+  final q = uri.queryParameters['invite'];
+  if (q != null && q.isNotEmpty) return q;
+  final frag = uri.fragment;
+  if (frag.contains('invite=')) {
+    final params = Uri.splitQueryString(frag.contains('?') ? frag.split('?').last : frag);
+    final f = params['invite'];
+    if (f != null && f.isNotEmpty) return f;
   }
   return null;
 }

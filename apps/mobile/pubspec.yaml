@@ -19,6 +19,11 @@ dependencies:
   flutter_secure_storage: ^9.2.2
   package_info_plus: ^8.1.0
   sign_in_with_apple: ^6.0.0
+  # Receives invite deep links: iOS Universal Links (cold-start + warm) and the
+  # web launch URL, both surfaced as URIs we parse for `?invite=`.
+  app_links: ^6.3.0
+  # Native share sheet for handing off the invite URL (Messages, Mail, …).
+  share_plus: ^10.1.0
 
 dev_dependencies:
   flutter_test:

@@ -170,7 +170,8 @@ class ApiClient {
     await _dio.delete('/families/$familyId/members/$memberId', options: _auth);
   }
 
-  /// Issue a member-claim invite (admin). Returns `{ token, expiresAt }`.
+  /// Issue a member-claim invite (admin). Returns `{ token, expiresAt, url }`
+  /// where `url` is the shareable deep link (null in local dev with no origin).
   Future<Map<String, dynamic>> issueMemberInvite(String familyId, String memberId) async =>
       _obj(await _dio.post('/families/$familyId/members/$memberId/invite',
           data: <String, dynamic>{}, options: _auth));

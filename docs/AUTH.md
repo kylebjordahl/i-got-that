@@ -272,6 +272,61 @@ and exchanges it for a fresh access token at delivery time.
 
 ## Onboarding a caretaker (no email)
 Until email is enabled, add caretakers with the **invite/share-link** flow (see
-the Family tab): an admin creates the member, shares the code, and the invitee
-signs in (Apple, or magic-link `devToken` on staging) and redeems the code to
-link their account to that member. See `docs/` and the `/invites` endpoints.
+the Family tab): an admin creates the member, then shares a link, and the
+invitee signs in (Apple, or magic-link `devToken` on staging) and is linked to
+that member — the second-caretaker join flow (`JoinFlow`) then walks them
+through connecting one calendar. See the `/invites` endpoints.
+
+### Invite deep link
+
+`POST /families/:familyId/members/:memberId/invite` returns
+`{ token, expiresAt, url }`. When `PUBLIC_ORIGIN` is set, `url` is a shareable
+deep link:
+
+```
+<PUBLIC_ORIGIN>/app/?invite=<token>
+```
+
+One URL serves both surfaces:
+
+- **Web** — the Flutter web client reads `?invite=` (or `#invite=`) from the
+  launch URL and renders the join flow (`onboarding/onboarding_entry.dart`).
+- **iOS** — the same URL is a **Universal Link**: with the app installed,
+  tapping it opens the app straight into the join flow (`app_links` captures the
+  link and seeds `activeInviteTokenProvider` in `main.dart`); without the app,
+  it falls back to the web flow above.
+
+The invitee never pastes a code. The manual **Redeem invite code** path (Me tab)
+stays as a fallback — the URL still contains the raw token.
+
+Without `PUBLIC_ORIGIN` (local dev / tests), `url` is `null` and the client
+shows the bare token with the paste-the-code instructions.
+
+### iOS Universal Links setup
+
+The Worker serves the association file at
+`/.well-known/apple-app-site-association` (apex path, **not** under `/api`),
+built from the `APPLE_APP_ID_PREFIX` env var — a comma-separated list of
+`<TeamID>.<bundleId>` (list staging + production bundle ids). Empty ⇒ the
+endpoint 404s and Universal Links are off (web fallback still works), mirroring
+how empty `APPLE_CLIENT_IDS` disables Apple login.
+
+```jsonc
+// wrangler.jsonc, per env
+"APPLE_APP_ID_PREFIX": "ABCDE12345.com.kylebjordahl.igt.staging"
+```
+
+The iOS app declares the domains in `ios/Runner/Runner.entitlements`
+(`com.apple.developer.associated-domains` → `applinks:<host>`).
+
+**Manual steps you own (Apple side):**
+
+1. Set `APPLE_APP_ID_PREFIX` per env (your 10-char Apple **Team ID** +
+   bundle id). Verify it's live:
+   `curl https://staging.igt.kylebjordahl.com/.well-known/apple-app-site-association`.
+2. Enable the **Associated Domains** capability on each App ID in the Apple
+   Developer portal, and regenerate provisioning profiles so the entitlement
+   ships in the build.
+3. The native leg can only be verified on a **real device / TestFlight**
+   against a deployed env (the Simulator + AASA don't cooperate) — tap the
+   invite link from Messages and confirm the app opens into the join flow.

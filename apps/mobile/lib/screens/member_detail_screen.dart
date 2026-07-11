@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:share_plus/share_plus.dart';
 import '../models.dart';
 import '../state/auth.dart';
 import '../state/family.dart';
@@ -248,9 +249,14 @@ class _InviteSection extends ConsumerStatefulWidget {
 
 class _InviteSectionState extends ConsumerState<_InviteSection> {
   String? _token;
+  String? _url;
   DateTime? _expiresAt;
   bool _busy = false;
   String? _error;
+
+  /// The thing we share: the full deep-link URL when the server composed one
+  /// (deployed envs with PUBLIC_ORIGIN), else the raw token (local dev).
+  String? get _shareable => _url ?? _token;
 
   Future<void> _generate() async {
     setState(() {
@@ -264,6 +270,7 @@ class _InviteSectionState extends ConsumerState<_InviteSection> {
       final expires = res['expiresAt'];
       setState(() {
         _token = res['token'] as String;
+        _url = res['url'] as String?;
         _expiresAt = expires is String ? DateTime.tryParse(expires) : null;
       });
     } catch (e) {
@@ -273,10 +280,19 @@ class _InviteSectionState extends ConsumerState<_InviteSection> {
     }
   }
 
+  Future<void> _share() async {
+    final link = _shareable;
+    if (link == null) return;
+    await Share.share(
+      link,
+      subject: 'Join ${widget.member.relationName} on I Got That',
+    );
+  }
+
   void _copy() {
-    final token = _token;
-    if (token == null) return;
-    Clipboard.setData(ClipboardData(text: token));
+    final link = _shareable;
+    if (link == null) return;
+    Clipboard.setData(ClipboardData(text: link));
     ScaffoldMessenger.of(context)
         .showSnackBar(const SnackBar(content: Text('Invite link copied')));
   }
@@ -320,8 +336,9 @@ class _InviteSectionState extends ConsumerState<_InviteSection> {
                   children: [
                     Expanded(
                       child: SelectableText(
-                        _token!,
-                        style: const TextStyle(fontFamily: 'monospace', fontSize: 14),
+                        _shareable!,
+                        maxLines: 2,
+                        style: const TextStyle(fontFamily: 'monospace', fontSize: 13),
                       ),
                     ),
                     IconButton(
@@ -331,11 +348,19 @@ class _InviteSectionState extends ConsumerState<_InviteSection> {
                     ),
                   ],
                 ),
-                const SizedBox(height: 4),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    PillButton(
+                      label: 'Share link',
+                      variant: PillVariant.indigo,
+                      onPressed: _share,
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
                 Text(
-                  'Share this with ${widget.member.relationName}. Once they sign '
-                  'in, they can paste it under "Redeem invite code" on the Me tab'
-                  '${_expiresAt != null ? ' — it expires ${_formatExpiry(_expiresAt!)}' : ''}.',
+                  _shareCopy(),
                   style: AppText.subtitle,
                 ),
                 const SizedBox(height: 10),
@@ -354,6 +379,20 @@ class _InviteSectionState extends ConsumerState<_InviteSection> {
         ],
       ],
     );
+  }
+
+  /// Helper text under the invite link. When the server composed a URL, the
+  /// recipient just taps it (opens the app, or web). Without one (local dev), we
+  /// fall back to the paste-the-code instructions.
+  String _shareCopy() {
+    final name = widget.member.relationName;
+    final expiry = _expiresAt != null ? ' It expires ${_formatExpiry(_expiresAt!)}.' : '';
+    if (_url != null) {
+      return 'Send this to $name — tapping it opens the app (or the web) and '
+          'walks them through joining in one step.$expiry';
+    }
+    return 'Share this code with $name. Once they sign in, they can paste it '
+        'under "Redeem invite code" on the Me tab.$expiry';
   }
 
   String _formatExpiry(DateTime expiresAt) {

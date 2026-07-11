@@ -46,6 +46,15 @@ export interface Bindings {
     /** Google OAuth client for the Calendar provider. Unset ⇒ Google OAuth off. */
     GOOGLE_OAUTH_CLIENT_ID?: string;
     GOOGLE_OAUTH_CLIENT_SECRET?: string;
+    /**
+     * Comma-separated Apple App ID prefixes (`<TeamID>.<bundleId>`) for iOS
+     * Universal Links, served in the apple-app-site-association file at
+     * `/.well-known/apple-app-site-association`. List every bundle id that
+     * should open invite links (e.g. staging + production). Unset/empty ⇒ the
+     * AASA endpoint 404s and Universal Links are disabled (web fallback still
+     * works).
+     */
+    APPLE_APP_ID_PREFIX?: string;
 }
 
 /** Per-request context set by middleware. */

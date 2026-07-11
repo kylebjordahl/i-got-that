@@ -44,6 +44,27 @@ app.get('/health/db', async (c) => {
   return c.json({ db: row?.ok === 1 ? 'up' : 'down' });
 });
 
+/**
+ * Apple App Site Association — lets iOS associate this domain with the app so
+ * invite links (`/app/?invite=…`) open the app via Universal Links instead of
+ * Safari. Served at the apex `/.well-known/…` path (see handler.fetch), never
+ * under `/api`. Empty APPLE_APP_ID_PREFIX ⇒ 404 (feature off); query strings
+ * aren't matched by iOS, so `/app/*` covers the invite and the app filters on
+ * `?invite=` itself.
+ */
+app.get('/.well-known/apple-app-site-association', (c) => {
+  const appIDs = (c.env.APPLE_APP_ID_PREFIX ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (appIDs.length === 0) return c.json({ error: 'not_configured' }, 404);
+  return c.json({
+    applinks: {
+      details: [{ appIDs, components: [{ '/': '/app/*', comment: 'invite + web app' }] }],
+    },
+  });
+});
+
 // --- Auth + identity -----------------------------------------------------
 
 app.route('/auth', authRoutes);
@@ -103,6 +124,11 @@ const handler = {
     const url = new URL(request.url);
     const path = url.pathname;
 
+    // iOS fetches the AASA at the apex, with no `/api` prefix — hand it to the
+    // Hono app unchanged so the well-known route resolves.
+    if (path === '/.well-known/apple-app-site-association') {
+      return app.fetch(request, env, ctx);
+    }
     if (path === '/api' || path.startsWith('/api/')) {
       url.pathname = path.slice('/api'.length) || '/';
       return app.fetch(new Request(url.toString(), request), env, ctx);
