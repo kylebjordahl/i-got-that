@@ -196,10 +196,9 @@ Future<void> _createAndOpen(BuildContext context, WidgetRef ref, {required bool 
     ref.invalidate(membersProvider);
     await ref.read(membersProvider.future);
     final id = (res['member'] as Map<String, dynamic>)['id'] as String;
-    // `context` here traces back to `rootNavigatorKey.currentContext` (the
-    // nav "+" button, above the inner content Navigator) — `Navigator.of` on
-    // that exact context resolves to MaterialApp's outer Navigator, not the
-    // inner one, so push explicitly onto the inner Navigator by key instead.
+    // Push via the key rather than `Navigator.of(context)` so this doesn't
+    // depend on `context` still happening to be the inner Navigator's own
+    // element (see the note on `_promptName` above for why that's fragile).
     rootNavigatorKey.currentState!.push(
       MaterialPageRoute(builder: (_) => MemberDetailScreen(memberId: id)),
     );
@@ -214,20 +213,28 @@ Future<String?> _promptName(BuildContext context, String title) {
   final controller = TextEditingController();
   return showDialog<String>(
     context: context,
-    builder: (_) => AlertDialog(
+    // `dialogContext`, not the outer `context`: `context` here is
+    // `rootNavigatorKey.currentContext` (the inner content Navigator's own
+    // element), and `Navigator.of` special-cases that to resolve to the
+    // Navigator itself rather than an ancestor. Popping through it removes
+    // AppShell — the inner Navigator's only route — leaving it empty, while
+    // this dialog (opened on the outer Navigator, showDialog's default)
+    // never actually closes.
+    builder: (dialogContext) => AlertDialog(
       title: Text(title),
       content: TextField(
         controller: controller,
         autofocus: true,
         decoration: const InputDecoration(labelText: 'Name / relation'),
-        onSubmitted: (v) => Navigator.of(context).pop(v),
+        onSubmitted: (v) => Navigator.of(dialogContext).pop(v),
       ),
       actions: [
-        TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('Cancel')),
+        TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(), child: const Text('Cancel')),
         PillButton(
           label: 'Continue',
           variant: PillVariant.amber,
-          onPressed: () => Navigator.of(context).pop(controller.text),
+          onPressed: () => Navigator.of(dialogContext).pop(controller.text),
         ),
       ],
     ),
