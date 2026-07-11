@@ -167,4 +167,46 @@ void main() {
     final position = Scrollable.of(tester.element(find.text('9 AM'))).position;
     expect(position.pixels, closeTo(294.0, 2.0));
   });
+
+  testWidgets('many overlapping calendars pack into narrow columns without overflow',
+      (tester) async {
+    // "Everyone" shows the same activity from several calendars at once (a
+    // synthesized copy, a manual copy, and a claimed copy) plus a pickup — four
+    // items overlapping at 3:15 pack into narrow columns. Their contents must
+    // clip / adapt, not overflow into the neighbouring column.
+    final now = DateTime.now();
+    DateTime at(int h, int m) => DateTime(now.year, now.month, now.day, h, m);
+    final events = [
+      CalendarEventItem(id: 'mch', familyMemberId: 'delbert', provenance: 'synthesized', start: at(8, 31), end: at(14, 47), allDay: false, summary: 'MCH'),
+      CalendarEventItem(id: 'fs', familyMemberId: 'delbert', provenance: 'synthesized', start: at(15, 15), end: at(16, 15), allDay: false, summary: 'fiddle practice'),
+      CalendarEventItem(id: 'fm', familyMemberId: 'delbert', provenance: 'human', start: at(15, 15), end: at(16, 15), allDay: false, summary: 'fiddle practice'),
+      CalendarEventItem(id: 'fc', familyMemberId: 'kyle', provenance: 'claimed_task', start: at(15, 15), end: at(16, 15), allDay: false, summary: 'fiddle practice', taskId: 'tf'),
+    ];
+    final tasks = [
+      TaskItem(id: 'd', familyMemberId: 'delbert', type: 'dropoff', start: at(9, 0), status: 'unowned', createdVia: 'generated'),
+      TaskItem(id: 'p', familyMemberId: 'delbert', type: 'pickup', start: at(15, 15), status: 'unowned', createdVia: 'generated'),
+      TaskItem(id: 'tf', familyMemberId: 'delbert', type: 'attendance', start: at(15, 15), end: at(16, 15), status: 'owned', ownerMemberId: 'kyle', createdVia: 'generated', calendarEventId: 'fc'),
+    ];
+    await tester.pumpWidget(ProviderScope(
+      overrides: [
+        membersProvider.overrideWith((ref) async => [
+              _m('kyle', 'Kyle', caretaker: true),
+              _m('delbert', 'delbert', child: true),
+            ]),
+        currentMemberProvider.overrideWith((ref) async => _m('kyle', 'Kyle', caretaker: true)),
+        allTasksProvider.overrideWith((ref) async => tasks),
+        calendarEventsProvider.overrideWith((ref) async => events),
+        pendingDecisionsProvider.overrideWith((ref) async => const []),
+        threadingThresholdProvider.overrideWith((ref) async => 30),
+      ],
+      child: MaterialApp(
+        theme: buildAppTheme(),
+        themeMode: ThemeMode.dark,
+        home: const Scaffold(body: SafeArea(child: PlanScreen())),
+      ),
+    ));
+    await tester.pumpAndSettle();
+    // No RenderFlex overflow was thrown while laying out the crowded 3:15 column.
+    expect(tester.takeException(), isNull);
+  });
 }

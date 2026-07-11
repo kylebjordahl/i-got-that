@@ -909,6 +909,9 @@ class _ItemBlock extends StatelessWidget {
       onTap: onTapBlock,
       behavior: HitTestBehavior.opaque,
       child: Container(
+        // Clip so a narrow column (several overlapping calendars) never bleeds
+        // its title / avatars / "manual" tag out over the neighbouring block.
+        clipBehavior: Clip.antiAlias,
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
         decoration: BoxDecoration(
           gradient: LinearGradient(
@@ -939,7 +942,7 @@ class _ItemBlock extends StatelessWidget {
             ),
             Align(
               alignment: Alignment.bottomLeft,
-              child: Row(mainAxisSize: MainAxisSize.min, children: [
+              child: Row(children: [
                 // A claimed task is an event on the owner's calendar generated
                 // for the child — show both, child then owner.
                 if (e.isClaimedTask && sourceChild != null && calendarOwner != null)
@@ -958,8 +961,12 @@ class _ItemBlock extends StatelessWidget {
                       size: 20),
                 if (e.isHuman) ...[
                   const SizedBox(width: 6),
-                  Text('manual',
-                      style: font(kBodyFont, 10, 600, color: AppColors.textMuted)),
+                  Flexible(
+                    child: Text('manual',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: font(kBodyFont, 10, 600, color: AppColors.textMuted)),
+                  ),
                 ],
               ]),
             ),
@@ -1000,23 +1007,34 @@ class _ItemBlock extends StatelessWidget {
               ),
             ],
           )
-        : Row(
-            children: [
-              Container(
-                width: 8,
-                height: 8,
-                decoration: BoxDecoration(color: accent, shape: BoxShape.circle),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text('$label · $time',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: font(kBodyFont, 12, 600, color: AppColors.textPrimary)),
-              ),
-              PillButton(label: 'Claim', compact: true, onPressed: onClaim),
-            ],
-          );
+        : LayoutBuilder(builder: (context, c) {
+            // In a wide lane the transition reads as "• Type · Name · time
+            // [Claim]"; in a narrow column (many overlapping calendars) the
+            // label and the full Claim pill won't fit, so fall back to a compact
+            // icon-only claim and let the label ellipsize — never overflow.
+            final tight = c.maxWidth < 108;
+            return Row(
+              children: [
+                Container(
+                  width: 8,
+                  height: 8,
+                  decoration: BoxDecoration(color: accent, shape: BoxShape.circle),
+                ),
+                SizedBox(width: tight ? 5 : 8),
+                Expanded(
+                  child: Text('$label · $time',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: font(kBodyFont, 12, 600, color: AppColors.textPrimary)),
+                ),
+                const SizedBox(width: 5),
+                if (tight)
+                  _ClaimIconButton(onTap: onClaim)
+                else
+                  PillButton(label: 'Claim', compact: true, onPressed: onClaim),
+              ],
+            );
+          });
 
     // Unowned blocks read as "not yet on anyone's calendar": a faint tint, a
     // diagonal hatch, and a dashed accent border.
@@ -1036,6 +1054,30 @@ class _ItemBlock extends StatelessWidget {
               child: content,
             ),
           ),
+        ),
+      ),
+    );
+  }
+}
+
+/// A compact icon-only Claim button — the narrow-column fallback for the slim
+/// transition rows, where the full "Claim" pill wouldn't fit.
+class _ClaimIconButton extends StatelessWidget {
+  const _ClaimIconButton({required this.onTap});
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: AppColors.textPrimary,
+      shape: const CircleBorder(),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: onTap,
+        child: const SizedBox(
+          width: 22,
+          height: 22,
+          child: Icon(Icons.add_rounded, size: 15, color: Color(0xFF17141C)),
         ),
       ),
     );
