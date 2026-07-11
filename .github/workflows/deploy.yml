@@ -234,13 +234,16 @@ jobs:
         with:
           ref: ${{ inputs.ref }}
 
-      # The runner's default Xcode (16.4, iOS 18.5 SDK) is no longer accepted
-      # by App Store Connect: "All iOS and iPadOS apps must be built with the
-      # iOS 26 SDK or later". Xcode 26.3 ships preinstalled alongside it —
-      # just not selected — so point DEVELOPER_DIR at it instead of waiting
-      # on `macos-latest` to move its default.
-      - name: Select Xcode 26
-        run: sudo xcode-select -s /Applications/Xcode_26.3.app
+      # macos-latest's default Xcode still lags Apple's App Store Connect
+      # SDK requirement (e.g. Xcode 16.4/iOS 18.5 SDK when Apple requires the
+      # iOS 26 SDK), so upload-testflight-build fails validation with a 409
+      # SDK version error even though the archive/build steps succeed. Pin to
+      # the latest stable Xcode on the runner rather than a hardcoded
+      # version path, which would go stale the next time the runner image
+      # drops an older point release.
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
 
       - uses: subosito/flutter-action@v2
         with:
