@@ -291,6 +291,48 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets(
+      'an unclaimed attendance task dedupes to one block titled with the source event',
+      (tester) async {
+    final now = DateTime.now();
+    DateTime at(int h, int m) => DateTime(now.year, now.month, now.day, h, m);
+    // The child's synthesized practice, still unclaimed — before the dedup fix
+    // this rendered twice: the real event block, plus a second, generic
+    // "Attendance" block for the still-unowned task pointing at the same event.
+    final events = [
+      CalendarEventItem(id: 'fs', familyMemberId: 'delbert', provenance: 'synthesized', start: at(15, 15), end: at(16, 15), allDay: false, summary: 'Fiddle practice'),
+    ];
+    final tasks = [
+      TaskItem(id: 'tf', familyMemberId: 'delbert', type: 'attendance', start: at(15, 15), end: at(16, 15), status: 'unowned', createdVia: 'generated', calendarEventId: 'fs'),
+    ];
+    await tester.pumpWidget(ProviderScope(
+      overrides: [
+        membersProvider.overrideWith((ref) async => [
+              _m('kyle', 'Kyle', caretaker: true),
+              _m('delbert', 'delbert', child: true),
+            ]),
+        currentMemberProvider.overrideWith((ref) async => _m('kyle', 'Kyle', caretaker: true)),
+        allTasksProvider.overrideWith((ref) async => tasks),
+        calendarEventsProvider.overrideWith((ref) async => events),
+        pendingDecisionsProvider.overrideWith((ref) async => const []),
+        threadingThresholdProvider.overrideWith((ref) async => 30),
+      ],
+      child: MaterialApp(
+        theme: buildAppTheme(),
+        themeMode: ThemeMode.dark,
+        home: const Scaffold(body: SafeArea(child: PlanScreen())),
+      ),
+    ));
+    await tester.pumpAndSettle();
+
+    // One block, titled with the real event summary (never the generic
+    // "Attendance" fallback), with an inline Claim affordance.
+    expect(find.textContaining('Fiddle practice'), findsOneWidget);
+    expect(find.text('Attendance'), findsNothing);
+    expect(find.text('Claim'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('tapping an event block manages its whole task group', (tester) async {
     final now = DateTime.now();
     DateTime at(int h, int m) => DateTime(now.year, now.month, now.day, h, m);
