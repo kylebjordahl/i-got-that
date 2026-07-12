@@ -54,40 +54,41 @@ class _WelcomeStepState extends ConsumerState<WelcomeStep> {
         ref.read(authControllerProvider.notifier).loginWithEmail(email.trim()));
   }
 
-  Future<String?> _promptEmail() {
+  Future<String?> _promptEmail() async {
     final controller = TextEditingController();
-    return showModalBottomSheet<String>(
-      context: context,
-      backgroundColor: AppColors.card,
-      isScrollControlled: true,
-      shape: const RoundedRectangleBorder(
-          borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
-      builder: (ctx) => Padding(
-        padding: EdgeInsets.fromLTRB(
-            22, 18, 22, MediaQuery.of(ctx).viewInsets.bottom + 24),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Text('Email me a magic link', style: AppText.subPageTitle),
-            const SizedBox(height: 14),
-            TextField(
-              controller: controller,
-              autofocus: true,
-              keyboardType: TextInputType.emailAddress,
-              decoration: const InputDecoration(
-                  labelText: 'Email', hintText: 'you@example.com'),
-              onSubmitted: (v) => Navigator.of(ctx).pop(v),
-            ),
-            const SizedBox(height: 16),
-            OnboardingButton(
-              label: 'Send link',
-              onPressed: () => Navigator.of(ctx).pop(controller.text),
-            ),
-          ],
+    try {
+      // A dialog (not a bottom sheet) so its route re-centers above the
+      // keyboard: the manual viewInsets padding a sheet needs pushes the
+      // autofocused field clean out of view on web.
+      return await showDialog<String>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          backgroundColor: AppColors.card,
+          title: Text('Email me a magic link', style: AppText.subPageTitle),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              TextField(
+                controller: controller,
+                autofocus: true,
+                keyboardType: TextInputType.emailAddress,
+                decoration: const InputDecoration(
+                    labelText: 'Email', hintText: 'you@example.com'),
+                onSubmitted: (v) => Navigator.of(ctx).pop(v),
+              ),
+              const SizedBox(height: 16),
+              OnboardingButton(
+                label: 'Send link',
+                onPressed: () => Navigator.of(ctx).pop(controller.text),
+              ),
+            ],
+          ),
         ),
-      ),
-    );
+      );
+    } finally {
+      controller.dispose();
+    }
   }
 
   @override
