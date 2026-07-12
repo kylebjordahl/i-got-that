@@ -3,7 +3,9 @@ import {
   authTokens,
   type Db,
   eq,
+  familyMembers,
   identities,
+  ne,
   sessions,
   users,
 } from '@igt/db';
@@ -252,6 +254,43 @@ export async function unlinkIdentity(
     .where(
       and(eq(identities.id, identityId), eq(identities.userId, userId)),
     );
+  return 'ok';
+}
+
+export type DeleteAccountResult = 'ok' | 'last_admin';
+
+/**
+ * Delete the user's own account. FK cascades drop their sessions, identities,
+ * and external accounts; each `family_members` row they held is kept but
+ * unlinked (`userId` → null, same outcome as `handleAppleAccountEvent`'s
+ * `account-delete` case) rather than removed — the person stays in the
+ * family, just loses login capability.
+ *
+ * Blocked (`last_admin`) if the user is the sole admin of a family that still
+ * has other members — deleting the account would leave that family with no
+ * one able to manage it. The caller must promote another admin, or delete the
+ * family outright, first.
+ */
+export async function deleteUserAccount(
+  db: Db,
+  userId: string,
+): Promise<DeleteAccountResult> {
+  const memberships = await db
+    .select()
+    .from(familyMembers)
+    .where(eq(familyMembers.userId, userId));
+
+  for (const m of memberships) {
+    if (!m.isAdmin) continue;
+    const others = await db
+      .select({ id: familyMembers.id, isAdmin: familyMembers.isAdmin })
+      .from(familyMembers)
+      .where(and(eq(familyMembers.familyId, m.familyId), ne(familyMembers.id, m.id)));
+    if (others.length === 0) continue; // sole member — nothing left to orphan
+    if (!others.some((o) => o.isAdmin)) return 'last_admin';
+  }
+
+  await db.delete(users).where(eq(users.id, userId));
   return 'ok';
 }
 

@@ -61,6 +61,14 @@ class ApiClient {
     _sessionToken = null;
   }
 
+  /// Delete the signed-in user's own account. Family memberships are kept but
+  /// unlinked, not removed; the server 409s (`last_admin`) if this would leave
+  /// a family with other members and no admin.
+  Future<void> deleteMyAccount() async {
+    await _dio.delete('/auth/me', options: _auth);
+    _sessionToken = null;
+  }
+
   // --- Login methods (thread multiple identities into one account) --------
 
   /// The login methods threaded to the current user.
@@ -114,6 +122,12 @@ class ApiClient {
       },
       options: _auth,
     );
+  }
+
+  /// Delete the family (admin). 204 on success; members, feeds, tasks, and
+  /// calendar data all go with it.
+  Future<void> deleteFamily(String familyId) async {
+    await _dio.delete('/families/$familyId', options: _auth);
   }
 
   // --- Family members ----------------------------------------------------

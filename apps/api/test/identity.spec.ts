@@ -309,6 +309,100 @@ describe('member editing & permissions', () => {
   });
 });
 
+describe('delete family', () => {
+  function del(token: string): RequestInit {
+    return { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } };
+  }
+
+  it('lets an admin delete the family; blocks non-admins', async () => {
+    const alice = await login('delfam-alice@example.com');
+    const bob = await login('delfam-bob@example.com');
+
+    const fam = await call('/families', authed(alice.token, { name: 'Doomed Fam' }));
+    const familyId = ((await fam.json()) as { family: { id: string } }).family.id;
+    await call(
+      `/families/${familyId}/members`,
+      authed(alice.token, { relationName: 'uncle', isCaretaker: true, userId: bob.userId }),
+    );
+
+    // Bob (non-admin) can't delete the family.
+    expect((await call(`/families/${familyId}`, del(bob.token))).status).toBe(403);
+
+    // Alice (admin) can.
+    expect((await call(`/families/${familyId}`, del(alice.token))).status).toBe(204);
+
+    // The family (and its members) are gone — Bob is no longer tenant-scoped in.
+    const membersAfter = await call(`/families/${familyId}/members`, {
+      headers: { Authorization: `Bearer ${bob.token}` },
+    });
+    expect(membersAfter.status).toBe(403);
+  });
+});
+
+describe('delete account', () => {
+  function delMe(token: string): RequestInit {
+    return { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } };
+  }
+
+  it('deletes the user; the session no longer works', async () => {
+    const alice = await login('delacct-alice@example.com');
+    expect((await call('/auth/me', delMe(alice.token))).status).toBe(204);
+
+    const me = await call('/me', { headers: { Authorization: `Bearer ${alice.token}` } });
+    expect(me.status).toBe(401);
+  });
+
+  it('blocks deleting the sole admin of a family with other members', async () => {
+    const alice = await login('delacct-solo-admin@example.com');
+    const bob = await login('delacct-solo-bob@example.com');
+
+    const fam = await call('/families', authed(alice.token, { name: 'Guarded Fam' }));
+    const familyId = ((await fam.json()) as { family: { id: string } }).family.id;
+    await call(
+      `/families/${familyId}/members`,
+      authed(alice.token, { relationName: 'uncle', isCaretaker: true, userId: bob.userId }),
+    );
+
+    expect((await call('/auth/me', delMe(alice.token))).status).toBe(409);
+
+    // The block didn't half-apply — Alice's session still works.
+    const me = await call('/me', { headers: { Authorization: `Bearer ${alice.token}` } });
+    expect(me.status).toBe(200);
+  });
+
+  it('allows deleting an admin account when a co-admin remains', async () => {
+    const alice = await login('delacct-coadmin-alice@example.com');
+    const bob = await login('delacct-coadmin-bob@example.com');
+
+    const fam = await call('/families', authed(alice.token, { name: 'Co-admin Fam' }));
+    const familyId = ((await fam.json()) as { family: { id: string } }).family.id;
+    await call(
+      `/families/${familyId}/members`,
+      authed(alice.token, {
+        relationName: 'uncle',
+        isCaretaker: true,
+        isAdmin: true,
+        userId: bob.userId,
+      }),
+    );
+
+    expect((await call('/auth/me', delMe(alice.token))).status).toBe(204);
+
+    // Bob (the remaining admin) still has access.
+    const members = await call(`/families/${familyId}/members`, {
+      headers: { Authorization: `Bearer ${bob.token}` },
+    });
+    expect(members.status).toBe(200);
+  });
+
+  it('allows deleting the sole admin when they are the only member (nothing to orphan)', async () => {
+    const alice = await login('delacct-alone@example.com');
+    await call('/families', authed(alice.token, { name: 'Solo Fam' }));
+
+    expect((await call('/auth/me', delMe(alice.token))).status).toBe(204);
+  });
+});
+
 describe('member-claim invites', () => {
   it('links an accepting user to a pre-created member (idempotent, single-claim)', async () => {
     const alice = await login('inv-alice@example.com');

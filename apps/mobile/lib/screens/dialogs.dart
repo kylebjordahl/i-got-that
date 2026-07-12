@@ -343,7 +343,15 @@ class _RedeemInviteDialogState extends ConsumerState<_RedeemInviteDialog> {
       _error = null;
     });
     try {
-      await ref.read(apiClientProvider).acceptInvite(_code.text.trim());
+      final res = await ref.read(apiClientProvider).acceptInvite(_code.text.trim());
+      // Land the user on the family they just joined — without this, the
+      // account's already-cached "first family" stays selected and nothing
+      // visibly changes even though the claim succeeded.
+      final joinedFamilyId = res['familyId'] as String?;
+      if (joinedFamilyId != null) {
+        ref.read(selectedFamilyIdProvider.notifier).state = joinedFamilyId;
+      }
+      ref.invalidate(familiesListProvider);
       if (mounted) Navigator.of(context).pop(true);
     } catch (e) {
       setState(() => _error = '$e');

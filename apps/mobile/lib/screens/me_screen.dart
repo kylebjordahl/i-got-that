@@ -12,6 +12,7 @@ import '../theme/app_text.dart';
 import '../theme/person_colors.dart';
 import '../widgets/primitives.dart';
 import '../widgets/settings.dart';
+import '../widgets/slide_to_confirm.dart';
 import 'connect_account_wizard.dart';
 import 'dialogs.dart';
 
@@ -26,6 +27,8 @@ class MeScreen extends ConsumerWidget {
     final user = ref.watch(authControllerProvider).user;
     final email = user?['email'] as String? ?? 'you@example.com';
     final familyCount = ref.watch(familyInfoProvider).valueOrNull?.count ?? 1;
+    final families = ref.watch(familiesListProvider).valueOrNull ?? const <({String id, String name})>[];
+    final defaultFamilyId = ref.watch(defaultFamilyIdProvider).valueOrNull;
     final accounts = ref.watch(accountsProvider).valueOrNull ?? const <ExternalAccount>[];
     final identities =
         ref.watch(loginIdentitiesProvider).valueOrNull ?? const <LoginIdentity>[];
@@ -158,6 +161,18 @@ class MeScreen extends ConsumerWidget {
                 title: 'Redeem invite code',
                 onTap: () => showRedeemInviteDialog(context, ref),
               ),
+              if (families.length > 1) ...[
+                const Divider(height: 20),
+                SettingRow(
+                  icon: Icons.home_filled,
+                  iconColor: AppColors.indigo,
+                  title: 'Default family',
+                  subtitle:
+                      '${families.where((f) => f.id == defaultFamilyId).map((f) => f.name).firstOrNull ?? "Account default"} '
+                      '· only affects this device',
+                  onTap: () => _openDefaultFamilyPicker(context, ref, families, defaultFamilyId),
+                ),
+              ],
               const Divider(height: 20),
               SwitchRow(
                 icon: Icons.notifications_none_rounded,
@@ -184,23 +199,85 @@ class MeScreen extends ConsumerWidget {
         ],
         const SizedBox(height: 28),
         _SignOutButton(onTap: () => _signOut(context, ref)),
+        const SizedBox(height: 14),
+        Center(
+          child: TextButton(
+            onPressed: () => _confirmDeleteAccount(context, ref),
+            child: Text('Delete account',
+                style: font(kBodyFont, 13, 700, color: AppColors.coral.withValues(alpha: 0.75))),
+          ),
+        ),
       ],
+    );
+  }
+
+  void _openDefaultFamilyPicker(BuildContext context, WidgetRef ref,
+      List<({String id, String name})> families, String? current) {
+    showModalBottomSheet<void>(
+      context: context,
+      useRootNavigator: true,
+      showDragHandle: true,
+      builder: (_) => Padding(
+        padding: const EdgeInsets.fromLTRB(22, 4, 22, 28),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Default family', style: AppText.subPageTitle),
+            const SizedBox(height: 6),
+            Text(
+              'Which family this app opens to by default. This only affects this '
+              'device — other devices and family members are unaffected.',
+              style: AppText.subtitle,
+            ),
+            const SizedBox(height: 12),
+            SettingRow(
+              icon: Icons.auto_awesome_rounded,
+              iconColor: current == null ? AppColors.indigo : AppColors.textMuted,
+              title: 'Account default',
+              subtitle: 'Whichever family is first on your account',
+              trailing:
+                  current == null ? const Icon(Icons.check_rounded, color: AppColors.indigo) : null,
+              onTap: () {
+                ref.read(defaultFamilyIdProvider.notifier).set(null);
+                Navigator.of(context).pop();
+              },
+            ),
+            for (final f in families) ...[
+              const Divider(height: 20),
+              SettingRow(
+                icon: Icons.home_rounded,
+                iconColor: f.id == current ? AppColors.indigo : AppColors.textMuted,
+                title: f.name,
+                trailing:
+                    f.id == current ? const Icon(Icons.check_rounded, color: AppColors.indigo) : null,
+                onTap: () {
+                  ref.read(defaultFamilyIdProvider.notifier).set(f.id);
+                  Navigator.of(context).pop();
+                },
+              ),
+            ],
+          ],
+        ),
+      ),
     );
   }
 
   Future<void> _disconnect(BuildContext context, WidgetRef ref, ExternalAccount a) async {
     final ok = await showDialog<bool>(
       context: context,
-      builder: (_) => AlertDialog(
+      builder: (dialogContext) => AlertDialog(
         title: const Text('Disconnect account?'),
         content: Text('Remove ${a.kindLabel} (${a.username ?? a.name})? Feeds and '
             'delivery methods using it will stop working.'),
         actions: [
-          TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Cancel')),
+          TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: const Text('Cancel')),
           PillButton(
             label: 'Disconnect',
             variant: PillVariant.white,
-            onPressed: () => Navigator.of(context).pop(true),
+            onPressed: () => Navigator.of(dialogContext).pop(true),
           ),
         ],
       ),
@@ -220,16 +297,18 @@ class MeScreen extends ConsumerWidget {
       BuildContext context, WidgetRef ref, LoginIdentity id) async {
     final ok = await showDialog<bool>(
       context: context,
-      builder: (_) => AlertDialog(
+      builder: (dialogContext) => AlertDialog(
         title: const Text('Remove login method?'),
         content: Text("You'll no longer be able to sign in with ${id.kindLabel} "
             '(${id.label}). Your other methods keep working.'),
         actions: [
-          TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Cancel')),
+          TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: const Text('Cancel')),
           PillButton(
             label: 'Remove',
             variant: PillVariant.white,
-            onPressed: () => Navigator.of(context).pop(true),
+            onPressed: () => Navigator.of(dialogContext).pop(true),
           ),
         ],
       ),
@@ -296,15 +375,17 @@ class MeScreen extends ConsumerWidget {
   Future<void> _signOut(BuildContext context, WidgetRef ref) async {
     final ok = await showDialog<bool>(
       context: context,
-      builder: (_) => AlertDialog(
+      builder: (dialogContext) => AlertDialog(
         title: const Text('Sign out?'),
         content: const Text("You'll need to sign in again to manage your families."),
         actions: [
-          TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Cancel')),
+          TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: const Text('Cancel')),
           PillButton(
             label: 'Sign out',
             variant: PillVariant.white,
-            onPressed: () => Navigator.of(context).pop(true),
+            onPressed: () => Navigator.of(dialogContext).pop(true),
           ),
         ],
       ),
@@ -313,6 +394,27 @@ class MeScreen extends ConsumerWidget {
       ref.read(navIndexProvider.notifier).state = 0;
       ref.read(authControllerProvider.notifier).logout();
     }
+  }
+
+  Future<void> _confirmDeleteAccount(BuildContext context, WidgetRef ref) {
+    return showSlideToConfirmSheet(
+      context,
+      title: 'Delete account?',
+      description: "This permanently deletes your login and connected "
+          "calendar accounts. Families you belong to keep their data — "
+          "you're just removed as a member with login access. This can't be "
+          'undone.',
+      slideLabel: 'Slide to delete account',
+      onConfirmed: () => ref.read(authControllerProvider.notifier).deleteAccount(),
+      errorMessage: (e) {
+        final data = e is DioException ? e.response?.data : null;
+        final code = (data as Map<String, dynamic>?)?['error'];
+        return code == 'last_admin'
+            ? "You're the only admin of a family with other members — "
+                'promote a co-admin or delete the family first.'
+            : 'Failed: $e';
+      },
+    );
   }
 
   IconData _accountIcon(String kind) => switch (kind) {

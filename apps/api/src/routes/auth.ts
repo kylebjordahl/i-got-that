@@ -15,6 +15,7 @@ import { authMiddleware } from '../middleware/auth.js';
 import {
   createSession,
   deleteSession,
+  deleteUserAccount,
   findOrCreateUserByApple,
   getUserBySessionToken,
   handleAppleAccountEvent,
@@ -288,6 +289,20 @@ authRoutes.post('/logout', async (c) => {
   if (token) await deleteSession(getDb(c.env.DB), token);
   clearSessionCookie(c);
   return c.json({ ok: true });
+});
+
+/**
+ * Delete the signed-in user's own account. Family memberships are kept but
+ * unlinked (see `deleteUserAccount`), not removed; blocked with 409 if the
+ * user is the sole admin of a family that has other members — promote another
+ * admin or delete the family first.
+ */
+authRoutes.delete('/me', authMiddleware, async (c) => {
+  const user = c.get('user');
+  const result = await deleteUserAccount(getDb(c.env.DB), user.id);
+  if (result === 'last_admin') return c.json({ error: 'last_admin' }, 409);
+  clearSessionCookie(c);
+  return c.body(null, 204);
 });
 
 // --- Identity linking (thread multiple login methods into one user) -------
