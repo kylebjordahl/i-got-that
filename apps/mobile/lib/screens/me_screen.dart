@@ -217,7 +217,14 @@ class MeScreen extends ConsumerWidget {
       context: context,
       useRootNavigator: true,
       showDragHandle: true,
-      builder: (_) => Padding(
+      // `sheetCtx`, not the outer `context`: `context` here is the Me screen's
+      // own build context, which lives on the *inner* content Navigator
+      // (`rootNavigatorKey`, AppShell's only route — see `_AuthedRoot` in
+      // main.dart). This sheet was raised with `useRootNavigator: true`, i.e.
+      // on MaterialApp's outer Navigator, so popping via `Navigator.of(context)`
+      // would instead pop AppShell off the inner Navigator — leaving it empty
+      // (a blank screen) while the sheet itself never closes.
+      builder: (sheetCtx) => Padding(
         padding: const EdgeInsets.fromLTRB(22, 4, 22, 28),
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -240,7 +247,7 @@ class MeScreen extends ConsumerWidget {
                   current == null ? const Icon(Icons.check_rounded, color: AppColors.indigo) : null,
               onTap: () {
                 ref.read(defaultFamilyIdProvider.notifier).set(null);
-                Navigator.of(context).pop();
+                Navigator.of(sheetCtx).pop();
               },
             ),
             for (final f in families) ...[
@@ -253,7 +260,7 @@ class MeScreen extends ConsumerWidget {
                     f.id == current ? const Icon(Icons.check_rounded, color: AppColors.indigo) : null,
                 onTap: () {
                   ref.read(defaultFamilyIdProvider.notifier).set(f.id);
-                  Navigator.of(context).pop();
+                  Navigator.of(sheetCtx).pop();
                 },
               ),
             ],

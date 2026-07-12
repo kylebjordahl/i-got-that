@@ -197,7 +197,15 @@ class FamilyScreen extends ConsumerWidget {
       context: context,
       useRootNavigator: true,
       showDragHandle: true,
-      builder: (_) => Padding(
+      // `sheetCtx`, not the outer `context`: `context` here is the Family
+      // screen's own build context, which lives on the *inner* content
+      // Navigator (`rootNavigatorKey`, AppShell's only route — see the note
+      // in `_promptName` below and in `_AuthedRoot`). This sheet was raised
+      // with `useRootNavigator: true`, i.e. on MaterialApp's outer Navigator,
+      // so popping via `Navigator.of(context)` would instead pop AppShell off
+      // the inner Navigator — leaving it empty (a blank screen) while the
+      // sheet itself never closes.
+      builder: (sheetCtx) => Padding(
         padding: const EdgeInsets.fromLTRB(22, 4, 22, 28),
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -215,7 +223,7 @@ class FamilyScreen extends ConsumerWidget {
                     : null,
                 onTap: () {
                   ref.read(selectedFamilyIdProvider.notifier).state = f.id;
-                  Navigator.of(context).pop();
+                  Navigator.of(sheetCtx).pop();
                 },
               ),
           ],
