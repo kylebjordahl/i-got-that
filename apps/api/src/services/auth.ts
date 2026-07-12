@@ -5,13 +5,13 @@ import {
   eq,
   familyMembers,
   identities,
-  ne,
   sessions,
   users,
 } from '@igt/db';
 import type { IdentityProvider } from '@igt/domain';
 import type { AppleNotificationEvent } from '../lib/apple.js';
 import { randomToken, sha256hex } from '../lib/crypto.js';
+import { wouldOrphanFamily } from './families.js';
 
 const MAGIC_LINK_TTL_MS = 15 * 60 * 1000; // 15 minutes
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
@@ -260,6 +260,26 @@ export async function unlinkIdentity(
 export type DeleteAccountResult = 'ok' | 'last_admin';
 
 /**
+ * True if deleting `userId`'s account right now would orphan a family — they
+ * are the sole admin of at least one family that still has other members.
+ * Shared by [deleteUserAccount] (to actually block it) and the `/auth/me/
+ * deletable` route (so the client can warn *before* the user tries to slide
+ * to confirm, rather than surfacing the block as a failed-action toast).
+ */
+export async function accountDeletionBlocked(db: Db, userId: string): Promise<boolean> {
+  const memberships = await db
+    .select()
+    .from(familyMembers)
+    .where(eq(familyMembers.userId, userId));
+
+  for (const m of memberships) {
+    if (!m.isAdmin) continue;
+    if (await wouldOrphanFamily(db, m.familyId, m.id)) return true;
+  }
+  return false;
+}
+
+/**
  * Delete the user's own account. FK cascades drop their sessions, identities,
  * and external accounts; each `family_members` row they held is kept but
  * unlinked (`userId` → null, same outcome as `handleAppleAccountEvent`'s
@@ -275,21 +295,7 @@ export async function deleteUserAccount(
   db: Db,
   userId: string,
 ): Promise<DeleteAccountResult> {
-  const memberships = await db
-    .select()
-    .from(familyMembers)
-    .where(eq(familyMembers.userId, userId));
-
-  for (const m of memberships) {
-    if (!m.isAdmin) continue;
-    const others = await db
-      .select({ id: familyMembers.id, isAdmin: familyMembers.isAdmin })
-      .from(familyMembers)
-      .where(and(eq(familyMembers.familyId, m.familyId), ne(familyMembers.id, m.id)));
-    if (others.length === 0) continue; // sole member — nothing left to orphan
-    if (!others.some((o) => o.isAdmin)) return 'last_admin';
-  }
-
+  if (await accountDeletionBlocked(db, userId)) return 'last_admin';
   await db.delete(users).where(eq(users.id, userId));
   return 'ok';
 }
