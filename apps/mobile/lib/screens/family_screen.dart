@@ -1,6 +1,8 @@
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models.dart';
+import '../onboarding/onboarding_entry.dart';
 import '../state/auth.dart';
 import '../state/family.dart';
 import '../state/nav.dart';
@@ -9,6 +11,7 @@ import '../theme/app_text.dart';
 import '../theme/person_colors.dart';
 import '../widgets/primitives.dart';
 import '../widgets/settings.dart';
+import '../widgets/slide_to_confirm.dart';
 import 'member_detail_screen.dart';
 
 /// Family — the hub (6l): Caretakers and Children render inline as two lists;
@@ -50,7 +53,39 @@ class FamilyScreen extends ConsumerWidget {
             padding: const EdgeInsets.symmetric(vertical: 40),
             child: Center(child: Text('No members yet — tap + to add one', style: AppText.subtitle)),
           ),
+        if (me?.isAdmin ?? false) ...[
+          const SizedBox(height: 28),
+          Center(
+            child: TextButton(
+              onPressed: () => _confirmDeleteFamily(context, ref),
+              child: Text('Delete family',
+                  style: font(kBodyFont, 13, 700, color: AppColors.coral.withValues(alpha: 0.75))),
+            ),
+          ),
+        ],
       ],
+    );
+  }
+
+  Future<void> _confirmDeleteFamily(BuildContext context, WidgetRef ref) {
+    return showSlideToConfirmSheet(
+      context,
+      title: 'Delete family?',
+      description: 'This permanently deletes every member, feed, task, and '
+          "calendar event in this family. This can't be undone.",
+      slideLabel: 'Slide to delete family',
+      onConfirmed: () async {
+        final familyId = await ref.read(familyProvider.future);
+        await ref.read(apiClientProvider).deleteFamily(familyId);
+        // Drop the override and let the app re-decide: onboarding if that was
+        // the last family, else the next one it finds.
+        ref.read(selectedFamilyIdProvider.notifier).state = null;
+        ref.read(onboardingActiveProvider.notifier).state = null;
+        ref.invalidate(hasFamilyProvider);
+        ref.invalidate(familiesListProvider);
+        ref.invalidate(familyProvider);
+      },
+      errorMessage: (e) => e is DioException ? 'Failed: ${e.message}' : 'Failed: $e',
     );
   }
 

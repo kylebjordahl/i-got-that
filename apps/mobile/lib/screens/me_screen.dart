@@ -12,6 +12,7 @@ import '../theme/app_text.dart';
 import '../theme/person_colors.dart';
 import '../widgets/primitives.dart';
 import '../widgets/settings.dart';
+import '../widgets/slide_to_confirm.dart';
 import 'connect_account_wizard.dart';
 import 'dialogs.dart';
 
@@ -198,6 +199,14 @@ class MeScreen extends ConsumerWidget {
         ],
         const SizedBox(height: 28),
         _SignOutButton(onTap: () => _signOut(context, ref)),
+        const SizedBox(height: 14),
+        Center(
+          child: TextButton(
+            onPressed: () => _confirmDeleteAccount(context, ref),
+            child: Text('Delete account',
+                style: font(kBodyFont, 13, 700, color: AppColors.coral.withValues(alpha: 0.75))),
+          ),
+        ),
       ],
     );
   }
@@ -385,6 +394,27 @@ class MeScreen extends ConsumerWidget {
       ref.read(navIndexProvider.notifier).state = 0;
       ref.read(authControllerProvider.notifier).logout();
     }
+  }
+
+  Future<void> _confirmDeleteAccount(BuildContext context, WidgetRef ref) {
+    return showSlideToConfirmSheet(
+      context,
+      title: 'Delete account?',
+      description: "This permanently deletes your login and connected "
+          "calendar accounts. Families you belong to keep their data — "
+          "you're just removed as a member with login access. This can't be "
+          'undone.',
+      slideLabel: 'Slide to delete account',
+      onConfirmed: () => ref.read(authControllerProvider.notifier).deleteAccount(),
+      errorMessage: (e) {
+        final data = e is DioException ? e.response?.data : null;
+        final code = (data as Map<String, dynamic>?)?['error'];
+        return code == 'last_admin'
+            ? "You're the only admin of a family with other members — "
+                'promote a co-admin or delete the family first.'
+            : 'Failed: $e';
+      },
+    );
   }
 
   IconData _accountIcon(String kind) => switch (kind) {

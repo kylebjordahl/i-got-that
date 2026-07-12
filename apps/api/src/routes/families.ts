@@ -112,6 +112,19 @@ familyRoutes.patch('/:familyId', requireFamilyMember, requireAdmin, async (c) =>
   return c.json({ family });
 });
 
+/**
+ * Delete the family (admin). FKs cascade: members, feeds, tasks, calendar
+ * events, and calendar targets all go with it. `event_mirrors` rows
+ * deliberately have no FK (see schema note) and are left behind — same
+ * best-effort gap as member removal today; a future reconcile would need to
+ * run before the cascade to cancel remote copies.
+ */
+familyRoutes.delete('/:familyId', requireFamilyMember, requireAdmin, async (c) => {
+  const db = getDb(c.env.DB);
+  await db.delete(families).where(eq(families.id, c.get('member').familyId));
+  return c.body(null, 204);
+});
+
 /** List members of a family (any member). */
 familyRoutes.get('/:familyId/members', requireFamilyMember, async (c) => {
   const db = getDb(c.env.DB);

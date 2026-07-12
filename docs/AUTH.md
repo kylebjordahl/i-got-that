@@ -33,6 +33,25 @@ The Flutter client surfaces all of this on the **Me** tab under "Login methods"
 (list + add email + link Apple on web + unlink), following the account-card UI
 pattern.
 
+## Deleting an account
+
+`DELETE /auth/me` deletes the signed-in user (`services/auth.ts`'s
+`deleteUserAccount`). FK cascades drop their `sessions`, `identities`, and
+`external_accounts`; each `family_members` row they held is kept but unlinked
+(`userId` → `null`) rather than removed — the person stays in the family, just
+loses login capability, same outcome as `handleAppleAccountEvent`'s
+server-to-server `account-delete` case.
+
+Blocked with `409 last_admin` if the user is the sole admin of a family that
+still has other members — deleting the account would leave that family with no
+one able to manage it. The caller must promote a co-admin, or delete the
+family outright (`DELETE /families/:familyId`, admin-only — cascades the whole
+family away), before deleting their own account.
+
+The Flutter client surfaces this on the **Me** tab as "Delete account", gated
+behind a slide-to-confirm speedbump (`widgets/slide_to_confirm.dart`); "Delete
+family" on the **Family** tab uses the same control.
+
 ## Session persistence on web (surviving a page refresh)
 
 The Flutter web SPA keeps its session token in memory only (`AuthState` in
