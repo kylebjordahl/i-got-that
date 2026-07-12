@@ -70,7 +70,7 @@
                 "APPLE_WEB_CLIENT_ID": "com.kylebjordahl.igt.web.staging",
                 "GOOGLE_OAUTH_CLIENT_ID": "",
                 // Fill in your 10-char Apple Team ID: "<TeamID>.com.kylebjordahl.igt.staging".
-                "APPLE_APP_ID_PREFIX": "",
+                "APPLE_APP_ID_PREFIX": "WG5R9LUU9X.com.kylebjordahl.igt.staging",
             },
             // The whole subdomain routes to this Worker (custom_domain provisions DNS
             // + cert; the parent zone must be on Cloudflare). The Worker serves the
@@ -128,7 +128,7 @@
                 "APPLE_WEB_CLIENT_ID": "com.kylebjordahl.igt.web",
                 "GOOGLE_OAUTH_CLIENT_ID": "",
                 // Fill in your 10-char Apple Team ID: "<TeamID>.com.kylebjordahl.igt".
-                "APPLE_APP_ID_PREFIX": "",
+                "APPLE_APP_ID_PREFIX": "WG5R9LUU9X.com.kylebjordahl.igt",
             },
             "d1_databases": [
                 {
