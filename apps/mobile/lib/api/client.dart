@@ -69,6 +69,15 @@ class ApiClient {
     _sessionToken = null;
   }
 
+  /// Whether the signed-in user is currently free to delete their account —
+  /// false while they're the sole admin of a family that has other members.
+  /// Checked before opening the delete-account speedbump so a block shows
+  /// immediately rather than as a toast behind a failed slide attempt.
+  Future<bool> accountDeletable() async {
+    final res = await _dio.get('/auth/me/deletable', options: _auth);
+    return _obj(res)['deletable'] as bool;
+  }
+
   // --- Login methods (thread multiple identities into one account) --------
 
   /// The login methods threaded to the current user.
@@ -128,6 +137,13 @@ class ApiClient {
   /// calendar data all go with it.
   Future<void> deleteFamily(String familyId) async {
     await _dio.delete('/families/$familyId', options: _auth);
+  }
+
+  /// Leave a family (self-service): unlinks the caller from their member row
+  /// while keeping it (and its history) intact. 204 on success; the server
+  /// blocks (409 `last_admin`) if this would leave the family adminless.
+  Future<void> leaveFamily(String familyId) async {
+    await _dio.post('/families/$familyId/leave', data: <String, dynamic>{}, options: _auth);
   }
 
   // --- Family members ----------------------------------------------------

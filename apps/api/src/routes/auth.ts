@@ -13,6 +13,7 @@ import { getMailer } from '../lib/mailer.js';
 import { clearSessionCookie, sessionToken, setSessionCookie } from '../lib/session-cookie.js';
 import { authMiddleware } from '../middleware/auth.js';
 import {
+  accountDeletionBlocked,
   createSession,
   deleteSession,
   deleteUserAccount,
@@ -303,6 +304,18 @@ authRoutes.delete('/me', authMiddleware, async (c) => {
   if (result === 'last_admin') return c.json({ error: 'last_admin' }, 409);
   clearSessionCookie(c);
   return c.body(null, 204);
+});
+
+/**
+ * Whether the signed-in user is currently free to delete their account. Lets
+ * the client warn before the delete-confirm sheet's slide control is even
+ * shown, instead of letting the user slide and then surfacing the same
+ * `last_admin` block as a failed-action toast.
+ */
+authRoutes.get('/me/deletable', authMiddleware, async (c) => {
+  const user = c.get('user');
+  const blocked = await accountDeletionBlocked(getDb(c.env.DB), user.id);
+  return c.json({ deletable: !blocked });
 });
 
 // --- Identity linking (thread multiple login methods into one user) -------
