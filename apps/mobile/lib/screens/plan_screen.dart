@@ -216,10 +216,14 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
     }
 
     // Attendee avatars on an event = the child whose calendar it's on plus any
-    // caretaker who has claimed a task generated from it.
+    // caretaker who has claimed the *attendance* task generated from it. A
+    // claimed drop-off/pick-up only ever adds the claimant's avatar to its own
+    // edge tab (below) — the actual attendee at the event is still just the
+    // child, so a pickup/dropoff claim must not add a badge to the block.
     final ownersByEvent = <String, List<Member>>{};
     for (final t in rawTasks) {
       if (t.status != 'owned' || t.calendarEventId == null) continue;
+      if (t.type != 'attendance') continue;
       final owner = byId[t.ownerMemberId];
       if (owner == null) continue;
       final list = ownersByEvent[t.calendarEventId!] ??= [];
@@ -451,15 +455,17 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
     Widget tab(TaskItem t, double left, double width, double top) => Positioned(
           top: top,
           left: left,
-          width: width,
           height: _tabHeight,
-          child: _EdgeTab(
-            task: t,
-            accent: personColor(byId[t.familyMemberId] ?? _fallbackMember),
-            owner: t.status == 'owned' ? byId[t.ownerMemberId] : null,
-            onClaim: t.isUnowned ? () => _claim(t.id) : null,
-            // Tapping a tag manages just this one drop-off / pick-up task.
-            onTap: () => showTaskActions(context, ref, t),
+          child: ConstrainedBox(
+            constraints: BoxConstraints(maxWidth: width),
+            child: _EdgeTab(
+              task: t,
+              accent: personColor(byId[t.familyMemberId] ?? _fallbackMember),
+              owner: t.status == 'owned' ? byId[t.ownerMemberId] : null,
+              onClaim: t.isUnowned ? () => _claim(t.id) : null,
+              // Tapping a tag manages just this one drop-off / pick-up task.
+              onTap: () => showTaskActions(context, ref, t),
+            ),
           ),
         );
 
@@ -1165,10 +1171,11 @@ class _EdgeTab extends StatelessWidget {
         color: claimed ? onAccent : AppColors.textPrimary);
 
     final row = Row(
+      mainAxisSize: MainAxisSize.min,
       children: [
         glyph,
         const SizedBox(width: 6),
-        Expanded(
+        Flexible(
           child: Text(_label,
               maxLines: 1, overflow: TextOverflow.ellipsis, style: labelStyle),
         ),

@@ -53,8 +53,18 @@ class FamilyScreen extends ConsumerWidget {
             padding: const EdgeInsets.symmetric(vertical: 40),
             child: Center(child: Text('No members yet — tap + to add one', style: AppText.subtitle)),
           ),
-        if (me?.isAdmin ?? false) ...[
+        if (me != null) ...[
           const SizedBox(height: 28),
+          Center(
+            child: TextButton(
+              onPressed: () => _confirmLeaveFamily(context, ref, me, members),
+              child: Text('Leave family',
+                  style: font(kBodyFont, 13, 700, color: AppColors.coral.withValues(alpha: 0.75))),
+            ),
+          ),
+        ],
+        if (me?.isAdmin ?? false) ...[
+          const SizedBox(height: 8),
           Center(
             child: TextButton(
               onPressed: () => _confirmDeleteFamily(context, ref),
@@ -86,6 +96,52 @@ class FamilyScreen extends ConsumerWidget {
         ref.invalidate(familyProvider);
       },
       errorMessage: (e) => e is DioException ? 'Failed: ${e.message}' : 'Failed: $e',
+    );
+  }
+
+  Future<void> _confirmLeaveFamily(
+    BuildContext context,
+    WidgetRef ref,
+    Member me,
+    List<Member> members,
+  ) {
+    // The last remaining admin can't leave a family that still has other
+    // members — computed from state already loaded for this screen, so (like
+    // account deletion) the block shows up front rather than as a toast after
+    // a failed slide.
+    final isSoleAdmin = me.isAdmin &&
+        members.length > 1 &&
+        !members.any((m) => m.id != me.id && m.isAdmin);
+    return showSlideToConfirmSheet(
+      context,
+      title: isSoleAdmin ? "Can't leave yet" : 'Leave family?',
+      description: isSoleAdmin
+          ? "You're the only admin here — promote a co-admin first, or "
+              'delete the family instead.'
+          : "You'll lose access to this family's feeds, tasks, and "
+              "calendar. Your history stays, and you can rejoin if invited "
+              'again.',
+      slideLabel: 'Slide to leave family',
+      blocked: isSoleAdmin,
+      onConfirmed: () async {
+        final familyId = await ref.read(familyProvider.future);
+        await ref.read(apiClientProvider).leaveFamily(familyId);
+        // Same reset as delete family: let the app re-decide between
+        // onboarding (if that was the last family) and the next one.
+        ref.read(selectedFamilyIdProvider.notifier).state = null;
+        ref.read(onboardingActiveProvider.notifier).state = null;
+        ref.invalidate(hasFamilyProvider);
+        ref.invalidate(familiesListProvider);
+        ref.invalidate(familyProvider);
+      },
+      errorMessage: (e) {
+        final data = e is DioException ? e.response?.data : null;
+        final code = (data as Map<String, dynamic>?)?['error'];
+        return code == 'last_admin'
+            ? "You're the only admin here — promote a co-admin first, or "
+                'delete the family instead.'
+            : 'Failed: $e';
+      },
     );
   }
 

@@ -403,15 +403,24 @@ class MeScreen extends ConsumerWidget {
     }
   }
 
-  Future<void> _confirmDeleteAccount(BuildContext context, WidgetRef ref) {
+  Future<void> _confirmDeleteAccount(BuildContext context, WidgetRef ref) async {
+    // Checked up front (rather than letting the slide fail) so a block reads
+    // as the sheet's own message, not a toast that lands behind the sheet and
+    // the floating nav.
+    final blocked = !(await ref.read(accountDeletableProvider.future));
+    if (!context.mounted) return;
     return showSlideToConfirmSheet(
       context,
-      title: 'Delete account?',
-      description: "This permanently deletes your login and connected "
-          "calendar accounts. Families you belong to keep their data — "
-          "you're just removed as a member with login access. This can't be "
-          'undone.',
+      title: blocked ? "Can't delete account yet" : 'Delete account?',
+      description: blocked
+          ? 'Before you can delete your account, you must either leave or '
+              'delete all the families you are involved in.'
+          : "This permanently deletes your login and connected "
+              "calendar accounts. Families you belong to keep their data — "
+              "you're just removed as a member with login access. This can't be "
+              'undone.',
       slideLabel: 'Slide to delete account',
+      blocked: blocked,
       onConfirmed: () => ref.read(authControllerProvider.notifier).deleteAccount(),
       errorMessage: (e) {
         final data = e is DioException ? e.response?.data : null;

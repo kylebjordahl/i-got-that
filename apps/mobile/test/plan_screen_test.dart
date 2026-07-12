@@ -250,6 +250,46 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets(
+      'a claimed drop-off does not add the claimant as an attendee avatar on the block',
+      (tester) async {
+    final now = DateTime.now();
+    DateTime at(int h, int m) => DateTime(now.year, now.month, now.day, h, m);
+    final events = [
+      CalendarEventItem(id: 'school', familyMemberId: 'theo', provenance: 'synthesized', start: at(8, 30), end: at(15, 0), allDay: false, summary: 'School day'),
+    ];
+    // The drop-off is claimed by Dad, but the only real attendee of the
+    // school event is Theo — Dad's avatar should show up on the edge tab
+    // only, not as a second attendee badge on the event block itself.
+    final tasks = [
+      TaskItem(id: 'drop', familyMemberId: 'theo', type: 'dropoff', start: at(8, 0), status: 'owned', ownerMemberId: 'dad', createdVia: 'generated', calendarEventId: 'school'),
+    ];
+    await tester.pumpWidget(ProviderScope(
+      overrides: [
+        membersProvider.overrideWith((ref) async => [
+              _m('dad', 'Dad', caretaker: true),
+              _m('theo', 'Theo', child: true),
+            ]),
+        currentMemberProvider.overrideWith((ref) async => _m('dad', 'Dad', caretaker: true)),
+        allTasksProvider.overrideWith((ref) async => tasks),
+        calendarEventsProvider.overrideWith((ref) async => events),
+        pendingDecisionsProvider.overrideWith((ref) async => const []),
+        threadingThresholdProvider.overrideWith((ref) async => 30),
+      ],
+      child: MaterialApp(
+        theme: buildAppTheme(),
+        themeMode: ThemeMode.dark,
+        home: const Scaffold(body: SafeArea(child: PlanScreen())),
+      ),
+    ));
+    await tester.pumpAndSettle();
+
+    // Dad's "D" avatar renders exactly once — on the claimed edge tab — not a
+    // second time as an attendee badge on the block.
+    expect(find.text('D'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('a claimed attendance dedupes to one block carrying both attendees',
       (tester) async {
     final now = DateTime.now();

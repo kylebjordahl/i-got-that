@@ -44,13 +44,24 @@ server-to-server `account-delete` case.
 
 Blocked with `409 last_admin` if the user is the sole admin of a family that
 still has other members — deleting the account would leave that family with no
-one able to manage it. The caller must promote a co-admin, or delete the
-family outright (`DELETE /families/:familyId`, admin-only — cascades the whole
-family away), before deleting their own account.
+one able to manage it. The caller must promote a co-admin, leave the family
+(`POST /families/:familyId/leave` — self-service, same `userId` → `null`
+unlink as account deletion, blocked with the same `409 last_admin` guard), or
+delete the family outright (`DELETE /families/:familyId`, admin-only —
+cascades the whole family away), before deleting their own account.
+
+`GET /auth/me/deletable` reports whether the signed-in user is currently free
+to delete their account (`{ deletable: boolean }`), backed by the same guard
+(`services/auth.ts`'s `accountDeletionBlocked`). The client checks this before
+opening the delete-account speedbump so a block reads as the sheet's own
+message ("Before you can delete your account, you must either leave or delete
+all the families you are involved in.") instead of a toast raised after a
+failed slide.
 
 The Flutter client surfaces this on the **Me** tab as "Delete account", gated
-behind a slide-to-confirm speedbump (`widgets/slide_to_confirm.dart`); "Delete
-family" on the **Family** tab uses the same control.
+behind a slide-to-confirm speedbump (`widgets/slide_to_confirm.dart`); "Leave
+family" and "Delete family" on the **Family** tab use the same control, the
+latter admin-only.
 
 ## Session persistence on web (surviving a page refresh)
 
