@@ -69,6 +69,8 @@ class FamilyScreen extends ConsumerWidget {
   }
 
   Widget _header(BuildContext context, WidgetRef ref, ({String name, int count})? info, bool isAdmin) {
+    final name = info?.name ?? 'Family';
+    final multipleFamilies = (info?.count ?? 1) > 1;
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -76,15 +78,9 @@ class FamilyScreen extends ConsumerWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Row(
-                children: [
-                  Flexible(child: Text(info?.name ?? 'Family', style: AppText.screenTitleAlt)),
-                  if ((info?.count ?? 1) > 1) ...[
-                    const SizedBox(width: 8),
-                    _SwitcherButton(onTap: () => _openSwitcher(context, ref)),
-                  ],
-                ],
-              ),
+              multipleFamilies
+                  ? _FamilySelect(name: name, onTap: () => _openSwitcher(context, ref))
+                  : Text(name, style: AppText.screenTitleAlt),
               const SizedBox(height: 3),
               Text.rich(TextSpan(
                 style: AppText.subtitle,
@@ -283,27 +279,36 @@ class _PersonRow extends StatelessWidget {
   }
 }
 
-class _SwitcherButton extends StatelessWidget {
-  const _SwitcherButton({required this.onTap});
+/// The Family-screen title, styled as an explicit select control (name +
+/// unfold-chevron, both tappable) — shown in place of a plain title once the
+/// account belongs to more than one family.
+class _FamilySelect extends StatelessWidget {
+  const _FamilySelect({required this.name, required this.onTap});
+  final String name;
   final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
     return Material(
-      color: AppColors.card,
-      shape: const CircleBorder(),
+      color: Colors.transparent,
       child: InkWell(
         onTap: onTap,
-        customBorder: const CircleBorder(),
-        child: Container(
-          width: 30,
-          height: 30,
-          alignment: Alignment.center,
-          decoration: BoxDecoration(
-            shape: BoxShape.circle,
-            border: Border.all(color: AppColors.border),
+        borderRadius: BorderRadius.circular(10),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 2),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Flexible(
+                child: Text(name,
+                    style: AppText.screenTitleAlt,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis),
+              ),
+              const SizedBox(width: 6),
+              const Icon(Icons.unfold_more_rounded, size: 22, color: AppColors.textMuted),
+            ],
           ),
-          child: const Icon(Icons.expand_more_rounded, size: 20, color: AppColors.textSecondary),
         ),
       ),
     );

@@ -1,9 +1,11 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import '../models.dart';
 import 'auth.dart';
 
-/// The active family, when the user has switched away from their default (first)
-/// family via the Family-screen switcher. Null ⇒ use the default.
+/// The active family, when the user has switched away from the default family
+/// via the Family-screen switcher. Session-only (resets on relaunch); takes
+/// priority over [defaultFamilyIdProvider]. Null ⇒ use the default.
 final selectedFamilyIdProvider = StateProvider<String?>((ref) => null);
 
 /// The first-run gate: whether the signed-in user already belongs to any
@@ -17,14 +19,57 @@ final hasFamilyProvider = FutureProvider<bool>((ref) async {
   return (me['families'] as List<dynamic>).isNotEmpty;
 });
 
-/// The current family id — the selected family, else the user's first family, or
-/// a freshly created one.
+const _defaultFamilyStorageKey = 'default_family_id';
+const _defaultFamilyStorage = FlutterSecureStorage();
+
+/// A persisted, client-only default family, set from the Me screen's
+/// "Default family" control — unlike [selectedFamilyIdProvider], this survives
+/// app restarts, but only on this device/install; it's never synced to the
+/// account or seen by other devices/family members.
+class DefaultFamilyController extends StateNotifier<AsyncValue<String?>> {
+  DefaultFamilyController() : super(const AsyncValue.loading()) {
+    _load();
+  }
+
+  Future<void> _load() async {
+    try {
+      state = AsyncValue.data(await _defaultFamilyStorage.read(key: _defaultFamilyStorageKey));
+    } catch (_) {
+      // Keychain unavailable/unreadable — treat as no persisted default.
+      state = const AsyncValue.data(null);
+    }
+  }
+
+  Future<void> set(String? familyId) async {
+    if (familyId == null) {
+      await _defaultFamilyStorage.delete(key: _defaultFamilyStorageKey);
+    } else {
+      await _defaultFamilyStorage.write(key: _defaultFamilyStorageKey, value: familyId);
+    }
+    state = AsyncValue.data(familyId);
+  }
+}
+
+final defaultFamilyIdProvider =
+    StateNotifierProvider<DefaultFamilyController, AsyncValue<String?>>(
+  (ref) => DefaultFamilyController(),
+);
+
+/// The current family id: the session-switched family, else the persisted
+/// per-device default (if still one of the account's families), else the
+/// account's first family, or a freshly created one.
 final familyProvider = FutureProvider<String>((ref) async {
   final override = ref.watch(selectedFamilyIdProvider);
   if (override != null) return override;
   final api = ref.watch(apiClientProvider);
   final me = await api.me();
   final families = me['families'] as List<dynamic>;
+  final defaultId = ref.watch(defaultFamilyIdProvider).valueOrNull;
+  if (defaultId != null &&
+      families.any((f) =>
+          ((f as Map<String, dynamic>)['family'] as Map<String, dynamic>)['id'] == defaultId)) {
+    return defaultId;
+  }
   if (families.isNotEmpty) {
     final first = families.first as Map<String, dynamic>;
     return (first['family'] as Map<String, dynamic>)['id'] as String;
