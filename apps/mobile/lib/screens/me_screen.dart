@@ -27,6 +27,8 @@ class MeScreen extends ConsumerWidget {
     final user = ref.watch(authControllerProvider).user;
     final email = user?['email'] as String? ?? 'you@example.com';
     final familyCount = ref.watch(familyInfoProvider).valueOrNull?.count ?? 1;
+    final families = ref.watch(familiesListProvider).valueOrNull ?? const <({String id, String name})>[];
+    final defaultFamilyId = ref.watch(defaultFamilyIdProvider).valueOrNull;
     final accounts = ref.watch(accountsProvider).valueOrNull ?? const <ExternalAccount>[];
     final identities =
         ref.watch(loginIdentitiesProvider).valueOrNull ?? const <LoginIdentity>[];
@@ -159,6 +161,18 @@ class MeScreen extends ConsumerWidget {
                 title: 'Redeem invite code',
                 onTap: () => showRedeemInviteDialog(context, ref),
               ),
+              if (families.length > 1) ...[
+                const Divider(height: 20),
+                SettingRow(
+                  icon: Icons.home_filled,
+                  iconColor: AppColors.indigo,
+                  title: 'Default family',
+                  subtitle:
+                      '${families.where((f) => f.id == defaultFamilyId).map((f) => f.name).firstOrNull ?? "Account default"} '
+                      '· only affects this device',
+                  onTap: () => _openDefaultFamilyPicker(context, ref, families, defaultFamilyId),
+                ),
+              ],
               const Divider(height: 20),
               SwitchRow(
                 icon: Icons.notifications_none_rounded,
@@ -194,6 +208,58 @@ class MeScreen extends ConsumerWidget {
           ),
         ),
       ],
+    );
+  }
+
+  void _openDefaultFamilyPicker(BuildContext context, WidgetRef ref,
+      List<({String id, String name})> families, String? current) {
+    showModalBottomSheet<void>(
+      context: context,
+      useRootNavigator: true,
+      showDragHandle: true,
+      builder: (_) => Padding(
+        padding: const EdgeInsets.fromLTRB(22, 4, 22, 28),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Default family', style: AppText.subPageTitle),
+            const SizedBox(height: 6),
+            Text(
+              'Which family this app opens to by default. This only affects this '
+              'device — other devices and family members are unaffected.',
+              style: AppText.subtitle,
+            ),
+            const SizedBox(height: 12),
+            SettingRow(
+              icon: Icons.auto_awesome_rounded,
+              iconColor: current == null ? AppColors.indigo : AppColors.textMuted,
+              title: 'Account default',
+              subtitle: 'Whichever family is first on your account',
+              trailing:
+                  current == null ? const Icon(Icons.check_rounded, color: AppColors.indigo) : null,
+              onTap: () {
+                ref.read(defaultFamilyIdProvider.notifier).set(null);
+                Navigator.of(context).pop();
+              },
+            ),
+            for (final f in families) ...[
+              const Divider(height: 20),
+              SettingRow(
+                icon: Icons.home_rounded,
+                iconColor: f.id == current ? AppColors.indigo : AppColors.textMuted,
+                title: f.name,
+                trailing:
+                    f.id == current ? const Icon(Icons.check_rounded, color: AppColors.indigo) : null,
+                onTap: () {
+                  ref.read(defaultFamilyIdProvider.notifier).set(f.id);
+                  Navigator.of(context).pop();
+                },
+              ),
+            ],
+          ],
+        ),
+      ),
     );
   }
 
