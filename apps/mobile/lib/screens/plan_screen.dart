@@ -17,6 +17,9 @@ const _labelWidth = 46.0;
 // Edge-tab (drop-off / pick-up) height. Tall enough for the compact "Claim"
 // pill; tabs straddle their block's edge by half this and stack by the full.
 const _tabHeight = 32.0;
+// Left indentation for edge tabs so they don't flush-align with the block
+// underneath — 1.5x the tab's pill corner radius (half its height).
+const _tabLeftInset = _tabHeight / 2 * 1.5;
 // The grid always shows at least this window, then expands to fit the day's
 // events (and the now-line) so nothing is clipped — the page scrolls to reveal
 // the extra hours.
@@ -503,16 +506,18 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
           ),
         ));
         for (var i = 0; i < dropoffs.length; i++) {
-          tabs.add(tab(dropoffs[i], left, width, p.top - _tabHeight / 2 - i * _tabHeight));
+          tabs.add(tab(dropoffs[i], left + _tabLeftInset, width - _tabLeftInset,
+              p.top - _tabHeight / 2 - i * _tabHeight));
         }
         for (var i = 0; i < pickups.length; i++) {
-          tabs.add(tab(pickups[i], left, width,
+          tabs.add(tab(pickups[i], left + _tabLeftInset, width - _tabLeftInset,
               p.top + p.height - _tabHeight / 2 + i * _tabHeight));
         }
       }
       // Transitions whose source event isn't on the grid: a standalone pill.
       for (final t in orphanTabs) {
-        tabs.add(tab(t, laneLeft, laneWidth - 6, taskTop(t.start) - _tabHeight / 2));
+        tabs.add(tab(t, laneLeft + _tabLeftInset, laneWidth - 6 - _tabLeftInset,
+            taskTop(t.start) - _tabHeight / 2));
       }
 
       return SizedBox(
