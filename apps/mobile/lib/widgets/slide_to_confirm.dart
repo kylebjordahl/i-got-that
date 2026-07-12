@@ -5,7 +5,14 @@ import '../theme/app_text.dart';
 /// The shared confirm-sheet chrome for a [SlideToConfirm]-gated destructive
 /// action: title, description, the slide control, and a Cancel fallback.
 /// Shared by the Me screen's "Delete account" and the Family screen's "Delete
-/// family" flows so the two destructive confirmations read as one system.
+/// family"/"Leave family" flows so the destructive confirmations read as one
+/// system.
+///
+/// When [blocked] is true, the slide control is omitted entirely — just the
+/// (caller-supplied, blocked-specific) description and an "OK" dismissal.
+/// Callers precompute [blocked] from state they already have (or a cheap
+/// server check) so a guard the server would otherwise 409 on shows up front,
+/// not as a toast surfaced after a failed slide.
 Future<void> showSlideToConfirmSheet(
   BuildContext context, {
   required String title,
@@ -14,6 +21,7 @@ Future<void> showSlideToConfirmSheet(
   required Future<void> Function() onConfirmed,
   required String Function(Object error) errorMessage,
   IconData icon = Icons.delete_forever_rounded,
+  bool blocked = false,
 }) {
   return showModalBottomSheet<void>(
     context: context,
@@ -31,28 +39,30 @@ Future<void> showSlideToConfirmSheet(
           const SizedBox(height: 8),
           Text(description, style: AppText.subtitle),
           const SizedBox(height: 24),
-          SlideToConfirm(
-            label: slideLabel,
-            icon: icon,
-            onConfirmed: () async {
-              await onConfirmed();
-              // Let the checkmark flash briefly before closing — nothing else
-              // pops this sheet, and a reactive state swap elsewhere in the
-              // app isn't guaranteed to dismiss it.
-              await Future<void>.delayed(const Duration(milliseconds: 500));
-              if (sheetContext.mounted) Navigator.of(sheetContext).pop();
-            },
-            onError: (e) {
-              if (!sheetContext.mounted) return;
-              ScaffoldMessenger.of(sheetContext)
-                  .showSnackBar(SnackBar(content: Text(errorMessage(e))));
-            },
-          ),
-          const SizedBox(height: 12),
+          if (!blocked) ...[
+            SlideToConfirm(
+              label: slideLabel,
+              icon: icon,
+              onConfirmed: () async {
+                await onConfirmed();
+                // Let the checkmark flash briefly before closing — nothing else
+                // pops this sheet, and a reactive state swap elsewhere in the
+                // app isn't guaranteed to dismiss it.
+                await Future<void>.delayed(const Duration(milliseconds: 500));
+                if (sheetContext.mounted) Navigator.of(sheetContext).pop();
+              },
+              onError: (e) {
+                if (!sheetContext.mounted) return;
+                ScaffoldMessenger.of(sheetContext)
+                    .showSnackBar(SnackBar(content: Text(errorMessage(e))));
+              },
+            ),
+            const SizedBox(height: 12),
+          ],
           Center(
             child: TextButton(
               onPressed: () => Navigator.of(sheetContext).pop(),
-              child: const Text('Cancel'),
+              child: Text(blocked ? 'OK' : 'Cancel'),
             ),
           ),
         ],

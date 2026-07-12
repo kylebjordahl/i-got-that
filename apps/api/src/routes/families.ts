@@ -12,6 +12,7 @@ import {
   requireAdmin,
   requireFamilyMember,
 } from '../middleware/auth.js';
+import { wouldOrphanFamily } from '../services/families.js';
 import { enqueueReconcile } from '../services/mirror.js';
 import { rebuildMemberTasks } from '../services/task-gen.js';
 import { createMemberClaimInvite } from '../services/invites.js';
@@ -122,6 +123,23 @@ familyRoutes.patch('/:familyId', requireFamilyMember, requireAdmin, async (c) =>
 familyRoutes.delete('/:familyId', requireFamilyMember, requireAdmin, async (c) => {
   const db = getDb(c.env.DB);
   await db.delete(families).where(eq(families.id, c.get('member').familyId));
+  return c.body(null, 204);
+});
+
+/**
+ * Leave a family (self-service): unlink the caller's `userId` from their
+ * `family_members` row. The row (and their history/tasks) stays — same
+ * unlink-not-remove outcome as `deleteUserAccount`, just for one family
+ * instead of all of them. Blocked (`last_admin`) if the caller is the sole
+ * admin of a family that still has other members.
+ */
+familyRoutes.post('/:familyId/leave', requireFamilyMember, async (c) => {
+  const db = getDb(c.env.DB);
+  const me = c.get('member');
+  if (me.isAdmin && (await wouldOrphanFamily(db, me.familyId, me.id))) {
+    return c.json({ error: 'last_admin' }, 409);
+  }
+  await db.update(familyMembers).set({ userId: null }).where(eq(familyMembers.id, me.id));
   return c.body(null, 204);
 });
 
@@ -294,12 +312,8 @@ familyRoutes.delete(
     )[0];
     if (!target) return c.json({ error: 'not_found' }, 404);
 
-    if (target.isAdmin) {
-      const admins = await db
-        .select({ id: familyMembers.id })
-        .from(familyMembers)
-        .where(and(eq(familyMembers.familyId, me.familyId), eq(familyMembers.isAdmin, true)));
-      if (admins.length <= 1) return c.json({ error: 'last_admin' }, 409);
+    if (target.isAdmin && (await wouldOrphanFamily(db, me.familyId, memberId))) {
+      return c.json({ error: 'last_admin' }, 409);
     }
 
     await db.delete(familyMembers).where(eq(familyMembers.id, memberId));

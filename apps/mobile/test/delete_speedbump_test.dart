@@ -16,6 +16,11 @@ class _FakeApiClient extends ApiClient {
   _FakeApiClient() : super(baseUrl: 'http://test');
   bool deletedAccount = false;
   String? deletedFamilyId;
+  String? leftFamilyId;
+
+  /// Controls the up-front eligibility check the delete-account sheet does
+  /// before showing its slide control.
+  bool accountIsDeletable = true;
 
   @override
   Future<Map<String, dynamic>> me() async => {
@@ -28,8 +33,16 @@ class _FakeApiClient extends ApiClient {
   }
 
   @override
+  Future<bool> accountDeletable() async => accountIsDeletable;
+
+  @override
   Future<void> deleteFamily(String familyId) async {
     deletedFamilyId = familyId;
+  }
+
+  @override
+  Future<void> leaveFamily(String familyId) async {
+    leftFamilyId = familyId;
   }
 }
 
@@ -117,6 +130,50 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets(
+      'shows the blocking message up front instead of the slide when the account cannot be deleted yet',
+      (tester) async {
+    final api = _FakeApiClient()..accountIsDeletable = false;
+    final me = Member(
+      id: 'me',
+      relationName: 'Me',
+      isCaretaker: true,
+      isAdmin: true,
+      requiresCaretaker: false,
+    );
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          apiClientProvider.overrideWithValue(api),
+          currentMemberProvider.overrideWith((ref) async => me),
+          familyInfoProvider.overrideWith((ref) async => (name: 'Test Family', count: 1)),
+          accountsProvider.overrideWith((ref) async => const <ExternalAccount>[]),
+          loginIdentitiesProvider.overrideWith((ref) async => const <LoginIdentity>[]),
+        ],
+        child: const MaterialApp(home: Scaffold(body: MeScreen())),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.scrollUntilVisible(find.text('Delete account'), 300);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Delete account'));
+    await tester.pumpAndSettle();
+
+    // No slide control at all — the block is shown, not a failure toast.
+    expect(find.byType(SlideToConfirm), findsNothing);
+    expect(
+      find.text('Before you can delete your account, you must either leave '
+          'or delete all the families you are involved in.'),
+      findsOneWidget,
+    );
+
+    await tester.tap(find.text('OK'));
+    await tester.pumpAndSettle();
+    expect(api.deletedAccount, isFalse);
+  });
+
   final admin = Member(
     id: 'dad',
     relationName: 'Dad',
@@ -169,5 +226,48 @@ void main() {
     expect(api.deletedFamilyId, 'fam-1');
     expect(find.byType(SlideToConfirm), findsNothing);
     expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('a non-admin can leave the family via the slide gesture', (tester) async {
+    final api = _FakeApiClient();
+    await tester.pumpWidget(familyApp(api, nonAdmin));
+    await tester.pumpAndSettle();
+
+    await tester.scrollUntilVisible(find.text('Leave family'), 300);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Leave family'));
+    await tester.pumpAndSettle();
+
+    expect(find.byType(SlideToConfirm), findsOneWidget);
+    expect(api.leftFamilyId, isNull);
+
+    await slideToConfirm(tester);
+
+    expect(api.leftFamilyId, 'fam-1');
+    expect(find.byType(SlideToConfirm), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+      'the sole admin sees the blocking message instead of the slide when leaving',
+      (tester) async {
+    final api = _FakeApiClient();
+    // `admin` is the only admin among [admin, nonAdmin] — leaving would
+    // orphan the family.
+    await tester.pumpWidget(familyApp(api, admin));
+    await tester.pumpAndSettle();
+
+    await tester.scrollUntilVisible(find.text('Leave family'), 300);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Leave family'));
+    await tester.pumpAndSettle();
+
+    expect(find.byType(SlideToConfirm), findsNothing);
+    expect(find.text("You're the only admin here — promote a co-admin "
+        'first, or delete the family instead.'), findsOneWidget);
+
+    await tester.tap(find.text('OK'));
+    await tester.pumpAndSettle();
+    expect(api.leftFamilyId, isNull);
   });
 }
