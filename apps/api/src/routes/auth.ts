@@ -9,6 +9,13 @@ import { deleteCookie, getSignedCookie, setSignedCookie } from 'hono/cookie';
 import type { HonoEnv } from '../env.js';
 import { verifyAppleIdentityToken, verifyAppleNotificationToken } from '../lib/apple.js';
 import { randomToken } from '../lib/crypto.js';
+import { connectGoogleAccount } from '../lib/google-account.js';
+import {
+  buildGoogleAuthorizeUrl,
+  decodeGoogleIdToken,
+  exchangeGoogleCode,
+  googleOAuthConfigured,
+} from '../lib/google-oauth.js';
 import { getMailer } from '../lib/mailer.js';
 import { clearSessionCookie, sessionToken, setSessionCookie } from '../lib/session-cookie.js';
 import { authMiddleware } from '../middleware/auth.js';
@@ -18,9 +25,11 @@ import {
   deleteSession,
   deleteUserAccount,
   findOrCreateUserByApple,
+  findOrCreateUserByGoogle,
   getUserBySessionToken,
   handleAppleAccountEvent,
   linkAppleIdentity,
+  linkGoogleIdentity,
   linkMagicLinkIdentity,
   listIdentities,
   requestMagicLink,
@@ -36,6 +45,12 @@ const APPLE_OAUTH_TTL_S = 10 * 60; // 10 minutes to complete the round-trip
 const APPLE_AUTHORIZE_URL = 'https://appleid.apple.com/auth/authorize';
 /** Public path Apple form-POSTs the identity token to (behind the `/api` prefix). */
 const APPLE_CALLBACK_PATH = '/api/auth/apple/callback';
+
+/** Short-lived cookie carrying the `state` + link-user we minted for a Google flow. */
+const GOOGLE_OAUTH_COOKIE = 'igt_google_oauth';
+const GOOGLE_OAUTH_TTL_S = 10 * 60; // 10 minutes to complete the round-trip
+/** Public path Google redirects the auth code back to (behind the `/api` prefix). */
+const GOOGLE_CALLBACK_PATH = '/api/auth/google/callback';
 
 authRoutes.post('/magic-link/request', async (c) => {
   const parsed = MagicLinkRequestInput.safeParse(await c.req.json().catch(() => null));
@@ -81,6 +96,23 @@ function appleWebConfig(
   return {
     clientId: env.APPLE_WEB_CLIENT_ID,
     redirectUri: new URL(APPLE_CALLBACK_PATH, env.PUBLIC_ORIGIN).toString(),
+    appBase: new URL('/app/', env.PUBLIC_ORIGIN),
+  };
+}
+
+/**
+ * Config for the Google login / connect redirect flow, derived from the OAuth
+ * client credentials + PUBLIC_ORIGIN. Null when Google OAuth is unconfigured or
+ * PUBLIC_ORIGIN is unset (⇒ the routes report 501). `redirectUri` is the Google
+ * Authorized redirect URI (register it in the Cloud Console); `appBase` is where
+ * we send the browser back with the session / connect result.
+ */
+function googleWebConfig(
+  env: HonoEnv['Bindings'],
+): { redirectUri: string; appBase: URL } | null {
+  if (!googleOAuthConfigured(env) || !env.PUBLIC_ORIGIN) return null;
+  return {
+    redirectUri: new URL(GOOGLE_CALLBACK_PATH, env.PUBLIC_ORIGIN).toString(),
     appBase: new URL('/app/', env.PUBLIC_ORIGIN),
   };
 }
@@ -227,6 +259,136 @@ authRoutes.post('/apple/callback', async (c) => {
 
   const user = await findOrCreateUserByApple(db, identity.sub, identity.email);
   const token = await createSession(db, user.id);
+  setSessionCookie(c, token);
+  return back(`session=${encodeURIComponent(token)}`);
+});
+
+/**
+ * Sign in with Google — step 1. The browser navigates here (full-page); we mint
+ * a `state`, stash it in a short-lived signed cookie, and 302 to Google's
+ * consent screen requesting the OpenID scopes (to identify the user) *and* the
+ * calendar scope with offline access (so the same grant yields a refresh token
+ * we can store — "automatically connect Google Calendar on Google login").
+ * Google redirects back to `/google/callback` (the registered redirect URI).
+ *
+ * `?link=1` with a live session (the same-origin `igt_session` cookie rides
+ * along) threads Google onto the current user and connects their calendar
+ * without starting a new session — the wizard's "connect Google" for users who
+ * signed in another way. Requires GOOGLE_OAUTH_CLIENT_ID/SECRET + PUBLIC_ORIGIN;
+ * unset ⇒ 501.
+ */
+authRoutes.get('/google/start', async (c) => {
+  const web = googleWebConfig(c.env);
+  if (!web) return c.json({ error: 'google_web_not_configured' }, 501);
+
+  let linkUserId = '';
+  if (c.req.query('link') === '1') {
+    const token = sessionToken(c);
+    const user = token ? await getUserBySessionToken(getDb(c.env.DB), token) : null;
+    if (user) linkUserId = user.id;
+  }
+
+  const state = randomToken();
+  await setSignedCookie(c, GOOGLE_OAUTH_COOKIE, `${state}.${linkUserId}`, cookieSecret(c.env), {
+    httpOnly: true,
+    secure: true,
+    // Google's redirect back is a cross-site top-level navigation, so the cookie
+    // must be SameSite=None to ride along on the callback.
+    sameSite: 'None',
+    path: '/',
+    maxAge: GOOGLE_OAUTH_TTL_S,
+  });
+
+  return c.redirect(
+    buildGoogleAuthorizeUrl(c.env, { redirectUri: web.redirectUri, state, identity: true }),
+    302,
+  );
+});
+
+/**
+ * Sign in with Google — step 2. Google redirects here with the auth `code` (+
+ * echoed `state`). We validate `state` against the cookie, exchange the code for
+ * tokens (incl. an id_token identifying the user and a refresh token), find or
+ * create the user, auto-connect their Google Calendar, issue a session, and hand
+ * it to the SPA via the URL fragment (`/app/#session=…`). In link mode we thread
+ * the identity onto the signed-in user (best-effort — a calendar still connects
+ * even if that Google login already belongs to someone else) and return
+ * `#connected=google`. Failures redirect to `/app/#auth_error=…`.
+ */
+authRoutes.get('/google/callback', async (c) => {
+  const web = googleWebConfig(c.env);
+  if (!web) return c.json({ error: 'google_web_not_configured' }, 501);
+
+  const back = (fragment: string) => {
+    const to = new URL(web.appBase);
+    to.hash = fragment;
+    return c.redirect(to.toString(), 302);
+  };
+
+  const cookie = await getSignedCookie(c, cookieSecret(c.env), GOOGLE_OAUTH_COOKIE);
+  deleteCookie(c, GOOGLE_OAUTH_COOKIE, { path: '/' });
+
+  const errorParam = c.req.query('error');
+  const state = c.req.query('state');
+  const code = c.req.query('code');
+  if (errorParam) return back(`auth_error=${encodeURIComponent(errorParam)}`);
+
+  // CSRF guard: the echoed `state` must match the one bound to this browser.
+  // A second segment (possibly empty) carries the user id for link mode.
+  const [expectedState, linkUserId] = (cookie || '').split('.');
+  if (!cookie || !state || !expectedState || state !== expectedState) {
+    return back('auth_error=state_mismatch');
+  }
+  if (!code) return back('auth_error=missing_code');
+
+  let tokens;
+  try {
+    tokens = await exchangeGoogleCode(c.env, { code, redirectUri: web.redirectUri });
+  } catch (err) {
+    console.error('google code exchange failed', err);
+    return back('auth_error=exchange_failed');
+  }
+  if (!tokens.idToken) return back('auth_error=missing_token');
+
+  let identity;
+  try {
+    identity = decodeGoogleIdToken(tokens.idToken);
+  } catch {
+    return back('auth_error=invalid_token');
+  }
+
+  const db = getDb(c.env.DB);
+
+  // Resolve the user: thread onto the signed-in user (link mode) or find/create.
+  let userId: string;
+  if (linkUserId) {
+    // Best-effort identity threading — a `conflict` (this Google login already
+    // belongs to someone else) or `already_linked` is fine; the calendar still
+    // connects for the current user below.
+    await linkGoogleIdentity(db, linkUserId, identity.sub);
+    userId = linkUserId;
+  } else {
+    const user = await findOrCreateUserByGoogle(db, identity.sub, identity.email);
+    userId = user.id;
+  }
+
+  // Auto-connect the Google Calendar from the refresh token this consent yielded.
+  if (tokens.refreshToken && c.env.KEK) {
+    try {
+      await connectGoogleAccount(db, c.env.KEK, {
+        userId,
+        refreshToken: tokens.refreshToken,
+        email: identity.email,
+      });
+    } catch (err) {
+      // A calendar-connect failure shouldn't block login — log and carry on.
+      console.error('google calendar auto-connect failed', err);
+    }
+  }
+
+  if (linkUserId) return back('connected=google');
+
+  const token = await createSession(db, userId);
   setSessionCookie(c, token);
   return back(`session=${encodeURIComponent(token)}`);
 });

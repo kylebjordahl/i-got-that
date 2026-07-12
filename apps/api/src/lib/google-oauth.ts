@@ -11,6 +11,10 @@ import type { Bindings } from '../env.js';
 const AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
 const TOKEN_URL = 'https://oauth2.googleapis.com/token';
 const SCOPE = 'https://www.googleapis.com/auth/calendar.events';
+/** OpenID Connect scopes so the same consent that grants calendar access also
+ *  identifies the user (id_token with `sub` + `email`) — used by the login /
+ *  connect redirect flow (`/auth/google/*`). */
+const IDENTITY_SCOPES = 'openid email profile';
 
 function requireClient(env: Bindings): { id: string; secret: string } {
   if (!env.GOOGLE_OAUTH_CLIENT_ID || !env.GOOGLE_OAUTH_CLIENT_SECRET) {
@@ -37,17 +41,19 @@ export function googleRefresherFor(
 }
 
 /** The consent URL to send the user to. `access_type=offline` + `prompt=consent`
- *  are required to receive a refresh token. */
+ *  are required to receive a refresh token. Pass `identity: true` (the login /
+ *  connect redirect flow) to also request the OpenID scopes, so the returned
+ *  token set carries an id_token identifying the user. */
 export function buildGoogleAuthorizeUrl(
   env: Bindings,
-  opts: { redirectUri: string; state?: string },
+  opts: { redirectUri: string; state?: string; identity?: boolean },
 ): string {
   const client = requireClient(env);
   const params = new URLSearchParams({
     client_id: client.id,
     redirect_uri: opts.redirectUri,
     response_type: 'code',
-    scope: SCOPE,
+    scope: opts.identity ? `${IDENTITY_SCOPES} ${SCOPE}` : SCOPE,
     access_type: 'offline',
     prompt: 'consent',
     include_granted_scopes: 'true',
@@ -59,6 +65,34 @@ export function buildGoogleAuthorizeUrl(
 export interface GoogleTokens {
   accessToken: string;
   refreshToken?: string;
+  /** OpenID Connect id_token (present only when identity scopes were granted). */
+  idToken?: string;
+}
+
+/** The identity claims we read out of a Google id_token. */
+export interface GoogleIdentity {
+  sub: string;
+  email?: string;
+}
+
+/**
+ * Decode the claims from a Google id_token. No signature check is needed: the
+ * token is delivered straight from Google's token endpoint over TLS in response
+ * to our client-secret-authenticated code exchange (not via the browser), so it
+ * is already trusted — the same trust model as the code exchange itself.
+ */
+export function decodeGoogleIdToken(idToken: string): GoogleIdentity {
+  const parts = idToken.split('.');
+  if (parts.length !== 3) throw new Error('google id_token malformed');
+  const json = new TextDecoder().decode(
+    Uint8Array.from(
+      atob(parts[1]!.replace(/-/g, '+').replace(/_/g, '/')),
+      (ch) => ch.charCodeAt(0),
+    ),
+  );
+  const claims = JSON.parse(json) as { sub?: string; email?: string };
+  if (!claims.sub) throw new Error('google id_token missing sub');
+  return { sub: claims.sub, email: claims.email };
 }
 
 export async function exchangeGoogleCode(
@@ -82,8 +116,16 @@ export async function exchangeGoogleCode(
   if (!res.ok) {
     throw new Error(`google code exchange failed: ${res.status} ${await res.text().catch(() => '')}`);
   }
-  const json = (await res.json()) as { access_token: string; refresh_token?: string };
-  return { accessToken: json.access_token, refreshToken: json.refresh_token };
+  const json = (await res.json()) as {
+    access_token: string;
+    refresh_token?: string;
+    id_token?: string;
+  };
+  return {
+    accessToken: json.access_token,
+    refreshToken: json.refresh_token,
+    idToken: json.id_token,
+  };
 }
 
 export async function refreshGoogleAccessToken(
