@@ -224,6 +224,22 @@ class AuthController extends StateNotifier<AuthState> {
     }
     state = const AuthState();
   }
+
+  /// Delete the account server-side, then clear local session state exactly
+  /// like [logout] (the server already invalidated the session as part of the
+  /// deletion). Lets the `last_admin` 409 propagate so the caller can surface
+  /// it — local state is untouched on failure.
+  Future<void> deleteAccount() async {
+    await _api.deleteMyAccount();
+    if (!kIsWeb) {
+      try {
+        await _storage.delete(key: _sessionStorageKey);
+      } catch (_) {
+        // Best-effort local cleanup; state is cleared regardless below.
+      }
+    }
+    state = const AuthState();
+  }
 }
 
 final authControllerProvider =

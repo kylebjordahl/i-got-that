@@ -1,6 +1,8 @@
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models.dart';
+import '../onboarding/onboarding_entry.dart';
 import '../state/auth.dart';
 import '../state/family.dart';
 import '../state/nav.dart';
@@ -9,6 +11,7 @@ import '../theme/app_text.dart';
 import '../theme/person_colors.dart';
 import '../widgets/primitives.dart';
 import '../widgets/settings.dart';
+import '../widgets/slide_to_confirm.dart';
 import 'member_detail_screen.dart';
 
 /// Family — the hub (6l): Caretakers and Children render inline as two lists;
@@ -50,7 +53,75 @@ class FamilyScreen extends ConsumerWidget {
             padding: const EdgeInsets.symmetric(vertical: 40),
             child: Center(child: Text('No members yet — tap + to add one', style: AppText.subtitle)),
           ),
+        if (me?.isAdmin ?? false) ...[
+          const SizedBox(height: 28),
+          Center(
+            child: TextButton(
+              onPressed: () => _confirmDeleteFamily(context, ref),
+              child: Text('Delete family',
+                  style: font(kBodyFont, 13, 700, color: AppColors.coral.withValues(alpha: 0.75))),
+            ),
+          ),
+        ],
       ],
+    );
+  }
+
+  Future<void> _confirmDeleteFamily(BuildContext context, WidgetRef ref) async {
+    await showModalBottomSheet<void>(
+      context: context,
+      useRootNavigator: true,
+      showDragHandle: true,
+      isScrollControlled: true,
+      builder: (sheetContext) => Padding(
+        padding: EdgeInsets.fromLTRB(
+            22, 4, 22, 28 + MediaQuery.of(sheetContext).viewInsets.bottom),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Delete family?', style: AppText.subPageTitle),
+            const SizedBox(height: 8),
+            Text(
+              'This permanently deletes every member, feed, task, and calendar '
+              "event in this family. This can't be undone.",
+              style: AppText.subtitle,
+            ),
+            const SizedBox(height: 24),
+            SlideToConfirm(
+              label: 'Slide to delete family',
+              icon: Icons.delete_forever_rounded,
+              onConfirmed: () async {
+                final familyId = await ref.read(familyProvider.future);
+                await ref.read(apiClientProvider).deleteFamily(familyId);
+                // Drop the override and let the app re-decide: onboarding if
+                // that was the last family, else the next one it finds.
+                ref.read(selectedFamilyIdProvider.notifier).state = null;
+                ref.read(onboardingActiveProvider.notifier).state = null;
+                ref.invalidate(hasFamilyProvider);
+                ref.invalidate(familiesListProvider);
+                ref.invalidate(familyProvider);
+                // Let the checkmark flash briefly before closing — nothing
+                // else pops this sheet.
+                await Future<void>.delayed(const Duration(milliseconds: 500));
+                if (sheetContext.mounted) Navigator.of(sheetContext).pop();
+              },
+              onError: (e) {
+                if (!sheetContext.mounted) return;
+                final msg = e is DioException ? 'Failed: ${e.message}' : 'Failed: $e';
+                ScaffoldMessenger.of(sheetContext).showSnackBar(SnackBar(content: Text(msg)));
+              },
+            ),
+            const SizedBox(height: 12),
+            Center(
+              child: TextButton(
+                onPressed: () => Navigator.of(sheetContext).pop(),
+                child: const Text('Cancel'),
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 

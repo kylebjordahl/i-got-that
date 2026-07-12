@@ -12,6 +12,7 @@ import '../theme/app_text.dart';
 import '../theme/person_colors.dart';
 import '../widgets/primitives.dart';
 import '../widgets/settings.dart';
+import '../widgets/slide_to_confirm.dart';
 import 'connect_account_wizard.dart';
 import 'dialogs.dart';
 
@@ -184,6 +185,14 @@ class MeScreen extends ConsumerWidget {
         ],
         const SizedBox(height: 28),
         _SignOutButton(onTap: () => _signOut(context, ref)),
+        const SizedBox(height: 14),
+        Center(
+          child: TextButton(
+            onPressed: () => _confirmDeleteAccount(context, ref),
+            child: Text('Delete account',
+                style: font(kBodyFont, 13, 700, color: AppColors.coral.withValues(alpha: 0.75))),
+          ),
+        ),
       ],
     );
   }
@@ -319,6 +328,63 @@ class MeScreen extends ConsumerWidget {
       ref.read(navIndexProvider.notifier).state = 0;
       ref.read(authControllerProvider.notifier).logout();
     }
+  }
+
+  Future<void> _confirmDeleteAccount(BuildContext context, WidgetRef ref) async {
+    await showModalBottomSheet<void>(
+      context: context,
+      useRootNavigator: true,
+      showDragHandle: true,
+      isScrollControlled: true,
+      builder: (sheetContext) => Padding(
+        padding: EdgeInsets.fromLTRB(
+            22, 4, 22, 28 + MediaQuery.of(sheetContext).viewInsets.bottom),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Delete account?', style: AppText.subPageTitle),
+            const SizedBox(height: 8),
+            Text(
+              "This permanently deletes your login and connected calendar "
+              "accounts. Families you belong to keep their data — you're just "
+              "removed as a member with login access. This can't be undone.",
+              style: AppText.subtitle,
+            ),
+            const SizedBox(height: 24),
+            SlideToConfirm(
+              label: 'Slide to delete account',
+              icon: Icons.delete_forever_rounded,
+              onConfirmed: () async {
+                await ref.read(authControllerProvider.notifier).deleteAccount();
+                // Let the checkmark flash briefly before closing — nothing
+                // else pops this sheet, and a reactive auth-state swap
+                // elsewhere in the app isn't guaranteed to dismiss it.
+                await Future<void>.delayed(const Duration(milliseconds: 500));
+                if (sheetContext.mounted) Navigator.of(sheetContext).pop();
+              },
+              onError: (e) {
+                if (!sheetContext.mounted) return;
+                final data = e is DioException ? e.response?.data : null;
+                final code = (data as Map<String, dynamic>?)?['error'];
+                final msg = code == 'last_admin'
+                    ? "You're the only admin of a family with other members — "
+                        'promote a co-admin or delete the family first.'
+                    : 'Failed: $e';
+                ScaffoldMessenger.of(sheetContext).showSnackBar(SnackBar(content: Text(msg)));
+              },
+            ),
+            const SizedBox(height: 12),
+            Center(
+              child: TextButton(
+                onPressed: () => Navigator.of(sheetContext).pop(),
+                child: const Text('Cancel'),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   IconData _accountIcon(String kind) => switch (kind) {
