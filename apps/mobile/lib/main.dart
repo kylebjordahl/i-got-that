@@ -1,3 +1,7 @@
+import 'dart:async';
+
+import 'package:app_links/app_links.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'app_shell.dart';
@@ -13,11 +17,54 @@ void main() {
   runApp(const ProviderScope(child: CaretakerApp()));
 }
 
-class CaretakerApp extends ConsumerWidget {
+class CaretakerApp extends ConsumerStatefulWidget {
   const CaretakerApp({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<CaretakerApp> createState() => _CaretakerAppState();
+}
+
+class _CaretakerAppState extends ConsumerState<CaretakerApp> {
+  StreamSubscription<Uri>? _linkSub;
+
+  @override
+  void initState() {
+    super.initState();
+    // Native invite links (iOS Universal Links) arrive asynchronously — the web
+    // launch URL is already read synchronously by activeInviteTokenProvider.
+    if (!kIsWeb) _initDeepLinks();
+  }
+
+  Future<void> _initDeepLinks() async {
+    final appLinks = AppLinks();
+    // Cold start: the link that launched the app.
+    try {
+      final initial = await appLinks.getInitialLink();
+      if (initial != null) _onLink(initial);
+    } catch (_) {
+      // No launch link (normal start) — nothing to route.
+    }
+    // Warm: links delivered while the app is already running.
+    _linkSub = appLinks.uriLinkStream.listen(_onLink, onError: (_) {});
+  }
+
+  /// Route an incoming deep link into the join flow by seeding the invite token
+  /// provider (main.dart's build watches it). Non-invite links are ignored.
+  void _onLink(Uri uri) {
+    final token = inviteTokenFromUri(uri);
+    if (token != null && mounted) {
+      ref.read(activeInviteTokenProvider.notifier).state = token;
+    }
+  }
+
+  @override
+  void dispose() {
+    _linkSub?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final auth = ref.watch(authControllerProvider);
     // On sign-out, forget any latched onboarding decision so the next session
     // re-determines whether the first-run wizard is needed.
@@ -37,9 +84,9 @@ class CaretakerApp extends ConsumerWidget {
       // welcome screen for an already-authed user.
       home: auth.restoring
           ? const Scaffold()
-          // An invite link (web deep link) drives the second-parent join flow,
-          // whether or not the recipient is already signed in — it owns the
-          // screen until it finishes and clears the token.
+          // An invite link (web URL or iOS Universal Link) drives the
+          // second-parent join flow, whether or not the recipient is already
+          // signed in — it owns the screen until it finishes and clears the token.
           : inviteToken != null
               ? JoinFlow(token: inviteToken)
               : auth.isAuthed

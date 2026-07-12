@@ -422,8 +422,10 @@ describe('member-claim invites', () => {
       authed(alice.token),
     );
     expect(issued.status).toBe(201);
-    const { token } = (await issued.json()) as { token: string };
+    const { token, url } = (await issued.json()) as { token: string; url: string | null };
     expect(token).toBeTruthy();
+    // No PUBLIC_ORIGIN in the default test env ⇒ no composed deep link.
+    expect(url).toBeNull();
 
     // Public preview shows what you're joining.
     const preview = await call(`/invites/${token}`);
@@ -477,5 +479,82 @@ describe('member-claim invites', () => {
     expect(bobIssue.status).toBe(403);
 
     expect((await call('/invites/does-not-exist')).status).toBe(404);
+  });
+
+  it('composes a shareable deep-link URL from PUBLIC_ORIGIN', async () => {
+    const alice = await login('inv-url@example.com');
+    const famRes = await call('/families', authed(alice.token, { name: 'URL Fam' }));
+    const familyId = ((await famRes.json()) as { family: { id: string } }).family.id;
+    const memberRes = await call(
+      `/families/${familyId}/members`,
+      authed(alice.token, { relationName: 'Uncle', isCaretaker: true }),
+    );
+    const uncleId = ((await memberRes.json()) as { member: { id: string } }).member.id;
+
+    // Same DB (env.DB), but issue the invite through an env that has a public
+    // origin set — the response should carry the composed `/app/?invite=` link.
+    const ctx = createExecutionContext();
+    const res = await app.fetch(
+      new Request(`https://api.test/families/${familyId}/members/${uncleId}/invite`, authed(alice.token)),
+      { ...env, PUBLIC_ORIGIN: 'https://staging.igt.example' },
+      ctx,
+    );
+    await waitOnExecutionContext(ctx);
+    expect(res.status).toBe(201);
+    const { token, url } = (await res.json()) as { token: string; url: string };
+    expect(url).toBe(`https://staging.igt.example/app/?invite=${token}`);
+  });
+});
+
+describe('apple-app-site-association (iOS Universal Links)', () => {
+  async function fetchWith(path: string, bindings: typeof env) {
+    const ctx = createExecutionContext();
+    const res = await app.fetch(new Request(`https://api.test${path}`), bindings, ctx);
+    await waitOnExecutionContext(ctx);
+    return res;
+  }
+
+  it('404s when no APPLE_APP_ID_PREFIX is configured', async () => {
+    const res = await fetchWith('/.well-known/apple-app-site-association', env);
+    expect(res.status).toBe(404);
+  });
+
+  it('serves the configured appIDs matching /app/*', async () => {
+    const configured = {
+      ...env,
+      APPLE_APP_ID_PREFIX: 'ABCDE12345.com.kylebjordahl.igt, ABCDE12345.com.kylebjordahl.igt.staging',
+    };
+    const res = await fetchWith('/.well-known/apple-app-site-association', configured);
+    expect(res.status).toBe(200);
+    expect((await res.json()) as unknown).toEqual({
+      applinks: {
+        details: [
+          {
+            appIDs: ['ABCDE12345.com.kylebjordahl.igt', 'ABCDE12345.com.kylebjordahl.igt.staging'],
+            components: [{ '/': '/app/*', comment: 'invite + web app' }],
+          },
+        ],
+      },
+    });
+  });
+
+  it('reaches the app (not the /app redirect) at the apex when ASSETS is bound', async () => {
+    // With an ASSETS binding present the single-origin handler kicks in; the
+    // apex .well-known path must route to the API, not the bare-domain → /app/
+    // redirect. A stub ASSETS Fetcher stands in for the deployed web client.
+    const singleOrigin = {
+      ...env,
+      APPLE_APP_ID_PREFIX: 'ABCDE12345.com.kylebjordahl.igt',
+      ASSETS: { fetch: async () => new Response('nope', { status: 404 }) } as unknown as Fetcher,
+    };
+    const ctx = createExecutionContext();
+    const res = await app.fetch(
+      new Request('https://api.test/.well-known/apple-app-site-association'),
+      singleOrigin,
+      ctx,
+    );
+    await waitOnExecutionContext(ctx);
+    expect(res.status).toBe(200); // 302 would mean it fell through to the redirect
+    expect((await res.json()) as { applinks: unknown }).toHaveProperty('applinks');
   });
 });

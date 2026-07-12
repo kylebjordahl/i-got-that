@@ -37,6 +37,11 @@
         // SECRET via `wrangler secret put GOOGLE_OAUTH_CLIENT_SECRET`. Empty ⇒ the
         // Google OAuth flow is disabled (paste-token still works). See docs/AUTH.md.
         "GOOGLE_OAUTH_CLIENT_ID": "",
+        // Apple App ID prefixes for iOS Universal Links (invite deep links),
+        // comma-separated `<TeamID>.<bundleId>` (e.g. "ABCDE12345.com.kylebjordahl.igt").
+        // Served at /.well-known/apple-app-site-association. Empty ⇒ Universal
+        // Links off (web fallback still works). Set per env below. See docs/AUTH.md.
+        "APPLE_APP_ID_PREFIX": "",
     },
     "d1_databases": [
         {
@@ -64,6 +69,8 @@
                 "APPLE_CLIENT_IDS": "com.kylebjordahl.igt.staging,com.kylebjordahl.igt.web.staging",
                 "APPLE_WEB_CLIENT_ID": "com.kylebjordahl.igt.web.staging",
                 "GOOGLE_OAUTH_CLIENT_ID": "",
+                // Fill in your 10-char Apple Team ID: "<TeamID>.com.kylebjordahl.igt.staging".
+                "APPLE_APP_ID_PREFIX": "WG5R9LUU9X.com.kylebjordahl.igt.staging",
             },
             // The whole subdomain routes to this Worker (custom_domain provisions DNS
             // + cert; the parent zone must be on Cloudflare). The Worker serves the
@@ -120,6 +127,8 @@
                 "APPLE_CLIENT_IDS": "com.kylebjordahl.igt,com.kylebjordahl.igt.web",
                 "APPLE_WEB_CLIENT_ID": "com.kylebjordahl.igt.web",
                 "GOOGLE_OAUTH_CLIENT_ID": "",
+                // Fill in your 10-char Apple Team ID: "<TeamID>.com.kylebjordahl.igt".
+                "APPLE_APP_ID_PREFIX": "WG5R9LUU9X.com.kylebjordahl.igt",
             },
             "d1_databases": [
                 {

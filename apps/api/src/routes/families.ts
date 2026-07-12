@@ -173,9 +173,10 @@ familyRoutes.post(
 
 /**
  * Issue a member-claim invite (admin) — a share token that links whoever
- * accepts it (after logging in) to this pre-created member. Returns the token;
- * the client composes a shareable link/code. Works for users who already have
- * an account (no new user is created on accept).
+ * accepts it (after logging in) to this pre-created member. Returns the token
+ * plus an absolute deep-link `url` (when PUBLIC_ORIGIN is set) the client can
+ * share directly. Works for users who already have an account (no new user is
+ * created on accept).
  */
 familyRoutes.post(
   '/:familyId/members/:memberId/invite',
@@ -197,7 +198,14 @@ familyRoutes.post(
     if (member.userId) return c.json({ error: 'already_linked' }, 409);
 
     const invite = await createMemberClaimInvite(db, me.familyId, memberId, me.id);
-    return c.json({ token: invite.token, expiresAt: invite.expiresAt }, 201);
+    // Compose the shareable deep-link URL from the deployment's public origin.
+    // On iOS this opens the app (Universal Links); on web it drives the same
+    // join flow via the existing `?invite=` parser. Local dev / tests have no
+    // public origin ⇒ `url` is null and the client falls back to the raw token.
+    const url = c.env.PUBLIC_ORIGIN
+      ? `${c.env.PUBLIC_ORIGIN}/app/?invite=${invite.token}`
+      : null;
+    return c.json({ token: invite.token, expiresAt: invite.expiresAt, url }, 201);
   },
 );
 
