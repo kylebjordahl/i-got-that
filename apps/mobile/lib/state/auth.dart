@@ -215,14 +215,7 @@ class AuthController extends StateNotifier<AuthState> {
     } catch (_) {
       // Best-effort server-side invalidation; clear local state regardless.
     }
-    if (!kIsWeb) {
-      try {
-        await _storage.delete(key: _sessionStorageKey);
-      } catch (_) {
-        // Best-effort local cleanup; state is cleared regardless below.
-      }
-    }
-    state = const AuthState();
+    await _clearLocalSession();
   }
 
   /// Delete the account server-side, then clear local session state exactly
@@ -231,6 +224,12 @@ class AuthController extends StateNotifier<AuthState> {
   /// it — local state is untouched on failure.
   Future<void> deleteAccount() async {
     await _api.deleteMyAccount();
+    await _clearLocalSession();
+  }
+
+  /// Drop the persisted session token (native only) and reset to signed-out.
+  /// Best-effort — a Keychain delete failure still clears the in-memory state.
+  Future<void> _clearLocalSession() async {
     if (!kIsWeb) {
       try {
         await _storage.delete(key: _sessionStorageKey);

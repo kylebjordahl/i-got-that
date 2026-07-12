@@ -67,61 +67,25 @@ class FamilyScreen extends ConsumerWidget {
     );
   }
 
-  Future<void> _confirmDeleteFamily(BuildContext context, WidgetRef ref) async {
-    await showModalBottomSheet<void>(
-      context: context,
-      useRootNavigator: true,
-      showDragHandle: true,
-      isScrollControlled: true,
-      builder: (sheetContext) => Padding(
-        padding: EdgeInsets.fromLTRB(
-            22, 4, 22, 28 + MediaQuery.of(sheetContext).viewInsets.bottom),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('Delete family?', style: AppText.subPageTitle),
-            const SizedBox(height: 8),
-            Text(
-              'This permanently deletes every member, feed, task, and calendar '
-              "event in this family. This can't be undone.",
-              style: AppText.subtitle,
-            ),
-            const SizedBox(height: 24),
-            SlideToConfirm(
-              label: 'Slide to delete family',
-              icon: Icons.delete_forever_rounded,
-              onConfirmed: () async {
-                final familyId = await ref.read(familyProvider.future);
-                await ref.read(apiClientProvider).deleteFamily(familyId);
-                // Drop the override and let the app re-decide: onboarding if
-                // that was the last family, else the next one it finds.
-                ref.read(selectedFamilyIdProvider.notifier).state = null;
-                ref.read(onboardingActiveProvider.notifier).state = null;
-                ref.invalidate(hasFamilyProvider);
-                ref.invalidate(familiesListProvider);
-                ref.invalidate(familyProvider);
-                // Let the checkmark flash briefly before closing — nothing
-                // else pops this sheet.
-                await Future<void>.delayed(const Duration(milliseconds: 500));
-                if (sheetContext.mounted) Navigator.of(sheetContext).pop();
-              },
-              onError: (e) {
-                if (!sheetContext.mounted) return;
-                final msg = e is DioException ? 'Failed: ${e.message}' : 'Failed: $e';
-                ScaffoldMessenger.of(sheetContext).showSnackBar(SnackBar(content: Text(msg)));
-              },
-            ),
-            const SizedBox(height: 12),
-            Center(
-              child: TextButton(
-                onPressed: () => Navigator.of(sheetContext).pop(),
-                child: const Text('Cancel'),
-              ),
-            ),
-          ],
-        ),
-      ),
+  Future<void> _confirmDeleteFamily(BuildContext context, WidgetRef ref) {
+    return showSlideToConfirmSheet(
+      context,
+      title: 'Delete family?',
+      description: 'This permanently deletes every member, feed, task, and '
+          "calendar event in this family. This can't be undone.",
+      slideLabel: 'Slide to delete family',
+      onConfirmed: () async {
+        final familyId = await ref.read(familyProvider.future);
+        await ref.read(apiClientProvider).deleteFamily(familyId);
+        // Drop the override and let the app re-decide: onboarding if that was
+        // the last family, else the next one it finds.
+        ref.read(selectedFamilyIdProvider.notifier).state = null;
+        ref.read(onboardingActiveProvider.notifier).state = null;
+        ref.invalidate(hasFamilyProvider);
+        ref.invalidate(familiesListProvider);
+        ref.invalidate(familyProvider);
+      },
+      errorMessage: (e) => e is DioException ? 'Failed: ${e.message}' : 'Failed: $e',
     );
   }
 

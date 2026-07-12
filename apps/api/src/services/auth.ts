@@ -283,22 +283,11 @@ export async function deleteUserAccount(
   for (const m of memberships) {
     if (!m.isAdmin) continue;
     const others = await db
-      .select({ id: familyMembers.id })
+      .select({ id: familyMembers.id, isAdmin: familyMembers.isAdmin })
       .from(familyMembers)
       .where(and(eq(familyMembers.familyId, m.familyId), ne(familyMembers.id, m.id)));
     if (others.length === 0) continue; // sole member — nothing left to orphan
-
-    const remainingAdmins = await db
-      .select({ id: familyMembers.id })
-      .from(familyMembers)
-      .where(
-        and(
-          eq(familyMembers.familyId, m.familyId),
-          eq(familyMembers.isAdmin, true),
-          ne(familyMembers.id, m.id),
-        ),
-      );
-    if (remainingAdmins.length === 0) return 'last_admin';
+    if (!others.some((o) => o.isAdmin)) return 'last_admin';
   }
 
   await db.delete(users).where(eq(users.id, userId));
