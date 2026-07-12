@@ -191,16 +191,18 @@ class MeScreen extends ConsumerWidget {
   Future<void> _disconnect(BuildContext context, WidgetRef ref, ExternalAccount a) async {
     final ok = await showDialog<bool>(
       context: context,
-      builder: (_) => AlertDialog(
+      builder: (dialogContext) => AlertDialog(
         title: const Text('Disconnect account?'),
         content: Text('Remove ${a.kindLabel} (${a.username ?? a.name})? Feeds and '
             'delivery methods using it will stop working.'),
         actions: [
-          TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Cancel')),
+          TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: const Text('Cancel')),
           PillButton(
             label: 'Disconnect',
             variant: PillVariant.white,
-            onPressed: () => Navigator.of(context).pop(true),
+            onPressed: () => Navigator.of(dialogContext).pop(true),
           ),
         ],
       ),
@@ -220,16 +222,18 @@ class MeScreen extends ConsumerWidget {
       BuildContext context, WidgetRef ref, LoginIdentity id) async {
     final ok = await showDialog<bool>(
       context: context,
-      builder: (_) => AlertDialog(
+      builder: (dialogContext) => AlertDialog(
         title: const Text('Remove login method?'),
         content: Text("You'll no longer be able to sign in with ${id.kindLabel} "
             '(${id.label}). Your other methods keep working.'),
         actions: [
-          TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Cancel')),
+          TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: const Text('Cancel')),
           PillButton(
             label: 'Remove',
             variant: PillVariant.white,
-            onPressed: () => Navigator.of(context).pop(true),
+            onPressed: () => Navigator.of(dialogContext).pop(true),
           ),
         ],
       ),
@@ -296,15 +300,17 @@ class MeScreen extends ConsumerWidget {
   Future<void> _signOut(BuildContext context, WidgetRef ref) async {
     final ok = await showDialog<bool>(
       context: context,
-      builder: (_) => AlertDialog(
+      builder: (dialogContext) => AlertDialog(
         title: const Text('Sign out?'),
         content: const Text("You'll need to sign in again to manage your families."),
         actions: [
-          TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Cancel')),
+          TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: const Text('Cancel')),
           PillButton(
             label: 'Sign out',
             variant: PillVariant.white,
-            onPressed: () => Navigator.of(context).pop(true),
+            onPressed: () => Navigator.of(dialogContext).pop(true),
           ),
         ],
       ),
