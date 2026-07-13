@@ -1,6 +1,7 @@
 # Authentication
 
-Two login methods feed the same session model (a `sessions` row → bearer token).
+Three login methods feed the same session model (a `sessions` row → bearer
+token): magic link, Sign in with Apple, and Sign in with Google.
 
 ## Linking login methods (one user, many identities)
 
@@ -104,6 +105,78 @@ shape, different storage primitive per platform.
 | --- | --- | --- |
 | **Magic link** (email) | Fully implemented | Needs outbound email, which is **off** (no paid plan). In **dev/staging** the request endpoint returns the token directly (`devToken`) so you can log in without a mailbox; in **production** it does not. |
 | **Sign in with Apple** | Server + web redirect flow **implemented + tested**; native (iOS) client wiring + Apple config required | The primary login for deployed environments (works without email). |
+| **Sign in with Google** | Server + web redirect flow **implemented + tested**; native (iOS) client wiring TODO | Also **auto-connects the user's Google Calendar** as part of logging in (the same consent grants calendar access). |
+
+## Sign in with Google
+
+Google login reuses the calendar OAuth client (`GOOGLE_OAUTH_CLIENT_ID/SECRET`)
+and adds the OpenID scopes, so **one consent both identifies the user and grants
+calendar access**. On any Google sign-in we exchange the code for an id_token
+(identity) *and* a refresh token, then auto-connect that Google account's
+calendar as a user-owned `external_accounts` row (`kind='google'`) — the
+"automatically connect Google Calendar when a user logs in with Google" flow.
+
+Because it's a browser redirect flow, it works regardless of how the user
+originally signed in: the connect-account **wizard** (and the "Login methods"
+card on the **Me** tab) drive the same `?link=1` flow to let an Apple- or
+magic-link-authenticated user link a Google Calendar (threading a `google`
+identity onto their account when that Google login isn't already someone else's).
+
+### Web redirect flow
+
+Mirrors the Apple web flow, but Google uses `response_type=code` (a **GET**
+redirect back, not a form-POST):
+
+1. **`GET /auth/google/start`** — the browser navigates here (the "Continue with
+   Google" button). The server mints a `state`, stores it in a short-lived
+   signed cookie (`igt_google_oauth`, `SameSite=None; Secure; HttpOnly`), and
+   302-redirects to Google's consent screen with `access_type=offline`,
+   `prompt=consent` (both required to receive a refresh token), and the OpenID +
+   `calendar.events` scopes. `?link=1` with a live session (the same-origin
+   `igt_session` cookie rides along) records the current user id in the cookie so
+   the callback threads Google onto them instead of starting a new session.
+2. The user consents; Google redirects to **`GET /auth/google/callback`** (the
+   registered redirect URI) with `?code=…&state=…`. The `SameSite=None` cookie
+   rides along.
+3. The callback checks `state` against the cookie (login-CSRF guard), exchanges
+   the code for tokens over TLS (client-secret-authenticated, so the returned
+   id_token is trusted without a JWKS check — same trust model as the exchange),
+   reads `sub` + `email` from the id_token, finds/creates the user (or threads
+   the identity in link mode), **auto-connects their Google Calendar** from the
+   refresh token, issues a session, and 302-redirects to **`/app/#session=…`**
+   (login) or **`/app/#connected=google`** (link/connect). Failures redirect to
+   **`/app/#auth_error=…`**. A calendar-connect failure never blocks login — it's
+   logged and the session still issues.
+
+The redirect URI isn't its own config value — it's derived from **`PUBLIC_ORIGIN`**
+as `<PUBLIC_ORIGIN>/api/auth/google/callback`. If `GOOGLE_OAUTH_CLIENT_ID`,
+`GOOGLE_OAUTH_CLIENT_SECRET`, or `PUBLIC_ORIGIN` is unset, `/auth/google/start`
+and `/auth/google/callback` return **501** (Google login disabled).
+
+### What you need to configure
+
+**Google Cloud Console** (APIs & Services → Credentials → OAuth 2.0 Client ID,
+type *Web application*):
+- Add the **Authorized redirect URI** `<PUBLIC_ORIGIN>/api/auth/google/callback`
+  (e.g. `https://staging.igt.kylebjordahl.com/api/auth/google/callback`).
+- Enable the **Google Calendar API** and add the `openid`, `email`, `profile`,
+  and `.../auth/calendar.events` scopes to the consent screen.
+
+**This API** (already used for calendar delivery/ingest — nothing Google-login-
+specific to add):
+```bash
+cd apps/api
+#   GOOGLE_OAUTH_CLIENT_ID  = <the Web client id>   (var in wrangler.jsonc per env)
+pnpm wrangler secret put GOOGLE_OAUTH_CLIENT_SECRET --env staging
+#   PUBLIC_ORIGIN           = https://staging.igt.kylebjordahl.com
+#   → derived redirect URI to register in the Cloud Console:
+#     https://staging.igt.kylebjordahl.com/api/auth/google/callback
+```
+
+**Flutter client:** the web app wires "Continue with Google" (login) and "Link
+Sign in with Google" / the wizard's Google step to the redirect endpoints
+(`lib/state/auth.dart`). Native (iOS) Google sign-in is not wired yet — the same
+TODO as native Apple — so on native those surfaces point users at the web app.
 
 ## Sign in with Apple
 
@@ -266,11 +339,14 @@ App ID's Sign in with Apple config. Verification lives in
 mutations in `handleAppleAccountEvent` (`apps/api/src/services/auth.ts`). Requires
 `APPLE_CLIENT_IDS` set (else 501).
 
-## Google Calendar — OAuth (delivery target, not a login)
+## Google Calendar — OAuth (delivery / ingest target)
 
 The Google Calendar delivery provider needs an OAuth token. A pasted access
 token still works but expires in ~1h; the proper flow stores a **refresh token**
-and exchanges it for a fresh access token at delivery time.
+and exchanges it for a fresh access token at delivery time. (Signing in with
+Google connects an account this same way automatically — see "Sign in with
+Google" above; this section covers connecting a calendar directly, e.g. the
+native manual paste-the-code path.)
 
 ### Configure
 1. In **Google Cloud Console** → APIs & Services → Credentials, create an
