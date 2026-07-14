@@ -130,6 +130,21 @@
                 // Fill in your 10-char Apple Team ID: "<TeamID>.com.kylebjordahl.igt".
                 "APPLE_APP_ID_PREFIX": "WG5R9LUU9X.com.kylebjordahl.igt",
             },
+            // Single-origin layout, mirroring staging (see §7 of docs/DEPLOYMENT.md):
+            // custom_domain provisions DNS + cert on the parent Cloudflare zone.
+            "routes": [
+                {
+                    "pattern": "igt.kylebjordahl.com",
+                    "custom_domain": true,
+                },
+            ],
+            // Flutter web build (CI runs `flutter build web --base-href /app/` into
+            // ./public/app). The Worker serves it via the ASSETS binding under /app.
+            "assets": {
+                "directory": "./public",
+                "binding": "ASSETS",
+                "not_found_handling": "none",
+            },
             "d1_databases": [
                 {
                     "binding": "DB",

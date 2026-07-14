@@ -48,7 +48,7 @@ jobs:
           done
 
   # No TestFlight job here yet: `deploy.yml`'s `testflight` job only runs for
-  # `environment: staging` (prod has no real API domain to build against). To
+  # `environment: staging` (prod signing assets aren't set up yet). To
   # enable it: add the six `IOS_*`/`APP_STORE_CONNECT_*` secrets to the
   # `production` GitHub Environment, add an `ExportOptions-prod.plist`, pass
   # the secrets through below, and drop the `environment == 'staging'` gate

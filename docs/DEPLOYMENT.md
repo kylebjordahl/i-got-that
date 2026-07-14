@@ -153,9 +153,8 @@ tests (no binding) still serve the API directly at the root.
 3. **Native (iOS) clients** aren't same-origin — build them with
    `--dart-define=API_BASE_URL=https://staging.igt.kylebjordahl.com/api`.
 
-> To put **production** on its own subdomain later, mirror the `routes` +
-> `assets` blocks under `env.production` (e.g. `igt.kylebjordahl.com`). Until
-> then prod has no `ASSETS` binding and serves the API at the root.
+Production mirrors this on `igt.kylebjordahl.com` (`routes` + `assets` blocks
+under `env.production`) — same prerequisites apply to that zone.
 
 ### 8. iOS / TestFlight (staging)
 
