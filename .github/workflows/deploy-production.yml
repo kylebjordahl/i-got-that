@@ -47,12 +47,6 @@ jobs:
             echo "✓ ${wf} has a successful run for ${SHA}"
           done
 
-  # No TestFlight job here yet: `deploy.yml`'s `testflight` job only runs for
-  # `environment: staging` (prod signing assets aren't set up yet). To
-  # enable it: add the six `IOS_*`/`APP_STORE_CONNECT_*` secrets to the
-  # `production` GitHub Environment, add an `ExportOptions-prod.plist`, pass
-  # the secrets through below, and drop the `environment == 'staging'` gate
-  # in deploy.yml (or extend it to also allow production).
   production:
     needs: verify
     uses: ./.github/workflows/deploy.yml
@@ -63,3 +57,9 @@ jobs:
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      IOS_DIST_CERT_P12_BASE64: ${{ secrets.IOS_DIST_CERT_P12_BASE64 }}
+      IOS_DIST_CERT_PASSWORD: ${{ secrets.IOS_DIST_CERT_PASSWORD }}
+      IOS_PROD_PROFILE_BASE64: ${{ secrets.IOS_PROD_PROFILE_BASE64 }}
+      APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+      APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+      APP_STORE_CONNECT_API_KEY_P8: ${{ secrets.APP_STORE_CONNECT_API_KEY_P8 }}
