@@ -216,10 +216,10 @@ jobs:
           fi
 
   # Archives, signs, and uploads the mobile app's `staging` flavor to
-  # TestFlight. Staging-only for now (prod has no real API domain yet — see
-  # the note in deploy-production.yml for how to enable it). Needs macOS for
-  # Xcode/codesign, so it's a separate job from `deploy` (which stays on
-  # ubuntu-latest) rather than an extra step there.
+  # TestFlight. Staging-only for now (prod signing assets + ExportOptions
+  # aren't set up yet — see the note in deploy-production.yml for how to
+  # enable it). Needs macOS for Xcode/codesign, so it's a separate job from
+  # `deploy` (which stays on ubuntu-latest) rather than an extra step there.
   #
   # Gated at the job level (rather than per-step) on `check-mobile-changed`
   # so a no-op shows up as skipped, not a false green success.
