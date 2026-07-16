@@ -56,11 +56,12 @@ class AuthController extends StateNotifier<AuthState> {
   /// previous login — so neither a page refresh nor relaunching the app
   /// forces a re-login.
   Future<void> _restore() async {
-    // The third field (`linked`) is the web link-a-method redirect
-    // (`#linked=apple`); it leaves the existing session cookie in place, so we
-    // just let it strip the fragment and fall through to the cookie restore
-    // below — the freshly linked identity is picked up on the reload.
-    final (:session, :error, linked: _) = consumeAppleAuthFragment();
+    // `linked` (`#linked=apple`) and `connected` (`#connected=google`, the
+    // web wizard's connect-a-Google-Calendar redirect) both leave the existing
+    // session cookie in place, so we just let the fragment be stripped and fall
+    // through to the cookie restore below — the freshly linked identity /
+    // connected account is picked up on the reload.
+    final (:session, :error, linked: _, connected: _) = consumeWebAuthFragment();
     if (session != null) {
       _api.setSession(session);
       try {
@@ -130,6 +131,19 @@ class AuthController extends StateNotifier<AuthState> {
   /// threads Apple onto this account and sends the browser back to
   /// `/app/#linked=apple`. Native uses [linkWithAppleNative].
   void linkWithApple() => startWebRedirect('$apiBaseUrl/auth/apple/start?link=1');
+
+  /// Web: begin Sign in with Google by navigating to the API's redirect
+  /// endpoint. Google sends the browser back to `/app/#session=…` (picked up on
+  /// reload by [_restore]); the same consent grants calendar access, so the
+  /// user's Google Calendar is connected automatically as part of logging in.
+  void loginWithGoogle() => startWebRedirect('$apiBaseUrl/auth/google/start');
+
+  /// Web: connect a Google Calendar to the *current* user (regardless of how
+  /// they signed in). The `igt_session` cookie rides along on the redirect, so
+  /// the callback threads Google onto this account and connects the calendar,
+  /// then sends the browser back to `/app/#connected=google`.
+  void connectGoogleCalendar() =>
+      startWebRedirect('$apiBaseUrl/auth/google/start?link=1');
 
   /// Native (iOS): request an Apple ID credential from the OS sheet and post
   /// its identity token to `/auth/apple` to obtain a session.

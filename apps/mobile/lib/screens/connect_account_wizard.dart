@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../state/auth.dart';
@@ -228,6 +229,25 @@ class _ConnectAccountWizardState extends ConsumerState<ConnectAccountWizard> {
           label: 'Go to Input feeds',
           busy: false,
           onPressed: () => Navigator.of(context).maybePop(),
+        ),
+      ];
+    }
+    // Web Google uses the server-hosted OAuth redirect (one tap, no pasting) —
+    // the same `/auth/google/start?link=1` flow that threads Google onto this
+    // account. It navigates the page away and returns to `#connected=google`, so
+    // there's no in-page calendar step; the account shows up on reload.
+    if (_isGoogle && kIsWeb) {
+      return [
+        _hero(Icons.calendar_month_rounded, 'Sign in to $_providerLabel',
+            'Authorize I Got That to read your Google calendars and manage handoffs.'),
+        const SizedBox(height: 20),
+        const _PermissionsCard(),
+        const SizedBox(height: 20),
+        _PrimaryButton(
+          label: 'Continue with $_providerLabel',
+          busy: false,
+          onPressed: () =>
+              ref.read(authControllerProvider.notifier).connectGoogleCalendar(),
         ),
       ];
     }

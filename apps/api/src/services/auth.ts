@@ -86,6 +86,32 @@ export async function findOrCreateUserByApple(
   return user;
 }
 
+/** Find or create the user behind a Google `sub` (provider_ref). */
+export async function findOrCreateUserByGoogle(
+  db: Db,
+  sub: string,
+  email?: string,
+): Promise<SessionUser> {
+  const existing = await db
+    .select({ user: users })
+    .from(identities)
+    .innerJoin(users, eq(users.id, identities.userId))
+    .where(and(eq(identities.provider, 'google'), eq(identities.providerRef, sub)))
+    .limit(1);
+  if (existing[0]) return existing[0].user;
+
+  const username = email ?? `google:${sub}`;
+  const inserted = await db
+    .insert(users)
+    .values({ username, displayName: email?.split('@')[0] ?? 'Google user' })
+    .returning();
+  const user = inserted[0]!;
+  await db
+    .insert(identities)
+    .values({ userId: user.id, provider: 'google', providerRef: sub });
+  return user;
+}
+
 /**
  * Apply an Apple server-to-server account event. Idempotent and safe for unknown
  * subjects (Apple may notify about accounts we've never seen — we just no-op):
@@ -227,6 +253,26 @@ export async function linkAppleIdentity(
   sub: string,
 ): Promise<LinkResult> {
   const status = await attachIdentity(db, userId, 'apple', sub);
+  if (status === 'conflict') {
+    return { ok: false, error: 'identity_linked_to_other_user' };
+  }
+  return { ok: true, status };
+}
+
+/**
+ * Thread a verified Google `sub` onto `userId` as a `google` identity. The caller
+ * verifies the token (the OAuth code exchange yields the id_token straight from
+ * Google over TLS) before calling. Returns `already_linked` for the caller's own
+ * identity; the caller decides whether a `conflict` (the Google account is
+ * already someone else's login) is fatal — connecting a *calendar* still
+ * succeeds even when identity threading is skipped.
+ */
+export async function linkGoogleIdentity(
+  db: Db,
+  userId: string,
+  sub: string,
+): Promise<LinkResult> {
+  const status = await attachIdentity(db, userId, 'google', sub);
   if (status === 'conflict') {
     return { ok: false, error: 'identity_linked_to_other_user' };
   }

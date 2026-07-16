@@ -146,6 +146,18 @@ class MeScreen extends ConsumerWidget {
                   onTap: () => _linkApple(context, ref),
                 ),
               ],
+              // Offer Google (web redirect flow) until one is linked; the same
+              // consent also connects the user's Google Calendar.
+              if (kIsWeb && !identities.any((i) => i.provider == 'google')) ...[
+                const Divider(height: 20),
+                SettingRow(
+                  icon: Icons.g_mobiledata_rounded,
+                  iconColor: AppColors.blue,
+                  title: 'Link Sign in with Google',
+                  onTap: () =>
+                      ref.read(authControllerProvider.notifier).connectGoogleCalendar(),
+                ),
+              ],
             ],
           ),
         ),
@@ -357,11 +369,17 @@ class MeScreen extends ConsumerWidget {
     }
   }
 
-  IconData _identityIcon(String provider) =>
-      provider == 'apple' ? Icons.apple : Icons.alternate_email_rounded;
+  IconData _identityIcon(String provider) => switch (provider) {
+        'apple' => Icons.apple,
+        'google' => Icons.g_mobiledata_rounded,
+        _ => Icons.alternate_email_rounded,
+      };
 
-  Color _identityColor(String provider) =>
-      provider == 'apple' ? AppColors.textPrimary : AppColors.indigo;
+  Color _identityColor(String provider) => switch (provider) {
+        'apple' => AppColors.textPrimary,
+        'google' => AppColors.blue,
+        _ => AppColors.indigo,
+      };
 
   Future<void> _showAbout(BuildContext context) async {
     final info = await PackageInfo.fromPlatform();

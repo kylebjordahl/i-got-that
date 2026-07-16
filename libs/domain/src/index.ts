@@ -122,7 +122,7 @@ export type MirrorStatus = z.infer<typeof MirrorStatus>;
 export const RsvpStatus = z.enum(['none', 'accepted', 'declined']);
 export type RsvpStatus = z.infer<typeof RsvpStatus>;
 
-export const IdentityProvider = z.enum(['apple', 'magic_link']);
+export const IdentityProvider = z.enum(['apple', 'magic_link', 'google']);
 export type IdentityProvider = z.infer<typeof IdentityProvider>;
 
 /** `claim_member` links an accepting user to a pre-created family member. */

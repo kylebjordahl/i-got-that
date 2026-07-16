@@ -107,17 +107,19 @@ class LoginIdentity {
   });
 
   final String id;
-  final String provider; // 'apple' | 'magic_link'
-  // Apple's opaque subject, or the magic-link email (shown for that provider).
+  final String provider; // 'apple' | 'magic_link' | 'google'
+  // Apple/Google's opaque subject, or the magic-link email (shown for email).
   final String providerRef;
 
   String get label => switch (provider) {
         'apple' => 'Sign in with Apple',
+        'google' => 'Sign in with Google',
         _ => providerRef,
       };
 
   String get kindLabel => switch (provider) {
         'apple' => 'Apple',
+        'google' => 'Google',
         _ => 'Magic link',
       };
 
