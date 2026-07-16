@@ -217,10 +217,15 @@ builds and uploads a TestFlight build automatically — no further action
 needed per-release. Add internal/external testers in App Store Connect →
 TestFlight the first time a build lands.
 
-**Promoting prod later**: add the same six secrets to the `production`
-Environment, add an `ios/ExportOptions-prod.plist` (+ prod signing xcconfig),
-and update the `if: inputs.environment == 'staging'` gate on the `testflight`
-job in `deploy.yml` to also allow `production`.
+**Promoting prod later**: `ios/ExportOptions-prod.plist` and the prod signing
+xcconfig (`Flutter/prodRelease.xcconfig`, profile name `IGT App Store`) are
+already in place. Still needed: create that named provisioning profile (App
+Store distribution, `com.kylebjordahl.igt`) in Apple Developer, add the same
+six secrets to the `production` GitHub Environment (the dist cert/password and
+ASC API key can likely be reused from staging; the profile itself needs a new
+`IOS_PROD_PROFILE_BASE64`), and update the `if: inputs.environment ==
+'staging'` gate on the `testflight` job in `deploy.yml` to also allow
+`production`.
 
 ---
 
