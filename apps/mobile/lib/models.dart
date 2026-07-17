@@ -142,6 +142,7 @@ class TaskItem {
     this.location,
     this.ownerMemberId,
     this.calendarEventId,
+    this.durationOverrideMin,
   });
 
   final String id;
@@ -161,8 +162,21 @@ class TaskItem {
   /// fully-manual tasks).
   final String? calendarEventId;
 
+  /// A user-set window length (minutes, signed) for a transition task, measured
+  /// from its anchor — the event's start for a drop-off, its end for a pickup.
+  /// Null ⇒ the window is the rule-derived default. See [signedDurationMin].
+  final int? durationOverrideMin;
+
   bool get isDismissed => status == 'dismissed';
   bool get isUnowned => status == 'unowned';
+  bool get isTransition => type == 'pickup' || type == 'dropoff';
+
+  /// The task's window length in signed minutes from its anchor: the explicit
+  /// override when set, otherwise derived from the stored span (a generated
+  /// transition always extends forward from its anchor, so it reads positive).
+  int get signedDurationMin =>
+      durationOverrideMin ??
+      (end == null ? 0 : end!.difference(start).inMinutes);
 
   factory TaskItem.fromJson(Map<String, dynamic> j) => TaskItem(
         id: j['id'] as String,
@@ -175,6 +189,7 @@ class TaskItem {
         createdVia: j['createdVia'] as String? ?? 'generated',
         ownerMemberId: j['ownerMemberId'] as String?,
         calendarEventId: j['calendarEventId'] as String?,
+        durationOverrideMin: j['durationOverrideMin'] as int?,
       );
 
   String get typeLabel => switch (type) {

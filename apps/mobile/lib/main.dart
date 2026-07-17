@@ -12,6 +12,7 @@ import 'state/auth.dart';
 import 'state/nav.dart';
 import 'theme/app_theme.dart';
 import 'widgets/app_bottom_nav.dart';
+import 'widgets/env_ribbon.dart';
 
 void main() {
   runApp(const ProviderScope(child: CaretakerApp()));
@@ -79,6 +80,8 @@ class _CaretakerAppState extends ConsumerState<CaretakerApp> {
       debugShowCheckedModeBanner: false,
       theme: buildAppTheme(),
       themeMode: ThemeMode.dark,
+      // Staging-only corner ribbon, above every route/sheet/dialog.
+      builder: (context, child) => EnvRibbon(child: child ?? const SizedBox()),
       // While restoring (the one round trip to check the web session cookie —
       // see state/auth.dart), hold on a blank scaffold instead of flashing the
       // welcome screen for an already-authed user.

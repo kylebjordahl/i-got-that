@@ -7,6 +7,7 @@ import {
   feeds,
   getDb,
   gte,
+  inArray,
   lt,
   pendingDecisions,
   sourceEvents,
@@ -16,8 +17,9 @@ import {
   AssignTaskInput,
   ConvertTaskInput,
   ResolvePendingDecisionInput,
+  SetTaskDurationInput,
 } from '@igt/domain';
-import { wallTimeToUtc, startOfUtcDay } from '@igt/classification';
+import { transitionWindow, wallTimeToUtc, startOfUtcDay } from '@igt/classification';
 import { Hono } from 'hono';
 import type { HonoEnv } from '../env.js';
 import { requireFamilyMember } from '../middleware/auth.js';
@@ -277,6 +279,90 @@ taskRoutes.post('/tasks/:taskId/convert', async (c) => {
 
   const updated = await db.select().from(tasks).where(groupWhere);
   return c.json({ tasks: updated });
+});
+
+/**
+ * Set a transition task's (pickup / drop-off) window length in minutes,
+ * measured from its anchor — the parent event's start for a drop-off, its end
+ * for a pickup. A positive value extends the window forward from the anchor; a
+ * negative value reverses it, sitting before the anchor (so the drop-off/pickup
+ * runs the opposite direction); 0 collapses it to a point. The override is
+ * stamped on the task so a rebuild re-anchors around it rather than recomputing
+ * the rule-derived window, and the whole transition pair is frozen to `manual`
+ * (mirrors convert()) so reclassification can't wipe the customization. An owned
+ * task's claimed mirror event is re-synced.
+ */
+taskRoutes.post('/tasks/:taskId/duration', async (c) => {
+  const parsed = SetTaskDurationInput.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) return c.json({ error: 'invalid', issues: parsed.error.issues }, 400);
+  const { durationMinutes } = parsed.data;
+
+  const db = getDb(c.env.DB);
+  const me = c.get('member');
+
+  const task = (
+    await db
+      .select()
+      .from(tasks)
+      .where(and(eq(tasks.id, c.req.param('taskId')), eq(tasks.familyId, me.familyId)))
+      .limit(1)
+  )[0];
+  if (!task) return c.json({ error: 'task_not_found' }, 404);
+  if (task.type !== 'pickup' && task.type !== 'dropoff') {
+    return c.json({ error: 'not_a_transition' }, 400);
+  }
+
+  // The anchor stays pinned to the source event (drop-off ⇒ start, pickup ⇒
+  // end). Fall back to the task's own stored anchor when the event is gone,
+  // reading the anchored end according to the current override's sign.
+  let anchor: Date;
+  const event = task.calendarEventId
+    ? (
+        await db
+          .select()
+          .from(calendarEvents)
+          .where(eq(calendarEvents.id, task.calendarEventId))
+          .limit(1)
+      )[0]
+    : undefined;
+  if (event) {
+    anchor = task.type === 'pickup' ? (event.dtend ?? event.dtstart) : event.dtstart;
+  } else {
+    anchor =
+      task.durationOverrideMin != null && task.durationOverrideMin < 0 && task.dtend
+        ? task.dtend
+        : task.dtstart;
+  }
+
+  const { dtstart, dtend } = transitionWindow(anchor, durationMinutes);
+
+  // Freeze the transition pair so a rebuild won't reclassify or drop it, then
+  // stamp the new window + override on this task.
+  if (task.calendarEventId) {
+    await db
+      .update(tasks)
+      .set({ createdVia: 'manual' })
+      .where(
+        and(
+          eq(tasks.calendarEventId, task.calendarEventId),
+          inArray(tasks.type, ['pickup', 'dropoff']),
+        ),
+      );
+  }
+  const updated = (
+    await db
+      .update(tasks)
+      .set({ dtstart, dtend, durationOverrideMin: durationMinutes, createdVia: 'manual' })
+      .where(eq(tasks.id, task.id))
+      .returning()
+  )[0]!;
+
+  // Owned ⇒ the claimed mirror event tracks the task's window; re-sync it.
+  if (updated.status === 'owned' && updated.ownerMemberId) {
+    await upsertClaimEvent(db, updated);
+    enqueueReconcile(c, { kind: 'member', memberId: updated.ownerMemberId });
+  }
+  return c.json({ task: updated });
 });
 
 // --- Pending decisions -----------------------------------------------------
