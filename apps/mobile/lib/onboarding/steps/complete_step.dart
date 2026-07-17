@@ -7,11 +7,16 @@ import '../../state/family.dart';
 import '../../theme/app_colors.dart';
 import '../../theme/app_text.dart';
 import '../onboarding_scaffold.dart';
+import '../wizard_outcomes.dart';
 
-/// 1h — first-run complete: the bail-out contract made visible. Each committed
-/// chunk is receipted, and the amber card leads into the second-parent join.
+/// 1h — first-run complete: the bail-out contract made visible. Each chunk is
+/// receipted from what the user actually did ([WizardOutcomes]) — completed
+/// steps get a check, skipped ones say so — and the amber card leads into the
+/// second-parent join.
 class CompleteStep extends ConsumerWidget {
-  const CompleteStep({super.key, required this.onGoHome});
+  const CompleteStep({super.key, required this.outcomes, required this.onGoHome});
+
+  final WizardOutcomes outcomes;
   final VoidCallback onGoHome;
 
   @override
@@ -20,10 +25,18 @@ class CompleteStep extends ConsumerWidget {
     final info = ref.watch(familyInfoProvider).valueOrNull;
     final children = ref.watch(dependentsProvider).valueOrNull ?? const <Member>[];
     final caretakers = ref.watch(caretakersProvider).valueOrNull ?? const <Member>[];
+    final self = ref.watch(currentMemberProvider).valueOrNull;
     final invitable =
         caretakers.where((m) => !m.hasLogin).where((m) => m.isCaretaker).toList();
 
     final childNames = _joinNames(children.map((c) => c.relationName).toList());
+
+    // Co-parents the user answered 1g for, split by what they chose. Caretakers
+    // missing from the map were never reached and get no row at all.
+    final others = caretakers.where((m) => m.id != self?.id);
+    final othersDone = others.where((m) => outcomes.adultCalendars[m.id] == true).toList();
+    final othersSkipped = others.where((m) => outcomes.adultCalendars[m.id] == false).toList();
+    final selfDone = self != null && outcomes.adultCalendars[self.id] == true;
 
     return Scaffold(
       backgroundColor: AppColors.bg,
@@ -55,11 +68,40 @@ class CompleteStep extends ConsumerWidget {
                             color: AppColors.textSecondary, height: 1.55)),
                     const SizedBox(height: 22),
                     GroupedCard(children: [
-                      _receipt('${accounts.length} calendar account${accounts.length == 1 ? '' : 's'} connected'),
-                      _receipt('${info?.name ?? 'Family'} created · ${info?.count ?? 1} member${(info?.count ?? 1) == 1 ? '' : 's'}'),
+                      if (outcomes.accountsConnected)
+                        ReceiptRow(
+                            done: true,
+                            text: '${accounts.length} calendar account'
+                                '${accounts.length == 1 ? '' : 's'} connected')
+                      else
+                        const ReceiptRow(
+                            done: false,
+                            text: 'No calendar accounts connected',
+                            note: 'Add them anytime from Me.'),
+                      ReceiptRow(
+                          done: true,
+                          text: '${info?.name ?? 'Family'} created · ${info?.count ?? 1} '
+                              'member${(info?.count ?? 1) == 1 ? '' : 's'}'),
                       if (childNames.isNotEmpty)
-                        _receipt('Unified calendar for $childNames'),
-                      _receipt('Your calendar ready to claim onto'),
+                        ReceiptRow(done: true, text: 'Unified calendar for $childNames'),
+                      if (selfDone)
+                        const ReceiptRow(done: true, text: 'Your calendar ready to claim onto')
+                      else
+                        const ReceiptRow(
+                            done: false,
+                            text: 'No calendar of your own to claim onto',
+                            note: 'Pick one anytime from Me.'),
+                      if (othersDone.isNotEmpty)
+                        ReceiptRow(
+                            done: true,
+                            text: 'Unified calendar for '
+                                '${_joinNames(othersDone.map((m) => m.relationName).toList())}'),
+                      if (othersSkipped.isNotEmpty)
+                        ReceiptRow(
+                            done: false,
+                            text: 'No calendar yet for '
+                                '${_joinNames(othersSkipped.map((m) => m.relationName).toList())}',
+                            note: "They'll pick their own when they join."),
                     ]),
                     if (invitable.isNotEmpty) ...[
                       const SizedBox(height: 16),
@@ -81,17 +123,6 @@ class CompleteStep extends ConsumerWidget {
       ),
     );
   }
-
-  Widget _receipt(String text) => GroupRow(
-        leading: Container(
-          width: 24,
-          height: 24,
-          alignment: Alignment.center,
-          decoration: BoxDecoration(color: AppColors.tint(AppColors.green, 0.18), shape: BoxShape.circle),
-          child: const Icon(Icons.check_rounded, size: 13, color: AppColors.green),
-        ),
-        title: text,
-      );
 
   static String _joinNames(List<String> names) {
     if (names.isEmpty) return '';

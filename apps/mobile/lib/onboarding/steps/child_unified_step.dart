@@ -5,7 +5,7 @@ import '../../state/family.dart';
 import '../../theme/app_colors.dart';
 import '../../theme/app_text.dart';
 import '../../theme/person_colors.dart';
-import '../child_strip.dart';
+import '../member_strip.dart';
 import '../onboarding_scaffold.dart';
 import '../unified_calendar_picker.dart';
 
@@ -71,7 +71,8 @@ class _ChildUnifiedStepState extends ConsumerState<ChildUnifiedStep> {
       onBack: widget.onBack,
       trailingLabel: 'Finish later',
       onTrailing: widget.onExit,
-      header: ChildStrip(children: widget.children, currentIndex: widget.childIndex),
+      header: MemberStrip(
+          members: widget.children, currentIndex: widget.childIndex, noun: 'Child'),
       title: "$name's unified calendar",
       subtitle: 'Pick the one writable calendar everything else syncs onto — '
           "$name's single source of truth.",

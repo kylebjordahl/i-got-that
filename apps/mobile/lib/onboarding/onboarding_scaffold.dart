@@ -609,6 +609,35 @@ class MiniPill extends StatelessWidget {
   }
 }
 
+/// One line of a wizard summary (1h, 2d). A step the user actually completed
+/// gets the green check; one they skipped gets a muted dash and says so, so the
+/// summary receipts what happened rather than implying everything was done.
+class ReceiptRow extends StatelessWidget {
+  const ReceiptRow({super.key, required this.text, required this.done, this.note});
+
+  final String text;
+  final bool done;
+
+  /// Optional second line — used to tell the user where to finish a skipped step.
+  final String? note;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = done ? AppColors.green : AppColors.textMuted;
+    return GroupRow(
+      leading: Container(
+        width: 24,
+        height: 24,
+        alignment: Alignment.center,
+        decoration: BoxDecoration(color: AppColors.tint(color, 0.18), shape: BoxShape.circle),
+        child: Icon(done ? Icons.check_rounded : Icons.remove_rounded, size: 13, color: color),
+      ),
+      title: text,
+      subtitle: note,
+    );
+  }
+}
+
 /// A small inline hint row ("ⓘ …") used beneath several step bodies.
 class InfoHint extends StatelessWidget {
   const InfoHint(this.text, {super.key, this.icon = Icons.info_outline_rounded});
