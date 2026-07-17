@@ -5,24 +5,33 @@ import '../theme/app_text.dart';
 import '../theme/person_colors.dart';
 import '../widgets/primitives.dart';
 
-/// The per-child position indicator on 1e/1f: the current child's avatar drawn
-/// large with an accent ring, the rest dimmed, and a "Child N of M" label.
-class ChildStrip extends StatelessWidget {
-  const ChildStrip({super.key, required this.children, required this.currentIndex});
+/// The position indicator for the wizard's per-member loops (1e/1f per child,
+/// 1g per caretaker): the current member's avatar drawn large with an accent
+/// ring, the rest dimmed, and a "{noun} N of M" label.
+class MemberStrip extends StatelessWidget {
+  const MemberStrip({
+    super.key,
+    required this.members,
+    required this.currentIndex,
+    required this.noun,
+  });
 
-  final List<Member> children;
+  final List<Member> members;
   final int currentIndex;
+
+  /// Singular label for the thing being iterated — "Child" or "Caretaker".
+  final String noun;
 
   @override
   Widget build(BuildContext context) {
     return Row(
       children: [
-        for (var i = 0; i < children.length; i++) ...[
-          _Avatar(member: children[i], active: i == currentIndex),
+        for (var i = 0; i < members.length; i++) ...[
+          _Avatar(member: members[i], active: i == currentIndex),
           const SizedBox(width: 9),
         ],
         const Spacer(),
-        Text('Child ${currentIndex + 1} of ${children.length}',
+        Text('$noun ${currentIndex + 1} of ${members.length}',
             style: font(kBodyFont, 12, 600, color: AppColors.textMuted)),
       ],
     );

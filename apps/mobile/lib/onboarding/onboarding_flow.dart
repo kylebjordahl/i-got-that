@@ -12,10 +12,12 @@ import 'steps/complete_step.dart';
 import 'steps/connect_accounts_step.dart';
 import 'steps/create_family_step.dart';
 import 'steps/parent_unified_step.dart';
+import 'wizard_outcomes.dart';
 
 /// The first-run wizard orchestrator (post-auth, pre-family-through-complete).
-/// Holds the step position and the per-child cursor; each step is a self-wired
-/// widget that commits real configuration and calls back to advance.
+/// Holds the step position, the per-child and per-caretaker cursors, and the
+/// record of what the user actually did ([WizardOutcomes]); each step is a
+/// self-wired widget that commits real configuration and calls back to advance.
 ///
 /// Important: family-scoped providers ([membersProvider]/[dependentsProvider]/…)
 /// are only read from the branches that run *after* the family is created in
@@ -28,16 +30,35 @@ class OnboardingFlow extends ConsumerStatefulWidget {
   ConsumerState<OnboardingFlow> createState() => _OnboardingFlowState();
 }
 
+/// The caretakers step 1g visits, in order: the signed-in user first, then every
+/// other caretaker in family order — the wizard opens on the calendar the user
+/// can actually answer for before asking them to stand in for their co-parents.
+///
+/// Self is prepended rather than filtered in from [caretakersProvider], so the
+/// user always gets their own step even if their member row isn't flagged as a
+/// caretaker.
+final wizardAdultsProvider = FutureProvider<List<Member>>((ref) async {
+  final self = await ref.watch(currentMemberProvider.future);
+  if (self == null) return const <Member>[];
+  final all = await ref.watch(caretakersProvider.future);
+  return [self, ...all.where((m) => m.id != self.id)];
+});
+
 enum _Step { connect, family, addMembers, childSources, childUnified, parentUnified, complete }
 
 class _OnboardingFlowState extends ConsumerState<OnboardingFlow> {
   _Step _step = _Step.connect;
   int _childIndex = 0;
+  int _adultIndex = 0;
+  WizardOutcomes _outcomes = const WizardOutcomes();
 
   void _go(_Step s) => setState(() => _step = s);
 
   List<Member> get _children =>
       ref.read(dependentsProvider).valueOrNull ?? const <Member>[];
+
+  List<Member> get _adults =>
+      ref.read(wizardAdultsProvider).valueOrNull ?? const <Member>[];
 
   void _exit() {
     // Latch out of the wizard: [OnboardingGate] shows the app once this is
@@ -46,9 +67,19 @@ class _OnboardingFlowState extends ConsumerState<OnboardingFlow> {
     ref.invalidate(hasFamilyProvider);
   }
 
+  /// Leaving 1b: the step is skippable and "Continue" is reachable with nothing
+  /// linked, so receipt what's actually connected rather than that they passed.
+  void _afterConnect() {
+    final accounts = ref.read(accountsProvider).valueOrNull ?? const [];
+    setState(() {
+      _outcomes = _outcomes.copyWith(accountsConnected: accounts.isNotEmpty);
+      _step = _Step.family;
+    });
+  }
+
   void _afterMembers() {
     if (_children.isEmpty) {
-      _go(_Step.parentUnified);
+      _startAdults();
     } else {
       setState(() {
         _childIndex = 0;
@@ -64,7 +95,30 @@ class _OnboardingFlowState extends ConsumerState<OnboardingFlow> {
         _step = _Step.childSources;
       });
     } else {
-      _go(_Step.parentUnified);
+      _startAdults();
+    }
+  }
+
+  void _startAdults() {
+    setState(() {
+      _adultIndex = 0;
+      _step = _Step.parentUnified;
+    });
+  }
+
+  void _afterAdultUnified(bool done) {
+    final adults = _adults;
+    final outcomes = _outcomes.withAdultCalendar(adults[_adultIndex].id, done: done);
+    if (_adultIndex + 1 < adults.length) {
+      setState(() {
+        _outcomes = outcomes;
+        _adultIndex++;
+      });
+    } else {
+      setState(() {
+        _outcomes = outcomes;
+        _step = _Step.complete;
+      });
     }
   }
 
@@ -79,8 +133,12 @@ class _OnboardingFlowState extends ConsumerState<OnboardingFlow> {
     }
   }
 
+  /// Back out of 1g: rewind the caretaker loop first, then fall back to the last
+  /// child's step (or straight to 1d when the family has no children).
   void _backFromParent() {
-    if (_children.isEmpty) {
+    if (_adultIndex > 0) {
+      setState(() => _adultIndex--);
+    } else if (_children.isEmpty) {
       _go(_Step.addMembers);
     } else {
       setState(() {
@@ -94,7 +152,7 @@ class _OnboardingFlowState extends ConsumerState<OnboardingFlow> {
   Widget build(BuildContext context) {
     switch (_step) {
       case _Step.connect:
-        return ConnectAccountsStep(onNext: () => _go(_Step.family));
+        return ConnectAccountsStep(onNext: _afterConnect);
       case _Step.family:
         return CreateFamilyStep(
           onNext: () => _go(_Step.addMembers),
@@ -129,12 +187,20 @@ class _OnboardingFlowState extends ConsumerState<OnboardingFlow> {
               onExit: _exit,
             ));
       case _Step.parentUnified:
-        return ParentUnifiedStep(
-          onNext: () => _go(_Step.complete),
-          onBack: _backFromParent,
-        );
+        return _adultGuarded((adults, adult, isSelf) => ParentUnifiedStep(
+              adult: adult,
+              adults: adults,
+              adultIndex: _adultIndex,
+              isSelf: isSelf,
+              nextAdultName: _adultIndex + 1 < adults.length
+                  ? adults[_adultIndex + 1].relationName
+                  : null,
+              onNext: _afterAdultUnified,
+              onBack: _backFromParent,
+              onExit: _exit,
+            ));
       case _Step.complete:
-        return CompleteStep(onGoHome: _exit);
+        return CompleteStep(outcomes: _outcomes, onGoHome: _exit);
     }
   }
 
@@ -142,10 +208,24 @@ class _OnboardingFlowState extends ConsumerState<OnboardingFlow> {
   /// spinner while the members list (re)loads.
   Widget _childGuarded(Widget Function(List<Member> children, Member child) build) {
     final children = ref.watch(dependentsProvider).valueOrNull;
-    if (children == null || _childIndex >= children.length) {
-      return const OnboardingScaffold(
-        progress: 0.66,
-        body: [
+    if (children == null || _childIndex >= children.length) return _loading(0.66);
+    return build(children, children[_childIndex]);
+  }
+
+  /// The 1g counterpart: resolve the caretaker whose turn it is.
+  /// [wizardAdultsProvider] puts self first, so index 0 is the user's own step.
+  Widget _adultGuarded(
+      Widget Function(List<Member> adults, Member adult, bool isSelf) build) {
+    final adults = ref.watch(wizardAdultsProvider).valueOrNull;
+    if (adults == null || adults.isEmpty || _adultIndex >= adults.length) {
+      return _loading(0.90);
+    }
+    return build(adults, adults[_adultIndex], _adultIndex == 0);
+  }
+
+  Widget _loading(double progress) => OnboardingScaffold(
+        progress: progress,
+        body: const [
           Padding(
             padding: EdgeInsets.symmetric(vertical: 60),
             child: Center(
@@ -156,7 +236,4 @@ class _OnboardingFlowState extends ConsumerState<OnboardingFlow> {
           ),
         ],
       );
-    }
-    return build(children, children[_childIndex]);
-  }
 }
