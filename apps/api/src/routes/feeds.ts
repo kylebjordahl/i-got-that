@@ -120,6 +120,23 @@ async function resynthesize(
   db: ReturnType<typeof getDb>,
   feed: typeof feeds.$inferSelect,
 ): Promise<void> {
+  // A brand-new feed has never been ingested (lastSyncedAt is null), so
+  // source_events is empty — a rule created right after setup (e.g. one meant
+  // to override a near-term occurrence) would otherwise have nothing to match
+  // until the next cron tick or a manual "Refresh feeds" tap. Ingest once,
+  // synchronously, before the first synthesis. Best-effort: a failed ingest
+  // here shouldn't block the mutation that already committed (the rule/link/
+  // etc. row); it also isn't retried on every subsequent edit, since a failed
+  // ingest marks the feed 'error' and cron only re-ingests 'active' feeds — an
+  // 'error' feed already requires a manual "Refresh feeds" tap to recover, so
+  // there's nothing this call could usefully retry once that's happened.
+  if (!feed.lastSyncedAt && feed.status !== 'error') {
+    try {
+      await ingestFeed(db, feed, ingestSecrets(c.env));
+    } catch {
+      // swallow — ingestFeed already marked the feed 'error'.
+    }
+  }
   await synthesizeFeed(db, feed);
   const links = await db
     .select({ familyMemberId: familyMemberFeeds.familyMemberId })

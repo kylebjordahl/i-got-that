@@ -93,7 +93,16 @@ async function ingestIcsFeed(
   const headers: Record<string, string> = {};
   if (feed.etag) headers['If-None-Match'] = feed.etag;
 
-  const res = await fetchImpl(feed.url, { headers });
+  let res: Awaited<ReturnType<typeof fetchImpl>>;
+  try {
+    res = await fetchImpl(feed.url, { headers });
+  } catch (err) {
+    // A connection-level failure (DNS, TLS, timeout) never reaches the
+    // status-code branches below, so it must mark the feed 'error' here too —
+    // otherwise callers gating on feed.status keep retrying it on every call.
+    await db.update(feeds).set({ status: 'error' }).where(eq(feeds.id, feed.id));
+    throw err;
+  }
 
   if (res.status === 304) {
     await db

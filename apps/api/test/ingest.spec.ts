@@ -187,4 +187,28 @@ describe('ingest: account-backed input feeds', () => {
     const after = (await db.select().from(feeds).where(eq(feeds.id, feed.id)).limit(1))[0]!;
     expect(after.status).toBe('error');
   });
+
+  it('marks an ICS feed errored on a connection-level failure (not just a bad HTTP status)', async () => {
+    // Regression: a thrown fetch (DNS/TLS/timeout) used to bypass the
+    // status='error' update entirely — only a non-ok *response* set it —
+    // so callers gating on feed.status kept retrying a permanently
+    // unreachable feed on every call instead of backing off like cron does.
+    const user = await login('ingest-unreachable@example.com');
+    const familyId = await createFamily(user.token, 'Ingest U');
+    const db = getDb(env.DB);
+    const feed = (
+      await db
+        .insert(feeds)
+        .values({ familyId, kind: 'ics', url: 'https://unreachable.example.invalid/cal.ics', mode: 'standard' })
+        .returning()
+    )[0]!;
+
+    const fetchImpl = (async () => {
+      throw new Error('getaddrinfo ENOTFOUND unreachable.example.invalid');
+    }) as unknown as typeof fetch;
+
+    await expect(ingestFeed(db, feed, { fetchImpl })).rejects.toThrow();
+    const after = (await db.select().from(feeds).where(eq(feeds.id, feed.id)).limit(1))[0]!;
+    expect(after.status).toBe('error');
+  });
 });

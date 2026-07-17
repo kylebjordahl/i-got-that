@@ -44,6 +44,27 @@ function icalTimeToDate(t: ICAL.Time): Date {
   return t.toJSDate();
 }
 
+/**
+ * An occurrence belongs in [windowStart, windowEnd) if it starts before the
+ * window closes, and either starts on/after windowStart or — being multi-day
+ * — is still ongoing (its end is after windowStart). Without the second
+ * clause, a still-relevant multi-day/all-day span that began before "now"
+ * (e.g. a closure spanning today through tomorrow) would be dropped from
+ * ingestion entirely, taking tomorrow's coverage down with it. Mirrors the
+ * overlap check the synthesis DB query already uses (`synthesisWindow`'s
+ * `dtstart < window.end AND (dtstart >= window.start OR dtend > window.start)`).
+ */
+function occurrenceInWindow(
+  start: Date,
+  end: Date | null,
+  windowStart: Date,
+  windowEnd: Date,
+): boolean {
+  if (start >= windowEnd) return false;
+  if (start >= windowStart) return true;
+  return end != null && end > windowStart;
+}
+
 export interface ExpandOptions {
   /** Inclusive lower bound (default: now). */
   windowStart?: Date;
@@ -102,12 +123,13 @@ export function parseAndExpand(
     const event = new ICAL.Event(ve);
     if (!event.startDate) continue;
     const start = icalTimeToDate(event.startDate);
-    if (start < windowStart || start >= windowEnd) continue;
+    const end = event.endDate ? icalTimeToDate(event.endDate) : null;
+    if (!occurrenceInWindow(start, end, windowStart, windowEnd)) continue;
     out.push({
       uid: event.uid,
       recurrenceId: null,
       start,
-      end: event.endDate ? icalTimeToDate(event.endDate) : null,
+      end,
       summary: event.summary ?? null,
       location: event.location ?? null,
       allDay: event.startDate.isDate,
@@ -126,14 +148,17 @@ export function parseAndExpand(
       const startJs = next.toJSDate();
       if (startJs >= windowEnd) break;
       if (++count > maxPerEvent) break;
-      if (startJs < windowStart) continue;
 
       const details = event.getOccurrenceDetails(next);
+      const start = icalTimeToDate(details.startDate);
+      const end = details.endDate ? icalTimeToDate(details.endDate) : null;
+      if (!occurrenceInWindow(start, end, windowStart, windowEnd)) continue;
+
       out.push({
         uid: event.uid,
         recurrenceId: startJs.toISOString(),
-        start: icalTimeToDate(details.startDate),
-        end: details.endDate ? icalTimeToDate(details.endDate) : null,
+        start,
+        end,
         summary: details.item.summary ?? null,
         location: details.item.location ?? null,
         allDay: details.startDate.isDate,
@@ -149,12 +174,13 @@ export function parseAndExpand(
       const event = new ICAL.Event(ve);
       if (!event.startDate || !event.recurrenceId) continue;
       const start = icalTimeToDate(event.startDate);
-      if (start < windowStart || start >= windowEnd) continue;
+      const end = event.endDate ? icalTimeToDate(event.endDate) : null;
+      if (!occurrenceInWindow(start, end, windowStart, windowEnd)) continue;
       out.push({
         uid: event.uid,
         recurrenceId: icalTimeToDate(event.recurrenceId).toISOString(),
         start,
-        end: event.endDate ? icalTimeToDate(event.endDate) : null,
+        end,
         summary: event.summary ?? null,
         location: event.location ?? null,
         allDay: event.startDate.isDate,
