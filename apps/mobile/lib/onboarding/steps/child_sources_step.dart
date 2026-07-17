@@ -7,7 +7,7 @@ import '../../theme/app_colors.dart';
 import '../../theme/app_text.dart';
 import '../../theme/person_colors.dart';
 import '../../widgets/primitives.dart';
-import '../child_strip.dart';
+import '../member_strip.dart';
 import '../onboarding_scaffold.dart';
 
 /// 1e — per child, connect calendar sources. Add the child's feeds (school ICS,
@@ -41,7 +41,7 @@ class ChildSourcesStep extends ConsumerWidget {
       onBack: onBack,
       trailingLabel: 'Finish later',
       onTrailing: onExit,
-      header: ChildStrip(children: children, currentIndex: childIndex),
+      header: MemberStrip(members: children, currentIndex: childIndex, noun: 'Child'),
       title: "$name's calendars",
       body: [
         Text.rich(

@@ -26,6 +26,10 @@ enum _Phase { landing, connect, pick, joined }
 class _JoinFlowState extends ConsumerState<JoinFlow> {
   _Phase _phase = _Phase.landing;
 
+  /// Both join steps are skippable ("I'll connect later" / Finish without a
+  /// pick), so 2d receipts what actually happened rather than assuming.
+  bool _calendarPicked = false;
+
   void _go(_Phase p) => setState(() => _phase = p);
 
   void _onAccepted() {
@@ -59,11 +63,14 @@ class _JoinFlowState extends ConsumerState<JoinFlow> {
         );
       case _Phase.pick:
         return PickUnifiedStep(
-          onNext: () => _go(_Phase.joined),
+          onNext: (picked) => setState(() {
+            _calendarPicked = picked;
+            _phase = _Phase.joined;
+          }),
           onBack: () => _go(_Phase.connect),
         );
       case _Phase.joined:
-        return JoinedStep(onGoHome: _exit);
+        return JoinedStep(calendarPicked: _calendarPicked, onGoHome: _exit);
     }
   }
 }

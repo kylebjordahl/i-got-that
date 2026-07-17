@@ -12,7 +12,9 @@ import '../unified_calendar_picker.dart';
 class PickUnifiedStep extends ConsumerStatefulWidget {
   const PickUnifiedStep({super.key, required this.onNext, required this.onBack});
 
-  final VoidCallback onNext;
+  /// Reports whether a calendar was actually committed — "Finish" is reachable
+  /// without a pick, and 2d receipts what happened.
+  final ValueChanged<bool> onNext;
   final VoidCallback onBack;
 
   @override
@@ -33,7 +35,7 @@ class _PickUnifiedStepState extends ConsumerState<PickUnifiedStep> {
       if (_choice != null) {
         await commitUnifiedTarget(ref, memberId: self.id, choice: _choice!);
       }
-      if (mounted) widget.onNext();
+      if (mounted) widget.onNext(_choice != null);
     } catch (e) {
       if (mounted) setState(() => _error = '$e');
     } finally {

@@ -6,9 +6,13 @@ import '../../theme/app_text.dart';
 import '../onboarding_scaffold.dart';
 
 /// 2d — joined. Two taps of real input (one login, one pick) and the second
-/// parent is coordinating. Lands straight in the working app.
+/// parent is coordinating. Lands straight in the working app. Both steps are
+/// skippable, so each line is receipted from what actually happened.
 class JoinedStep extends ConsumerWidget {
-  const JoinedStep({super.key, required this.onGoHome});
+  const JoinedStep({super.key, required this.calendarPicked, required this.onGoHome});
+
+  /// Whether 2c actually committed a unified calendar for the joining parent.
+  final bool calendarPicked;
   final VoidCallback onGoHome;
 
   @override
@@ -55,24 +59,40 @@ class JoinedStep extends ConsumerWidget {
                       Text("You're in, $name",
                           style: font(kDisplayFont, 30, 600, letterSpacing: -0.3)),
                       const SizedBox(height: 10),
-                      Text.rich(
-                        TextSpan(
-                          text: "That's all it took. The family setup was already "
-                              'done — your claimed tasks will land on ',
-                          style: font(kBodyFont, 15, 500,
-                              color: const Color(0xFFA79FB5), height: 1.55),
-                          children: [
-                            TextSpan(
-                                text: targetName ?? 'your calendar',
-                                style: font(kBodyFont, 15, 600, color: const Color(0xFFBFE0FF))),
-                            const TextSpan(text: '.'),
-                          ],
-                        ),
-                      ),
+                      if (calendarPicked)
+                        Text.rich(
+                          TextSpan(
+                            text: "That's all it took. The family setup was already "
+                                'done — your claimed tasks will land on ',
+                            style: font(kBodyFont, 15, 500,
+                                color: const Color(0xFFA79FB5), height: 1.55),
+                            children: [
+                              TextSpan(
+                                  text: targetName ?? 'your calendar',
+                                  style: font(kBodyFont, 15, 600, color: const Color(0xFFBFE0FF))),
+                              const TextSpan(text: '.'),
+                            ],
+                          ),
+                        )
+                      else
+                        Text(
+                            "That's all it took. The family setup was already done — "
+                            'pick a calendar whenever you want your claimed tasks to '
+                            'land somewhere of your own.',
+                            style: font(kBodyFont, 15, 500,
+                                color: const Color(0xFFA79FB5), height: 1.55)),
                       const SizedBox(height: 24),
                       GroupedCard(children: [
-                        _receipt('Joined ${info?.name ?? 'the family'} as a caretaker'),
-                        _receipt('Your unified calendar connected'),
+                        ReceiptRow(
+                            done: true,
+                            text: 'Joined ${info?.name ?? 'the family'} as a caretaker'),
+                        if (calendarPicked)
+                          const ReceiptRow(done: true, text: 'Your unified calendar connected')
+                        else
+                          const ReceiptRow(
+                              done: false,
+                              text: 'No unified calendar yet',
+                              note: 'Pick one anytime from Me.'),
                       ]),
                       const SizedBox(height: 16),
                       Text('Delivery reminders, task lists & email notices can be '
@@ -93,16 +113,4 @@ class JoinedStep extends ConsumerWidget {
       ),
     );
   }
-
-  Widget _receipt(String text) => GroupRow(
-        leading: Container(
-          width: 24,
-          height: 24,
-          alignment: Alignment.center,
-          decoration: BoxDecoration(
-              color: AppColors.tint(AppColors.green, 0.18), shape: BoxShape.circle),
-          child: const Icon(Icons.check_rounded, size: 13, color: AppColors.green),
-        ),
-        title: text,
-      );
 }
