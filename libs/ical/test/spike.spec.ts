@@ -126,6 +126,65 @@ END:VCALENDAR`;
     expect(timed?.allDay).toBe(false);
   });
 
+  it('keeps an in-progress multi-day/all-day occurrence whose span already started before "now"', () => {
+    // A closure spanning today through tomorrow (DTEND is exclusive, so this
+    // covers Jul 16 and Jul 17). windowStart sits mid-day on the 16th — after
+    // the event's own start but still within its coverage — reproducing an
+    // ingest that runs partway through a multi-day event's first day. Without
+    // also checking `end`, a start-only window filter drops this occurrence
+    // entirely, taking its (still-future) coverage of tomorrow down with it.
+    const ics = `BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//test//test//EN
+BEGIN:VEVENT
+UID:closure-1
+DTSTART;VALUE=DATE:20260716
+DTEND;VALUE=DATE:20260718
+SUMMARY:MCH Closed - Staff Training
+END:VEVENT
+END:VCALENDAR`;
+    const occ = parseAndExpand(ics, {
+      windowStart: new Date('2026-07-16T14:00:00Z'),
+      windowEnd: new Date('2026-07-20T00:00:00Z'),
+    });
+    expect(occ).toHaveLength(1);
+    expect(occ[0]?.start.toISOString()).toBe('2026-07-16T00:00:00.000Z');
+    expect(occ[0]?.end?.toISOString()).toBe('2026-07-18T00:00:00.000Z');
+
+    // A same-shaped event that fully ended before windowStart stays excluded.
+    const pastIcs = ics.replace(/20260716/g, '20260710').replace(/20260718/g, '20260712');
+    const pastOcc = parseAndExpand(pastIcs, {
+      windowStart: new Date('2026-07-16T14:00:00Z'),
+      windowEnd: new Date('2026-07-20T00:00:00Z'),
+    });
+    expect(pastOcc).toHaveLength(0);
+  });
+
+  it('keeps an in-progress occurrence of a recurring multi-day event alongside a far-future one', () => {
+    // Mirrors the reported bug: a recurring closure whose *next* occurrence
+    // started today (still covers tomorrow) alongside ones weeks out — both
+    // must be ingested so a cancel_day override rule can match either.
+    const ics = `BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//test//test//EN
+BEGIN:VEVENT
+UID:recurring-closure-1
+DTSTART;VALUE=DATE:20260716
+DTEND;VALUE=DATE:20260718
+RRULE:FREQ=WEEKLY;COUNT=4
+SUMMARY:Late start
+END:VEVENT
+END:VCALENDAR`;
+    const occ = parseAndExpand(ics, {
+      windowStart: new Date('2026-07-16T14:00:00Z'),
+      windowEnd: new Date('2026-08-15T00:00:00Z'),
+    });
+    // All 4 weekly occurrences ingested, including today's in-progress one —
+    // not just the ones starting cleanly in the future.
+    expect(occ).toHaveLength(4);
+    expect(occ[0]?.start.toISOString()).toBe('2026-07-16T00:00:00.000Z');
+  });
+
   it('folds all-day into the content hash', () => {
     const [a] = parseAndExpand(SAMPLE_ICS, {
       windowStart: new Date('2026-01-10T00:00:00Z'),
