@@ -156,76 +156,73 @@ tests (no binding) still serve the API directly at the root.
 Production mirrors this on `igt.kylebjordahl.com` (`routes` + `assets` blocks
 under `env.production`) — same prerequisites apply to that zone.
 
-### 8. iOS / TestFlight (staging)
+### 8. iOS / TestFlight (staging + production)
 
 `deploy.yml` has a `testflight` job (macOS runner) that archives, signs, and
-uploads the mobile app's **`staging`** flavor (`com.kylebjordahl.igt.staging`)
-to TestFlight whenever the `mobile` Nx project is affected. It's staging-only
-for now — prod is deferred until prod has a real API domain (see the comment
-in `deploy-production.yml`). Signing is **manual** (a distribution `.p12` + an
-App Store provisioning profile), not Xcode-managed — headless
+uploads the mobile app's flavor for the target environment (`staging` →
+`com.kylebjordahl.igt.staging`, `production` → `prod` flavor /
+`com.kylebjordahl.igt`) to TestFlight whenever the `mobile` Nx project is
+affected. Signing is **manual** (a distribution `.p12` + an App Store
+provisioning profile), not Xcode-managed — headless
 `-allowProvisioningUpdates` is flaky; a pinned profile name is deterministic.
 
 A `check-mobile-changed` job (ubuntu runner) gates `testflight`: it looks up
-the commit of the last `Deploy staging` run whose `testflight` job actually
-succeeded (via the GitHub API), then runs `nx show projects --affected
---base=<that commit> --head=<this commit>` and checks whether `mobile` is in
-the result. This is base/head aware — unlike a plain `git diff` against the
-immediate parent commit, it correctly catches mobile changes accumulated
-across several commits since the last real build. `testflight` depends on
-that job's output at the **job level** (`if:
+the commit of the last `Deploy <env>` run whose `testflight` job actually
+succeeded for that same environment (via the GitHub API), then runs `nx show
+projects --affected --base=<that commit> --head=<this commit>` and checks
+whether `mobile` is in the result. This is base/head aware — unlike a plain
+`git diff` against the immediate parent commit, it correctly catches mobile
+changes accumulated across several commits since the last real build.
+Staging and production are tracked independently (each has its own last
+successful build, since staging deploys on every push to `main` but
+production only on a published release). `testflight` depends on that job's
+output at the **job level** (`if:
 needs.check-mobile-changed.outputs.changed == 'true'`), so a no-op shows up
 in the Actions UI as **skipped**, not a false green success.
 
 **One-time setup, all done by hand (not code):**
 
-1. **App Store Connect app record** for `com.kylebjordahl.igt.staging`
-   (App Store Connect → My Apps → **+** → New App).
+1. **App Store Connect app record** for each bundle id — `com.kylebjordahl.igt.staging`
+   and `com.kylebjordahl.igt` (App Store Connect → My Apps → **+** → New App).
 2. **App Store Connect API key** (App Store Connect → Users and Access →
    Integrations → App Store Connect API → **Generate API Key**, role
    *App Manager*). Save the **Issuer ID**, **Key ID**, and download the `.p8`
-   — the `.p8` can only be downloaded once.
+   — the `.p8` can only be downloaded once. One key (account-level) covers
+   both apps.
 3. **Distribution signing assets**:
    - An **Apple Distribution** certificate (Apple Developer portal, or Xcode →
      Settings → Accounts → Manage Certificates), exported from Keychain Access
-     as a password-protected `.p12`.
-   - An **App Store** (not Ad Hoc/Development) provisioning profile for
-     `com.kylebjordahl.igt.staging`. Its **name** must match
-     `PROVISIONING_PROFILE_SPECIFIER` in
-     `apps/mobile/ios/Flutter/stagingRelease.xcconfig` and the
-     `provisioningProfiles` entry in `apps/mobile/ios/ExportOptions-staging.plist`
-     (both currently set to `IGT Staging App Store` — rename the profile to
-     match, or update both files to match whatever you name it).
-4. **GitHub secrets**, added to the **`staging`** GitHub Environment (repo →
-   Settings → Environments → `staging` → Environment secrets):
+     as a password-protected `.p12`. Team-wide — one cert covers both flavors.
+   - An **App Store** (not Ad Hoc/Development) provisioning profile **per
+     bundle id**. Each profile's **name** must match the
+     `PROVISIONING_PROFILE_SPECIFIER` in its flavor's release xcconfig and the
+     `provisioningProfiles` entry in its `ExportOptions-*.plist`:
+
+     | Flavor | Bundle id | xcconfig | ExportOptions | Profile name |
+     | --- | --- | --- | --- | --- |
+     | `staging` | `com.kylebjordahl.igt.staging` | `Flutter/stagingRelease.xcconfig` | `ExportOptions-staging.plist` | `IGT Staging App Store` |
+     | `prod` | `com.kylebjordahl.igt` | `Flutter/prodRelease.xcconfig` | `ExportOptions-prod.plist` | `IGT App Store` |
+4. **GitHub secrets** (repo-level; shared across environments except the
+   per-flavor profile):
 
    | Secret | Contents |
    | --- | --- |
    | `IOS_DIST_CERT_P12_BASE64` | `base64 -i dist.p12 \| pbcopy` |
    | `IOS_DIST_CERT_PASSWORD` | the `.p12` export password |
    | `IOS_STAGING_PROFILE_BASE64` | `base64 -i staging_appstore.mobileprovision \| pbcopy` |
+   | `IOS_PROD_PROFILE_BASE64` | `base64 -i prod_appstore.mobileprovision \| pbcopy` |
    | `APP_STORE_CONNECT_KEY_ID` | ASC API Key ID from step 2 |
    | `APP_STORE_CONNECT_ISSUER_ID` | ASC API Issuer ID from step 2 |
    | `APP_STORE_CONNECT_API_KEY_P8` | contents of the `.p8` from step 2 |
 
-   These are passed through by `deploy-staging.yml`; `deploy-production.yml`
-   doesn't pass them (they're `required: false` in `deploy.yml`, so the
-   production caller still validates without them).
+   `deploy-staging.yml` passes the staging profile through; `deploy-production.yml`
+   passes the prod profile through — both share the rest.
 
-Once the secrets exist, the next staging deploy where `mobile` is Nx-affected
-builds and uploads a TestFlight build automatically — no further action
-needed per-release. Add internal/external testers in App Store Connect →
-TestFlight the first time a build lands.
-
-**Promoting prod later**: `ios/ExportOptions-prod.plist` and the prod signing
-xcconfig (`Flutter/prodRelease.xcconfig`, profile name `IGT App Store`) are
-already in place. Still needed: create that named provisioning profile (App
-Store distribution, `com.kylebjordahl.igt`) in Apple Developer, add the same
-six secrets to the `production` GitHub Environment (the dist cert/password and
-ASC API key can likely be reused from staging; the profile itself needs a new
-`IOS_PROD_PROFILE_BASE64`), and update the `if: inputs.environment ==
-'staging'` gate on the `testflight` job in `deploy.yml` to also allow
-`production`.
+Once the secrets exist, the next deploy (staging on push to `main`, production
+on a published release) where `mobile` is Nx-affected builds and uploads a
+TestFlight build automatically for that environment's flavor — no further
+action needed per-release. Add internal/external testers in App Store Connect
+→ TestFlight the first time each app's build lands.
 
 ---
 
