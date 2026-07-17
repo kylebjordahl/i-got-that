@@ -8,6 +8,13 @@
       "when": 1783572223068,
       "tag": "0000_tense_tombstone",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1784321758779,
+      "tag": "0001_white_doctor_spectrum",
+      "breakpoints": true
     }
   ]
 }

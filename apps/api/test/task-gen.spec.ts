@@ -280,4 +280,129 @@ describe('task generation (Module B)', () => {
     expect(survivors[0]!.type).toBe('pickup');
     expect(survivors[0]!.status).toBe('owned');
   });
+
+  it('sets a positive duration override on a transition task and freezes the pair', async () => {
+    const fam = await setupFamily('gen-dur-pos@example.com');
+    const db = getDb(env.DB);
+    const { link } = await linkedFeed(db, fam.familyId, fam.childId, 'transition');
+    const event = await insertEvent(db, fam.familyId, fam.childId, {
+      synthKey: 'ev:l1:dur-pos',
+      linkId: link.id,
+      dtstart: new Date('2026-07-06T15:30:00Z'),
+      dtend: new Date('2026-07-06T21:45:00Z'),
+    });
+    await buildMemberTasks(db, fam.childId);
+    const pickup = (
+      await db.select().from(tasks).where(eq(tasks.calendarEventId, event.id))
+    ).find((t) => t.type === 'pickup')!;
+
+    const res = await call(
+      `/families/${fam.familyId}/tasks/${pickup.id}/duration`,
+      authed(fam.admin.token, { durationMinutes: 30 }),
+    );
+    expect(res.status).toBe(200);
+
+    const updated = (await db.select().from(tasks).where(eq(tasks.id, pickup.id)))[0]!;
+    // Pickup anchors to the event's end; +30 extends forward from it.
+    expect(updated.dtstart.getTime()).toBe(new Date('2026-07-06T21:45:00Z').getTime());
+    expect(updated.dtend!.getTime()).toBe(new Date('2026-07-06T22:15:00Z').getTime());
+    expect(updated.durationOverrideMin).toBe(30);
+    expect(updated.createdVia).toBe('manual');
+    // The whole transition pair is frozen so a rebuild can't reclassify it.
+    const dropoff = (
+      await db.select().from(tasks).where(eq(tasks.calendarEventId, event.id))
+    ).find((t) => t.type === 'dropoff')!;
+    expect(dropoff.createdVia).toBe('manual');
+  });
+
+  it('a negative duration reverses the window before the anchor', async () => {
+    const fam = await setupFamily('gen-dur-neg@example.com');
+    const db = getDb(env.DB);
+    const { link } = await linkedFeed(db, fam.familyId, fam.childId, 'transition');
+    const event = await insertEvent(db, fam.familyId, fam.childId, {
+      synthKey: 'ev:l1:dur-neg',
+      linkId: link.id,
+      dtstart: new Date('2026-07-06T15:30:00Z'),
+      dtend: new Date('2026-07-06T21:45:00Z'),
+    });
+    await buildMemberTasks(db, fam.childId);
+    const dropoff = (
+      await db.select().from(tasks).where(eq(tasks.calendarEventId, event.id))
+    ).find((t) => t.type === 'dropoff')!;
+
+    const res = await call(
+      `/families/${fam.familyId}/tasks/${dropoff.id}/duration`,
+      authed(fam.admin.token, { durationMinutes: -20 }),
+    );
+    expect(res.status).toBe(200);
+
+    const updated = (await db.select().from(tasks).where(eq(tasks.id, dropoff.id)))[0]!;
+    // Drop-off anchors to the event's start; -20 sits before it (dtend at anchor).
+    expect(updated.dtstart.getTime()).toBe(new Date('2026-07-06T15:10:00Z').getTime());
+    expect(updated.dtend!.getTime()).toBe(new Date('2026-07-06T15:30:00Z').getTime());
+    expect(updated.durationOverrideMin).toBe(-20);
+  });
+
+  it('a duration override survives a moved event, preserving its signed window', async () => {
+    const fam = await setupFamily('gen-dur-heal@example.com');
+    const db = getDb(env.DB);
+    const { link } = await linkedFeed(db, fam.familyId, fam.childId, 'transition');
+    const event = await insertEvent(db, fam.familyId, fam.childId, {
+      synthKey: 'ev:l1:dur-heal',
+      linkId: link.id,
+      dtstart: new Date('2026-07-06T15:30:00Z'),
+      dtend: new Date('2026-07-06T21:45:00Z'),
+    });
+    await buildMemberTasks(db, fam.childId);
+    const dropoff = (
+      await db.select().from(tasks).where(eq(tasks.calendarEventId, event.id))
+    ).find((t) => t.type === 'dropoff')!;
+    await call(
+      `/families/${fam.familyId}/tasks/${dropoff.id}/duration`,
+      authed(fam.admin.token, { durationMinutes: -20 }),
+    );
+
+    // The event reschedules an hour later; its hash changes so task-gen heals.
+    const movedStart = new Date('2026-07-06T16:30:00Z');
+    const movedEnd = new Date('2026-07-06T22:45:00Z');
+    const payload = {
+      dtstart: movedStart,
+      dtend: movedEnd,
+      allDay: false,
+      summary: 'School day',
+      location: null,
+      description: null,
+    };
+    await db
+      .update(calendarEvents)
+      .set({ ...payload, contentHash: hashCalendarEvent(payload) })
+      .where(eq(calendarEvents.id, event.id));
+    await buildMemberTasks(db, fam.childId);
+
+    const healed = (await db.select().from(tasks).where(eq(tasks.id, dropoff.id)))[0]!;
+    // Anchor tracks the new start; the -20 window still sits before it.
+    expect(healed.dtend!.getTime()).toBe(movedStart.getTime());
+    expect(healed.dtstart.getTime()).toBe(movedStart.getTime() - 20 * 60_000);
+    expect(healed.durationOverrideMin).toBe(-20);
+  });
+
+  it('rejects a duration change on a non-transition (attendance) task', async () => {
+    const fam = await setupFamily('gen-dur-att@example.com');
+    const db = getDb(env.DB);
+    const { link } = await linkedFeed(db, fam.familyId, fam.childId, 'attendance');
+    const event = await insertEvent(db, fam.familyId, fam.childId, {
+      synthKey: 'ev:l1:dur-att',
+      linkId: link.id,
+    });
+    await buildMemberTasks(db, fam.childId);
+    const attendance = (
+      await db.select().from(tasks).where(eq(tasks.calendarEventId, event.id))
+    )[0]!;
+
+    const res = await call(
+      `/families/${fam.familyId}/tasks/${attendance.id}/duration`,
+      authed(fam.admin.token, { durationMinutes: 30 }),
+    );
+    expect(res.status).toBe(400);
+  });
 });

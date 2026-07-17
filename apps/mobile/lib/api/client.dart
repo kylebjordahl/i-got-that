@@ -493,6 +493,16 @@ class ApiClient {
         data: {'types': types}, options: _auth);
   }
 
+  /// Set a transition task's (pickup / drop-off) window length in minutes,
+  /// measured from its anchor (the parent event's start for a drop-off, its end
+  /// for a pickup). Positive extends the window forward from the anchor;
+  /// negative reverses it to sit before the anchor; 0 collapses it to a point.
+  Future<void> setTaskDuration(
+      String familyId, String taskId, int durationMinutes) async {
+    await _dio.post('/families/$familyId/tasks/$taskId/duration',
+        data: {'durationMinutes': durationMinutes}, options: _auth);
+  }
+
   /// The raw feed events behind the tasks (for the oversight view).
   Future<List<dynamic>> listSourceEvents(String familyId) async =>
       _list(await _dio.get('/families/$familyId/source-events', options: _auth), 'events');

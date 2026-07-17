@@ -437,6 +437,25 @@ function windowEnd(anchor: Date, windowMin: number): Date | null {
 }
 
 /**
+ * Resolve a transition task's `[dtstart, dtend]` around its anchor for a signed
+ * window length (minutes). A positive length extends the window forward from the
+ * anchor (`dtstart` at the anchor); a negative length reverses it, placing the
+ * window before the anchor (`dtend` at the anchor) so the stored interval stays
+ * ordered; 0 collapses to a point (`dtend: null`). Used for user-set duration
+ * overrides — the anchor stays fixed to the event while the window flips sides.
+ */
+export function transitionWindow(
+  anchor: Date,
+  durationMin: number,
+): { dtstart: Date; dtend: Date | null } {
+  if (durationMin === 0) return { dtstart: anchor, dtend: null };
+  if (durationMin > 0) {
+    return { dtstart: anchor, dtend: new Date(anchor.getTime() + durationMin * 60_000) };
+  }
+  return { dtstart: new Date(anchor.getTime() + durationMin * 60_000), dtend: anchor };
+}
+
+/**
  * What claimable tasks an event spawns, given its resolved result type. A
  * `transition` yields a drop-off (padded from the event start) and a pickup
  * (padded from the event end); `attendance` yields one task spanning the event.
