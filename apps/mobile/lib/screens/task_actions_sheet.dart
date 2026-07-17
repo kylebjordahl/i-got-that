@@ -52,13 +52,12 @@ Future<void> showTaskActions(
   final types = (group.isEmpty ? [task] : group).map((t) => t.type).toSet();
   final hasAtt = types.contains('attendance');
   final hasTrans = types.contains('pickup') || types.contains('dropoff');
-  final transSub = types.contains('pickup') ? 'pickup' : 'dropoff';
   final currentSeg = hasAtt && hasTrans ? 'both' : (hasAtt ? 'attendance' : 'transition');
 
   List<String> targetOf(String seg) => switch (seg) {
         'attendance' => ['attendance'],
-        'both' => [transSub, 'attendance'],
-        _ => [transSub],
+        'both' => const ['dropoff', 'pickup', 'attendance'],
+        _ => const ['dropoff', 'pickup'],
       };
 
   final owners = scope
