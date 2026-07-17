@@ -16,6 +16,7 @@ import {
 import {
   generateTaskIntents,
   resolveTaskResult,
+  transitionWindow,
   type TaskDefault,
   type TaskIntent,
   type TaskRuleLike,
@@ -177,11 +178,20 @@ export async function buildMemberTasks(
       .from(tasks)
       .where(eq(tasks.calendarEventId, event.id));
 
-    // User-converted tasks freeze the type set; only heal their anchors.
+    // User-converted tasks freeze the type set; only heal their anchors. A
+    // transition task with a user-set duration override re-derives both ends
+    // from the (moved) anchor so its signed window is preserved; others keep
+    // their own dtend and just re-anchor dtstart.
     const manual = existing.filter((t) => t.createdVia === 'manual');
     if (manual.length > 0) {
       for (const t of manual) {
-        await healTask(db, t, anchorStart(event, t.type), t.dtend, event.location);
+        const anchor = anchorStart(event, t.type);
+        if (t.durationOverrideMin != null && t.type !== 'attendance') {
+          const w = transitionWindow(anchor, t.durationOverrideMin);
+          await healTask(db, t, w.dtstart, w.dtend, event.location);
+        } else {
+          await healTask(db, t, anchor, t.dtend, event.location);
+        }
       }
     } else {
       const desiredByType = new Map(intents.map((i) => [i.type, i]));

@@ -472,6 +472,12 @@ export const tasks = sqliteTable(
     }),
     dtstart: integer('dtstart', { mode: 'timestamp_ms' }).notNull(),
     dtend: integer('dtend', { mode: 'timestamp_ms' }),
+    // A user-set window length (minutes, signed) for a transition task, measured
+    // from its anchor — the event's start for a drop-off, its end for a pickup.
+    // Positive extends forward from the anchor, negative reverses it (window sits
+    // before the anchor). Null ⇒ derived from the task-rule pipeline's window;
+    // when set, task-gen re-anchors around it instead of recomputing the window.
+    durationOverrideMin: integer('duration_override_min'),
     location: text('location'),
     status: text('status', { enum: TaskStatus.options })
       .notNull()
