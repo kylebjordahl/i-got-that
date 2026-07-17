@@ -60,7 +60,7 @@ function stubFeed(times: number) {
 
 describe('feed ingest', () => {
   it('creates a feed, links a child, and ingests occurrences idempotently', async () => {
-    stubFeed(2); // two force-refreshes below
+    stubFeed(3); // implicit first-link ingest, then two explicit force-refreshes below
     const alice = await login('feedadmin@example.com');
     const familyId = await createFamily(alice.token, 'Ingest Fam');
 

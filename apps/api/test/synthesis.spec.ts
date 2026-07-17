@@ -1,4 +1,4 @@
-import { env } from 'cloudflare:test';
+import { env, fetchMock } from 'cloudflare:test';
 import {
   and,
   calendarEvents,
@@ -10,9 +10,22 @@ import {
   pendingDecisions,
   sourceEvents,
 } from '@igt/db';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { synthesizeFeed } from '../src/services/synthesis.js';
 import { authed, call, setupFamily } from './helpers.js';
+
+const EMPTY_ICS = 'BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//test//test//EN\r\nEND:VCALENDAR';
+
+// The 'link-rule (override) routes' spec below hits the real member-links
+// route, whose first call now opportunistically ingests a never-synced feed
+// (see resynthesize() in routes/feeds.ts) — stub that out so it resolves
+// deterministically instead of attempting a real DNS lookup for these feeds'
+// placeholder URLs.
+beforeAll(() => {
+  fetchMock.activate();
+  fetchMock.disableNetConnect();
+});
+afterEach(() => fetchMock.assertNoPendingInterceptors());
 
 // Fixed window (Mon Jul 6 – Sun Jul 12 2026) so weekday assertions are stable.
 const WINDOW = {
@@ -309,6 +322,14 @@ describe('synthesis: standard feeds', () => {
 
 describe('link-rule (override) routes', () => {
   it('rejects override rules on standard feeds; orders inserts; reorders; deletes', async () => {
+    // One implicit ingest per feed (standard + exception), triggered by each
+    // feed's first member-link creation below.
+    fetchMock
+      .get('https://f')
+      .intercept({ path: (p: string) => p === '/x.ics' || p === '/e.ics', method: 'GET' })
+      .reply(200, EMPTY_ICS, { headers: { 'content-type': 'text/calendar' } })
+      .times(2);
+
     const fam = await setupFamily('rules-routes@example.com');
     const db = getDb(env.DB);
     const standard = (
