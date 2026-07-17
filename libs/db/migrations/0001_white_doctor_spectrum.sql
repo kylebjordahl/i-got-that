@@ -1,0 +1,1 @@
+ALTER TABLE `tasks` ADD `duration_override_min` integer;

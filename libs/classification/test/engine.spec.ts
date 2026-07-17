@@ -8,6 +8,7 @@ import {
   synthesizeException,
   synthesizeStandard,
   taskRulesForCalendar,
+  transitionWindow,
   wallTimeToUtc,
   type OverrideRuleLike,
   type SourceOccurrence,
@@ -269,5 +270,28 @@ describe('generateTaskIntents', () => {
     );
     expect(intents[0]?.dtend).toBeNull();
     expect(intents[1]?.dtstart).toEqual(span.dtstart); // pickup falls back to start
+  });
+});
+
+describe('transitionWindow', () => {
+  const anchor = new Date('2026-07-06T15:30:00Z');
+
+  it('a positive length extends forward from the anchor', () => {
+    const w = transitionWindow(anchor, 30);
+    expect(w.dtstart).toEqual(anchor);
+    expect(w.dtend?.toISOString()).toBe('2026-07-06T16:00:00.000Z');
+  });
+
+  it('a negative length reverses the window before the anchor, keeping it ordered', () => {
+    const w = transitionWindow(anchor, -20);
+    expect(w.dtstart.toISOString()).toBe('2026-07-06T15:10:00.000Z');
+    expect(w.dtend).toEqual(anchor);
+    expect(w.dtstart.getTime()).toBeLessThan(w.dtend!.getTime());
+  });
+
+  it('zero collapses to a point in time', () => {
+    const w = transitionWindow(anchor, 0);
+    expect(w.dtstart).toEqual(anchor);
+    expect(w.dtend).toBeNull();
   });
 });

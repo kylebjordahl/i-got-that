@@ -156,6 +156,12 @@ tests (no binding) still serve the API directly at the root.
 Production mirrors this on `igt.kylebjordahl.com` (`routes` + `assets` blocks
 under `env.production`) — same prerequisites apply to that zone.
 
+**Telling the two apart:** every client build (web and iOS) also gets
+`--dart-define=APP_ENV=staging|production`. Staging draws a small amber "BETA"
+ribbon across the app's top-right corner (`apps/mobile/lib/widgets/env_ribbon.dart`);
+production and local builds don't. Because `APP_ENV` is baked into the bundle,
+the CI web-client cache is keyed per environment — keep it that way.
+
 ### 8. iOS / TestFlight (staging + production)
 
 `deploy.yml` has a `testflight` job (macOS runner) that archives, signs, and
