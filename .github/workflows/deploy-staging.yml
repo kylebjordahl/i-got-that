@@ -9,7 +9,12 @@ on:
     branches: [main]
 
 concurrency:
-  group: deploy-staging
+  # Shared with deploy-production.yml: if a production release is published
+  # while a staging deploy is in flight (or vice versa), the later one queues
+  # behind the earlier one instead of racing it. deploy-production.yml's
+  # verify job relies on this — it only needs to poll briefly for event lag,
+  # not sit through an entire in-progress staging deploy.
+  group: deploy
   cancel-in-progress: false
 
 jobs:
