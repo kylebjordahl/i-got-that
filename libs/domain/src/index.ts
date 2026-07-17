@@ -332,6 +332,18 @@ export const ConvertTaskInput = z.object({
 });
 export type ConvertTaskInput = z.infer<typeof ConvertTaskInput>;
 
+/**
+ * Set a transition task's (pickup / drop-off) window length, in minutes from
+ * its anchor — the parent event's start for a drop-off, its end for a pickup.
+ * A positive value extends the window forward from the anchor; a negative value
+ * reverses it, extending backward from the anchor (the opposite direction); 0
+ * collapses it to a point in time. Capped at ±24h.
+ */
+export const SetTaskDurationInput = z.object({
+  durationMinutes: z.number().int().gte(-1440).lte(1440),
+});
+export type SetTaskDurationInput = z.infer<typeof SetTaskDurationInput>;
+
 // --- Override rules (the feed's schedule pipeline) ------------------------
 
 /** `cancel_day` / `ignore`: no parameters. */

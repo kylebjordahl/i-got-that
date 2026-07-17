@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models.dart';
 import '../state/auth.dart';
@@ -69,12 +70,19 @@ Future<void> showTaskActions(
       ? 'unclaimed'
       : (owners.length == 1 ? owners.first : '${owners.length} assigned');
 
+  // Transition tasks in scope get an editable duration field (keyboard-aware,
+  // so the sheet lifts above it). A single tag/row scopes to one; a Plan block
+  // tap scopes to the whole pair.
+  final transitions = scope.where((t) => t.isTransition).toList();
+
   await showModalBottomSheet<void>(
     context: context,
     useRootNavigator: true,
     showDragHandle: true,
+    isScrollControlled: true,
     builder: (sheetCtx) => SingleChildScrollView(
-      padding: const EdgeInsets.fromLTRB(22, 4, 22, 28),
+      padding: EdgeInsets.fromLTRB(
+          22, 4, 22, 28 + MediaQuery.of(sheetCtx).viewInsets.bottom),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -127,6 +135,29 @@ Future<void> showTaskActions(
                 ],
               ],
             ),
+          ],
+          if (transitions.isNotEmpty) ...[
+            const SizedBox(height: 20),
+            Text('DURATION', style: AppText.eyebrow()),
+            const SizedBox(height: 10),
+            for (final t in transitions)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 4),
+                child: _DurationField(
+                  task: t,
+                  // Label each field when the scope holds both edges (a block
+                  // tap); a lone tag/row needs no disambiguation.
+                  showLabel: transitions.length > 1,
+                  onSubmit: (minutes) {
+                    Navigator.of(sheetCtx).pop();
+                    _run(
+                        context,
+                        ref,
+                        (api, fid) => api.setTaskDuration(fid, t.id, minutes),
+                        'Duration updated');
+                  },
+                ),
+              ),
           ],
           const SizedBox(height: 20),
           AppCard(
@@ -343,6 +374,96 @@ class _SegTile extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+}
+
+/// An editable window length for a single transition (pickup / drop-off) task.
+/// The value is signed minutes measured from the task's anchor — the parent
+/// event's start (drop-off) or end (pickup). A negative value runs the window
+/// the opposite direction (before the anchor). The subtext spells this out.
+class _DurationField extends StatefulWidget {
+  const _DurationField({
+    required this.task,
+    required this.showLabel,
+    required this.onSubmit,
+  });
+
+  final TaskItem task;
+  final bool showLabel;
+  final ValueChanged<int> onSubmit;
+
+  @override
+  State<_DurationField> createState() => _DurationFieldState();
+}
+
+class _DurationFieldState extends State<_DurationField> {
+  late final TextEditingController _controller =
+      TextEditingController(text: widget.task.signedDurationMin.toString());
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  /// The clock point the window hangs off of, in words.
+  String get _anchorWord => widget.task.type == 'dropoff' ? 'start' : 'end';
+
+  void _submit() {
+    final minutes = int.tryParse(_controller.text.trim());
+    if (minutes == null) return;
+    widget.onSubmit(minutes);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        if (widget.showLabel) ...[
+          Text(widget.task.typeLabel, style: AppText.subtitle),
+          const SizedBox(height: 6),
+        ],
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Expanded(
+              child: TextField(
+                controller: _controller,
+                keyboardType:
+                    const TextInputType.numberWithOptions(signed: true),
+                inputFormatters: [
+                  FilteringTextInputFormatter.allow(RegExp(r'^-?\d*')),
+                ],
+                onSubmitted: (_) => _submit(),
+                style: font(kBodyFont, 15, 600, color: AppColors.textPrimary),
+                decoration: const InputDecoration(
+                  suffixText: 'min',
+                  isDense: true,
+                ),
+              ),
+            ),
+            const SizedBox(width: 10),
+            FilledButton(
+              onPressed: _submit,
+              style: FilledButton.styleFrom(
+                backgroundColor: AppColors.tint(AppColors.indigo, 0.22),
+                foregroundColor: AppColors.indigo,
+                elevation: 0,
+                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+              ),
+              child: const Text('Set'),
+            ),
+          ],
+        ),
+        const SizedBox(height: 6),
+        Text(
+          'Minutes from the event $_anchorWord. '
+          'Use a negative value to run it the opposite direction.',
+          style: AppText.subtitle,
+        ),
+      ],
     );
   }
 }
