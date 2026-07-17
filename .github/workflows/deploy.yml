@@ -70,7 +70,7 @@ jobs:
             exit 1
           fi
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref }}
       - uses: ./.github/actions/pnpm-install
@@ -87,7 +87,7 @@ jobs:
       # about) lines up with the TestFlight build for the same workflow run.
       - name: Restore built web client
         id: web-client-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: apps/api/public/app
           key: >-
@@ -124,7 +124,7 @@ jobs:
           fi
           echo "Serving $(find apps/api/public/app -type f | wc -l) web asset file(s)."
 
-      - uses: hashicorp/setup-terraform@v3
+      - uses: hashicorp/setup-terraform@v4
       - name: Terraform apply (${{ inputs.environment }} infra)
         working-directory: infra/terraform
         env:
@@ -161,7 +161,7 @@ jobs:
     outputs:
       changed: ${{ steps.mobile-changed.outputs.changed }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref }}
           # Full history: the last successful TestFlight build may be many
@@ -240,7 +240,7 @@ jobs:
       FLAVOR: ${{ inputs.environment == 'production' && 'prod' || 'staging' }}
       API_BASE_URL: ${{ inputs.environment == 'production' && 'https://igt.kylebjordahl.com/api' || 'https://staging.igt.kylebjordahl.com/api' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref }}
 
@@ -269,7 +269,7 @@ jobs:
           flutter pub get
 
       - name: Import distribution signing certificate
-        uses: apple-actions/import-codesign-certs@v3
+        uses: apple-actions/import-codesign-certs@v7
         with:
           p12-file-base64: ${{ secrets.IOS_DIST_CERT_P12_BASE64 }}
           p12-password: ${{ secrets.IOS_DIST_CERT_PASSWORD }}
@@ -312,7 +312,7 @@ jobs:
           echo "path=apps/mobile/$ipa_path" >> "$GITHUB_OUTPUT"
 
       - name: Upload to TestFlight
-        uses: apple-actions/upload-testflight-build@v3
+        uses: apple-actions/upload-testflight-build@v5
         with:
           app-path: ${{ steps.locate-ipa.outputs.path }}
           issuer-id: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
