@@ -14,8 +14,9 @@ import 'task_actions_sheet.dart';
 
 const _hourPx = 42.0;
 const _labelWidth = 46.0;
-// Edge-tab (drop-off / pick-up) height. Tall enough for the compact "Claim"
-// pill; tabs straddle their block's edge by half this and stack by the full.
+// Edge-tab (drop-off / pick-up) height. Tall enough for the compact label +
+// owner avatar; tabs straddle their block's edge by half this and stack by the
+// full.
 const _tabHeight = 32.0;
 // Left indentation for edge tabs so they don't flush-align with the block
 // underneath — 1.5x the tab's pill corner radius (half its height).
@@ -27,8 +28,7 @@ const _defaultStartHour = 7;
 const _defaultEndHour = 19; // 7 PM
 
 /// One item on the Plan grid: a unified-calendar event (synthesized / human /
-/// claimed — colored by whose calendar it's on) or an unowned task (dashed,
-/// claimable inline).
+/// claimed — colored by whose calendar it's on) or an unowned task (dashed).
 class _PlanItem {
   _PlanItem.event(CalendarEventItem this.event) : task = null;
   _PlanItem.task(TaskItem this.task) : event = null;
@@ -45,7 +45,7 @@ class _PlanItem {
 /// Plan — an iOS-Calendar-style day view of every member's unified calendar.
 /// Kids and caretakers each have a calendar chip; a claimed task shows up as an
 /// event on the claimer's calendar (the recursion, visible), and unclaimed
-/// tasks render hatched with an inline Claim.
+/// tasks render hatched. Tapping any block or tab opens its management sheet.
 class PlanScreen extends ConsumerStatefulWidget {
   const PlanScreen({super.key});
 
@@ -144,14 +144,6 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
     return true;
   }
 
-  Future<void> _claim(String taskId) async {
-    final familyId = await ref.read(familyProvider.future);
-    await ref.read(apiClientProvider).assignTask(familyId, taskId);
-    ref.invalidate(allTasksProvider);
-    ref.invalidate(unownedTasksProvider);
-    ref.invalidate(calendarEventsProvider);
-  }
-
   Future<void> _refreshFeeds() async {
     setState(() => _refreshingFeeds = true);
     try {
@@ -231,9 +223,9 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
     }
 
     // An unowned attendance task's own block stands in for its source event
-    // (below) so it can carry the dashed/claimable treatment — rendering the
-    // source event too would duplicate it (the real "Fiddle practice" event
-    // plus a second, generic "Attendance" block for the same time).
+    // (below) so tapping it manages the task — rendering the source event too
+    // would duplicate it (the real "Fiddle practice" event plus a second,
+    // generic "Attendance" block for the same time).
     final unownedAttendanceEventIds = {
       for (final t in allTasks)
         if (t.isUnowned && t.type == 'attendance' && taskVisible(t) && t.calendarEventId != null)
@@ -462,7 +454,6 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
               task: t,
               accent: personColor(byId[t.familyMemberId] ?? _fallbackMember),
               owner: t.status == 'owned' ? byId[t.ownerMemberId] : null,
-              onClaim: t.isUnowned ? () => _claim(t.id) : null,
               // Tapping a tag manages just this one drop-off / pick-up task.
               onTap: () => showTaskActions(context, ref, t),
             ),
@@ -500,7 +491,6 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
             attendees: attendeesOf(p.item),
             hasTopTab: dropoffs.isNotEmpty,
             hasBottomTab: pickups.isNotEmpty,
-            onClaim: p.item.task != null ? () => _claim(p.item.task!.id) : null,
             // Tapping the event block manages every task the event generates —
             // switch its type and (re)assign both the drop-off and pick-up.
             onTapBlock: () {
@@ -790,7 +780,7 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
         final top = (((ev.start.hour + ev.start.minute / 60) - _gridStart) * _hourPx)
             .clamp(0.0, _gridHeight);
         final height = _isBlock(ev.item)
-            // Tall enough for the title + time + a Claim/avatar footer.
+            // Tall enough for the title + time + an attendee-avatar footer.
             ? (ev.end.difference(ev.start).inMinutes / 60 * _hourPx)
                 .clamp(76.0, _gridHeight)
             : 34.0;
@@ -1024,7 +1014,6 @@ class _ItemBlock extends StatelessWidget {
     required this.attendees,
     required this.hasTopTab,
     required this.hasBottomTab,
-    required this.onClaim,
     this.sourceEvent,
     this.onTapBlock,
   });
@@ -1037,7 +1026,6 @@ class _ItemBlock extends StatelessWidget {
   final List<Member> attendees;
   final bool hasTopTab;
   final bool hasBottomTab;
-  final VoidCallback? onClaim;
   final VoidCallback? onTapBlock;
 
   @override
@@ -1048,14 +1036,13 @@ class _ItemBlock extends StatelessWidget {
     final start = it.start;
     final end = it.end;
     final human = e?.isHuman ?? sourceEvent?.isHuman ?? false;
-    final claimable = t != null && t.isUnowned;
 
     final summary = e != null ? e.displaySummary : taskTitle(t!, sourceEvent);
     final personName = attendees.isNotEmpty ? attendees.first.relationName : 'child';
 
     final hasRange = end != null && end.isAfter(start);
     final subtitle =
-        '${hasRange ? 'Attendance · ${friendlyRange(start, end)}' : clockShort(start)}'
+        '${hasRange ? friendlyRange(start, end) : clockShort(start)}'
         '${human ? ' · manual' : ''}';
 
     return GestureDetector(
@@ -1073,49 +1060,39 @@ class _ItemBlock extends StatelessWidget {
           borderRadius: BorderRadius.circular(14),
           border: Border.all(color: accent.withValues(alpha: 0.55)),
         ),
-        child: Stack(
-          fit: StackFit.expand,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Column(
-              mainAxisSize: MainAxisSize.min,
+            Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Expanded(
-                      child: Text.rich(
-                        TextSpan(children: [
-                          TextSpan(
-                              text: summary,
-                              style: font(kBodyFont, 12.5, 600,
-                                  color: AppColors.textPrimary)),
-                          TextSpan(
-                              text: ' · $personName',
-                              style: font(kBodyFont, 12.5, 700, color: accent)),
-                        ]),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ),
-                    if (attendees.isNotEmpty) ...[
-                      const SizedBox(width: 6),
-                      _attendeeAvatars(),
-                    ],
-                  ],
-                ),
-                const SizedBox(height: 2),
-                Text(subtitle,
+                Expanded(
+                  child: Text.rich(
+                    TextSpan(children: [
+                      TextSpan(
+                          text: summary,
+                          style: font(kBodyFont, 12.5, 600,
+                              color: AppColors.textPrimary)),
+                      TextSpan(
+                          text: ' · $personName',
+                          style: font(kBodyFont, 12.5, 700, color: accent)),
+                    ]),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: font(kBodyFont, 11, 500, color: AppColors.textTertiary)),
+                  ),
+                ),
+                if (attendees.isNotEmpty) ...[
+                  const SizedBox(width: 6),
+                  _attendeeAvatars(),
+                ],
               ],
             ),
-            if (claimable)
-              Align(
-                alignment: Alignment.bottomRight,
-                child: PillButton(label: 'Claim', compact: true, onPressed: onClaim),
-              ),
+            const SizedBox(height: 2),
+            Text(subtitle,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: font(kBodyFont, 11, 500, color: AppColors.textTertiary)),
           ],
         ),
       ),
@@ -1140,20 +1117,18 @@ class _ItemBlock extends StatelessWidget {
 
 /// A drop-off / pick-up transition rendered as a tab clipped onto the top or
 /// bottom edge of its parent event block (6c). Solid in the source colour with
-/// the owner's avatar when claimed; a dashed amber outline with a "Claim" pill
-/// when it still needs an owner.
+/// the owner's avatar when claimed; a dashed amber outline when it still needs
+/// an owner.
 class _EdgeTab extends StatelessWidget {
   const _EdgeTab({
     required this.task,
     required this.accent,
     required this.owner,
-    required this.onClaim,
     this.onTap,
   });
   final TaskItem task;
   final Color accent;
   final Member? owner;
-  final VoidCallback? onClaim;
   final VoidCallback? onTap;
 
   String get _label {
@@ -1179,22 +1154,20 @@ class _EdgeTab extends StatelessWidget {
           child: Text(_label,
               maxLines: 1, overflow: TextOverflow.ellipsis, style: labelStyle),
         ),
-        const SizedBox(width: 6),
-        if (claimed)
+        if (claimed) ...[
+          const SizedBox(width: 6),
           PersonAvatar(
               initial: initialFor(owner!.relationName),
               color: personColor(owner!),
-              size: 18)
-        else
-          PillButton(label: 'Claim', compact: true, onPressed: onClaim),
+              size: 18),
+        ],
       ],
     );
 
-    // A rounded background (no hard clip) so the trailing Claim pill / avatar
-    // is never cut by the pill's rounded end. The unclaimed tab keeps a wider
-    // right inset so the Claim pill sits inside the dashed outline.
+    // A rounded background (no hard clip) so the trailing owner avatar is never
+    // cut by the pill's rounded end.
     final inner = Padding(
-      padding: EdgeInsets.fromLTRB(10, 2, claimed ? 10 : 14, 2),
+      padding: const EdgeInsets.fromLTRB(10, 2, 10, 2),
       child: row,
     );
 

@@ -219,7 +219,7 @@ void main() {
     ];
     final tasks = [
       // A claimed drop-off (top tab, owner avatar) and an unowned pick-up
-      // (bottom tab, Claim) — both attached to the school event, not blocks.
+      // (bottom tab, no button) — both attached to the school event, not blocks.
       TaskItem(id: 'drop', familyMemberId: 'theo', type: 'dropoff', start: at(8, 0), status: 'owned', ownerMemberId: 'dad', createdVia: 'generated', calendarEventId: 'school'),
       TaskItem(id: 'pick', familyMemberId: 'theo', type: 'pickup', start: at(15, 0), status: 'unowned', createdVia: 'generated', calendarEventId: 'school'),
     ];
@@ -243,10 +243,10 @@ void main() {
     ));
     await tester.pumpAndSettle();
 
-    // Both transitions are edge tabs; only the unowned pick-up carries a Claim.
+    // Both transitions render as edge tabs; neither carries a Claim button.
     expect(find.text('Drop-off · 8:00'), findsOneWidget);
     expect(find.text('Pick-up · 3:00'), findsOneWidget);
-    expect(find.text('Claim'), findsOneWidget);
+    expect(find.text('Claim'), findsNothing);
     expect(tester.takeException(), isNull);
   });
 
@@ -326,7 +326,7 @@ void main() {
 
     // Only the source-event block survives (its subtitle appears once, not
     // twice), and it carries the claimer as a second attendee avatar.
-    expect(find.text('Attendance · 3:15 – 4:15 PM'), findsOneWidget);
+    expect(find.text('3:15 – 4:15 PM'), findsOneWidget);
     expect(find.text('K'), findsOneWidget); // the claimer's attendee avatar
     expect(tester.takeException(), isNull);
   });
@@ -366,10 +366,10 @@ void main() {
     await tester.pumpAndSettle();
 
     // One block, titled with the real event summary (never the generic
-    // "Attendance" fallback), with an inline Claim affordance.
+    // "Attendance" fallback), with no inline Claim button.
     expect(find.textContaining('Fiddle practice'), findsOneWidget);
     expect(find.text('Attendance'), findsNothing);
-    expect(find.text('Claim'), findsOneWidget);
+    expect(find.text('Claim'), findsNothing);
     expect(tester.takeException(), isNull);
   });
 
@@ -404,7 +404,7 @@ void main() {
 
     // Tap the block body (its subtitle, clear of the edge tabs) — previously a
     // plain event block had no task and tapping did nothing.
-    await tester.tap(find.text('Attendance · 8:30 AM – 3:00 PM'));
+    await tester.tap(find.text('8:30 AM – 3:00 PM'));
     await tester.pumpAndSettle();
 
     // The management sheet opens: change the event's type, and claim both the
