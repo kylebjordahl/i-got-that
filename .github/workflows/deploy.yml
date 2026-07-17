@@ -78,9 +78,11 @@ jobs:
       # Build the Flutter web client and stage it under apps/api/public/app so
       # the Worker serves it (same origin) at /app. API base is the relative
       # /api on that origin. The built bundle is cached and keyed on the mobile
-      # sources: a backend/infra-only deploy restores it and skips the Flutter
-      # SDK download + web build (the slowest part of the deploy). Only a change
-      # under apps/mobile busts the cache and triggers a rebuild.
+      # sources *and the environment* (APP_ENV is baked into the bundle — it
+      # drives the staging-only beta ribbon — so the two envs must never share a
+      # cache entry): a backend/infra-only deploy restores it and skips the
+      # Flutter SDK download + web build (the slowest part of the deploy). Only
+      # a change under apps/mobile busts the cache and triggers a rebuild.
       #
       # --build-number matches the `testflight` job below (same
       # github.run_number), so the build number shown in-app (Me → Help &
@@ -91,8 +93,8 @@ jobs:
         with:
           path: apps/api/public/app
           key: >-
-            web-client-${{ hashFiles('apps/mobile/lib/**', 'apps/mobile/web/**',
-            'apps/mobile/pubspec.yaml', 'apps/mobile/pubspec.lock') }}
+            web-client-${{ inputs.environment }}-${{ hashFiles('apps/mobile/lib/**',
+            'apps/mobile/web/**', 'apps/mobile/pubspec.yaml', 'apps/mobile/pubspec.lock') }}
       - uses: subosito/flutter-action@v2
         if: steps.web-client-cache.outputs.cache-hit != 'true'
         with:
@@ -105,6 +107,7 @@ jobs:
           flutter create . --platforms=web --project-name caretaker_app
           flutter pub get
           flutter build web --base-href /app/ --dart-define=API_BASE_URL=/api \
+            --dart-define=APP_ENV=${{ inputs.environment }} \
             --build-number=${{ github.run_number }}
       - name: Stage web assets
         if: steps.web-client-cache.outputs.cache-hit != 'true'
@@ -289,6 +292,7 @@ jobs:
           flutter build ipa --flavor "$FLAVOR" \
             --export-options-plist "ios/ExportOptions-$FLAVOR.plist" \
             --dart-define=API_BASE_URL="$API_BASE_URL" \
+            --dart-define=APP_ENV="${{ inputs.environment }}" \
             --build-number=${{ github.run_number }}
 
       # `github.run_number` is a small monotonic int, satisfying TestFlight's
