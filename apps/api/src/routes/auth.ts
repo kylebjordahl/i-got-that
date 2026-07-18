@@ -1,6 +1,7 @@
 import { getDb } from '@igt/db';
 import {
   AppleSignInInput,
+  GoogleSignInInput,
   MagicLinkRequestInput,
   MagicLinkVerifyInput,
 } from '@igt/domain';
@@ -10,6 +11,7 @@ import type { HonoEnv } from '../env.js';
 import { verifyAppleIdentityToken, verifyAppleNotificationToken } from '../lib/apple.js';
 import { randomToken } from '../lib/crypto.js';
 import { connectGoogleAccount } from '../lib/google-account.js';
+import { verifyGoogleIdentityToken } from '../lib/google-identity.js';
 import {
   buildGoogleAuthorizeUrl,
   decodeGoogleIdToken,
@@ -76,6 +78,40 @@ function appleAudience(env: HonoEnv['Bindings']): string[] {
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean);
+}
+
+/** Allowed native Google `aud` values (iOS OAuth client ids), from GOOGLE_IOS_CLIENT_IDS. */
+function googleNativeAudience(env: HonoEnv['Bindings']): string[] {
+  return (env.GOOGLE_IOS_CLIENT_IDS ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+/**
+ * Redeem a native `serverAuthCode` for a refresh token and auto-connect the
+ * user's Google Calendar, mirroring the web redirect flow's behavior. A
+ * missing code, unconfigured Calendar OAuth, or a failed exchange is a no-op
+ * — calendar-connect never blocks the native login/link itself.
+ */
+async function autoConnectGoogleCalendarNative(
+  env: HonoEnv['Bindings'],
+  db: ReturnType<typeof getDb>,
+  opts: { userId: string; serverAuthCode?: string; email?: string },
+): Promise<void> {
+  if (!opts.serverAuthCode || !env.KEK || !googleOAuthConfigured(env)) return;
+  try {
+    const tokens = await exchangeGoogleCode(env, { code: opts.serverAuthCode });
+    if (tokens.refreshToken) {
+      await connectGoogleAccount(db, env.KEK, {
+        userId: opts.userId,
+        refreshToken: tokens.refreshToken,
+        email: opts.email,
+      });
+    }
+  } catch (err) {
+    console.error('google calendar auto-connect (native) failed', err);
+  }
 }
 
 /** The signing secret for the state cookie — reuses the per-env KEK. */
@@ -261,6 +297,47 @@ authRoutes.post('/apple/callback', async (c) => {
   const token = await createSession(db, user.id);
   setSessionCookie(c, token);
   return back(`session=${encodeURIComponent(token)}`);
+});
+
+/**
+ * Sign in with Google (native). The iOS client (`google_sign_in`) obtains an
+ * identity token and posts it here; we verify it against Google's JWKS and
+ * the configured iOS OAuth client id(s), then issue a session — the native
+ * counterpart of `/apple`. An optional `serverAuthCode` (requested alongside
+ * the identity token via `serverClientId` = the Web OAuth client) is redeemed
+ * for a refresh token and used to auto-connect the user's Google Calendar,
+ * mirroring the web redirect flow's "one consent, two outcomes" behavior — a
+ * calendar-connect failure never blocks login.
+ */
+authRoutes.post('/google', async (c) => {
+  const audience = googleNativeAudience(c.env);
+  if (audience.length === 0) {
+    return c.json({ error: 'google_native_not_configured' }, 501);
+  }
+  const parsed = GoogleSignInInput.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) return c.json({ error: 'invalid' }, 400);
+
+  let identity;
+  try {
+    identity = await verifyGoogleIdentityToken(parsed.data.idToken, { audience });
+  } catch (err) {
+    return c.json({ error: 'invalid_google_token', message: String(err) }, 401);
+  }
+
+  const db = getDb(c.env.DB);
+  const user = await findOrCreateUserByGoogle(db, identity.sub, identity.email);
+  await autoConnectGoogleCalendarNative(c.env, db, {
+    userId: user.id,
+    serverAuthCode: parsed.data.serverAuthCode,
+    email: identity.email,
+  });
+
+  const token = await createSession(db, user.id);
+  setSessionCookie(c, token);
+  return c.json({
+    sessionToken: token,
+    user: { id: user.id, username: user.username, displayName: user.displayName },
+  });
 });
 
 /**
@@ -530,6 +607,41 @@ authRoutes.post('/link/apple', authMiddleware, async (c) => {
 
   const result = await linkAppleIdentity(getDb(c.env.DB), user.id, identity.sub);
   if (!result.ok) return c.json({ error: result.error }, 409);
+  return c.json({ ok: true, status: result.status });
+});
+
+/**
+ * Link a native Sign in with Google identity to the current user. Same token
+ * verification as `/google`, but attaches to the signed-in user instead of
+ * starting a session; an optional `serverAuthCode` still auto-connects the
+ * calendar. (Web links via the `/google/start?link=1` redirect.)
+ */
+authRoutes.post('/link/google', authMiddleware, async (c) => {
+  const audience = googleNativeAudience(c.env);
+  if (audience.length === 0) {
+    return c.json({ error: 'google_native_not_configured' }, 501);
+  }
+  const user = c.get('user');
+  const parsed = GoogleSignInInput.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) return c.json({ error: 'invalid' }, 400);
+
+  let identity;
+  try {
+    identity = await verifyGoogleIdentityToken(parsed.data.idToken, { audience });
+  } catch (err) {
+    return c.json({ error: 'invalid_google_token', message: String(err) }, 401);
+  }
+
+  const db = getDb(c.env.DB);
+  const result = await linkGoogleIdentity(db, user.id, identity.sub);
+  if (!result.ok) return c.json({ error: result.error }, 409);
+
+  await autoConnectGoogleCalendarNative(c.env, db, {
+    userId: user.id,
+    serverAuthCode: parsed.data.serverAuthCode,
+    email: identity.email,
+  });
+
   return c.json({ ok: true, status: result.status });
 });
 
