@@ -9,6 +9,7 @@ import '../state/nav.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_text.dart';
 import '../theme/person_colors.dart';
+import '../widgets/app_bottom_nav.dart';
 import '../widgets/primitives.dart';
 import '../widgets/settings.dart';
 import '../widgets/slide_to_confirm.dart';
@@ -299,7 +300,10 @@ Future<void> _createAndOpen(BuildContext context, WidgetRef ref, {required bool 
     );
   } catch (e) {
     if (context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed: $e')));
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('Failed: $e'),
+        margin: snackBarMarginAboveNav(context),
+      ));
     }
   }
 }

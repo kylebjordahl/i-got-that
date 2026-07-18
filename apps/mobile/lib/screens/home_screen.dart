@@ -8,6 +8,7 @@ import '../theme/app_text.dart';
 import '../theme/person_colors.dart';
 import '../util/format.dart';
 import '../util/task_visuals.dart';
+import '../widgets/app_bottom_nav.dart';
 import '../widgets/primitives.dart';
 import '../widgets/settings.dart';
 import '../widgets/task_row.dart';
@@ -71,8 +72,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       await ref.read(allTasksProvider.future);
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('Refresh failed: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Refresh failed: $e'),
+          margin: snackBarMarginAboveNav(context),
+        ));
       }
     } finally {
       if (mounted) setState(() => _refreshingFeeds = false);
@@ -381,8 +384,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       _refresh();
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('Couldn\'t open rule editor: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Couldn\'t open rule editor: $e'),
+          margin: snackBarMarginAboveNav(context),
+        ));
       }
     }
   }
@@ -394,8 +399,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       _refresh();
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('Dismiss failed: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Dismiss failed: $e'),
+          margin: snackBarMarginAboveNav(context),
+        ));
       }
     }
   }
