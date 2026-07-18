@@ -40,19 +40,11 @@ class _WelcomeStepState extends ConsumerState<WelcomeStep> {
       ? Future.sync(() => ref.read(authControllerProvider.notifier).loginWithApple())
       : ref.read(authControllerProvider.notifier).loginWithAppleNative());
 
-  void _google() {
-    if (kIsWeb) {
+  void _google() => _run(() => kIsWeb
       // Web redirect flow: the same consent grants calendar access, so signing
       // in with Google also connects the user's Google Calendar automatically.
-      ref.read(authControllerProvider.notifier).loginWithGoogle();
-      return;
-    }
-    // Native Google sign-in isn't wired yet (mirrors native Apple's own TODO);
-    // on iOS the deployed app is used via the web flow.
-    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-      content: Text('Google sign-in is available on the web app — use Apple or email here.'),
-    ));
-  }
+      ? Future.sync(() => ref.read(authControllerProvider.notifier).loginWithGoogle())
+      : ref.read(authControllerProvider.notifier).loginWithGoogleNative());
 
   Future<void> _magicLink() async {
     final email = await _promptEmail();
