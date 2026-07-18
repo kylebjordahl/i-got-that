@@ -151,6 +151,7 @@ describe('Sign in with Google — redirect flow', () => {
     );
     expect(url.searchParams.get('scope')).toContain('openid');
     expect(url.searchParams.get('scope')).toContain('calendar.events');
+    expect(url.searchParams.get('scope')).toContain('calendar.readonly');
     expect(res.headers.get('set-cookie')).toContain('igt_google_oauth=');
   });
 

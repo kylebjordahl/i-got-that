@@ -37,6 +37,12 @@
         // SECRET via `wrangler secret put GOOGLE_OAUTH_CLIENT_SECRET`. Empty ⇒ the
         // Google OAuth flow is disabled (paste-token still works). See docs/AUTH.md.
         "GOOGLE_OAUTH_CLIENT_ID": "",
+        // Allowed Google `aud` values for native Sign in with Google (comma-
+        // separated iOS OAuth client ids, one per flavor — distinct from
+        // GOOGLE_OAUTH_CLIENT_ID above). Empty ⇒ native Google login disabled
+        // (web flow unaffected). Set per env below once the iOS OAuth clients
+        // exist in the Cloud Console. See docs/AUTH.md.
+        "GOOGLE_IOS_CLIENT_IDS": "",
         // Apple App ID prefixes for iOS Universal Links (invite deep links),
         // comma-separated `<TeamID>.<bundleId>` (e.g. "ABCDE12345.com.kylebjordahl.igt").
         // Served at /.well-known/apple-app-site-association. Empty ⇒ Universal
@@ -68,7 +74,8 @@
                 // Allowed Apple `aud`s: the native iOS bundle id + the web Services ID.
                 "APPLE_CLIENT_IDS": "com.kylebjordahl.igt.staging,com.kylebjordahl.igt.web.staging",
                 "APPLE_WEB_CLIENT_ID": "com.kylebjordahl.igt.web.staging",
-                "GOOGLE_OAUTH_CLIENT_ID": "",
+                "GOOGLE_OAUTH_CLIENT_ID": "503268168924-2tdfajihn62m5o051jjdjnkfjrg921o1.apps.googleusercontent.com",
+                "GOOGLE_IOS_CLIENT_IDS": "503268168924-honi8hhgikagd2gbu2tpb9qrf0n6eqcm.apps.googleusercontent.com",
                 // Fill in your 10-char Apple Team ID: "<TeamID>.com.kylebjordahl.igt.staging".
                 "APPLE_APP_ID_PREFIX": "WG5R9LUU9X.com.kylebjordahl.igt.staging",
             },
@@ -126,7 +133,8 @@
                 // Allowed Apple `aud`s: the native iOS bundle id + the web Services ID.
                 "APPLE_CLIENT_IDS": "com.kylebjordahl.igt,com.kylebjordahl.igt.web",
                 "APPLE_WEB_CLIENT_ID": "com.kylebjordahl.igt.web",
-                "GOOGLE_OAUTH_CLIENT_ID": "",
+                "GOOGLE_OAUTH_CLIENT_ID": "503268168924-5ogd6crcl1p1pfpoe3kdtqbo9nqhivpj.apps.googleusercontent.com",
+                "GOOGLE_IOS_CLIENT_IDS": "503268168924-gk8d4c4dfjtkmi2ol3t63usi089h1uvv.apps.googleusercontent.com",
                 // Fill in your 10-char Apple Team ID: "<TeamID>.com.kylebjordahl.igt".
                 "APPLE_APP_ID_PREFIX": "WG5R9LUU9X.com.kylebjordahl.igt",
             },

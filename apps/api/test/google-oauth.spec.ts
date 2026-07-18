@@ -38,7 +38,8 @@ describe('Google OAuth', () => {
     expect(p.get('access_type')).toBe('offline');
     expect(p.get('prompt')).toBe('consent');
     expect(p.get('scope')).toContain('calendar.events');
-    // freebusy.query (busy-mode feeds) is NOT covered by calendar.events.
+    expect(p.get('scope')).toContain('calendar.readonly');
+    // freebusy.query (busy-mode feeds) is NOT covered by the other two scopes.
     expect(p.get('scope')).toContain('calendar.freebusy');
     expect(p.get('state')).toBe('s1');
   });
@@ -52,6 +53,7 @@ describe('Google OAuth', () => {
     expect(scope).toContain('email');
     expect(scope).toContain('profile');
     expect(scope).toContain('calendar.events');
+    expect(scope).toContain('calendar.readonly');
   });
 
   it('omits the OpenID scopes for a plain calendar consent', () => {

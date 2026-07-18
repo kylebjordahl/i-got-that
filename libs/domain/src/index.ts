@@ -171,6 +171,19 @@ export const AppleSignInInput = z.object({
 });
 export type AppleSignInInput = z.infer<typeof AppleSignInInput>;
 
+/**
+ * Sign in with Google (native): the identity token from the `google_sign_in`
+ * SDK, plus an optional one-time `serverAuthCode` (requested alongside it via
+ * `serverClientId`) redeemable for a refresh token — the native counterpart
+ * of the web redirect flow's "one consent, two outcomes" (identifies the user
+ * *and* auto-connects their Google Calendar).
+ */
+export const GoogleSignInInput = z.object({
+  idToken: z.string().min(1),
+  serverAuthCode: z.string().min(1).optional(),
+});
+export type GoogleSignInInput = z.infer<typeof GoogleSignInInput>;
+
 export const CreateFamilyInput = z.object({
   name: z.string().min(1).max(120),
   /** The creator's relation label within the new family (e.g. "mom"). */
