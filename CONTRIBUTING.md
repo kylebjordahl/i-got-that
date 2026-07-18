@@ -39,9 +39,17 @@ For dev setup, commands, and architecture, see **[AGENTS.md](AGENTS.md)**.
 
 ## Conventions
 
-- **Commits / PR titles**: short imperative summary, optionally
-  `area: summary` (e.g. `feat(delivery): …`, `fix: …`, `ci: …`). Explain the
-  *why* in the body for non-trivial changes.
+- **Commits / PR titles use [Conventional Commits](https://www.conventionalcommits.org/)**:
+  `type(scope): summary` — short imperative summary, scope optional (e.g.
+  `feat(delivery): …`, `fix(auth): …`, `ci: …`, `chore(api): …`). This isn't just
+  style: `deploy.yml`'s `testflight` job parses commit subjects since the last
+  tag to pick the next staging version (`feat` → minor, `fix`/anything else →
+  patch, `!` after the type/scope or a `BREAKING CHANGE` footer → major), so a
+  merge commit that doesn't follow the convention just falls out of that
+  detection (staging then falls back to the plain `git describe` form) rather
+  than breaking the build — but use the convention anyway so the staging
+  version stays meaningful. Explain the *why* in the body for non-trivial
+  changes.
 - **One concern per PR.** If you spot unrelated work, open an issue instead of
   expanding the PR.
 - **Don't commit secrets.** Credentials are envelope-encrypted server-side;
