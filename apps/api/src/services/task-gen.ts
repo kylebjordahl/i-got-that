@@ -156,6 +156,17 @@ export async function buildMemberTasks(
     );
 
   for (const event of dirty) {
+    // Busy blocks (`fb:` — free/busy firewall intervals) are opaque
+    // availability, never family logistics: they must not spawn claimable
+    // tasks even for members whose events otherwise generate them. Stamp the
+    // hash so the row doesn't stay dirty forever.
+    if (event.synthKey.startsWith('fb:')) {
+      await db
+        .update(calendarEvents)
+        .set({ tasksBuiltHash: event.contentHash })
+        .where(eq(calendarEvents.id, event.id));
+      continue;
+    }
     const fallback =
       (event.linkId && linkDefault.get(event.linkId)) || unifiedDefault;
     const resolution = resolveTaskResult(

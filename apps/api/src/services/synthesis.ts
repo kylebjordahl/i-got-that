@@ -18,6 +18,7 @@ import {
 import {
   DAY_MS,
   startOfUtcDay,
+  synthesizeBusy,
   synthesizeException,
   synthesizeStandard,
   type EventIntent,
@@ -290,9 +291,11 @@ export async function synthesizeFeed(
     };
 
     const engineResult =
-      feed.mode === 'exception'
-        ? synthesizeException(linkConfig, occurrences, rules, window, tz)
-        : synthesizeStandard(linkConfig, occurrences);
+      feed.mode === 'busy'
+        ? synthesizeBusy(linkConfig, occurrences)
+        : feed.mode === 'exception'
+          ? synthesizeException(linkConfig, occurrences, rules, window, tz)
+          : synthesizeStandard(linkConfig, occurrences);
 
     // Existing synthesized rows this link owns within the window (pd: rows are
     // keyed to the decision, not the link, and are never touched here).
@@ -308,7 +311,10 @@ export async function synthesizeFeed(
         ),
       );
     const linkOwnedExisting = existing.filter(
-      (e) => e.synthKey.startsWith('bl:') || e.synthKey.startsWith('ev:'),
+      (e) =>
+        e.synthKey.startsWith('bl:') ||
+        e.synthKey.startsWith('ev:') ||
+        e.synthKey.startsWith('fb:'),
     );
     const existingByKey = new Map(linkOwnedExisting.map((e) => [e.synthKey, e]));
     const desiredKeys = new Set(engineResult.events.map((e) => e.synthKey));
@@ -341,8 +347,13 @@ export async function synthesizeFeed(
   return result;
 }
 
-/** Summary stamped on baseline-day events (e.g. "Lincoln Elementary"). */
+/**
+ * Summary stamped on generated events: baseline days take the feed's name
+ * (e.g. "Lincoln Elementary"); busy blocks take the user's chosen label —
+ * the ONLY text a busy event ever carries.
+ */
 function baselineSummaryFor(feed: FeedRow): string {
+  if (feed.mode === 'busy') return feed.sourceCalendarName ?? 'Busy';
   return feed.sourceCalendarName ?? 'School day';
 }
 

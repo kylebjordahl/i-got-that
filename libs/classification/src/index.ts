@@ -278,6 +278,33 @@ export function synthesizeStandard(
 }
 
 /**
+ * Busy feed (the calendar-firewall input): occurrences are opaque availability
+ * intervals read via Google free/busy — they carry no titles or locations by
+ * construction. Each lands on the unified calendar as a detail-free block
+ * labeled with the link's summary ("Busy" when unnamed). No override rules
+ * apply and nothing ever pends; the interval itself is the whole payload.
+ */
+export function synthesizeBusy(
+  link: LinkConfigLike,
+  occurrences: SourceOccurrence[],
+): SynthesisResult {
+  return {
+    events: occurrences.map((occ) => ({
+      synthKey: `fb:${link.id}:${occ.id}`,
+      sourceEventId: occ.id,
+      matchedRuleId: null,
+      dtstart: occ.dtstart,
+      dtend: occ.dtend,
+      allDay: occ.allDay,
+      summary: link.baselineSummary ?? 'Busy',
+      location: null,
+      description: null,
+    })),
+    pending: [],
+  };
+}
+
+/**
  * Exception-only feed: normal days come from the link's baseline (weekday mask
  * + day start/end), feed events apply schedule overrides. Per covered day the
  * winning (lowest-position) rule decides: `cancel_day` drops the day's baseline

@@ -24,6 +24,34 @@ describe('domain schemas', () => {
     ).toThrow();
   });
 
+  it("restricts mode 'busy' to google-kind feeds", () => {
+    expect(
+      CreateFeedInput.safeParse({
+        kind: 'google',
+        mode: 'busy',
+        externalAccountId: 'acct-1',
+        sourceCalendarId: 'kyle@work.example',
+      }).success,
+    ).toBe(true);
+    // The intervals-only guarantee comes from freebusy.query; no other
+    // transport qualifies.
+    expect(
+      CreateFeedInput.safeParse({
+        kind: 'ics',
+        mode: 'busy',
+        url: 'https://x/c.ics',
+      }).success,
+    ).toBe(false);
+    expect(
+      CreateFeedInput.safeParse({
+        kind: 'caldav',
+        mode: 'busy',
+        externalAccountId: 'acct-1',
+        sourceCalendarId: 'https://caldav.example/cal/',
+      }).success,
+    ).toBe(false);
+  });
+
   it('validates HH:MM times', () => {
     expect(TimeOfDay.safeParse('08:00').success).toBe(true);
     expect(TimeOfDay.safeParse('24:00').success).toBe(false);
