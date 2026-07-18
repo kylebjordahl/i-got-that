@@ -172,8 +172,9 @@ affected. Signing is **manual** (a distribution `.p12` + an App Store
 provisioning profile), not Xcode-managed — headless
 `-allowProvisioningUpdates` is flaky; a pinned profile name is deterministic.
 
-**Marketing version** (`--build-name`, i.e. `CFBundleShortVersionString`) is
-computed by the `Determine app version` step, per environment:
+**Marketing version** (`--build-name`, i.e. `CFBundleShortVersionString` on
+iOS) is computed once, by a dedicated `version` job that runs before both
+`deploy` and `testflight`, per environment:
 - **production** always ships the exact version of the GitHub Release that
   triggered the deploy — it reads the version tag on the released commit
   (`git tag --points-at HEAD`) directly, so it can never drift from what the
@@ -186,9 +187,21 @@ computed by the `Determine app version` step, per environment:
   plus the commit count and short hash since it — the plain `git describe`
   form (`0.0.0` stands in for "no tag yet").
 
-The build number (`--build-number`, `CFBundleVersion`) is unrelated and
-stays `github.run_number` (see below) — the two are independent App Store
-Connect fields.
+That single computed value is shared — via job outputs — by **both** the iOS
+build (`testflight`'s `flutter build ipa --build-name=...`) **and** the web
+client build (`deploy`'s `flutter build web --build-name=...`), so the web
+client and the iOS app always show the same marketing version for a given
+workflow run. The web client's `version.json` (what `package_info_plus` reads
+at runtime for the "Me → Help & about" screen) is re-stamped with this run's
+version + build number in a dedicated step that runs **even when the cached
+web bundle is restored instead of rebuilt** — that JSON file isn't part of
+the compiled JS/wasm, so refreshing it is cheap and doesn't require busting
+the build cache.
+
+The build number (`--build-number`, `CFBundleVersion` on iOS) is unrelated and
+stays `github.run_number` on both platforms — the two are independent
+version fields, and `github.run_number` already guarantees the "same build
+number for the same workflow run" property on its own.
 
 A `check-mobile-changed` job (ubuntu runner) gates `testflight`: it looks up
 the commit of the last `Deploy <env>` run whose `testflight` job actually
