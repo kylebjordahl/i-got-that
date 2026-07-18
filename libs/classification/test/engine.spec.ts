@@ -5,6 +5,7 @@ import {
   generateTaskIntents,
   resolveTaskResult,
   ruleMatches,
+  synthesizeBusy,
   synthesizeException,
   synthesizeStandard,
   taskRulesForCalendar,
@@ -135,6 +136,39 @@ describe('synthesizeStandard', () => {
       summary: 'Soccer practice',
       location: 'Field 3',
     });
+  });
+});
+
+// --- Stage A: busy feeds ------------------------------------------------------
+
+describe('synthesizeBusy', () => {
+  it('emits detail-free fb: blocks labeled with the link summary, never pends', () => {
+    const interval = occ({
+      dtstart: new Date('2026-07-06T15:00:00Z'),
+      dtend: new Date('2026-07-06T16:30:00Z'),
+    });
+    const link = { ...schoolLink, baselineSummary: 'Busy (work)' };
+    const { events, pending } = synthesizeBusy(link, [interval]);
+    expect(pending).toEqual([]);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      synthKey: `fb:link-1:${interval.id}`,
+      sourceEventId: interval.id,
+      summary: 'Busy (work)',
+      location: null,
+      description: null,
+      allDay: false,
+    });
+    expect(events[0]!.dtstart.toISOString()).toBe('2026-07-06T15:00:00.000Z');
+    expect(events[0]!.dtend!.toISOString()).toBe('2026-07-06T16:30:00.000Z');
+  });
+
+  it('defaults the label to "Busy" and never leaks source text fields', () => {
+    // Even if a source row somehow carried text, busy synthesis drops it.
+    const interval = occ({ summary: 'should never appear', location: 'nor this' });
+    const { events } = synthesizeBusy({ ...schoolLink, baselineSummary: null }, [interval]);
+    expect(events[0]!.summary).toBe('Busy');
+    expect(events[0]!.location).toBeNull();
   });
 });
 

@@ -175,18 +175,31 @@ class _FeedBaselineScreenState extends ConsumerState<FeedBaselineScreen> {
                   const SizedBox(height: 24),
                   const SectionEyebrow('Feed type'),
                   const SizedBox(height: 8),
-                  Text(
-                    'Exception-only feeds are empty on normal days and carry only '
-                    'deviations; normal days come from the baseline below.',
-                    style: AppText.subtitle,
-                  ),
-                  const SizedBox(height: 12),
-                  _Segmented(
-                    options: const [('standard', 'Standard'), ('exception', 'Exception-only')],
-                    value: _feed.mode,
-                    activeColor: _isException ? AppColors.amber : AppColors.indigo,
-                    onChanged: _busy ? null : _setMode,
-                  ),
+                  if (_feed.isBusy) ...[
+                    // Busy feeds can't change mode (the server refuses:
+                    // interval-keyed data is incompatible with the other
+                    // pipelines) — recreate the feed instead.
+                    Text(
+                      'Busy-only: opaque availability blocks read via Google '
+                      'free/busy — event details never leave the source '
+                      'calendar. The type is fixed; to change it, remove this '
+                      'feed and set up a new one.',
+                      style: AppText.subtitle,
+                    ),
+                  ] else ...[
+                    Text(
+                      'Exception-only feeds are empty on normal days and carry only '
+                      'deviations; normal days come from the baseline below.',
+                      style: AppText.subtitle,
+                    ),
+                    const SizedBox(height: 12),
+                    _Segmented(
+                      options: const [('standard', 'Standard'), ('exception', 'Exception-only')],
+                      value: _feed.mode,
+                      activeColor: _isException ? AppColors.amber : AppColors.indigo,
+                      onChanged: _busy ? null : _setMode,
+                    ),
+                  ],
                   if (_isException) ...[
                     const SizedBox(height: 24),
                     const SectionEyebrow('Baseline — the normal school day', color: AppColors.amber),

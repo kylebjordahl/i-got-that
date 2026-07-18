@@ -38,6 +38,8 @@ describe('Google OAuth', () => {
     expect(p.get('access_type')).toBe('offline');
     expect(p.get('prompt')).toBe('consent');
     expect(p.get('scope')).toContain('calendar.events');
+    // freebusy.query (busy-mode feeds) is NOT covered by calendar.events.
+    expect(p.get('scope')).toContain('calendar.freebusy');
     expect(p.get('state')).toBe('s1');
   });
 

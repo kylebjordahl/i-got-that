@@ -1,8 +1,9 @@
-import { type Db, eq, feeds, sourceEvents } from '@igt/db';
+import { and, type Db, eq, feeds, gte, inArray, lt, sourceEvents } from '@igt/db';
 import {
   extractCalendarName,
   extractTimezone,
   fetchCalDavOccurrences,
+  fetchGoogleFreeBusy,
   fetchGoogleOccurrences,
   hashOccurrence,
   type Occurrence,
@@ -27,6 +28,49 @@ export interface IngestResult {
 }
 
 type FeedRow = typeof feeds.$inferSelect;
+
+/**
+ * Busy feeds read ~35 days ahead: synthesis consumes only 30, and a short
+ * window keeps `freebusy.query` calls cheap. The same window bounds the
+ * stale-row reconcile below, so it must stay ≥ the synthesis window.
+ */
+const BUSY_WINDOW_MS = 35 * 24 * 60 * 60 * 1000;
+
+/**
+ * Reconcile a busy feed's `source_events` against the freshly fetched interval
+ * set. Free/busy rows are keyed by the interval itself (`fb:<start>/<end>`), so
+ * a moved, merged, or split block arrives under a NEW key — without deletion the
+ * old row would linger as a ghost block forever. Any of this feed's rows
+ * starting inside the fetch window whose uid isn't in the fresh set is stale;
+ * deleting it cascades the synthesized calendar_events rows (FK), and the next
+ * mirror reconcile cancels their remote copies. Rows already in the past fall
+ * out of the synthesis window naturally, like any other feed's history.
+ */
+async function deleteStaleBusyEvents(
+  db: Db,
+  feed: FeedRow,
+  window: { windowStart: Date; windowEnd: Date },
+  fresh: Occurrence[],
+): Promise<void> {
+  const freshUids = new Set(fresh.map((o) => o.uid));
+  const rows = await db
+    .select({ id: sourceEvents.id, icalUid: sourceEvents.icalUid })
+    .from(sourceEvents)
+    .where(
+      and(
+        eq(sourceEvents.feedId, feed.id),
+        gte(sourceEvents.dtstart, window.windowStart),
+        lt(sourceEvents.dtstart, window.windowEnd),
+      ),
+    );
+  const staleIds = rows.filter((r) => !freshUids.has(r.icalUid)).map((r) => r.id);
+  // Chunked to stay under D1's bound-parameter limit.
+  for (let i = 0; i < staleIds.length; i += 50) {
+    await db
+      .delete(sourceEvents)
+      .where(inArray(sourceEvents.id, staleIds.slice(i, i + 50)));
+  }
+}
 
 /**
  * Upsert expanded occurrences into `source_events`, keyed by
@@ -164,6 +208,9 @@ async function ingestAccountFeed(
 
   let occurrences: Occurrence[];
   let timezone: string | null;
+  // Busy feeds reconcile (delete stale interval keys) over the exact window
+  // they fetched, so the window is pinned here rather than in the reader.
+  let busyWindow: { windowStart: Date; windowEnd: Date } | null = null;
   try {
     if (feed.kind === 'caldav') {
       if (credential.kind !== 'basic') throw new Error('caldav feed requires a basic credential');
@@ -184,12 +231,25 @@ async function ingestAccountFeed(
           ? await opts.googleRefresh(credential.refreshToken)
           : undefined);
       if (!accessToken) throw new Error('google feed has no usable access token');
-      ({ occurrences, timezone } = await fetchGoogleOccurrences(
-        accessToken,
-        feed.sourceCalendarId,
-        window,
-        opts.fetchImpl,
-      ));
+      if (feed.mode === 'busy') {
+        const windowStart = opts.windowStart ?? new Date();
+        const windowEnd =
+          opts.windowEnd ?? new Date(windowStart.getTime() + BUSY_WINDOW_MS);
+        busyWindow = { windowStart, windowEnd };
+        ({ occurrences, timezone } = await fetchGoogleFreeBusy(
+          accessToken,
+          feed.sourceCalendarId,
+          busyWindow,
+          opts.fetchImpl,
+        ));
+      } else {
+        ({ occurrences, timezone } = await fetchGoogleOccurrences(
+          accessToken,
+          feed.sourceCalendarId,
+          window,
+          opts.fetchImpl,
+        ));
+      }
     }
   } catch (err) {
     await db.update(feeds).set({ status: 'error' }).where(eq(feeds.id, feed.id));
@@ -197,6 +257,7 @@ async function ingestAccountFeed(
   }
 
   await upsertOccurrences(db, feed, occurrences);
+  if (busyWindow) await deleteStaleBusyEvents(db, feed, busyWindow, occurrences);
   await db
     .update(feeds)
     .set({ lastSyncedAt: new Date(), status: 'active', timezone: timezone ?? feed.timezone })

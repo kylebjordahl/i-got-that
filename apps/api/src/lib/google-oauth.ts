@@ -10,7 +10,13 @@ import type { Bindings } from '../env.js';
 
 const AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
 const TOKEN_URL = 'https://oauth2.googleapis.com/token';
-const SCOPE = 'https://www.googleapis.com/auth/calendar.events';
+// calendar.events: read/write events (input feeds via events.list + the output
+// mirror). calendar.freebusy: freebusy.query for busy-mode feeds — the
+// intervals-only read of a work calendar shared as "see only free/busy"
+// (calendar.events does NOT authorize freebusy.query). Accounts connected
+// before the freebusy scope was added must be reconnected once to grant it.
+const SCOPE =
+  'https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/calendar.freebusy';
 /** OpenID Connect scopes so the same consent that grants calendar access also
  *  identifies the user (id_token with `sub` + `email`) — used by the login /
  *  connect redirect flow (`/auth/google/*`). */

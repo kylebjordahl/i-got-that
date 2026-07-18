@@ -213,13 +213,16 @@ class FeedItem {
 
   final String id;
   final String kind; // 'ics' | 'caldav' | 'google'
-  final String mode; // 'standard' | 'exception'
+  final String mode; // 'standard' | 'exception' | 'busy'
   final String? url;
   final String? sourceCalendarName;
   final String? timezone;
   final String? status;
 
   bool get isException => mode == 'exception';
+
+  /// Free/busy firewall feed: opaque availability blocks, google-kind only.
+  bool get isBusy => mode == 'busy';
 
   String get displayName =>
       sourceCalendarName ?? (url != null ? Uri.tryParse(url!)?.host ?? url! : 'Feed');

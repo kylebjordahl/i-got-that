@@ -188,15 +188,22 @@ class _SourceCalendarsSection extends ConsumerWidget {
               else
                 for (final (feed, link) in linked) ...[
                   SettingRow(
-                    icon: feed.kind == 'ics'
-                        ? Icons.rss_feed_rounded
-                        : Icons.calendar_month_rounded,
-                    iconColor:
-                        feed.isException ? AppColors.amber : AppColors.feedBlue,
+                    icon: feed.isBusy
+                        ? Icons.lock_clock_rounded
+                        : feed.kind == 'ics'
+                            ? Icons.rss_feed_rounded
+                            : Icons.calendar_month_rounded,
+                    iconColor: feed.isException
+                        ? AppColors.amber
+                        : feed.isBusy
+                            ? AppColors.purple
+                            : AppColors.feedBlue,
                     title: feed.displayName,
                     subtitle: feed.isException
                         ? 'Exception-only · transformed'
-                        : 'Standard · ${feed.kind.toUpperCase()}',
+                        : feed.isBusy
+                            ? 'Busy-only · free/busy'
+                            : 'Standard · ${feed.kind.toUpperCase()}',
                     trailing: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [

@@ -580,6 +580,86 @@ export async function fetchGoogleOccurrences(
   return { occurrences: out, timezone };
 }
 
+interface GoogleFreeBusyInterval {
+  start?: string;
+  end?: string;
+}
+interface GoogleFreeBusyResponse {
+  calendars?: Record<
+    string,
+    { busy?: GoogleFreeBusyInterval[]; errors?: { domain?: string; reason?: string }[] }
+  >;
+}
+
+/**
+ * Deterministic UID for a busy interval. Free/busy responses carry no event
+ * identity at all, so the interval itself is the identity: a moved/merged/split
+ * block is a *different* row, and busy ingest reconciles by deleting stale keys
+ * (see `ingest.ts`) rather than relying on per-UID updates.
+ */
+export function busyIntervalUid(start: Date, end: Date): string {
+  return `fb:${start.toISOString()}/${end.toISOString()}`;
+}
+
+/**
+ * Read opaque busy intervals from a calendar via `freebusy.query`. This is the
+ * privacy-preserving read behind busy-mode feeds: with only freeBusyReader
+ * access (e.g. a work calendar shared to the personal account as "see only
+ * free/busy"), Google returns start/end intervals and nothing else — the
+ * detail-stripping is enforced by Google's ACL, not by this code. A calendar
+ * that is unshared/nonexistent comes back as a per-calendar `errors` entry
+ * (reason `notFound` for both), which throws so the feed is marked 'error'.
+ * Returns `timezone: null`: intervals are absolute instants, not wall times.
+ */
+export async function fetchGoogleFreeBusy(
+  accessToken: string,
+  calendarId: string,
+  opts: ExpandOptions = {},
+  fetchImpl: typeof fetch = fetch.bind(globalThis),
+): Promise<AccountOccurrences> {
+  const windowStart = opts.windowStart ?? new Date();
+  const windowEnd = opts.windowEnd ?? new Date(Date.now() + 90 * DAY);
+  const res = await fetchImpl('https://www.googleapis.com/calendar/v3/freeBusy', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({
+      timeMin: windowStart.toISOString(),
+      timeMax: windowEnd.toISOString(),
+      items: [{ id: calendarId }],
+    }),
+  });
+  if (!res.ok) throw new Error(`google freebusy failed: ${res.status}`);
+  const json = (await res.json()) as GoogleFreeBusyResponse;
+  // Google keys the response by the requested id; fall back to the single
+  // entry in case it canonicalizes (we only ever query one calendar).
+  const cal =
+    json.calendars?.[calendarId] ?? Object.values(json.calendars ?? {})[0];
+  if (!cal) throw new Error('google freebusy: calendar missing from response');
+  if (cal.errors && cal.errors.length > 0) {
+    const reasons = cal.errors.map((e) => e.reason ?? 'unknown').join(',');
+    throw new Error(`google freebusy calendar error: ${reasons}`);
+  }
+  const occurrences: Occurrence[] = [];
+  for (const b of cal.busy ?? []) {
+    if (!b.start || !b.end) continue;
+    const start = new Date(b.start);
+    const end = new Date(b.end);
+    occurrences.push({
+      uid: busyIntervalUid(start, end),
+      recurrenceId: null,
+      start,
+      end,
+      summary: null,
+      location: null,
+      allDay: false,
+    });
+  }
+  return { occurrences, timezone: null };
+}
+
 export interface CalendarChoice {
   /** CalDAV collection URL or Google calendar id (the feed/target's source). */
   id: string;
