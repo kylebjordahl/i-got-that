@@ -132,9 +132,11 @@ redirect back, not a form-POST):
    signed cookie (`igt_google_oauth`, `SameSite=None; Secure; HttpOnly`), and
    302-redirects to Google's consent screen with `access_type=offline`,
    `prompt=consent` (both required to receive a refresh token), and the OpenID +
-   `calendar.events` scopes. `?link=1` with a live session (the same-origin
-   `igt_session` cookie rides along) records the current user id in the cookie so
-   the callback threads Google onto them instead of starting a new session.
+   `calendar.events` + `calendar.readonly` scopes (the latter needed for the
+   "list a user's calendars" picker, `calendarList.list`). `?link=1` with a live
+   session (the same-origin `igt_session` cookie rides along) records the
+   current user id in the cookie so the callback threads Google onto them
+   instead of starting a new session.
 2. The user consents; Google redirects to **`GET /auth/google/callback`** (the
    registered redirect URI) with `?code=…&state=…`. The `SameSite=None` cookie
    rides along.
@@ -160,7 +162,8 @@ type *Web application*):
 - Add the **Authorized redirect URI** `<PUBLIC_ORIGIN>/api/auth/google/callback`
   (e.g. `https://staging.igt.kylebjordahl.com/api/auth/google/callback`).
 - Enable the **Google Calendar API** and add the `openid`, `email`, `profile`,
-  and `.../auth/calendar.events` scopes to the consent screen.
+  `.../auth/calendar.events`, and `.../auth/calendar.readonly` scopes to the
+  consent screen.
 
 **This API** (already used for calendar delivery/ingest — nothing Google-login-
 specific to add):
