@@ -146,16 +146,16 @@ class MeScreen extends ConsumerWidget {
                   onTap: () => _linkApple(context, ref),
                 ),
               ],
-              // Offer Google (web redirect flow) until one is linked; the same
-              // consent also connects the user's Google Calendar.
-              if (kIsWeb && !identities.any((i) => i.provider == 'google')) ...[
+              // Offer Google until one is linked; the same consent also
+              // connects the user's Google Calendar (web redirects; native
+              // uses the OS sheet).
+              if (!identities.any((i) => i.provider == 'google')) ...[
                 const Divider(height: 20),
                 SettingRow(
                   icon: Icons.g_mobiledata_rounded,
                   iconColor: AppColors.blue,
                   title: 'Link Sign in with Google',
-                  onTap: () =>
-                      ref.read(authControllerProvider.notifier).connectGoogleCalendar(),
+                  onTap: () => _linkGoogle(context, ref),
                 ),
               ],
             ],
@@ -358,6 +358,34 @@ class MeScreen extends ConsumerWidget {
       final code = (e.response?.data as Map<String, dynamic>?)?['error'];
       final msg = code == 'identity_linked_to_other_user'
           ? 'That Apple ID is already linked to a different account.'
+          : 'Failed: $e';
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+      }
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed: $e')));
+      }
+    }
+  }
+
+  Future<void> _linkGoogle(BuildContext context, WidgetRef ref) async {
+    final auth = ref.read(authControllerProvider.notifier);
+    // Web can't get a token in-page — a full-page redirect links Google (and
+    // connects the calendar) and the reload refreshes the list. Native drives
+    // the OS sheet inline.
+    if (kIsWeb) {
+      auth.connectGoogleCalendar();
+      return;
+    }
+    try {
+      await auth.linkWithGoogleNative();
+      ref.invalidate(loginIdentitiesProvider);
+      ref.invalidate(accountsProvider);
+    } on DioException catch (e) {
+      final code = (e.response?.data as Map<String, dynamic>?)?['error'];
+      final msg = code == 'identity_linked_to_other_user'
+          ? 'That Google account is already linked to a different account.'
           : 'Failed: $e';
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));

@@ -51,6 +51,19 @@ class ApiClient {
     return data;
   }
 
+  /// Native Sign in with Google: exchange the ID token (+ an optional
+  /// `serverAuthCode`, which auto-connects the user's Google Calendar the
+  /// same way the web redirect flow does) for a session.
+  Future<Map<String, dynamic>> signInWithGoogle(String idToken, {String? serverAuthCode}) async {
+    final res = await _dio.post('/auth/google', data: {
+      'idToken': idToken,
+      if (serverAuthCode != null) 'serverAuthCode': serverAuthCode,
+    });
+    final data = _obj(res);
+    _sessionToken = data['sessionToken'] as String;
+    return data;
+  }
+
   Future<Map<String, dynamic>> me() async => _obj(await _dio.get('/me', options: _auth));
 
   /// Invalidate the session server-side and clear the web session cookie.
@@ -94,6 +107,15 @@ class ApiClient {
   Future<void> linkApple(String identityToken) async {
     await _dio.post('/auth/link/apple',
         data: {'identityToken': identityToken}, options: _auth);
+  }
+
+  /// Thread a native Sign in with Google identity onto the current user (an
+  /// optional `serverAuthCode` still auto-connects the calendar).
+  Future<void> linkGoogle(String idToken, {String? serverAuthCode}) async {
+    await _dio.post('/auth/link/google', data: {
+      'idToken': idToken,
+      if (serverAuthCode != null) 'serverAuthCode': serverAuthCode,
+    }, options: _auth);
   }
 
   /// Detach a login method (the server blocks removing the last one).
