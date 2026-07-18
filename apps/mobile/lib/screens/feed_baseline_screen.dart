@@ -88,6 +88,7 @@ class _FeedBaselineScreenState extends ConsumerState<FeedBaselineScreen> {
             sourceCalendarName: _feed.sourceCalendarName,
             timezone: _feed.timezone,
             status: _feed.status,
+            accountKind: _feed.accountKind,
           ));
       _refresh();
     } catch (e) {
@@ -169,7 +170,7 @@ class _FeedBaselineScreenState extends ConsumerState<FeedBaselineScreen> {
                       icon: _feed.kind == 'ics' ? Icons.rss_feed_rounded : Icons.calendar_month_rounded,
                       iconColor: AppColors.feedBlue,
                       title: _feed.displayName,
-                      subtitle: _feed.kind.toUpperCase(),
+                      subtitle: _feed.sourceLabel,
                     ),
                   ),
                   const SizedBox(height: 24),

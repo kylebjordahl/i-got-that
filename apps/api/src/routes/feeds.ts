@@ -194,8 +194,29 @@ feedRoutes.patch('/:feedId', requireAdmin, async (c) => {
 /** List a family's feeds. */
 feedRoutes.get('/', async (c) => {
   const rows = await getDb(c.env.DB)
-    .select()
+    .select({
+      id: feeds.id,
+      familyId: feeds.familyId,
+      kind: feeds.kind,
+      url: feeds.url,
+      externalAccountId: feeds.externalAccountId,
+      sourceCalendarId: feeds.sourceCalendarId,
+      sourceCalendarName: feeds.sourceCalendarName,
+      mode: feeds.mode,
+      timezone: feeds.timezone,
+      refreshMinutes: feeds.refreshMinutes,
+      etag: feeds.etag,
+      lastSyncedAt: feeds.lastSyncedAt,
+      lastRefreshRequestedAt: feeds.lastRefreshRequestedAt,
+      status: feeds.status,
+      createdAt: feeds.createdAt,
+      // Account-backed feeds only: the connected account's kind, so the
+      // client can distinguish "iCloud Calendar" from a generic "CalDAV
+      // Calendar" (both collapse to feed kind 'caldav').
+      accountKind: externalAccounts.kind,
+    })
     .from(feeds)
+    .leftJoin(externalAccounts, eq(externalAccounts.id, feeds.externalAccountId))
     .where(eq(feeds.familyId, c.get('member').familyId));
   return c.json({ feeds: rows });
 });

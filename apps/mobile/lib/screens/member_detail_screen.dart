@@ -196,7 +196,7 @@ class _SourceCalendarsSection extends ConsumerWidget {
                     title: feed.displayName,
                     subtitle: feed.isException
                         ? 'Exception-only · transformed'
-                        : 'Standard · ${feed.kind.toUpperCase()}',
+                        : 'Standard · ${feed.sourceLabel}',
                     trailing: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [

@@ -226,7 +226,7 @@ class _AddCalendarSheetState extends ConsumerState<_AddCalendarSheet> {
                       children: [
                         Text(f.displayName, maxLines: 1, overflow: TextOverflow.ellipsis, style: AppText.sectionItemTitle),
                         const SizedBox(height: 2),
-                        Text(f.isException ? 'Exception-only' : 'Standard · ${f.kind.toUpperCase()}',
+                        Text(f.isException ? 'Exception-only' : 'Standard · ${f.sourceLabel}',
                             style: AppText.subtitle),
                       ],
                     ),

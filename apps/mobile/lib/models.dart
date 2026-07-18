@@ -209,6 +209,7 @@ class FeedItem {
     this.sourceCalendarName,
     this.timezone,
     this.status,
+    this.accountKind,
   });
 
   final String id;
@@ -218,11 +219,23 @@ class FeedItem {
   final String? sourceCalendarName;
   final String? timezone;
   final String? status;
+  // Account-backed feeds only: the linked account's kind ('google' | 'icloud'
+  // | 'caldav'), needed to tell an iCloud calendar apart from a generic CalDAV
+  // one — both share feed kind 'caldav'. Null for 'ics' feeds.
+  final String? accountKind;
 
   bool get isException => mode == 'exception';
 
   String get displayName =>
       sourceCalendarName ?? (url != null ? Uri.tryParse(url!)?.host ?? url! : 'Feed');
+
+  /// Human-readable feed source, e.g. "Google Calendar" / "iCloud Calendar" /
+  /// "CalDAV Calendar", instead of the raw kind.
+  String get sourceLabel => switch (kind) {
+        'google' => 'Google Calendar',
+        'caldav' => accountKind == 'icloud' ? 'iCloud Calendar' : 'CalDAV Calendar',
+        _ => kind.toUpperCase(),
+      };
 
   factory FeedItem.fromJson(Map<String, dynamic> j) => FeedItem(
         id: j['id'] as String,
@@ -232,6 +245,7 @@ class FeedItem {
         sourceCalendarName: j['sourceCalendarName'] as String?,
         timezone: j['timezone'] as String?,
         status: j['status'] as String?,
+        accountKind: j['accountKind'] as String?,
       );
 }
 
