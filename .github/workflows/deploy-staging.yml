@@ -62,23 +62,27 @@ jobs:
       contents: write
     steps:
       - name: Publish draft release targeting this commit, if any
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-          SHA: ${{ github.event.workflow_run.head_sha }}
-        run: |
-          set -euo pipefail
-          # Draft releases don't create their tag until published, so the
-          # commit they're pinned to lives in target_commitish, not a
-          # resolvable git ref — hence the API scan rather than `gh release
-          # list`/`git tag --points-at`.
-          release=$(gh api "repos/${REPO}/releases" --paginate \
-            --jq "[.[] | select(.draft == true and .target_commitish == \"${SHA}\")][0]")
-          if [ -z "$release" ] || [ "$release" = "null" ]; then
-            echo "No draft release targets ${SHA} — nothing to publish."
-            exit 0
-          fi
-          id=$(echo "$release" | jq -r '.id')
-          tag=$(echo "$release" | jq -r '.tag_name')
-          echo "Publishing draft release '${tag}' (id ${id}) for commit ${SHA}."
-          gh api "repos/${REPO}/releases/${id}" -X PATCH -f draft=false
+        uses: actions/github-script@v7
+        with:
+          script: |
+            // Draft releases don't create their tag until published, so the
+            // commit they're pinned to lives in target_commitish, not a
+            // resolvable git ref — hence the listing/scan rather than a
+            // tag lookup.
+            const sha = context.payload.workflow_run.head_sha;
+            const releases = await github.paginate(github.rest.repos.listReleases, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+            });
+            const release = releases.find((r) => r.draft && r.target_commitish === sha);
+            if (!release) {
+              core.info(`No draft release targets ${sha} — nothing to publish.`);
+              return;
+            }
+            core.info(`Publishing draft release '${release.tag_name}' (id ${release.id}) for commit ${sha}.`);
+            await github.rest.repos.updateRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              release_id: release.id,
+              draft: false,
+            });
