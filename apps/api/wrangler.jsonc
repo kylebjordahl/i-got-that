@@ -126,7 +126,7 @@
                 // Allowed Apple `aud`s: the native iOS bundle id + the web Services ID.
                 "APPLE_CLIENT_IDS": "com.kylebjordahl.igt,com.kylebjordahl.igt.web",
                 "APPLE_WEB_CLIENT_ID": "com.kylebjordahl.igt.web",
-                "GOOGLE_OAUTH_CLIENT_ID": "",
+                "GOOGLE_OAUTH_CLIENT_ID": "503268168924-5ogd6crcl1p1pfpoe3kdtqbo9nqhivpj.apps.googleusercontent.com",
                 // Fill in your 10-char Apple Team ID: "<TeamID>.com.kylebjordahl.igt".
                 "APPLE_APP_ID_PREFIX": "WG5R9LUU9X.com.kylebjordahl.igt",
             },
