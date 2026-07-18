@@ -172,6 +172,24 @@ affected. Signing is **manual** (a distribution `.p12` + an App Store
 provisioning profile), not Xcode-managed — headless
 `-allowProvisioningUpdates` is flaky; a pinned profile name is deterministic.
 
+**Marketing version** (`--build-name`, i.e. `CFBundleShortVersionString`) is
+computed by the `Determine app version` step, per environment:
+- **production** always ships the exact version of the GitHub Release that
+  triggered the deploy — it reads the version tag on the released commit
+  (`git tag --points-at HEAD`) directly, so it can never drift from what the
+  release says.
+- **staging** deploys ahead of any release, so it guesses the *next* version:
+  it bumps the latest tag using Conventional Commits found since that tag
+  (`feat` → minor, `fix`/anything else → patch, `!` or `BREAKING CHANGE` →
+  major). When that can't be determined semantically (no tag yet, or nothing
+  since it is in Conventional Commits form), it falls back to the last tag
+  plus the commit count and short hash since it — the plain `git describe`
+  form (`0.0.0` stands in for "no tag yet").
+
+The build number (`--build-number`, `CFBundleVersion`) is unrelated and
+stays `github.run_number` (see below) — the two are independent App Store
+Connect fields.
+
 A `check-mobile-changed` job (ubuntu runner) gates `testflight`: it looks up
 the commit of the last `Deploy <env>` run whose `testflight` job actually
 succeeded for that same environment (via the GitHub API), then runs `nx show
