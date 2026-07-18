@@ -10,7 +10,11 @@ import type { Bindings } from '../env.js';
 
 const AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
 const TOKEN_URL = 'https://oauth2.googleapis.com/token';
-const SCOPE = 'https://www.googleapis.com/auth/calendar.events';
+/** `calendar.events` grants read/write on events within a known calendar;
+ *  `calendar.readonly` additionally covers `calendarList.list`, needed by the
+ *  "pick a calendar" flow (`fetchGoogleCalendars`). */
+const SCOPE =
+  'https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/calendar.readonly';
 /** OpenID Connect scopes so the same consent that grants calendar access also
  *  identifies the user (id_token with `sub` + `email`) — used by the login /
  *  connect redirect flow (`/auth/google/*`). */
@@ -95,9 +99,16 @@ export function decodeGoogleIdToken(idToken: string): GoogleIdentity {
   return { sub: claims.sub, email: claims.email };
 }
 
+/**
+ * Exchange an authorization code for tokens. `redirectUri` is required for
+ * the web redirect flow (must match the one used at the authorize step);
+ * native's `serverAuthCode` (from `google_sign_in`'s `serverClientId` option)
+ * is a one-time code issued to an installed app, which Google's token
+ * endpoint accepts without a `redirect_uri`.
+ */
 export async function exchangeGoogleCode(
   env: Bindings,
-  opts: { code: string; redirectUri: string },
+  opts: { code: string; redirectUri?: string },
   fetchImpl: typeof fetch = fetch,
 ): Promise<GoogleTokens> {
   const client = requireClient(env);
@@ -105,9 +116,9 @@ export async function exchangeGoogleCode(
     code: opts.code,
     client_id: client.id,
     client_secret: client.secret,
-    redirect_uri: opts.redirectUri,
     grant_type: 'authorization_code',
   });
+  if (opts.redirectUri) body.set('redirect_uri', opts.redirectUri);
   const res = await fetchImpl(TOKEN_URL, {
     method: 'POST',
     headers: { 'content-type': 'application/x-www-form-urlencoded' },

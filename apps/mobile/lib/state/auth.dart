@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:google_sign_in/google_sign_in.dart';
 import 'package:sign_in_with_apple/sign_in_with_apple.dart';
 import '../api/client.dart';
 import '../util/web_auth.dart';
@@ -10,6 +11,20 @@ import '../util/web_auth.dart';
 const apiBaseUrl = String.fromEnvironment(
   'API_BASE_URL',
   defaultValue: 'http://localhost:8787',
+);
+
+/// The **Web** Google OAuth client id (GOOGLE_OAUTH_CLIENT_ID in the API's
+/// wrangler.jsonc), passed to google_sign_in as `serverClientId` so native
+/// sign-in also returns a `serverAuthCode` — redeemable server-side for a
+/// refresh token, auto-connecting the user's Google Calendar the same way the
+/// web redirect flow does. Empty ⇒ native Google sign-in still authenticates,
+/// it just skips the calendar auto-connect. Override at build time with
+/// --dart-define=GOOGLE_SERVER_CLIENT_ID=...
+const _googleServerClientId = String.fromEnvironment('GOOGLE_SERVER_CLIENT_ID');
+
+final _googleSignIn = GoogleSignIn(
+  scopes: ['email', 'https://www.googleapis.com/auth/calendar.events'],
+  serverClientId: _googleServerClientId.isEmpty ? null : _googleServerClientId,
 );
 
 /// Native-only session persistence (iOS Keychain / Android Keystore). Web
@@ -189,6 +204,45 @@ class AuthController extends StateNotifier<AuthState> {
       throw Exception('Apple did not return an identity token.');
     }
     return identityToken;
+  }
+
+  /// Native (iOS): drive Google's native sign-in sheet and post the ID token
+  /// (+ a `serverAuthCode` when `GOOGLE_SERVER_CLIENT_ID` is configured) to
+  /// `/auth/google` to obtain a session — the native counterpart of
+  /// [loginWithGoogle]'s web redirect.
+  Future<void> loginWithGoogleNative() async {
+    final cred = await _requestGoogleIdentity();
+    if (cred == null) return; // user dismissed the sheet
+    final res = await _api.signInWithGoogle(cred.idToken, serverAuthCode: cred.serverAuthCode);
+    final token = res['sessionToken'] as String;
+    state = AuthState(
+      sessionToken: token,
+      user: res['user'] as Map<String, dynamic>,
+    );
+    await _persistToken(token);
+  }
+
+  /// Native (iOS): link Sign in with Google to the *current* user by posting
+  /// a fresh ID token to `/auth/link/google`. The session is unchanged; the
+  /// caller refreshes the identity list.
+  Future<void> linkWithGoogleNative() async {
+    final cred = await _requestGoogleIdentity();
+    if (cred == null) return; // user dismissed the sheet
+    await _api.linkGoogle(cred.idToken, serverAuthCode: cred.serverAuthCode);
+  }
+
+  /// Drive the native Google sign-in sheet and return its ID token (+ an
+  /// optional server auth code for the calendar auto-connect), or null if the
+  /// user dismissed it.
+  Future<({String idToken, String? serverAuthCode})?> _requestGoogleIdentity() async {
+    final account = await _googleSignIn.signIn();
+    if (account == null) return null; // user dismissed the sheet
+    final auth = await account.authentication;
+    final idToken = auth.idToken;
+    if (idToken == null) {
+      throw Exception('Google did not return an ID token.');
+    }
+    return (idToken: idToken, serverAuthCode: account.serverAuthCode);
   }
 
   /// Dev flow: request a magic link and immediately verify with the returned
