@@ -51,8 +51,97 @@ on:
         required: false
 
 jobs:
+  # Computed once and shared via job outputs, rather than in the `deploy` and
+  # `testflight` jobs separately: those build on different runners (ubuntu vs
+  # macOS) and can't share step outputs directly, but the web client and the
+  # iOS app must embed the exact same marketing version for a given workflow
+  # run.
+  version:
+    name: Determine app version
+    runs-on: ubuntu-latest
+    outputs:
+      build_name: ${{ steps.version.outputs.build_name }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+          # Full history + tags: derivation below needs to walk commits since
+          # the last tag (staging) or find the tag on this exact commit
+          # (production), neither of which a shallow clone can do.
+          fetch-depth: 0
+
+      # Marketing version (`--build-name` / CFBundleShortVersionString on
+      # iOS; the `version` field of the web client's `version.json`):
+      # - production always ships the exact version of the GitHub Release that
+      #   triggered this deploy — that release's tag is always present on the
+      #   released commit.
+      # - staging deploys ahead of any release, so it guesses the *next*
+      #   version by bumping the latest tag according to Conventional Commits
+      #   (`feat` -> minor, `fix`/other -> patch, `!` or `BREAKING CHANGE` ->
+      #   major) found since that tag. When that can't be determined
+      #   semantically — no tag yet, or nothing since it is in Conventional
+      #   Commits form — it falls back to plain `git describe` form: the last
+      #   tag plus the commit count and short hash since it (with `0.0.0`
+      #   standing in for "no tag yet").
+      - name: Determine app version
+        id: version
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+        run: |
+          set -euo pipefail
+
+          LATEST_TAG="$(git describe --tags --abbrev=0 2>/dev/null || true)"
+
+          if [ "$ENVIRONMENT" = "production" ]; then
+            RELEASE_TAG="$(git tag --points-at HEAD | grep -E '^v?[0-9]+\.[0-9]+\.[0-9]+' | head -n1)"
+            if [ -z "$RELEASE_TAG" ]; then
+              echo "::error::No version tag found on the released commit ($(git rev-parse HEAD))."
+              exit 1
+            fi
+            BUILD_NAME="${RELEASE_TAG#v}"
+            echo "Production build name: $BUILD_NAME (from release tag $RELEASE_TAG)"
+          else
+            BASE_VERSION="${LATEST_TAG#v}"
+            BASE_VERSION="${BASE_VERSION:-0.0.0}"
+            if [ -n "$LATEST_TAG" ]; then
+              LOG_RANGE="${LATEST_TAG}..HEAD"
+            else
+              LOG_RANGE="HEAD"
+            fi
+            SUBJECTS="$(git log "$LOG_RANGE" --format=%s)"
+
+            BUMP=""
+            if [ -n "$LATEST_TAG" ] && [ -n "$SUBJECTS" ]; then
+              if echo "$SUBJECTS" | grep -qE '^[a-z]+(\(.+\))?!:|BREAKING CHANGE'; then
+                BUMP="major"
+              elif echo "$SUBJECTS" | grep -qE '^feat(\(.+\))?:'; then
+                BUMP="minor"
+              elif echo "$SUBJECTS" | grep -qE '^fix(\(.+\))?:'; then
+                BUMP="patch"
+              fi
+            fi
+
+            if [ -n "$BUMP" ]; then
+              IFS='.' read -r MAJOR MINOR PATCH <<< "$BASE_VERSION"
+              case "$BUMP" in
+                major) BUILD_NAME="$((MAJOR + 1)).0.0" ;;
+                minor) BUILD_NAME="${MAJOR}.$((MINOR + 1)).0" ;;
+                patch) BUILD_NAME="${MAJOR}.${MINOR}.$((PATCH + 1))" ;;
+              esac
+              echo "Staging build name: $BUILD_NAME (next $BUMP version after $LATEST_TAG)"
+            else
+              COMMIT_COUNT="$(git rev-list "$LOG_RANGE" --count)"
+              SHORT_HASH="$(git rev-parse --short HEAD)"
+              BUILD_NAME="${BASE_VERSION}-${COMMIT_COUNT}-g${SHORT_HASH}"
+              echo "Staging build name: $BUILD_NAME (no semantic bump determinable since ${LATEST_TAG:-the start of history})"
+            fi
+          fi
+
+          echo "build_name=$BUILD_NAME" >> "$GITHUB_OUTPUT"
+
   deploy:
     name: Deploy → ${{ inputs.environment }}
+    needs: version
     runs-on: ubuntu-latest
     # Binds to the GitHub Environment — add required reviewers there to gate
     # production behind a manual approval.
@@ -82,11 +171,10 @@ jobs:
       # drives the staging-only beta ribbon — so the two envs must never share a
       # cache entry): a backend/infra-only deploy restores it and skips the
       # Flutter SDK download + web build (the slowest part of the deploy). Only
-      # a change under apps/mobile busts the cache and triggers a rebuild.
-      #
-      # --build-number matches the `testflight` job below (same
-      # github.run_number), so the build number shown in-app (Me → Help &
-      # about) lines up with the TestFlight build for the same workflow run.
+      # a change under apps/mobile busts the cache and triggers a rebuild. The
+      # marketing version and build number are *not* part of the cache key —
+      # see "Stamp web client version" below, which re-embeds this run's
+      # values on every deploy regardless of cache hit/miss.
       - name: Restore built web client
         id: web-client-cache
         uses: actions/cache@v6
@@ -108,6 +196,7 @@ jobs:
           flutter pub get
           flutter build web --base-href /app/ --dart-define=API_BASE_URL=/api \
             --dart-define=APP_ENV=${{ inputs.environment }} \
+            --build-name=${{ needs.version.outputs.build_name }} \
             --build-number=${{ github.run_number }}
       - name: Stage web assets
         if: steps.web-client-cache.outputs.cache-hit != 'true'
@@ -126,6 +215,19 @@ jobs:
             exit 1
           fi
           echo "Serving $(find apps/api/public/app -type f | wc -l) web asset file(s)."
+
+      # Runs unconditionally, even on a cache hit: `flutter build web` bakes
+      # the marketing version + build number into this one small JSON file
+      # (fetched at runtime by package_info_plus, not compiled into the JS/wasm
+      # bundle), so it's cheap to re-stamp on every deploy without forcing a
+      # full rebuild — keeping the web client's displayed version identical to
+      # this run's TestFlight build (`testflight` job below) even when the
+      # compiled bundle itself is stale/reused.
+      - name: Stamp web client version
+        run: |
+          cat > apps/api/public/app/version.json <<JSON
+          {"app_name":"caretaker_app","package_name":"caretaker_app","version":"${{ needs.version.outputs.build_name }}","build_number":"${{ github.run_number }}"}
+          JSON
 
       - uses: hashicorp/setup-terraform@v4
       - name: Terraform apply (${{ inputs.environment }} infra)
@@ -232,7 +334,7 @@ jobs:
   # so a no-op shows up as skipped, not a false green success.
   testflight:
     name: TestFlight → ${{ inputs.environment }}
-    needs: check-mobile-changed
+    needs: [check-mobile-changed, version]
     if: needs.check-mobile-changed.outputs.changed == 'true'
     runs-on: macos-latest
     environment: ${{ inputs.environment }}
@@ -286,6 +388,9 @@ jobs:
           echo "$PROFILE_BASE64" | base64 --decode \
             > "$PROFILE_DIR/$FLAVOR-appstore.mobileprovision"
 
+      # Marketing version comes from the `version` job above (shared with the
+      # web client build in `deploy`, so both embed the same value for this
+      # run) — see its "Determine app version" step for how it's derived.
       - name: Build signed IPA (${{ inputs.environment }})
         working-directory: apps/mobile
         run: |
@@ -293,12 +398,12 @@ jobs:
             --export-options-plist "ios/ExportOptions-$FLAVOR.plist" \
             --dart-define=API_BASE_URL="$API_BASE_URL" \
             --dart-define=APP_ENV="${{ inputs.environment }}" \
+            --build-name=${{ needs.version.outputs.build_name }} \
             --build-number=${{ github.run_number }}
 
       # `github.run_number` is a small monotonic int, satisfying TestFlight's
       # "strictly increasing build number" rule without a fragile round-trip
-      # to query the latest existing build. Marketing version stays whatever
-      # `pubspec.yaml`'s `version` says.
+      # to query the latest existing build.
 
       # Resolve the glob to a concrete file ourselves: the upload action hands
       # app-path straight to `xcrun altool`, which doesn't do shell-style glob
