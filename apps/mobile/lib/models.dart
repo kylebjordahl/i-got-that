@@ -471,6 +471,7 @@ class CalendarEventItem {
     required this.allDay,
     this.end,
     this.summary,
+    this.description,
     this.location,
     this.taskId,
   });
@@ -484,6 +485,7 @@ class CalendarEventItem {
   final DateTime? end;
   final bool allDay;
   final String? summary;
+  final String? description;
   final String? location;
 
   /// For claimed_task events: the task this event reflects (the recursion).
@@ -504,6 +506,7 @@ class CalendarEventItem {
       start: allDay ? parseAllDayDate(j['dtstart']) : parseTimestamp(j['dtstart']),
       end: j['dtend'] == null ? null : parseTimestamp(j['dtend']),
       summary: j['summary'] as String?,
+      description: j['description'] as String?,
       location: j['location'] as String?,
       taskId: j['taskId'] as String?,
     );

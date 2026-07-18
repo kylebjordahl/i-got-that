@@ -557,6 +557,7 @@ taskRoutes.get('/calendar-events', async (c) => {
       dtend: calendarEvents.dtend,
       allDay: calendarEvents.allDay,
       summary: calendarEvents.summary,
+      description: calendarEvents.description,
       location: calendarEvents.location,
     })
     .from(calendarEvents)
