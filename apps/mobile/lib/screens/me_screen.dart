@@ -10,6 +10,7 @@ import '../state/nav.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_text.dart';
 import '../theme/person_colors.dart';
+import '../widgets/app_bottom_nav.dart';
 import '../widgets/primitives.dart';
 import '../widgets/settings.dart';
 import '../widgets/slide_to_confirm.dart';
@@ -307,7 +308,10 @@ class MeScreen extends ConsumerWidget {
       ref.invalidate(accountsProvider);
     } catch (e) {
       if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Failed: $e'),
+          margin: snackBarMarginAboveNav(context),
+        ));
       }
     }
   }
@@ -338,7 +342,10 @@ class MeScreen extends ConsumerWidget {
       ref.invalidate(loginIdentitiesProvider);
     } catch (e) {
       if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Failed: $e'),
+          margin: snackBarMarginAboveNav(context),
+        ));
       }
     }
   }
@@ -360,11 +367,17 @@ class MeScreen extends ConsumerWidget {
           ? 'That Apple ID is already linked to a different account.'
           : 'Failed: $e';
       if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(msg),
+          margin: snackBarMarginAboveNav(context),
+        ));
       }
     } catch (e) {
       if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Failed: $e'),
+          margin: snackBarMarginAboveNav(context),
+        ));
       }
     }
   }

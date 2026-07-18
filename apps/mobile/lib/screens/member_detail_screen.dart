@@ -9,6 +9,7 @@ import '../state/nav.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_text.dart';
 import '../theme/person_colors.dart';
+import '../widgets/app_bottom_nav.dart';
 import '../widgets/primitives.dart';
 import '../widgets/settings.dart';
 import 'add_calendar_sheet.dart';
@@ -139,8 +140,10 @@ class MemberDetailScreen extends ConsumerWidget {
       if (context.mounted) Navigator.of(context).pop();
     } catch (e) {
       if (context.mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('Remove failed: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Remove failed: $e'),
+          margin: snackBarMarginAboveNav(context),
+        ));
       }
     }
   }
@@ -300,8 +303,10 @@ class _InviteSectionState extends ConsumerState<_InviteSection> {
     final link = _shareable;
     if (link == null) return;
     Clipboard.setData(ClipboardData(text: link));
-    ScaffoldMessenger.of(context)
-        .showSnackBar(const SnackBar(content: Text('Invite link copied')));
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: const Text('Invite link copied'),
+      margin: snackBarMarginAboveNav(context),
+    ));
   }
 
   @override

@@ -7,6 +7,24 @@ import '../state/nav.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_text.dart';
 
+/// Extra bottom clearance a floating SnackBar needs to sit above
+/// [PersistentAppNav] instead of behind it: the nav's own bottom gap (14) plus
+/// its pill height (54, from the icon/padding constants in [AppBottomNav]).
+/// Add the device's own safe-area inset on top of this since the nav does
+/// the same (see [PersistentAppNav]'s `SafeArea`).
+const double kBottomNavClearance = 68;
+
+/// Margin for a [SnackBar] shown from a screen where [PersistentAppNav] is
+/// mounted, so it floats above the nav pill rather than behind it. Keeps
+/// Flutter's own default floating-SnackBar margin (`EdgeInsets.fromLTRB(15,
+/// 5, 15, 10)`) except for the bottom inset.
+EdgeInsets snackBarMarginAboveNav(BuildContext context) => EdgeInsets.fromLTRB(
+      15,
+      5,
+      15,
+      MediaQuery.of(context).padding.bottom + kBottomNavClearance + 10,
+    );
+
 /// The floating nav, mounted once above the inner content Navigator (see
 /// `_AuthedRoot` in main.dart) instead of inside any pushed route's own
 /// Scaffold. That keeps the pill itself stationary through every push/pop
