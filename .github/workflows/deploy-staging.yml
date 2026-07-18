@@ -45,3 +45,40 @@ jobs:
       APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
       APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
       APP_STORE_CONNECT_API_KEY_P8: ${{ secrets.APP_STORE_CONNECT_API_KEY_P8 }}
+
+  # If a release was cut for this commit ahead of staging looking good — a
+  # draft release with target_commitish pinned to this SHA — publishing it
+  # here fires the `release: published` event, which is deploy-production.yml's
+  # trigger. That gets this commit to production without a human having to
+  # come back and flip the draft after watching staging succeed.
+  #
+  # Needs `staging` (not just runs after it): default `if: success()` means a
+  # failed or skipped staging deploy never publishes anything.
+  publish-pending-release:
+    name: Publish draft release for the deployed commit
+    needs: staging
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Publish draft release targeting this commit, if any
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          # Draft releases don't create their tag until published, so the
+          # commit they're pinned to lives in target_commitish, not a
+          # resolvable git ref — hence the API scan rather than `gh release
+          # list`/`git tag --points-at`.
+          release=$(gh api "repos/${REPO}/releases" --paginate \
+            --jq "[.[] | select(.draft == true and .target_commitish == \"${SHA}\")][0]")
+          if [ -z "$release" ] || [ "$release" = "null" ]; then
+            echo "No draft release targets ${SHA} — nothing to publish."
+            exit 0
+          fi
+          id=$(echo "$release" | jq -r '.id')
+          tag=$(echo "$release" | jq -r '.tag_name')
+          echo "Publishing draft release '${tag}' (id ${id}) for commit ${SHA}."
+          gh api "repos/${REPO}/releases/${id}" -X PATCH -f draft=false
