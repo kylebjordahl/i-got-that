@@ -5,6 +5,7 @@ import '../state/auth.dart';
 import '../state/family.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_text.dart';
+import '../widgets/app_bottom_nav.dart';
 import '../widgets/primitives.dart';
 import '../widgets/settings.dart';
 
@@ -143,7 +144,10 @@ class _FeedBaselineScreenState extends ConsumerState<FeedBaselineScreen> {
       if (mounted) Navigator.of(context).pop(true);
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Unlink failed: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Unlink failed: $e'),
+          margin: snackBarMarginAboveNav(context),
+        ));
       }
     }
   }

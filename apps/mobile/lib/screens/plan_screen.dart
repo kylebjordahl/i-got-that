@@ -8,6 +8,7 @@ import '../theme/app_text.dart';
 import '../theme/person_colors.dart';
 import '../util/format.dart';
 import '../util/task_visuals.dart';
+import '../widgets/app_bottom_nav.dart';
 import '../widgets/primitives.dart';
 import '../widgets/settings.dart';
 import 'task_actions_sheet.dart';
@@ -156,8 +157,10 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
       await ref.read(allTasksProvider.future);
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('Refresh failed: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Refresh failed: $e'),
+          margin: snackBarMarginAboveNav(context),
+        ));
       }
     } finally {
       if (mounted) setState(() => _refreshingFeeds = false);
