@@ -206,7 +206,7 @@ class _SourceCalendarsSection extends ConsumerWidget {
                         ? 'Exception-only · transformed'
                         : feed.isBusy
                             ? 'Busy-only · free/busy'
-                            : 'Standard · ${feed.kind.toUpperCase()}',
+                            : 'Standard · ${feed.sourceLabel}',
                     trailing: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
