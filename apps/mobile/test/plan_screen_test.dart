@@ -413,4 +413,52 @@ void main() {
     expect(find.text('Claim for myself'), findsOneWidget);
     expect(find.text('Mark as not needed'), findsOneWidget);
   });
+
+  testWidgets('tapping an event block shows the event\'s own details', (tester) async {
+    final now = DateTime.now();
+    DateTime at(int h, int m) => DateTime(now.year, now.month, now.day, h, m);
+    final me = _m('dad', 'Dad', caretaker: true);
+    final events = [
+      CalendarEventItem(
+        id: 'school',
+        familyMemberId: 'theo',
+        provenance: 'synthesized',
+        start: at(8, 30),
+        end: at(15, 0),
+        allDay: false,
+        summary: 'School day',
+        description: 'Bring the permission slip',
+        location: 'Lincoln Elementary',
+      ),
+    ];
+    final tasks = [
+      TaskItem(id: 'att', familyMemberId: 'theo', type: 'attendance', start: at(8, 30), end: at(15, 0), status: 'unowned', createdVia: 'generated', calendarEventId: 'school'),
+    ];
+    await tester.pumpWidget(ProviderScope(
+      overrides: [
+        membersProvider.overrideWith((ref) async => [me, _m('theo', 'Theo', child: true)]),
+        currentMemberProvider.overrideWith((ref) async => me),
+        allTasksProvider.overrideWith((ref) async => tasks),
+        calendarEventsProvider.overrideWith((ref) async => events),
+        pendingDecisionsProvider.overrideWith((ref) async => const []),
+        threadingThresholdProvider.overrideWith((ref) async => 30),
+      ],
+      child: MaterialApp(
+        theme: buildAppTheme(),
+        themeMode: ThemeMode.dark,
+        home: const Scaffold(body: SafeArea(child: PlanScreen())),
+      ),
+    ));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.textContaining('School day'));
+    await tester.pumpAndSettle();
+
+    // The sheet's header carries the event's real title, and a details block
+    // surfaces its location and description alongside the full time range.
+    expect(find.textContaining('School day'), findsWidgets);
+    expect(find.text('Lincoln Elementary'), findsOneWidget);
+    expect(find.text('Bring the permission slip'), findsOneWidget);
+    expect(find.textContaining('8:30 AM – 3:00 PM'), findsWidgets);
+  });
 }

@@ -18,14 +18,16 @@ import '../widgets/primitives.dart';
 ///
 /// [scopeTasks] scopes the assign / unassign / dismiss actions: pass the whole
 /// event group (a Plan block tap) to act on the drop-off *and* pick-up at once,
-/// or omit it (a tag tap / Home row) to act on [task] alone. [titleOverride]
-/// replaces the header's type label with the event's own summary.
+/// or omit it (a tag tap / Home row) to act on [task] alone. [sourceEvent], when
+/// the task traces back to a real calendar event, swaps the header's type label
+/// for the event's own title and adds a details block (time range, location,
+/// description) above the actions.
 Future<void> showTaskActions(
   BuildContext context,
   WidgetRef ref,
   TaskItem task, {
   List<TaskItem>? scopeTasks,
-  String? titleOverride,
+  CalendarEventItem? sourceEvent,
 }) async {
   final members = ref.read(membersProvider).valueOrNull ?? const <Member>[];
   final byId = {for (final m in members) m.id: m};
@@ -76,6 +78,17 @@ Future<void> showTaskActions(
   // tap scopes to the whole pair.
   final transitions = scope.where((t) => t.isTransition).toList();
 
+  // The event's own time range when it has one, else just the task's start.
+  final eventEnd = sourceEvent?.end;
+  final eventTime = sourceEvent != null && eventEnd != null && eventEnd.isAfter(sourceEvent.start)
+      ? friendlyRange(sourceEvent.start, eventEnd)
+      : friendlyTime(sourceEvent?.start ?? task.start);
+
+  final location = sourceEvent?.location;
+  final description = sourceEvent?.description;
+  final hasLocation = location != null && location.isNotEmpty;
+  final hasDescription = description != null && description.isNotEmpty;
+
   await showModalBottomSheet<void>(
     context: context,
     useRootNavigator: true,
@@ -96,16 +109,22 @@ Future<void> showTaskActions(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text('${titleOverride ?? taskTypeLabel(task.type)} · ${child?.relationName ?? 'child'}',
+                    Text('${sourceEvent?.displaySummary ?? taskTypeLabel(task.type)} · ${child?.relationName ?? 'child'}',
                         style: AppText.sectionItemTitle),
                     const SizedBox(height: 2),
-                    Text('${taskCategory(task.type)} · ${friendlyTime(task.start)} · $statusText',
+                    Text('${taskCategory(task.type)} · $eventTime · $statusText',
                         style: AppText.subtitle),
                   ],
                 ),
               ),
             ],
           ),
+          if (hasLocation || hasDescription) ...[
+            const SizedBox(height: 14),
+            if (hasLocation) _DetailRow(icon: Icons.location_on_outlined, text: location),
+            if (hasLocation && hasDescription) const SizedBox(height: 8),
+            if (hasDescription) _DetailRow(icon: Icons.notes_rounded, text: description),
+          ],
           if (isFeedTask) ...[
             const SizedBox(height: 20),
             Text('CHANGE TYPE', style: AppText.eyebrow()),
@@ -476,6 +495,27 @@ class _DurationFieldState extends State<_DurationField> {
           'Use a negative value to run it the opposite direction.',
           style: AppText.subtitle,
         ),
+      ],
+    );
+  }
+}
+
+/// One line of event detail (location / description) under the header — a
+/// small leading icon plus wrapping text.
+class _DetailRow extends StatelessWidget {
+  const _DetailRow({required this.icon, required this.text});
+
+  final IconData icon;
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Icon(icon, size: 16, color: AppColors.textSecondary),
+        const SizedBox(width: 8),
+        Expanded(child: Text(text, style: AppText.subtitle)),
       ],
     );
   }

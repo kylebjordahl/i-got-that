@@ -458,7 +458,8 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
               accent: personColor(byId[t.familyMemberId] ?? _fallbackMember),
               owner: t.status == 'owned' ? byId[t.ownerMemberId] : null,
               // Tapping a tag manages just this one drop-off / pick-up task.
-              onTap: () => showTaskActions(context, ref, t),
+              onTap: () => showTaskActions(context, ref, t,
+                  sourceEvent: t.calendarEventId == null ? null : eventsById[t.calendarEventId]),
             ),
           ),
         );
@@ -500,7 +501,7 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
               final group = _groupTasksFor(p.item);
               if (group.isEmpty) return;
               showTaskActions(context, ref, _repTask(group),
-                  scopeTasks: group, titleOverride: sourceEvent?.displaySummary);
+                  scopeTasks: group, sourceEvent: sourceEvent);
             },
           ),
         ));
