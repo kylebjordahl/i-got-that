@@ -132,9 +132,11 @@ redirect back, not a form-POST):
    signed cookie (`igt_google_oauth`, `SameSite=None; Secure; HttpOnly`), and
    302-redirects to Google's consent screen with `access_type=offline`,
    `prompt=consent` (both required to receive a refresh token), and the OpenID +
-   `calendar.events` scopes. `?link=1` with a live session (the same-origin
-   `igt_session` cookie rides along) records the current user id in the cookie so
-   the callback threads Google onto them instead of starting a new session.
+   `calendar.events` + `calendar.readonly` scopes (the latter needed for the
+   "list a user's calendars" picker, `calendarList.list`). `?link=1` with a live
+   session (the same-origin `igt_session` cookie rides along) records the
+   current user id in the cookie so the callback threads Google onto them
+   instead of starting a new session.
 2. The user consents; Google redirects to **`GET /auth/google/callback`** (the
    registered redirect URI) with `?code=…&state=…`. The `SameSite=None` cookie
    rides along.
@@ -157,9 +159,9 @@ and `/auth/google/callback` return **501** (Google login disabled).
 
 **Google Cloud Console** (APIs & Services → Credentials, same project as the
 Web client below):
-1. **Web application** client (already created for staging; production still
-   needs one) — used for the web redirect flow *and* to redeem native's
-   `serverAuthCode` (see below):
+1. **Web application** client (created for both staging and production) — used
+   for the web redirect flow *and* to redeem native's `serverAuthCode` (see
+   below):
    - Add the **Authorized redirect URI** `<PUBLIC_ORIGIN>/api/auth/google/callback`
      (e.g. `https://staging.igt.kylebjordahl.com/api/auth/google/callback`).
 2. **iOS** client, one per flavor (native login needs its own client — a Web
@@ -171,9 +173,10 @@ Web client below):
      (`com.googleusercontent.apps.…`, on the credential's detail page) for the
      Flutter config below.
 3. Enable the **Google Calendar API** and add the `openid`, `email`, `profile`,
-   and `.../auth/calendar.events` scopes to the consent screen (shared by both
-   client types — no per-client scope config). If the consent screen is still
-   in "Testing" publish status, add your test Google accounts as test users.
+   `.../auth/calendar.events`, and `.../auth/calendar.readonly` scopes to the
+   consent screen (shared by both client types — no per-client scope config).
+   If the consent screen is still in "Testing" publish status, add your test
+   Google accounts as test users.
 
 **This API:**
 ```bash

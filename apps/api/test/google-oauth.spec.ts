@@ -38,6 +38,7 @@ describe('Google OAuth', () => {
     expect(p.get('access_type')).toBe('offline');
     expect(p.get('prompt')).toBe('consent');
     expect(p.get('scope')).toContain('calendar.events');
+    expect(p.get('scope')).toContain('calendar.readonly');
     expect(p.get('state')).toBe('s1');
   });
 
@@ -50,6 +51,7 @@ describe('Google OAuth', () => {
     expect(scope).toContain('email');
     expect(scope).toContain('profile');
     expect(scope).toContain('calendar.events');
+    expect(scope).toContain('calendar.readonly');
   });
 
   it('omits the OpenID scopes for a plain calendar consent', () => {
