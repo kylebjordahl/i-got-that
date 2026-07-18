@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_text.dart';
+import 'app_bottom_nav.dart';
 
 /// The shared confirm-sheet chrome for a [SlideToConfirm]-gated destructive
 /// action: title, description, the slide control, and a Cancel fallback.
@@ -53,8 +54,10 @@ Future<void> showSlideToConfirmSheet(
               },
               onError: (e) {
                 if (!sheetContext.mounted) return;
-                ScaffoldMessenger.of(sheetContext)
-                    .showSnackBar(SnackBar(content: Text(errorMessage(e))));
+                ScaffoldMessenger.of(sheetContext).showSnackBar(SnackBar(
+                  content: Text(errorMessage(e)),
+                  margin: snackBarMarginAboveNav(sheetContext),
+                ));
               },
             ),
             const SizedBox(height: 12),

@@ -18,9 +18,11 @@ export type ExternalAccountKind = z.infer<typeof ExternalAccountKind>;
 
 /**
  * `standard` = feed events mean what they say; `exception` = the feed is empty
- * on normal days and only carries deviations from a per-link baseline.
+ * on normal days and only carries deviations from a per-link baseline; `busy` =
+ * the feed carries only opaque availability intervals (Google free/busy — the
+ * "calendar firewall" input), synthesized as detail-free blocks.
  */
-export const FeedMode = z.enum(['standard', 'exception']);
+export const FeedMode = z.enum(['standard', 'exception', 'busy']);
 export type FeedMode = z.infer<typeof FeedMode>;
 
 export const FeedStatus = z.enum(['active', 'paused', 'error']);
@@ -169,6 +171,19 @@ export const AppleSignInInput = z.object({
 });
 export type AppleSignInInput = z.infer<typeof AppleSignInInput>;
 
+/**
+ * Sign in with Google (native): the identity token from the `google_sign_in`
+ * SDK, plus an optional one-time `serverAuthCode` (requested alongside it via
+ * `serverClientId`) redeemable for a refresh token — the native counterpart
+ * of the web redirect flow's "one consent, two outcomes" (identifies the user
+ * *and* auto-connects their Google Calendar).
+ */
+export const GoogleSignInInput = z.object({
+  idToken: z.string().min(1),
+  serverAuthCode: z.string().min(1).optional(),
+});
+export type GoogleSignInInput = z.infer<typeof GoogleSignInInput>;
+
 export const CreateFamilyInput = z.object({
   name: z.string().min(1).max(120),
   /** The creator's relation label within the new family (e.g. "mom"). */
@@ -210,6 +225,11 @@ export const CreateFeedInput = z
       if (!v.sourceCalendarId) {
         ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['sourceCalendarId'], message: 'sourceCalendarId is required for account feeds' });
       }
+    }
+    // Free/busy reads go through the Google freebusy API; no other transport
+    // carries the intervals-only guarantee.
+    if (v.mode === 'busy' && v.kind !== 'google') {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['mode'], message: "mode 'busy' requires kind 'google'" });
     }
   });
 export type CreateFeedInput = z.infer<typeof CreateFeedInput>;

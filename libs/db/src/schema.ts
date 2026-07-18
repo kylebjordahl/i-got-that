@@ -519,6 +519,7 @@ export const secrets = sqliteTable('secrets', {
  * (familyMemberId, synthKey), so config changes resynthesize without dupes:
  *   `bl:<linkId>:<YYYY-MM-DD>`  baseline day
  *   `ev:<linkId>:<sourceEventId>`  feed-event-derived
+ *   `fb:<linkId>:<sourceEventId>`  opaque busy block (free/busy firewall feed)
  *   `pd:<pendingDecisionId>`  resolved pending decision
  *   `task:<taskId>`  claimed task on the claimer's calendar (the recursion)
  *   `ext:<uid>:<recurrenceId|''>`  human event read back from the target

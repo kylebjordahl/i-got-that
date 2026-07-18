@@ -9,6 +9,7 @@ import '../theme/app_text.dart';
 import '../theme/person_colors.dart';
 import '../util/format.dart';
 import '../util/task_visuals.dart';
+import '../widgets/app_bottom_nav.dart';
 import '../widgets/primitives.dart';
 
 /// Quick-actions for a timeline task (Home rows + Plan blocks/tags): change its
@@ -295,11 +296,17 @@ Future<void> _run(
     // Claims move events between calendars (the recursion) — refresh Plan too.
     ref.invalidate(calendarEventsProvider);
     if (context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(success)));
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(success),
+        margin: snackBarMarginAboveNav(context),
+      ));
     }
   } catch (e) {
     if (context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed: $e')));
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('Failed: $e'),
+        margin: snackBarMarginAboveNav(context),
+      ));
     }
   }
 }
@@ -324,11 +331,17 @@ Future<void> _runScope(
     // Claims move events between calendars (the recursion) — refresh Plan too.
     ref.invalidate(calendarEventsProvider);
     if (context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(success)));
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(success),
+        margin: snackBarMarginAboveNav(context),
+      ));
     }
   } catch (e) {
     if (context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed: $e')));
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('Failed: $e'),
+        margin: snackBarMarginAboveNav(context),
+      ));
     }
   }
 }

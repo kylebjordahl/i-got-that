@@ -5,6 +5,13 @@ ASSET_PREFIX=prod
 BUNDLE_NAME=IGT
 BUNDLE_DISPLAY_NAME=IGT
 
+// Native Sign in with Google (prod). Fill in once the prod iOS OAuth client
+// exists in the Cloud Console (bundle id com.kylebjordahl.igt) — see
+// docs/AUTH.md's Google section. Empty ⇒ native Google sign-in fails at
+// runtime with a clear "no client ID" error (web flow is unaffected).
+GOOGLE_IOS_CLIENT_ID=503268168924-gk8d4c4dfjtkmi2ol3t63usi089h1uvv.apps.googleusercontent.com
+GOOGLE_IOS_URL_SCHEME=com.googleusercontent.apps.503268168924-gk8d4c4dfjtkmi2ol3t63usi089h1uvv
+
 // Manual App Store distribution signing. Release config is only exercised by
 // `flutter build ipa` (archive/TestFlight), so this doesn't touch local
 // debug/run builds. The profile must be an App Store (not Ad Hoc/Development)

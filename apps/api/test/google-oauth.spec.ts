@@ -39,6 +39,8 @@ describe('Google OAuth', () => {
     expect(p.get('prompt')).toBe('consent');
     expect(p.get('scope')).toContain('calendar.events');
     expect(p.get('scope')).toContain('calendar.readonly');
+    // freebusy.query (busy-mode feeds) is NOT covered by the other two scopes.
+    expect(p.get('scope')).toContain('calendar.freebusy');
     expect(p.get('state')).toBe('s1');
   });
 

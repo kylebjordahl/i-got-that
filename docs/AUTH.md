@@ -105,7 +105,7 @@ shape, different storage primitive per platform.
 | --- | --- | --- |
 | **Magic link** (email) | Fully implemented | Needs outbound email, which is **off** (no paid plan). In **dev/staging** the request endpoint returns the token directly (`devToken`) so you can log in without a mailbox; in **production** it does not. |
 | **Sign in with Apple** | Server + web redirect flow **implemented + tested**; native (iOS) client wiring + Apple config required | The primary login for deployed environments (works without email). |
-| **Sign in with Google** | Server + web redirect flow **implemented + tested**; native (iOS) client wiring TODO | Also **auto-connects the user's Google Calendar** as part of logging in (the same consent grants calendar access). |
+| **Sign in with Google** | Server + web redirect flow **implemented + tested**; native (iOS) route + client wired, needs an iOS OAuth client per flavor in the Cloud Console before it'll actually run | Also **auto-connects the user's Google Calendar** as part of logging in (the same consent grants calendar access). |
 
 ## Sign in with Google
 
@@ -157,16 +157,28 @@ and `/auth/google/callback` return **501** (Google login disabled).
 
 ### What you need to configure
 
-**Google Cloud Console** (APIs & Services → Credentials → OAuth 2.0 Client ID,
-type *Web application*):
-- Add the **Authorized redirect URI** `<PUBLIC_ORIGIN>/api/auth/google/callback`
-  (e.g. `https://staging.igt.kylebjordahl.com/api/auth/google/callback`).
-- Enable the **Google Calendar API** and add the `openid`, `email`, `profile`,
-  `.../auth/calendar.events`, and `.../auth/calendar.readonly` scopes to the
-  consent screen.
+**Google Cloud Console** (APIs & Services → Credentials, same project as the
+Web client below):
+1. **Web application** client (created for both staging and production) — used
+   for the web redirect flow *and* to redeem native's `serverAuthCode` (see
+   below):
+   - Add the **Authorized redirect URI** `<PUBLIC_ORIGIN>/api/auth/google/callback`
+     (e.g. `https://staging.igt.kylebjordahl.com/api/auth/google/callback`).
+2. **iOS** client, one per flavor (native login needs its own client — a Web
+   client can't be used as the native `aud`):
+   - `Create Credentials → OAuth client ID → iOS`, Bundle ID
+     `com.kylebjordahl.igt.staging` (staging) / `com.kylebjordahl.igt` (prod).
+   - No client secret — iOS clients are public. Note the **Client ID**
+     (`…apps.googleusercontent.com`) and the **reversed client ID**
+     (`com.googleusercontent.apps.…`, on the credential's detail page) for the
+     Flutter config below.
+3. Enable the **Google Calendar API** and add the `openid`, `email`, `profile`,
+   `.../auth/calendar.events`, and `.../auth/calendar.readonly` scopes to the
+   consent screen (shared by both client types — no per-client scope config).
+   If the consent screen is still in "Testing" publish status, add your test
+   Google accounts as test users.
 
-**This API** (already used for calendar delivery/ingest — nothing Google-login-
-specific to add):
+**This API:**
 ```bash
 cd apps/api
 #   GOOGLE_OAUTH_CLIENT_ID  = <the Web client id>   (var in wrangler.jsonc per env)
@@ -174,12 +186,21 @@ pnpm wrangler secret put GOOGLE_OAUTH_CLIENT_SECRET --env staging
 #   PUBLIC_ORIGIN           = https://staging.igt.kylebjordahl.com
 #   → derived redirect URI to register in the Cloud Console:
 #     https://staging.igt.kylebjordahl.com/api/auth/google/callback
+#   GOOGLE_IOS_CLIENT_IDS = <the iOS client id(s) for this env, comma-separated>
+#     (var in wrangler.jsonc per env — see the iOS bundle ids table below)
 ```
 
-**Flutter client:** the web app wires "Continue with Google" (login) and "Link
-Sign in with Google" / the wizard's Google step to the redirect endpoints
-(`lib/state/auth.dart`). Native (iOS) Google sign-in is not wired yet — the same
-TODO as native Apple — so on native those surfaces point users at the web app.
+**Flutter client:** `lib/state/auth.dart` wires both platforms now:
+- **Web** navigates to the redirect endpoints (`loginWithGoogle`,
+  `connectGoogleCalendar`) as before.
+- **Native (iOS)** uses the `google_sign_in` package
+  (`loginWithGoogleNative`/`linkWithGoogleNative`) to obtain an ID token — and,
+  when `GOOGLE_SERVER_CLIENT_ID` (a `--dart-define`, set to the **Web** client
+  id) is configured, a `serverAuthCode` too — and posts them to
+  `POST /auth/google` / `POST /auth/link/google`. Requires `GIDClientID` +
+  the reversed-client-id URL scheme in `ios/Runner/Info.plist` (wired via
+  per-flavor xcconfig — see the placeholders in `ios/Flutter/{staging,prod}*.xcconfig`,
+  fill in once the iOS OAuth clients above exist).
 
 ## Sign in with Apple
 

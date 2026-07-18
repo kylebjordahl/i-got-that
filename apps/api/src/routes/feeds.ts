@@ -38,8 +38,10 @@ const MergedRuleShape = z
     params: z.unknown().optional(),
   })
   .superRefine(validateOverrideRuleShape);
+import { fetchGoogleFreeBusy } from '@igt/ical';
 import { Hono } from 'hono';
 import type { Bindings, HonoEnv } from '../env.js';
+import { resolveAccountCredential } from '../lib/account-credentials.js';
 import { googleRefresherFor } from '../lib/google-oauth.js';
 import { requireAdmin, requireFamilyMember } from '../middleware/auth.js';
 import { reconcileClaimEvents } from '../services/claim.js';
@@ -52,6 +54,40 @@ import { buildFamilyTasks, buildMemberTasks } from '../services/task-gen.js';
 /** Ingest secrets (KEK + Google refresher) needed to read account-backed feeds. */
 function ingestSecrets(env: Bindings) {
   return { kek: env.KEK, googleRefresh: googleRefresherFor(env) };
+}
+
+/**
+ * Creation-time probe for busy feeds: verify the target calendar actually
+ * answers `freebusy.query` for this account BEFORE the feed row exists, so a
+ * missing "share as see-only-free/busy" grant (or a pre-freebusy-scope token)
+ * surfaces as an actionable setup error instead of a feed stuck in 'error'.
+ * Returns null on success, else a short reason string.
+ */
+async function probeFreeBusy(
+  db: ReturnType<typeof getDb>,
+  env: Bindings,
+  accountId: string,
+  calendarId: string,
+): Promise<string | null> {
+  try {
+    const credential = await resolveAccountCredential(db, env.KEK, accountId);
+    if (!credential || credential.kind !== 'oauth') return 'no_account_credential';
+    const refresh = googleRefresherFor(env);
+    const accessToken =
+      credential.accessToken ??
+      (credential.refreshToken && refresh
+        ? await refresh(credential.refreshToken)
+        : undefined);
+    if (!accessToken) return 'no_access_token';
+    const now = new Date();
+    await fetchGoogleFreeBusy(accessToken, calendarId, {
+      windowStart: now,
+      windowEnd: new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000),
+    });
+    return null;
+  } catch (err) {
+    return err instanceof Error ? err.message : 'freebusy_probe_failed';
+  }
 }
 
 /** Mounted under /families/:familyId/feeds (auth applied by parent router). */
@@ -105,6 +141,15 @@ feedRoutes.post('/', requireAdmin, async (c) => {
     if (!account) return c.json({ error: 'account_not_found' }, 404);
     const expectedKind = account.kind === 'google' ? 'google' : 'caldav';
     if (d.kind !== expectedKind) return c.json({ error: 'account_kind_mismatch' }, 400);
+    // Busy feeds point at a calendar shared to this account as free/busy-only
+    // (it won't appear in the account's own calendarList) — probe the grant now
+    // so a mis-set share fails the creation with guidance, not the first sync.
+    if (d.mode === 'busy') {
+      const probeError = await probeFreeBusy(db, c.env, account.id, d.sourceCalendarId!);
+      if (probeError) {
+        return c.json({ error: 'freebusy_unavailable', detail: probeError }, 400);
+      }
+    }
     values.externalAccountId = account.id;
     values.sourceCalendarId = d.sourceCalendarId ?? null;
     values.sourceCalendarName = d.sourceCalendarName ?? null;
@@ -172,6 +217,16 @@ feedRoutes.patch('/:feedId', requireAdmin, async (c) => {
   if (!feed) return c.json({ error: 'not_found' }, 404);
 
   const d = parsed.data;
+  // The busy keyspace (interval-derived source events, `fb:` synthKeys) is
+  // incompatible with the UID-keyed standard/exception pipelines — a mode
+  // transition would strand rows on both sides. Recreate the feed instead.
+  if (
+    d.mode !== undefined &&
+    d.mode !== feed.mode &&
+    (d.mode === 'busy' || feed.mode === 'busy')
+  ) {
+    return c.json({ error: 'busy_mode_immutable' }, 400);
+  }
   const set: Partial<typeof feeds.$inferInsert> = {};
   if (d.mode !== undefined) set.mode = d.mode;
   if (d.refreshMinutes !== undefined) set.refreshMinutes = d.refreshMinutes;
