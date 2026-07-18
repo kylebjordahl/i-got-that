@@ -285,7 +285,7 @@ class _AddCalendarSheetState extends ConsumerState<_AddCalendarSheet> {
                                 ? 'Exception-only'
                                 : f.isBusy
                                     ? 'Busy-only · free/busy'
-                                    : 'Standard · ${f.kind.toUpperCase()}',
+                                    : 'Standard · ${f.sourceLabel}',
                             style: AppText.subtitle),
                       ],
                     ),
