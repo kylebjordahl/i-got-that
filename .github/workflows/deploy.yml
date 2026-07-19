@@ -93,59 +93,61 @@ jobs:
       #   standing in for "no tag yet").
       - name: Determine app version
         id: version
+        uses: actions/github-script@v7
         env:
           ENVIRONMENT: ${{ inputs.environment }}
-        run: |
-          set -euo pipefail
+        with:
+          script: |
+            const environment = process.env.ENVIRONMENT;
 
-          LATEST_TAG="$(git describe --tags --abbrev=0 2>/dev/null || true)"
+            const git = async (...args) => {
+              const { stdout } = await exec.getExecOutput('git', args, { ignoreReturnCode: true });
+              return stdout.trim();
+            };
 
-          if [ "$ENVIRONMENT" = "production" ]; then
-            RELEASE_TAG="$(git tag --points-at HEAD | grep -E '^v?[0-9]+\.[0-9]+\.[0-9]+' | head -n1)"
-            if [ -z "$RELEASE_TAG" ]; then
-              echo "::error::No version tag found on the released commit ($(git rev-parse HEAD))."
-              exit 1
-            fi
-            BUILD_NAME="${RELEASE_TAG#v}"
-            echo "Production build name: $BUILD_NAME (from release tag $RELEASE_TAG)"
-          else
-            BASE_VERSION="${LATEST_TAG#v}"
-            BASE_VERSION="${BASE_VERSION:-0.0.0}"
-            if [ -n "$LATEST_TAG" ]; then
-              LOG_RANGE="${LATEST_TAG}..HEAD"
-            else
-              LOG_RANGE="HEAD"
-            fi
-            SUBJECTS="$(git log "$LOG_RANGE" --format=%s)"
+            const latestTag = await git('describe', '--tags', '--abbrev=0');
+            let buildName;
 
-            BUMP=""
-            if [ -n "$LATEST_TAG" ] && [ -n "$SUBJECTS" ]; then
-              if echo "$SUBJECTS" | grep -qE '^[a-z]+(\(.+\))?!:|BREAKING CHANGE'; then
-                BUMP="major"
-              elif echo "$SUBJECTS" | grep -qE '^feat(\(.+\))?:'; then
-                BUMP="minor"
-              elif echo "$SUBJECTS" | grep -qE '^fix(\(.+\))?:'; then
-                BUMP="patch"
-              fi
-            fi
+            if (environment === 'production') {
+              const tagsOnHead = (await git('tag', '--points-at', 'HEAD')).split('\n').filter(Boolean);
+              const releaseTag = tagsOnHead.find((t) => /^v?\d+\.\d+\.\d+/.test(t));
+              if (!releaseTag) {
+                core.setFailed(`No version tag found on the released commit (${await git('rev-parse', 'HEAD')}).`);
+                return;
+              }
+              buildName = releaseTag.replace(/^v/, '');
+              core.info(`Production build name: ${buildName} (from release tag ${releaseTag})`);
+            } else {
+              const baseVersion = latestTag.replace(/^v/, '') || '0.0.0';
+              const logRange = latestTag ? `${latestTag}..HEAD` : 'HEAD';
+              const subjects = await git('log', logRange, '--format=%s');
 
-            if [ -n "$BUMP" ]; then
-              IFS='.' read -r MAJOR MINOR PATCH <<< "$BASE_VERSION"
-              case "$BUMP" in
-                major) BUILD_NAME="$((MAJOR + 1)).0.0" ;;
-                minor) BUILD_NAME="${MAJOR}.$((MINOR + 1)).0" ;;
-                patch) BUILD_NAME="${MAJOR}.${MINOR}.$((PATCH + 1))" ;;
-              esac
-              echo "Staging build name: $BUILD_NAME (next $BUMP version after $LATEST_TAG)"
-            else
-              COMMIT_COUNT="$(git rev-list "$LOG_RANGE" --count)"
-              SHORT_HASH="$(git rev-parse --short HEAD)"
-              BUILD_NAME="${BASE_VERSION}-${COMMIT_COUNT}-g${SHORT_HASH}"
-              echo "Staging build name: $BUILD_NAME (no semantic bump determinable since ${LATEST_TAG:-the start of history})"
-            fi
-          fi
+              let bump = '';
+              if (latestTag && subjects) {
+                if (/^[a-z]+(\(.+\))?!:/m.test(subjects) || /BREAKING CHANGE/.test(subjects)) {
+                  bump = 'major';
+                } else if (/^feat(\(.+\))?:/m.test(subjects)) {
+                  bump = 'minor';
+                } else if (/^fix(\(.+\))?:/m.test(subjects)) {
+                  bump = 'patch';
+                }
+              }
 
-          echo "build_name=$BUILD_NAME" >> "$GITHUB_OUTPUT"
+              if (bump) {
+                const [major, minor, patch] = baseVersion.split('.').map(Number);
+                buildName = bump === 'major' ? `${major + 1}.0.0`
+                  : bump === 'minor' ? `${major}.${minor + 1}.0`
+                  : `${major}.${minor}.${patch + 1}`;
+                core.info(`Staging build name: ${buildName} (next ${bump} version after ${latestTag})`);
+              } else {
+                const commitCount = await git('rev-list', logRange, '--count');
+                const shortHash = await git('rev-parse', '--short', 'HEAD');
+                buildName = `${baseVersion}-${commitCount}-g${shortHash}`;
+                core.info(`Staging build name: ${buildName} (no semantic bump determinable since ${latestTag || 'the start of history'})`);
+              }
+            }
+
+            core.setOutput('build_name', buildName);
 
   deploy:
     name: Deploy → ${{ inputs.environment }}
