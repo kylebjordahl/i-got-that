@@ -23,6 +23,14 @@ on:
         required: false
         type: string
         default: ""
+    outputs:
+      build_name:
+        description: >-
+          Marketing version computed by the `version` job (see below) for
+          this run — the same value embedded in the iOS/web builds. Exposed
+          so deploy-staging.yml can keep a draft release's tag in sync with
+          it without re-deriving the version itself.
+        value: ${{ jobs.version.outputs.build_name }}
     secrets:
       CLOUDFLARE_API_TOKEN:
         required: true
