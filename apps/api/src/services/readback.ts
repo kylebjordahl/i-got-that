@@ -69,12 +69,18 @@ export async function readBackMember(
   if (!credential) return result;
 
   const window = synthesisWindow(opts);
-  const expand = { windowStart: window.start, windowEnd: window.end };
+  // `cal.timezone` is whatever a prior read-back auto-detected (from some
+  // read-back event's own TZID/VTIMEZONE) or an admin manually set — used to
+  // resolve floating (zone-less) read-back events, which an externally
+  // sourced ICS invite added to the target calendar may carry (some sources
+  // never advertise a timezone for those at all).
+  const expand = { windowStart: window.start, windowEnd: window.end, defaultTimezone: cal.timezone ?? undefined };
 
   let occurrences: Occurrence[];
+  let timezone: string | null;
   if (cal.targetMethod === 'caldav') {
     if (credential.kind !== 'basic') return result;
-    ({ occurrences } = await fetchCalDavOccurrences(
+    ({ occurrences, timezone } = await fetchCalDavOccurrences(
       {
         collectionUrl: cal.targetCalendarId,
         username: credential.username,
@@ -91,7 +97,7 @@ export async function readBackMember(
         ? await opts.googleRefresh(credential.refreshToken)
         : undefined);
     if (!accessToken) return result;
-    ({ occurrences } = await fetchGoogleOccurrences(
+    ({ occurrences, timezone } = await fetchGoogleOccurrences(
       accessToken,
       cal.targetCalendarId,
       expand,
@@ -163,7 +169,7 @@ export async function readBackMember(
 
   await db
     .update(memberCalendars)
-    .set({ lastReadBackAt: new Date() })
+    .set({ lastReadBackAt: new Date(), timezone: timezone ?? cal.timezone })
     .where(eq(memberCalendars.id, cal.id));
   return result;
 }
