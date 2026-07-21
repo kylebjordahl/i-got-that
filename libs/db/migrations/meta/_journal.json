@@ -22,6 +22,13 @@
       "when": 1784613489137,
       "tag": "0002_damp_mariko_yashida",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1784669536513,
+      "tag": "0003_little_magus",
+      "breakpoints": true
     }
   ]
 }

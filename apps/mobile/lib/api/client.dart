@@ -1,4 +1,5 @@
 import 'package:dio/dio.dart';
+import '../models.dart';
 import 'dio_credentials.dart';
 
 /// Sentinel that distinguishes "omit this PATCH field" from "set to null".
@@ -332,6 +333,7 @@ class ApiClient {
     String? dayStart,
     String? dayEnd,
     String? location,
+    GeoLocation? locationGeo,
   }) async {
     final res = await _dio.post(
       '/families/$familyId/feeds/$feedId/member-links',
@@ -341,6 +343,7 @@ class ApiClient {
         if (dayStart != null) 'dayStart': dayStart,
         if (dayEnd != null) 'dayEnd': dayEnd,
         if (location != null) 'location': location,
+        if (locationGeo != null) 'locationGeo': locationGeo.toJson(),
       },
       options: _auth,
     );
@@ -359,6 +362,8 @@ class ApiClient {
     String? dayStart,
     String? dayEnd,
     String? location,
+    // Pass a GeoLocation to set, or `null` to clear; omit to leave unchanged.
+    Object? locationGeo = _unset,
     bool? active,
   }) async {
     await _dio.patch(
@@ -368,6 +373,8 @@ class ApiClient {
         if (dayStart != null) 'dayStart': dayStart,
         if (dayEnd != null) 'dayEnd': dayEnd,
         if (location != null) 'location': location,
+        if (!identical(locationGeo, _unset))
+          'locationGeo': (locationGeo as GeoLocation?)?.toJson(),
         if (active != null) 'active': active,
       },
       options: _auth,

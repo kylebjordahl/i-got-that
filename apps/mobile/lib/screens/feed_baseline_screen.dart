@@ -1,11 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models.dart';
+import '../services/geocoding.dart';
 import '../state/auth.dart';
 import '../state/family.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_text.dart';
 import '../widgets/app_bottom_nav.dart';
+import '../widgets/location_picker.dart';
 import '../widgets/primitives.dart';
 import '../widgets/settings.dart';
 
@@ -38,6 +40,7 @@ class _FeedBaselineScreenState extends ConsumerState<FeedBaselineScreen> {
   final _location = TextEditingController();
   final _dayStart = TextEditingController(text: '08:30');
   final _dayEnd = TextEditingController(text: '14:45');
+  GeoLocation? _locationGeo;
   bool _busy = false;
   String? _error;
 
@@ -52,6 +55,7 @@ class _FeedBaselineScreenState extends ConsumerState<FeedBaselineScreen> {
       ..clear()
       ..addAll([for (var i = 0; i < 7; i++) if ((mask & (1 << i)) != 0) i]);
     _location.text = ex.location ?? '';
+    _locationGeo = ex.locationGeo;
     _dayStart.text = ex.dayStart ?? '08:30';
     _dayEnd.text = ex.dayEnd ?? '14:45';
   }
@@ -114,6 +118,9 @@ class _FeedBaselineScreenState extends ConsumerState<FeedBaselineScreen> {
             dayStart: _isException ? _dayStart.text.trim() : null,
             dayEnd: _isException ? _dayEnd.text.trim() : null,
             location: _location.text.trim().isEmpty ? null : _location.text.trim(),
+            // Only keep the geocode when the text still matches the picked place;
+            // an empty field clears both. `null` is a real value here (clear).
+            locationGeo: _location.text.trim().isEmpty ? null : _locationGeo,
           );
       _refresh();
       if (mounted) Navigator.of(context).pop(true);
@@ -235,7 +242,12 @@ class _FeedBaselineScreenState extends ConsumerState<FeedBaselineScreen> {
                             ],
                           ),
                           const SizedBox(height: 14),
-                          _field(_location, 'Default location', 'Prefilled onto every task'),
+                          LocationPickerField(
+                            controller: _location,
+                            geo: _locationGeo,
+                            geocoder: ref.watch(geocoderProvider),
+                            onChanged: (_, geo) => setState(() => _locationGeo = geo),
+                          ),
                         ],
                       ),
                     ),

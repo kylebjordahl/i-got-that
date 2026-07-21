@@ -139,6 +139,10 @@ function hashMirrorPayload(
     event.dtend ? event.dtend.toISOString() : '',
     event.allDay ? '1' : '0',
     event.location ?? '',
+    // Re-mirror when only the geocode changes (same display text).
+    event.locationGeo
+      ? `${event.locationGeo.lat},${event.locationGeo.lon},${event.locationGeo.title ?? ''},${event.locationGeo.address ?? ''},${event.locationGeo.radius ?? ''}`
+      : '',
     event.description ?? '',
     alertMinutes.join(','),
     timezone ?? '',
@@ -302,6 +306,7 @@ export async function syncMemberMirror(
       summary,
       description: event.description ?? undefined,
       location: event.location ?? undefined,
+      locationGeo: event.locationGeo ?? undefined,
       alertMinutes: alertMinutes.length > 0 ? alertMinutes : undefined,
       timezone,
     };

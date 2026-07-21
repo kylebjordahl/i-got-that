@@ -86,4 +86,42 @@ void main() {
       expect(id.label, 'Sign in with Apple');
     });
   });
+
+  group('FeedLink geocoded location', () {
+    test('parses a geocoded baseline location', () {
+      final link = FeedLink.fromJson({
+        'id': 'l1',
+        'familyMemberId': 'm1',
+        'active': true,
+        'location': 'Lincoln Elementary',
+        'locationGeo': {
+          'lat': 37.331686,
+          'lon': -122.030656,
+          'title': 'Lincoln Elementary',
+          'address': '123 Main St, Springfield',
+        },
+      });
+      expect(link.location, 'Lincoln Elementary');
+      expect(link.locationGeo, isNotNull);
+      expect(link.locationGeo!.lat, 37.331686);
+      expect(link.locationGeo!.lon, -122.030656);
+      expect(link.locationGeo!.address, '123 Main St, Springfield');
+    });
+
+    test('locationGeo is null when the link has only free text', () {
+      final link = FeedLink.fromJson({
+        'id': 'l2',
+        'familyMemberId': 'm1',
+        'active': true,
+        'location': 'the school',
+      });
+      expect(link.location, 'the school');
+      expect(link.locationGeo, isNull);
+    });
+
+    test('GeoLocation.toJson omits absent optional fields', () {
+      const geo = GeoLocation(lat: 40.7128, lon: -74.006);
+      expect(geo.toJson(), {'lat': 40.7128, 'lon': -74.006});
+    });
+  });
 }
