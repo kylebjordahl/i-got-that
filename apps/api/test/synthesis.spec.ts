@@ -350,6 +350,60 @@ describe('synthesis: standard feeds', () => {
       await db.select().from(pendingDecisions).where(eq(pendingDecisions.familyId, fam.familyId)),
     ).toHaveLength(0);
   });
+
+  it('resynthesizes idempotently when the window boundary lands inside an already-synthesized event', async () => {
+    // Regression: production 500 — an evening event in a negative-UTC-offset
+    // zone commonly starts before the UTC day rolls over and ends after
+    // (window.start is always a UTC midnight). The source-occurrence query
+    // already treats "started before the window but still ongoing at
+    // window.start" as in-window; the existing-calendar_events lookup used to
+    // check dtstart alone, so on the day the window boundary crossed into the
+    // event's span it couldn't find its own already-synthesized row, tried to
+    // INSERT a duplicate, and hit the (familyMemberId, synthKey) unique index
+    // — crashing the whole feed's synthesis (and the request that triggered it).
+    const fam = await setupFamily('synth-std-straddle@example.com');
+    const db = getDb(env.DB);
+    const feed = (
+      await db
+        .insert(feeds)
+        .values({
+          familyId: fam.familyId,
+          mode: 'standard',
+          url: 'https://feed.example.com/evening.ics',
+        })
+        .returning()
+    )[0]!;
+    await db
+      .insert(familyMemberFeeds)
+      .values({ familyId: fam.familyId, feedId: feed.id, familyMemberId: fam.childId });
+
+    // Straddles the WINDOW's start (2026-07-06T00:00:00Z): starts the evening
+    // before, ends 20 minutes after midnight UTC.
+    await insertSource(db, feed, {
+      icalUid: 'dentist',
+      summary: 'Dentist',
+      dtstart: new Date('2026-07-05T23:20:00Z'),
+      dtend: new Date('2026-07-06T00:20:00Z'),
+      allDay: false,
+    });
+
+    const r1 = await synthesizeFeed(db, feed, WINDOW);
+    expect(r1.eventsUpserted).toBe(1);
+
+    // Re-running against the same window with unchanged content must be a
+    // pure no-op, not a duplicate-key crash.
+    await expect(synthesizeFeed(db, feed, WINDOW)).resolves.toMatchObject({
+      eventsUpserted: 0,
+      eventsRemoved: 0,
+    });
+
+    const events = await db
+      .select()
+      .from(calendarEvents)
+      .where(eq(calendarEvents.familyMemberId, fam.childId));
+    expect(events).toHaveLength(1);
+    expect(events[0]!.summary).toBe('Dentist');
+  });
 });
 
 describe('link-rule (override) routes', () => {

@@ -196,8 +196,12 @@ export const feeds = sqliteTable(
     sourceCalendarId: text('source_calendar_id'),
     sourceCalendarName: text('source_calendar_name'),
     mode: text('mode', { enum: FeedMode.options }).notNull(),
-    // IANA timezone the calendar's wall-clock times are in (from X-WR-TIMEZONE);
-    // used to interpret exception baseline times. Null ⇒ treated as UTC.
+    // IANA timezone the calendar's wall-clock times are in — auto-detected from
+    // the feed's own X-WR-TIMEZONE/VTIMEZONE on sync, or set manually for feeds
+    // that never advertise one (e.g. some booking-software ICS exports). Used
+    // to interpret exception baseline times and the feed's own floating
+    // (zone-less) VEVENT times. Null ⇒ exception baselines treated as UTC and
+    // floating VEVENT times fall back to the host runtime's timezone.
     timezone: text('timezone'),
     refreshMinutes: integer('refresh_minutes').notNull().default(360),
     etag: text('etag'),
@@ -624,6 +628,13 @@ export const memberCalendars = sqliteTable(
     targetCalendarName: text('target_calendar_name'),
     // JSON array of minutes-before-start for default alerts (max 2), e.g. [30,10].
     alertMinutes: text('alert_minutes', { mode: 'json' }).$type<number[]>(),
+    // IANA timezone the target calendar's wall-clock times are in — auto-detected
+    // from a read-back event's own TZID/VTIMEZONE, or set manually for events
+    // that carry neither (e.g. an externally-sourced ICS invite imported as a
+    // floating/zone-less VEVENT). Used to interpret the target's own floating
+    // read-back times (see readBackMember). Null ⇒ they fall back to the host
+    // runtime's timezone.
+    timezone: text('timezone'),
     active: integer('active', { mode: 'boolean' }).notNull().default(true),
     lastMirroredAt: integer('last_mirrored_at', { mode: 'timestamp_ms' }),
     lastReadBackAt: integer('last_read_back_at', { mode: 'timestamp_ms' }),

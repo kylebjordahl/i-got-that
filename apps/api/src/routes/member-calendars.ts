@@ -10,6 +10,7 @@ import {
 import { SetMemberCalendarTargetInput } from '@igt/domain';
 import { Hono } from 'hono';
 import type { HonoEnv } from '../env.js';
+import { googleRefresherFor } from '../lib/google-oauth.js';
 import { requireFamilyMember } from '../middleware/auth.js';
 import {
   deferSync,
@@ -17,6 +18,7 @@ import {
   getProductionRegistry,
   purgeMemberMirror,
 } from '../services/mirror.js';
+import { readBackMember } from '../services/readback.js';
 
 /**
  * A member's unified-calendar target: the ONE writable external calendar their
@@ -120,16 +122,20 @@ memberCalendarRoutes.put('/members/:memberId/calendar-target', async (c) => {
     targetCalendarId: parsed.data.targetCalendarId,
     targetCalendarName: parsed.data.targetCalendarName ?? null,
     alertMinutes: parsed.data.alertMinutes ?? null,
+    timezone: parsed.data.timezone ?? null,
     active: true,
   } as const;
 
+  // Retargeting to a different calendar: cancel our events off the old one
+  // first (skip when it's the same calendar — the reconcile heals in place).
+  const sameCalendar =
+    !!prior &&
+    prior.targetCalendarId === parsed.data.targetCalendarId &&
+    prior.targetExternalAccountId === account.id;
+  const timezoneChanged = sameCalendar && prior!.timezone !== values.timezone;
+
   let row;
   if (prior) {
-    // Retargeting to a different calendar: cancel our events off the old one
-    // first (skip when it's the same calendar — the reconcile heals in place).
-    const sameCalendar =
-      prior.targetCalendarId === parsed.data.targetCalendarId &&
-      prior.targetExternalAccountId === account.id;
     if (!sameCalendar) {
       deferSync(
         c.executionCtx,
@@ -150,6 +156,19 @@ memberCalendarRoutes.put('/members/:memberId/calendar-target', async (c) => {
         .values({ familyId: me.familyId, familyMemberId: member.id, ...values })
         .returning()
     )[0]!;
+  }
+
+  if (timezoneChanged) {
+    // The target calendar's own data may be byte-for-byte unchanged (this is
+    // a manual correction, not a source-side edit) — read back now so
+    // already-stored (wrong) floating-time human events get reinterpreted,
+    // rather than waiting for the next cron tick.
+    try {
+      await readBackMember(db, row, { kek: c.env.KEK, googleRefresh: googleRefresherFor(c.env) });
+    } catch {
+      // Best-effort — a failed read-back here shouldn't block the target
+      // change that already committed; the next cron tick retries it.
+    }
   }
 
   // Mirror the member's existing unified calendar onto the new target (queued).

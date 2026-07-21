@@ -212,6 +212,27 @@ export type CreateFamilyInput = z.infer<typeof CreateFamilyInput>;
 const RefreshMinutes = z.number().int().min(15).max(10080).default(360);
 
 /**
+ * A manual IANA timezone override (e.g. "America/Los_Angeles") for a feed or
+ * target calendar whose events don't all carry their own timezone info —
+ * some sources (booking-software ICS exports, imported invites) send bare
+ * local wall-clock times with no TZID/Z at all (RFC 5545 "floating" time).
+ * Auto-detection on sync still takes priority whenever a document/event does
+ * carry a timezone; this is only the fallback for the ones that don't.
+ */
+const IanaTimezone = z
+  .string()
+  .min(1)
+  .max(100)
+  .refine((tz) => {
+    try {
+      new Intl.DateTimeFormat('en-US', { timeZone: tz });
+      return true;
+    } catch {
+      return false;
+    }
+  }, 'invalid IANA timezone');
+
+/**
  * Create an input feed. Either a public ICS URL (`kind: 'ics'`, the default) or a
  * calendar drawn from a connected external account (`kind: 'caldav' | 'google'`,
  * with `externalAccountId` + the immutable `sourceCalendarId`). `sourceCalendarId`
@@ -260,6 +281,8 @@ export const UpdateFeedInput = z.object({
   mode: FeedMode.optional(),
   refreshMinutes: z.number().int().min(15).max(10080).optional(),
   status: FeedStatus.optional(),
+  /** See `IanaTimezone`. `null` clears an existing manual override. */
+  timezone: IanaTimezone.nullable().optional(),
 });
 export type UpdateFeedInput = z.infer<typeof UpdateFeedInput>;
 
@@ -629,5 +652,11 @@ export const SetMemberCalendarTargetInput = z.object({
   targetCalendarId: z.string().min(1),
   targetCalendarName: z.string().max(256).optional(),
   alertMinutes: AlertMinutes.optional(),
+  /**
+   * See `IanaTimezone`. This PUT fully replaces the target row, so — like
+   * `alertMinutes` — omitting it clears any previously-set value rather than
+   * preserving it.
+   */
+  timezone: IanaTimezone.optional(),
 });
 export type SetMemberCalendarTargetInput = z.infer<typeof SetMemberCalendarTargetInput>;

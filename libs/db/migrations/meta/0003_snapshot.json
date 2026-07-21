@@ -1,8 +1,8 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "541d088e-4941-4edb-bc6e-d4eb5aa63a08",
-  "prevId": "3e804c5a-3aa6-4c21-a7fc-1fffbfaf1d3f",
+  "id": "44b1f1f4-79a9-4e96-9519-8945d6c3b22e",
+  "prevId": "541d088e-4941-4edb-bc6e-d4eb5aa63a08",
   "tables": {
     "auth_tokens": {
       "name": "auth_tokens",
@@ -197,6 +197,13 @@
         },
         "location": {
           "name": "location",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "location_geo": {
+          "name": "location_geo",
           "type": "text",
           "primaryKey": false,
           "notNull": false,
@@ -666,6 +673,13 @@
         },
         "location": {
           "name": "location",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "location_geo": {
+          "name": "location_geo",
           "type": "text",
           "primaryKey": false,
           "notNull": false,
