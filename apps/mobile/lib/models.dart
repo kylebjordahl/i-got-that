@@ -254,6 +254,42 @@ class FeedItem {
 
 /// A feed↔member link. Carries the exception-feed baseline plus the task-gen
 /// config synthesis stamps onto the events it produces.
+/// A validated/geocoded location. `lat`/`lon` are what let calendar clients
+/// (notably Apple Calendar) compute travel time. Mirrors the `GeoLocation`
+/// domain schema on the API. Filled by the platform geocoder (MapKit on iOS);
+/// null when the user only typed free text.
+class GeoLocation {
+  const GeoLocation({
+    required this.lat,
+    required this.lon,
+    this.title,
+    this.address,
+    this.radius,
+  });
+
+  final double lat;
+  final double lon;
+  final String? title;
+  final String? address;
+  final double? radius;
+
+  factory GeoLocation.fromJson(Map<String, dynamic> j) => GeoLocation(
+        lat: (j['lat'] as num).toDouble(),
+        lon: (j['lon'] as num).toDouble(),
+        title: j['title'] as String?,
+        address: j['address'] as String?,
+        radius: (j['radius'] as num?)?.toDouble(),
+      );
+
+  Map<String, dynamic> toJson() => {
+        'lat': lat,
+        'lon': lon,
+        if (title != null) 'title': title,
+        if (address != null) 'address': address,
+        if (radius != null) 'radius': radius,
+      };
+}
+
 class FeedLink {
   FeedLink({
     required this.id,
@@ -264,6 +300,7 @@ class FeedLink {
     this.dayStart,
     this.dayEnd,
     this.location,
+    this.locationGeo,
     this.defaultTaskType = 'transition',
     this.defaultDropoffWindowMin = 15,
     this.defaultPickupWindowMin = 15,
@@ -277,6 +314,7 @@ class FeedLink {
   final String? dayStart; // "HH:MM"
   final String? dayEnd;
   final String? location;
+  final GeoLocation? locationGeo;
 
   /// This calendar's task-rule terminal default.
   final String defaultTaskType; // 'transition' | 'attendance'
@@ -292,6 +330,9 @@ class FeedLink {
         dayStart: j['dayStart'] as String?,
         dayEnd: j['dayEnd'] as String?,
         location: j['location'] as String?,
+        locationGeo: j['locationGeo'] == null
+            ? null
+            : GeoLocation.fromJson(j['locationGeo'] as Map<String, dynamic>),
         defaultTaskType: j['defaultTaskType'] as String? ?? 'transition',
         defaultDropoffWindowMin: j['defaultDropoffWindowMin'] as int? ?? 15,
         defaultPickupWindowMin: j['defaultPickupWindowMin'] as int? ?? 15,

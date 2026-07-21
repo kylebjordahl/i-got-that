@@ -1,6 +1,7 @@
 import {
   parseEcmaRegex,
   type AttendanceRequirement,
+  type GeoLocation,
   type OverrideMatchField,
   type OverrideMatchOp,
   type OverrideOutcome,
@@ -213,6 +214,8 @@ export interface LinkConfigLike {
   dayStart: string | null;
   dayEnd: string | null;
   location: string | null;
+  /** Geocoded coords for `location`; stamped onto generated baseline events. */
+  locationGeo?: GeoLocation | null;
   /** Summary for generated baseline-day events (e.g. the feed's name). */
   baselineSummary?: string | null;
 }
@@ -227,6 +230,8 @@ export interface EventIntent {
   allDay: boolean;
   summary: string | null;
   location: string | null;
+  /** Geocoded coords for `location` (baseline events only); null for feed events. */
+  locationGeo: GeoLocation | null;
   description: string | null;
 }
 
@@ -256,6 +261,7 @@ function occurrenceEvent(linkId: string, occ: SourceOccurrence): EventIntent {
     allDay: occ.allDay,
     summary: occ.summary,
     location: occ.location,
+    locationGeo: null,
     description: occ.description ?? null,
   };
 }
@@ -298,6 +304,7 @@ export function synthesizeBusy(
       allDay: occ.allDay,
       summary: link.baselineSummary ?? 'Busy',
       location: null,
+      locationGeo: null,
       description: null,
     })),
     pending: [],
@@ -369,6 +376,7 @@ export function synthesizeException(
         allDay: false,
         summary: link.baselineSummary ?? null,
         location: link.location ?? null,
+        locationGeo: link.locationGeo ?? null,
         description: null,
       });
     }

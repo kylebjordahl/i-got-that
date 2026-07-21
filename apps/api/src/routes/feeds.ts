@@ -319,6 +319,7 @@ feedRoutes.post('/:feedId/member-links', requireAdmin, async (c) => {
         dayStart: parsed.data.dayStart ?? null,
         dayEnd: parsed.data.dayEnd ?? null,
         location: parsed.data.location ?? null,
+        locationGeo: parsed.data.locationGeo ?? null,
       })
       .returning()
   )[0]!;
@@ -340,6 +341,7 @@ feedRoutes.get('/:feedId/member-links', async (c) => {
       dayStart: familyMemberFeeds.dayStart,
       dayEnd: familyMemberFeeds.dayEnd,
       location: familyMemberFeeds.location,
+      locationGeo: familyMemberFeeds.locationGeo,
       defaultTaskType: familyMemberFeeds.defaultTaskType,
       defaultDropoffWindowMin: familyMemberFeeds.defaultDropoffWindowMin,
       defaultPickupWindowMin: familyMemberFeeds.defaultPickupWindowMin,
@@ -396,6 +398,7 @@ feedRoutes.patch('/:feedId/member-links/:linkId', requireAdmin, async (c) => {
   if (d.dayStart !== undefined) set.dayStart = d.dayStart;
   if (d.dayEnd !== undefined) set.dayEnd = d.dayEnd;
   if (d.location !== undefined) set.location = d.location;
+  if (d.locationGeo !== undefined) set.locationGeo = d.locationGeo;
   if (d.active !== undefined) set.active = d.active;
   if (Object.keys(set).length > 0) {
     await db.update(familyMemberFeeds).set(set).where(eq(familyMemberFeeds.id, link.id));

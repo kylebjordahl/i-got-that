@@ -26,6 +26,7 @@ import {
   type SourceOccurrence,
   type SynthesisResult as EngineResult,
 } from '@igt/classification';
+import type { GeoLocation } from '@igt/domain';
 
 type FeedRow = typeof feeds.$inferSelect;
 type LinkRow = typeof familyMemberFeeds.$inferSelect;
@@ -61,14 +62,19 @@ export function hashCalendarEvent(e: {
   allDay: boolean;
   summary: string | null;
   location: string | null;
+  locationGeo?: GeoLocation | null;
   description: string | null;
 }): string {
+  const g = e.locationGeo;
   const parts = [
     e.dtstart.toISOString(),
     e.dtend ? e.dtend.toISOString() : '',
     e.allDay ? '1' : '0',
     e.summary ?? '',
     e.location ?? '',
+    // Include the geocode so a location that gains/loses/changes coordinates
+    // (but keeps the same text) still resynthesizes and re-mirrors.
+    g ? `${g.lat},${g.lon},${g.title ?? ''},${g.address ?? ''},${g.radius ?? ''}` : '',
     e.description ?? '',
   ].join('|');
   let h = 5381;
@@ -123,6 +129,7 @@ async function upsertIntent(
     allDay: intent.allDay,
     summary: intent.summary,
     location: intent.location,
+    locationGeo: intent.locationGeo,
     description: intent.description,
     sourceEventId: intent.sourceEventId,
     matchedRuleId: intent.matchedRuleId,
@@ -287,6 +294,7 @@ export async function synthesizeFeed(
       dayStart: link.dayStart,
       dayEnd: link.dayEnd,
       location: link.location,
+      locationGeo: link.locationGeo,
       baselineSummary: baselineSummaryFor(feed),
     };
 

@@ -153,6 +153,24 @@ export type TimeOfDay = z.infer<typeof TimeOfDay>;
 
 export const Id = z.string().min(1);
 
+/**
+ * A validated/geocoded location. `lat`/`lon` are what let calendar clients
+ * (notably Apple Calendar) compute travel time without re-geocoding the free
+ * text — we emit them as `GEO` + `X-APPLE-STRUCTURED-LOCATION`. `title` is the
+ * human label (defaults to the display `location` string when absent) and
+ * `address` the postal string. `radius` (metres) is Apple's geofence hint.
+ * Provider-agnostic on purpose: iOS MapKit fills it today; an OpenStreetMap /
+ * Photon server provider can fill the identical shape later.
+ */
+export const GeoLocation = z.object({
+  lat: z.number().min(-90).max(90),
+  lon: z.number().min(-180).max(180),
+  title: z.string().max(256).optional(),
+  address: z.string().max(512).optional(),
+  radius: z.number().positive().max(100_000).optional(),
+});
+export type GeoLocation = z.infer<typeof GeoLocation>;
+
 // --- API input schemas (v1 subset) --------------------------------------
 
 export const MagicLinkRequestInput = z.object({
@@ -323,6 +341,8 @@ export const MemberFeedLinkInput = z.object({
   dayStart: TimeOfDay.optional(),
   dayEnd: TimeOfDay.optional(),
   location: z.string().max(256).optional(),
+  /** Geocoded coordinates for the display `location` (enables travel time). */
+  locationGeo: GeoLocation.nullable().optional(),
 });
 export type MemberFeedLinkInput = z.infer<typeof MemberFeedLinkInput>;
 
@@ -332,6 +352,8 @@ export const UpdateMemberFeedLinkInput = z.object({
   dayStart: TimeOfDay.optional(),
   dayEnd: TimeOfDay.optional(),
   location: z.string().max(256).optional(),
+  /** Pass `null` to clear the geocode (e.g. location edited back to free text). */
+  locationGeo: GeoLocation.nullable().optional(),
   active: z.boolean().optional(),
 });
 export type UpdateMemberFeedLinkInput = z.infer<typeof UpdateMemberFeedLinkInput>;

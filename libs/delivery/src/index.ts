@@ -1,4 +1,4 @@
-import type { DeliveryMethod, RsvpStatus } from '@igt/domain';
+import type { DeliveryMethod, GeoLocation, RsvpStatus } from '@igt/domain';
 
 export { CalDavProvider } from './caldav.js';
 export { EmailImipProvider, type EmailSender } from './email.js';
@@ -22,6 +22,12 @@ export interface DeliveryEvent {
   summary: string;
   description?: string;
   location?: string;
+  /**
+   * Geocoded coords for `location`. CalDAV/iMIP emit them as GEO +
+   * X-APPLE-STRUCTURED-LOCATION (Apple travel time); Google ignores them (its
+   * REST location is text-only and Google geocodes server-side).
+   */
+  locationGeo?: GeoLocation | null;
   /** Default reminders: minutes before start, from the target config. */
   alertMinutes?: number[];
   /** IANA timezone of the source event so the delivered event isn't shown in GMT. */

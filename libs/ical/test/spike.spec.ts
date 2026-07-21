@@ -286,6 +286,53 @@ END:VCALENDAR`;
     expect(noLocation).not.toContain('X-APPLE-TRAVEL-ADVISORY-BEHAVIOR');
   });
 
+  // iCalendar folds long lines (CRLF + space at 75 octets); unfold before
+  // asserting on structured-location params that can straddle a fold boundary.
+  const unfold = (ics: string) => ics.replace(/\r\n[ \t]/g, '');
+
+  it('emits GEO + X-APPLE-STRUCTURED-LOCATION for a geocoded stored event', () => {
+    const ics = unfold(
+      buildStoredEventICalendar({
+        uid: 'task-geo',
+        sequence: 0,
+        start: new Date('2026-07-02T22:30:00Z'),
+        end: null,
+        summary: 'Pickup — School',
+        location: 'Springfield Elementary',
+        locationGeo: {
+          lat: 37.331686,
+          lon: -122.030656,
+          title: 'Springfield Elementary',
+          address: '123 Main St, Springfield',
+          radius: 72,
+        },
+      }),
+    );
+    // Structured location gives Apple the coordinates directly, so travel time
+    // works without it having to geocode the free text.
+    expect(ics).toContain('X-APPLE-TRAVEL-ADVISORY-BEHAVIOR:AUTOMATIC');
+    expect(ics).toContain('GEO:37.331686;-122.030656');
+    expect(ics).toContain('X-APPLE-STRUCTURED-LOCATION');
+    expect(ics).toContain('geo:37.331686,-122.030656');
+    expect(ics).toContain('X-TITLE=Springfield Elementary');
+  });
+
+  it('uses the display text as the structured title when geo omits one', () => {
+    const ics = unfold(
+      buildStoredEventICalendar({
+        uid: 'task-geo-notitle',
+        sequence: 0,
+        start: new Date('2026-07-02T22:30:00Z'),
+        end: null,
+        summary: 'Pickup',
+        location: "Children's House",
+        locationGeo: { lat: 40.7128, lon: -74.006 },
+      }),
+    );
+    expect(ics).toContain('GEO:40.7128;-74.006');
+    expect(ics).toContain("X-TITLE=Children's House");
+  });
+
   it('reads the calendar timezone from X-WR-TIMEZONE when present', () => {
     const ics = `BEGIN:VCALENDAR\r\nVERSION:2.0\r\nX-WR-TIMEZONE:America/Los_Angeles\r\nBEGIN:VEVENT\r\nUID:a\r\nDTSTART:20260105T150000Z\r\nDTEND:20260105T153000Z\r\nSUMMARY:x\r\nEND:VEVENT\r\nEND:VCALENDAR`;
     expect(extractTimezone(ics)).toBe('America/Los_Angeles');

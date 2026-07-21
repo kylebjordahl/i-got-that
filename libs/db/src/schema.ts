@@ -13,6 +13,7 @@ import {
   FeedKind,
   FeedMode,
   FeedStatus,
+  GeoLocation,
   IdentityProvider,
   InviteStatus,
   InviteType,
@@ -240,6 +241,10 @@ export const familyMemberFeeds = sqliteTable(
     dayEnd: text('day_end'),
     // Location stamped on generated baseline events (e.g. the school). Null ⇒ none.
     location: text('location'),
+    // Geocoded coordinates for `location` (validated at input via MapKit/etc.).
+    // When present, baseline events carry GEO + X-APPLE-STRUCTURED-LOCATION so
+    // Apple Calendar computes travel time. Null ⇒ free-text location only.
+    locationGeo: text('location_geo', { mode: 'json' }).$type<GeoLocation>(),
     // This calendar's task-rule terminal default (what an unmatched event
     // generates): 'transition' | 'attendance', with drop-off/pickup windows.
     defaultTaskType: text('default_task_type', {
@@ -564,6 +569,9 @@ export const calendarEvents = sqliteTable(
     allDay: integer('all_day', { mode: 'boolean' }).notNull().default(false),
     summary: text('summary'),
     location: text('location'),
+    // Geocoded coordinates for `location`, carried from the synthesizing link so
+    // the mirror can emit GEO + X-APPLE-STRUCTURED-LOCATION. Null ⇒ text only.
+    locationGeo: text('location_geo', { mode: 'json' }).$type<GeoLocation>(),
     description: text('description'),
     // Task typing is NOT stamped here — task-gen resolves it at build time from
     // the member's task-rule pipeline, keyed by this event's `linkId` (the
