@@ -33,14 +33,74 @@ export interface Occurrence {
 }
 
 /**
- * Convert an ICAL.Time to a JS Date. For date-only (all-day) values, ical.js's
- * `toJSDate()` resolves the *floating* date using the host runtime's timezone
- * (UTC on workerd, machine-local elsewhere) — which shifts all-day events by
- * the offset. Anchor them explicitly to UTC midnight from the y/m/d parts so the
- * calendar date is stable everywhere; timed values keep normal instant parsing.
+ * Resolve a wall-clock date/time in an IANA zone to the instant it denotes,
+ * DST-aware. `Intl.DateTimeFormat` can only format an instant *into* a zone,
+ * not parse one back out, so this guesses UTC==wall-clock, reads back what
+ * that guess renders as in `tz`, and corrects by the difference — exact
+ * except in the (here irrelevant) instant of a DST fall-back repeat.
  */
-function icalTimeToDate(t: ICAL.Time): Date {
+function zonedWallTimeToInstant(
+  year: number,
+  month: number,
+  day: number,
+  hour: number,
+  minute: number,
+  second: number,
+  tz: string,
+): Date {
+  const guess = Date.UTC(year, month - 1, day, hour, minute, second);
+  const dtf = new Intl.DateTimeFormat('en-US', {
+    timeZone: tz,
+    hourCycle: 'h23',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  });
+  const p: Record<string, number> = {};
+  for (const part of dtf.formatToParts(new Date(guess))) {
+    if (part.type !== 'literal') p[part.type] = Number(part.value);
+  }
+  // h23 can render midnight as 24; normalize back to 0 for Date.UTC.
+  const renderedAsUtc = Date.UTC(
+    p.year!,
+    p.month! - 1,
+    p.day!,
+    p.hour === 24 ? 0 : p.hour!,
+    p.minute!,
+    p.second!,
+  );
+  return new Date(guess - (renderedAsUtc - guess));
+}
+
+/**
+ * Convert an ICAL.Time to a JS Date.
+ *
+ * Date-only (all-day) values: ical.js's `toJSDate()` resolves the *floating*
+ * date using the host runtime's timezone (UTC on workerd, machine-local
+ * elsewhere) — which shifts all-day events by the offset. Anchor them
+ * explicitly to UTC midnight from the y/m/d parts so the calendar date is
+ * stable everywhere.
+ *
+ * Timed values with an explicit TZID or trailing `Z` already resolve to the
+ * correct instant via ical.js's own VTIMEZONE handling — keep `toJSDate()`.
+ * Timed values with *neither* (RFC 5545 "floating" time — no zone info at
+ * all, e.g. many booking-software exports) are a genuine ambiguity: the wall
+ * clock is meaningless without a zone. `toJSDate()` would resolve it using
+ * the host runtime's timezone, silently misinterpreting an 11:00 appointment
+ * as 11:00 UTC on workerd — hours off for any non-UTC provider. Given a
+ * `defaultTimezone` hint (the feed's known IANA zone), interpret the floating
+ * wall-clock time in that zone instead; with no hint, fall back to the old
+ * (host-timezone-dependent) behavior since that's the best information
+ * available.
+ */
+function icalTimeToDate(t: ICAL.Time, defaultTimezone?: string): Date {
   if (t.isDate) return new Date(Date.UTC(t.year, t.month - 1, t.day));
+  if (defaultTimezone && t.zone === ICAL.Timezone.localTimezone) {
+    return zonedWallTimeToInstant(t.year, t.month, t.day, t.hour, t.minute, t.second, defaultTimezone);
+  }
   return t.toJSDate();
 }
 
@@ -72,6 +132,13 @@ export interface ExpandOptions {
   windowEnd?: Date;
   /** Safety cap on expanded occurrences per recurring event. */
   maxPerEvent?: number;
+  /**
+   * IANA zone to interpret "floating" timed values in (no TZID, no trailing
+   * `Z` — RFC 5545 leaves these ambiguous). Typically the feed's own
+   * previously-detected `extractTimezone` result; without it, floating times
+   * fall back to the host runtime's timezone (see `icalTimeToDate`).
+   */
+  defaultTimezone?: string;
 }
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -122,8 +189,8 @@ export function parseAndExpand(
   for (const ve of standalone) {
     const event = new ICAL.Event(ve);
     if (!event.startDate) continue;
-    const start = icalTimeToDate(event.startDate);
-    const end = event.endDate ? icalTimeToDate(event.endDate) : null;
+    const start = icalTimeToDate(event.startDate, opts.defaultTimezone);
+    const end = event.endDate ? icalTimeToDate(event.endDate, opts.defaultTimezone) : null;
     if (!occurrenceInWindow(start, end, windowStart, windowEnd)) continue;
     out.push({
       uid: event.uid,
@@ -145,18 +212,22 @@ export function parseAndExpand(
     let count = 0;
     let next: ICAL.Time | null;
     while ((next = iterator.next())) {
-      const startJs = next.toJSDate();
-      if (startJs >= windowEnd) break;
+      // Compute the (possibly floating-timezone-corrected) start before the
+      // windowEnd break check — comparing the raw `next.toJSDate()` here would
+      // use the host runtime's timezone instead of `defaultTimezone`, which
+      // for zones behind UTC breaks the loop too early and silently drops
+      // trailing in-window occurrences.
+      const details = event.getOccurrenceDetails(next);
+      const start = icalTimeToDate(details.startDate, opts.defaultTimezone);
+      if (start >= windowEnd) break;
       if (++count > maxPerEvent) break;
 
-      const details = event.getOccurrenceDetails(next);
-      const start = icalTimeToDate(details.startDate);
-      const end = details.endDate ? icalTimeToDate(details.endDate) : null;
+      const end = details.endDate ? icalTimeToDate(details.endDate, opts.defaultTimezone) : null;
       if (!occurrenceInWindow(start, end, windowStart, windowEnd)) continue;
 
       out.push({
         uid: event.uid,
-        recurrenceId: startJs.toISOString(),
+        recurrenceId: start.toISOString(),
         start,
         end,
         summary: details.item.summary ?? null,
@@ -173,12 +244,12 @@ export function parseAndExpand(
     for (const ve of exVeList) {
       const event = new ICAL.Event(ve);
       if (!event.startDate || !event.recurrenceId) continue;
-      const start = icalTimeToDate(event.startDate);
-      const end = event.endDate ? icalTimeToDate(event.endDate) : null;
+      const start = icalTimeToDate(event.startDate, opts.defaultTimezone);
+      const end = event.endDate ? icalTimeToDate(event.endDate, opts.defaultTimezone) : null;
       if (!occurrenceInWindow(start, end, windowStart, windowEnd)) continue;
       out.push({
         uid: event.uid,
-        recurrenceId: icalTimeToDate(event.recurrenceId).toISOString(),
+        recurrenceId: icalTimeToDate(event.recurrenceId, opts.defaultTimezone).toISOString(),
         start,
         end,
         summary: event.summary ?? null,
@@ -472,6 +543,11 @@ export async function fetchCalDavOccurrences(
   for (const obj of objects) {
     const data = typeof obj.data === 'string' ? obj.data : '';
     if (!data) continue;
+    // Each time-range REPORT object is its own per-object VCALENDAR, so its
+    // floating times (if any) need its own TZID/X-WR-TIMEZONE, not another
+    // object's — falling back to the caller's hint (or the collection's
+    // first-seen zone) only when this object carries none itself.
+    const objTimezone = extractTimezone(data) ?? opts.defaultTimezone ?? timezone ?? undefined;
     if (!timezone) timezone = extractTimezone(data);
     try {
       out.push(
@@ -479,6 +555,7 @@ export async function fetchCalDavOccurrences(
           windowStart,
           windowEnd,
           maxPerEvent: opts.maxPerEvent,
+          defaultTimezone: objTimezone,
         }),
       );
     } catch {

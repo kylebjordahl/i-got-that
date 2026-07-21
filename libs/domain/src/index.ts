@@ -242,6 +242,28 @@ export const UpdateFeedInput = z.object({
   mode: FeedMode.optional(),
   refreshMinutes: z.number().int().min(15).max(10080).optional(),
   status: FeedStatus.optional(),
+  /**
+   * Manual IANA timezone override (e.g. "America/Los_Angeles"), for feeds
+   * whose ICS never advertises one via X-WR-TIMEZONE/VTIMEZONE (some
+   * booking-software exports send bare local wall-clock times with no zone
+   * info at all — RFC 5545 "floating" time). Auto-detection on sync still
+   * takes priority whenever the feed's own document does carry a timezone.
+   * `null` clears an existing manual override.
+   */
+  timezone: z
+    .string()
+    .min(1)
+    .max(100)
+    .refine((tz) => {
+      try {
+        new Intl.DateTimeFormat('en-US', { timeZone: tz });
+        return true;
+      } catch {
+        return false;
+      }
+    }, 'invalid IANA timezone')
+    .nullable()
+    .optional(),
 });
 export type UpdateFeedInput = z.infer<typeof UpdateFeedInput>;
 

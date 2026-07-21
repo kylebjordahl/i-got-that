@@ -162,9 +162,14 @@ async function ingestIcsFeed(
 
   const text = await res.text();
   const etag = res.headers.get('etag');
+  // `feed.timezone` is whatever a prior sync auto-detected (X-WR-TIMEZONE /
+  // VTIMEZONE) or an admin manually set — used to resolve this document's own
+  // floating (zone-less) timed values, which some sources (e.g. booking-
+  // software exports) never carry timezone metadata for at all.
   const occurrences = parseAndExpand(text, {
     windowStart: opts.windowStart,
     windowEnd: opts.windowEnd,
+    defaultTimezone: feed.timezone ?? undefined,
   });
 
   await upsertOccurrences(db, feed, occurrences);
@@ -196,7 +201,13 @@ async function ingestAccountFeed(
   feed: FeedRow,
   opts: IngestOptions,
 ): Promise<IngestResult> {
-  const window = { windowStart: opts.windowStart, windowEnd: opts.windowEnd };
+  const window = {
+    windowStart: opts.windowStart,
+    windowEnd: opts.windowEnd,
+    // Fallback for a per-object VCALENDAR that carries no TZID/X-WR-TIMEZONE
+    // of its own (see fetchCalDavOccurrences's per-object detection).
+    defaultTimezone: feed.timezone ?? undefined,
+  };
   const fail = async (message: string): Promise<never> => {
     await db.update(feeds).set({ status: 'error' }).where(eq(feeds.id, feed.id));
     throw new Error(message);

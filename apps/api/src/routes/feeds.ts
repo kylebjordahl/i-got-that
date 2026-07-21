@@ -195,9 +195,11 @@ async function resynthesize(
 
 /**
  * Update an input feed's config (admin). Only `mode` / `refreshMinutes` /
- * `status` are editable — the source (ICS url or the account's target calendar)
- * is immutable; change it by deleting and recreating the feed. A mode change
- * resynthesizes the feed (mode drives the whole pipeline shape).
+ * `status` / `timezone` are editable — the source (ICS url or the account's
+ * target calendar) is immutable; change it by deleting and recreating the
+ * feed. A mode change resynthesizes the feed (mode drives the whole pipeline
+ * shape); a timezone change re-ingests it (source_events' own dtstart/dtend
+ * may need reinterpreting, not just resynthesizing).
  */
 feedRoutes.patch('/:feedId', requireAdmin, async (c) => {
   const parsed = UpdateFeedInput.safeParse(await c.req.json().catch(() => null));
@@ -227,16 +229,33 @@ feedRoutes.patch('/:feedId', requireAdmin, async (c) => {
   ) {
     return c.json({ error: 'busy_mode_immutable' }, 400);
   }
+  const timezoneChanged = d.timezone !== undefined && d.timezone !== feed.timezone;
   const set: Partial<typeof feeds.$inferInsert> = {};
   if (d.mode !== undefined) set.mode = d.mode;
   if (d.refreshMinutes !== undefined) set.refreshMinutes = d.refreshMinutes;
   if (d.status !== undefined) set.status = d.status;
+  if (d.timezone !== undefined) set.timezone = d.timezone;
+  if (timezoneChanged) {
+    // The ICS document itself may be byte-for-byte unchanged (this is a
+    // manual correction, not a source-side edit) — clear the etag so the
+    // re-ingest below can't 304 its way out of reinterpreting the feed's
+    // already-stored (wrong) floating-time occurrences.
+    set.etag = null;
+  }
   if (Object.keys(set).length > 0) {
     await db.update(feeds).set(set).where(eq(feeds.id, feed.id));
   }
 
-  const updated = (await db.select().from(feeds).where(eq(feeds.id, feed.id)).limit(1))[0]!;
-  if (d.mode !== undefined && d.mode !== feed.mode) {
+  let updated = (await db.select().from(feeds).where(eq(feeds.id, feed.id)).limit(1))[0]!;
+  if (timezoneChanged) {
+    try {
+      await ingestFeed(db, updated, ingestSecrets(c.env));
+    } catch {
+      // swallow — ingestFeed already marked the feed 'error'; admin can retry via /refresh.
+    }
+    updated = (await db.select().from(feeds).where(eq(feeds.id, feed.id)).limit(1))[0]!;
+  }
+  if ((d.mode !== undefined && d.mode !== feed.mode) || timezoneChanged) {
     await db
       .update(sourceEvents)
       .set({ synthesizedHash: null })

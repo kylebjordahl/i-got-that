@@ -300,6 +300,110 @@ END:VCALENDAR`;
     expect(extractTimezone(SAMPLE_ICS)).toBeNull();
   });
 
+  describe('floating (zone-less) timed events', () => {
+    // Reproduces a real provider invite (Vagaro booking software): DTSTART/DTEND
+    // carry a bare local wall-clock time with no TZID and no trailing `Z`, and the
+    // document has no X-WR-TIMEZONE/VTIMEZONE either — RFC 5545 "floating" time.
+    // Apple resolves this using the calendar's own default zone; without a hint,
+    // we can only fall back to the host runtime's zone (UTC on workerd).
+    const floatingIcs = `BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-West Coast Wellness//173782591
+BEGIN:VEVENT
+UID:appt-1
+DTSTART:20260722T110000
+DTEND:20260722T113000
+SUMMARY:Chiropractic - Follow-Up Visit
+LOCATION:3804 & 3810 SE Belmont St, Portland, Oregon 97214
+END:VEVENT
+END:VCALENDAR`;
+
+    it('without a defaultTimezone hint, falls back to the host runtime zone (UTC on workerd)', () => {
+      const [occ] = parseAndExpand(floatingIcs, {
+        windowStart: new Date('2026-07-01T00:00:00Z'),
+        windowEnd: new Date('2026-08-01T00:00:00Z'),
+      });
+      expect(occ?.start.toISOString()).toBe('2026-07-22T11:00:00.000Z');
+    });
+
+    it('with a defaultTimezone hint, resolves the wall-clock time in that zone', () => {
+      // 11:00 AM in Portland, OR in July is PDT (UTC-7) → 18:00Z, not 11:00Z.
+      const [occ] = parseAndExpand(floatingIcs, {
+        windowStart: new Date('2026-07-01T00:00:00Z'),
+        windowEnd: new Date('2026-08-01T00:00:00Z'),
+        defaultTimezone: 'America/Los_Angeles',
+      });
+      expect(occ?.start.toISOString()).toBe('2026-07-22T18:00:00.000Z');
+      expect(occ?.end?.toISOString()).toBe('2026-07-22T18:30:00.000Z');
+      expect(occ?.allDay).toBe(false);
+    });
+
+    it('is DST-aware (winter offset differs from summer)', () => {
+      const winterIcs = floatingIcs.replace(/20260722/g, '20260122');
+      const [occ] = parseAndExpand(winterIcs, {
+        windowStart: new Date('2026-01-01T00:00:00Z'),
+        windowEnd: new Date('2026-02-01T00:00:00Z'),
+        defaultTimezone: 'America/Los_Angeles',
+      });
+      // PST is UTC-8 in January, vs UTC-7 (PDT) in July.
+      expect(occ?.start.toISOString()).toBe('2026-01-22T19:00:00.000Z');
+    });
+
+    it('does not reinterpret an explicit TZID event, even with a defaultTimezone hint', () => {
+      const tzidIcs = `BEGIN:VCALENDAR
+VERSION:2.0
+BEGIN:VTIMEZONE
+TZID:America/Chicago
+BEGIN:STANDARD
+DTSTART:19701101T020000
+TZOFFSETFROM:-0500
+TZOFFSETTO:-0600
+END:STANDARD
+END:VTIMEZONE
+BEGIN:VEVENT
+UID:tzid-1
+DTSTART;TZID=America/Chicago:20260722T110000
+DTEND;TZID=America/Chicago:20260722T113000
+SUMMARY:x
+END:VEVENT
+END:VCALENDAR`;
+      const [occ] = parseAndExpand(tzidIcs, {
+        windowStart: new Date('2026-07-01T00:00:00Z'),
+        windowEnd: new Date('2026-08-01T00:00:00Z'),
+        // A conflicting hint — must be ignored since this event isn't floating.
+        defaultTimezone: 'America/Los_Angeles',
+      });
+      // The fixture's VTIMEZONE only defines a STANDARD sub-component (no
+      // DAYLIGHT rule), so ical.js resolves it via the flat -0600 offset
+      // regardless of season — 11:00 + 6h = 17:00Z. What this test actually
+      // guards is that the (wrong) America/Los_Angeles hint had no effect.
+      expect(occ?.start.toISOString()).toBe('2026-07-22T17:00:00.000Z');
+    });
+
+    it('resolves floating recurring occurrences and keeps each a distinct (uid, recurrenceId) key', () => {
+      const recurringIcs = `BEGIN:VCALENDAR
+VERSION:2.0
+BEGIN:VEVENT
+UID:floating-weekly-1
+DTSTART:20260706T090000
+DTEND:20260706T093000
+RRULE:FREQ=WEEKLY;COUNT=3
+SUMMARY:Follow-up
+END:VEVENT
+END:VCALENDAR`;
+      const occ = parseAndExpand(recurringIcs, {
+        windowStart: new Date('2026-07-01T00:00:00Z'),
+        windowEnd: new Date('2026-08-01T00:00:00Z'),
+        defaultTimezone: 'America/Los_Angeles',
+      });
+      expect(occ).toHaveLength(3);
+      // 09:00 PDT == 16:00Z.
+      expect(occ[0]?.start.toISOString()).toBe('2026-07-06T16:00:00.000Z');
+      expect(occ[0]?.recurrenceId).toBe('2026-07-06T16:00:00.000Z');
+      expect(new Set(occ.map((o) => o.recurrenceId)).size).toBe(3);
+    });
+  });
+
   it('instantiates a CalDAV client (tsdav importable in workerd)', () => {
     // Don't hit the network — just prove the factory is callable here.
     const client = createCalDavClient({

@@ -195,8 +195,12 @@ export const feeds = sqliteTable(
     sourceCalendarId: text('source_calendar_id'),
     sourceCalendarName: text('source_calendar_name'),
     mode: text('mode', { enum: FeedMode.options }).notNull(),
-    // IANA timezone the calendar's wall-clock times are in (from X-WR-TIMEZONE);
-    // used to interpret exception baseline times. Null ⇒ treated as UTC.
+    // IANA timezone the calendar's wall-clock times are in — auto-detected from
+    // the feed's own X-WR-TIMEZONE/VTIMEZONE on sync, or set manually for feeds
+    // that never advertise one (e.g. some booking-software ICS exports). Used
+    // to interpret exception baseline times and the feed's own floating
+    // (zone-less) VEVENT times. Null ⇒ exception baselines treated as UTC and
+    // floating VEVENT times fall back to the host runtime's timezone.
     timezone: text('timezone'),
     refreshMinutes: integer('refresh_minutes').notNull().default(360),
     etag: text('etag'),

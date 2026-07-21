@@ -10,7 +10,7 @@ import {
 } from '@igt/db';
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { storeSecret } from '../src/lib/secrets.js';
-import { authed, bearer, call, createFamily, login, setupFamily } from './helpers.js';
+import { authed, bearer, call, createFamily, login, patched, setupFamily } from './helpers.js';
 
 const FEED_ORIGIN = 'https://feed.example.com';
 const FEED_PATH = '/cal.ics';
@@ -200,6 +200,93 @@ describe('feed ingest', () => {
     const list = await call(`/families/${familyId}/feeds`, bearer(alice.token));
     const { feeds } = (await list.json()) as { feeds: unknown[] };
     expect(feeds.length).toBe(1);
+  });
+
+  it('a manual timezone override re-ingests and corrects floating (zone-less) event times', async () => {
+    // Reproduces a provider invite (e.g. Vagaro booking software) whose
+    // DTSTART/DTEND carry a bare local wall-clock time with no TZID/Z and
+    // whose document never advertises X-WR-TIMEZONE/VTIMEZONE either — RFC
+    // 5545 "floating" time. Without a hint, it's misread as UTC.
+    const day = new Date();
+    day.setUTCDate(day.getUTCDate() + 5);
+    const floatingStamp = `${day.toISOString().slice(0, 10).replace(/-/g, '')}T110000`; // 11:00, no Z
+    const floatingIcs = [
+      'BEGIN:VCALENDAR',
+      'VERSION:2.0',
+      'PRODID:-West Coast Wellness//test',
+      'BEGIN:VEVENT',
+      'UID:appt-1',
+      `DTSTART:${floatingStamp}`,
+      'SUMMARY:Chiropractic - Follow-Up Visit',
+      'END:VEVENT',
+      'END:VCALENDAR',
+    ].join('\r\n');
+    fetchMock
+      .get(FEED_ORIGIN)
+      .intercept({ path: '/floating.ics', method: 'GET' })
+      .reply(200, floatingIcs, { headers: { 'content-type': 'text/calendar' } })
+      .times(2); // initial ingest + the PATCH-triggered re-ingest
+
+    const admin = await login('tz-admin@example.com');
+    const familyId = await createFamily(admin.token, 'TZ Fam');
+    const feedRes = await call(
+      `/families/${familyId}/feeds`,
+      authed(admin.token, { url: `${FEED_ORIGIN}/floating.ics`, mode: 'standard' }),
+    );
+    const { feed } = (await feedRes.json()) as { feed: { id: string; timezone: string | null } };
+    expect(feed.timezone).toBeNull();
+    await call(`/families/${familyId}/feeds/${feed.id}/refresh`, authed(admin.token));
+
+    // Hono serializes the D1 timestamp as an ISO string over JSON.
+    const dtstartOf = async (): Promise<string> => {
+      const res = await call(`/families/${familyId}/source-events`, bearer(admin.token));
+      const { events } = (await res.json()) as { events: { summary: string; dtstart: string }[] };
+      return events.find((e) => e.summary === 'Chiropractic - Follow-Up Visit')!.dtstart;
+    };
+    const beforeFix = await dtstartOf();
+    // No timezone hint yet ⇒ resolved as if the wall-clock time were UTC.
+    expect(new Date(beforeFix).toISOString()).toBe(`${floatingStamp.slice(0, 4)}-${floatingStamp.slice(4, 6)}-${floatingStamp.slice(6, 8)}T11:00:00.000Z`);
+
+    // Manually set the feed's timezone — the fix for a source that never
+    // advertises one — which must re-ingest (not just resynthesize) so the
+    // already-stored (wrong) source_events get reinterpreted.
+    const patchRes = await call(
+      `/families/${familyId}/feeds/${feed.id}`,
+      patched(admin.token, { timezone: 'America/Los_Angeles' }),
+    );
+    expect(patchRes.status).toBe(200);
+    const { feed: patchedFeed } = (await patchRes.json()) as { feed: { timezone: string | null } };
+    expect(patchedFeed.timezone).toBe('America/Los_Angeles');
+
+    const afterFix = await dtstartOf();
+    expect(afterFix).not.toBe(beforeFix);
+    // Independently derive the expected instant (not by reusing production
+    // code) — 11:00 wall-clock in America/Los_Angeles, whatever that day's
+    // DST offset is — to confirm the correction lands on the right instant.
+    const beforeFixMs = new Date(beforeFix).getTime();
+    const parts: Record<string, number> = {};
+    for (const p of new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/Los_Angeles',
+      hourCycle: 'h23',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    }).formatToParts(new Date(beforeFixMs))) {
+      if (p.type !== 'literal') parts[p.type] = Number(p.value);
+    }
+    const renderedAsUtc = Date.UTC(
+      parts.year!,
+      parts.month! - 1,
+      parts.day!,
+      parts.hour === 24 ? 0 : parts.hour!,
+      parts.minute!,
+      parts.second!,
+    );
+    const expectedMs = beforeFixMs - (renderedAsUtc - beforeFixMs);
+    expect(new Date(afterFix).getTime()).toBe(expectedMs);
   });
 
   it('refresh-all reads back a human edit on a member target calendar (not just the next cron tick)', async () => {
