@@ -94,6 +94,20 @@ jobs:
               return;
             }
 
+            // `generate_release_notes` on create/update only fills in notes
+            // the first time a release is *created* — the update endpoint
+            // doesn't support it at all, so it's silently ignored on every
+            // later re-run and the draft's notes would go stale as more
+            // commits land on main. Generating the notes explicitly here
+            // means both the create and update paths get fresh notes every
+            // run.
+            const { data: notes } = await github.rest.repos.generateReleaseNotes({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag_name: tagName,
+              target_commitish: sha,
+            });
+
             const payload = {
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -101,8 +115,7 @@ jobs:
               target_commitish: sha,
               name: tagName,
               draft: true,
-              body: marker,
-              generate_release_notes: true,
+              body: `${marker}\n\n${notes.body}`,
             };
 
             if (existing) {
