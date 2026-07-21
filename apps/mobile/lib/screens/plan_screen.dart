@@ -55,7 +55,11 @@ class PlanScreen extends ConsumerStatefulWidget {
 }
 
 class _PlanScreenState extends ConsumerState<PlanScreen> {
-  late final DateTime _today = _dateOnly(DateTime.now());
+  // The current calendar day, recomputed live on every read so navigation (the
+  // "Today" button, the day strip's today marker) stays correct even when the
+  // page is left open past midnight. A cached value would freeze at the day the
+  // page was first built.
+  DateTime get _today => _dateOnly(DateTime.now());
   late DateTime _selected = _today;
 
   // Filters are stored as *exclusions* (empty ⇒ show all): a chip is selected
