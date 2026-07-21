@@ -5,6 +5,7 @@ import {
   buildStoredEventICalendar,
   createCalDavClient,
   extractTimezone,
+  fetchCalDavOccurrences,
   fetchGoogleOccurrences,
   hashOccurrence,
   parseAndExpand,
@@ -401,6 +402,95 @@ END:VCALENDAR`;
       expect(occ[0]?.start.toISOString()).toBe('2026-07-06T16:00:00.000Z');
       expect(occ[0]?.recurrenceId).toBe('2026-07-06T16:00:00.000Z');
       expect(new Set(occ.map((o) => o.recurrenceId)).size).toBe(3);
+    });
+  });
+
+  describe('fetchCalDavOccurrences (per-object floating time fallback)', () => {
+    // A CalDAV time-range REPORT returns one VCALENDAR per event ("object"),
+    // so an object carrying no VTIMEZONE of its own (a floating-time import,
+    // like the Vagaro invite above) needs its timezone resolved from
+    // elsewhere: the caller's `defaultTimezone` hint, or — failing that — the
+    // first other object in the same fetch that does carry one.
+    function multistatusXml(entries: { href: string; etag: string; data?: string }[]): string {
+      const responses = entries
+        .map(
+          (e) => `<D:response>
+  <D:href>${e.href}</D:href>
+  <D:propstat>
+    <D:prop>
+      <D:getetag>"${e.etag}"</D:getetag>
+      ${e.data !== undefined ? `<C:calendar-data>${e.data.replace(/&/g, '&amp;').replace(/</g, '&lt;')}</C:calendar-data>` : ''}
+    </D:prop>
+    <D:status>HTTP/1.1 200 OK</D:status>
+  </D:propstat>
+</D:response>`,
+        )
+        .join('\n');
+      return `<?xml version="1.0" encoding="utf-8"?>
+<D:multistatus xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
+${responses}
+</D:multistatus>`;
+    }
+
+    /** Fakes tsdav's two-step REPORT (query for hrefs, then multiget for data). */
+    function caldavFetch(objects: { href: string; etag: string; data: string }[]): typeof fetch {
+      return (async (_url: string | URL | Request, init?: RequestInit) => {
+        const body = String(init?.body ?? '');
+        const xml = body.includes('calendar-multiget')
+          ? multistatusXml(objects)
+          : multistatusXml(objects.map(({ href, etag }) => ({ href, etag })));
+        return new Response(xml, {
+          status: 207,
+          headers: { 'content-type': 'application/xml; charset=utf-8' },
+        });
+      }) as unknown as typeof fetch;
+    }
+
+    const floatingObject = {
+      href: '/calendars/user/home/floating-event.ics',
+      etag: 'e1',
+      data: `BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:appt-1\r\nDTSTART:20260722T110000\r\nDTEND:20260722T113000\r\nSUMMARY:Chiropractic\r\nEND:VEVENT\r\nEND:VCALENDAR`,
+    };
+
+    it("resolves a floating object's time using the caller's defaultTimezone hint", async () => {
+      const { occurrences, timezone } = await fetchCalDavOccurrences(
+        { collectionUrl: 'https://caldav.example.com/calendars/user/home/', username: 'u', password: 'p' },
+        {
+          windowStart: new Date('2026-07-01T00:00:00Z'),
+          windowEnd: new Date('2026-08-01T00:00:00Z'),
+          defaultTimezone: 'America/Los_Angeles',
+        },
+        caldavFetch([floatingObject]),
+      );
+      expect(timezone).toBeNull(); // this object itself never advertised one
+      expect(occurrences).toHaveLength(1);
+      // 11:00 AM PDT == 18:00Z.
+      expect(occurrences[0]?.start.toISOString()).toBe('2026-07-22T18:00:00.000Z');
+    });
+
+    it("falls back to a sibling object's detected timezone when no hint is given", async () => {
+      const tzidObject = {
+        href: '/calendars/user/home/tzid-event.ics',
+        etag: 'e2',
+        data: `BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VTIMEZONE\r\nTZID:America/Los_Angeles\r\nBEGIN:DAYLIGHT\r\nDTSTART:19700308T020000\r\nTZOFFSETFROM:-0800\r\nTZOFFSETTO:-0700\r\nEND:DAYLIGHT\r\nEND:VTIMEZONE\r\nBEGIN:VEVENT\r\nUID:appt-2\r\nDTSTART;TZID=America/Los_Angeles:20260722T090000\r\nDTEND;TZID=America/Los_Angeles:20260722T093000\r\nSUMMARY:Other appt\r\nEND:VEVENT\r\nEND:VCALENDAR`,
+      };
+      const { occurrences, timezone } = await fetchCalDavOccurrences(
+        { collectionUrl: 'https://caldav.example.com/calendars/user/home/', username: 'u', password: 'p' },
+        { windowStart: new Date('2026-07-01T00:00:00Z'), windowEnd: new Date('2026-08-01T00:00:00Z') },
+        caldavFetch([tzidObject, floatingObject]),
+      );
+      expect(timezone).toBe('America/Los_Angeles'); // detected from tzidObject, returned to the caller
+      const floating = occurrences.find((o) => o.uid === 'appt-1')!;
+      expect(floating.start.toISOString()).toBe('2026-07-22T18:00:00.000Z');
+    });
+
+    it('without any hint at all, falls back to the host runtime zone (UTC on workerd)', async () => {
+      const { occurrences } = await fetchCalDavOccurrences(
+        { collectionUrl: 'https://caldav.example.com/calendars/user/home/', username: 'u', password: 'p' },
+        { windowStart: new Date('2026-07-01T00:00:00Z'), windowEnd: new Date('2026-08-01T00:00:00Z') },
+        caldavFetch([floatingObject]),
+      );
+      expect(occurrences[0]?.start.toISOString()).toBe('2026-07-22T11:00:00.000Z');
     });
   });
 

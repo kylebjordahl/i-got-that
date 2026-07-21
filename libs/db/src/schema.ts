@@ -620,6 +620,13 @@ export const memberCalendars = sqliteTable(
     targetCalendarName: text('target_calendar_name'),
     // JSON array of minutes-before-start for default alerts (max 2), e.g. [30,10].
     alertMinutes: text('alert_minutes', { mode: 'json' }).$type<number[]>(),
+    // IANA timezone the target calendar's wall-clock times are in — auto-detected
+    // from a read-back event's own TZID/VTIMEZONE, or set manually for events
+    // that carry neither (e.g. an externally-sourced ICS invite imported as a
+    // floating/zone-less VEVENT). Used to interpret the target's own floating
+    // read-back times (see readBackMember). Null ⇒ they fall back to the host
+    // runtime's timezone.
+    timezone: text('timezone'),
     active: integer('active', { mode: 'boolean' }).notNull().default(true),
     lastMirroredAt: integer('last_mirrored_at', { mode: 'timestamp_ms' }),
     lastReadBackAt: integer('last_read_back_at', { mode: 'timestamp_ms' }),

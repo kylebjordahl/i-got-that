@@ -15,6 +15,13 @@
       "when": 1784321758779,
       "tag": "0001_white_doctor_spectrum",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1784613489137,
+      "tag": "0002_damp_mariko_yashida",
+      "breakpoints": true
     }
   ]
 }
