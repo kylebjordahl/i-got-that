@@ -150,3 +150,11 @@ paths in particular).
   even once marked ready. Update the branch first — `gh pr update-branch
   <PR#>` (or `git fetch origin && git merge origin/main` and push) — then run
   `gh pr ready <PR#>`.
+- **Never write a literal NUL byte (`\0`) into a source file** — e.g. as a
+  string/template-literal separator. A NUL makes git treat the whole file as
+  binary (no line diff, `Bin X -> Y bytes` in stat, "Cannot merge binary
+  files" on the next conflicting merge). Use an ordinary separator character
+  instead (this codebase's convention is `:`, as in `synthKey`s like
+  `bl:<linkId>:<date>`). If a merge conflict ever reports a source file as
+  binary, that's the smell to check for first — see PR #118 for a case where
+  this had already landed on `main` and had to be cleaned up mid-merge.
