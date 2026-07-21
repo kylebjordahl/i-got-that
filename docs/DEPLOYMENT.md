@@ -198,6 +198,11 @@ web bundle is restored instead of rebuilt** — that JSON file isn't part of
 the compiled JS/wasm, so refreshing it is cheap and doesn't require busting
 the build cache.
 
+The same computed value is also what backs the auto-managed draft release
+(`draft-release` job, `deploy-staging.yml`, see "Day-to-day flow" below) —
+one script, read by both, so the tag a human eventually publishes can never
+drift from the version staging testers already saw.
+
 The build number (`--build-number`, `CFBundleVersion` on iOS) is unrelated and
 stays `github.run_number` on both platforms — the two are independent
 version fields, and `github.run_number` already guarantees the "same build
@@ -270,13 +275,16 @@ action needed per-release. Add internal/external testers in App Store Connect
   Nx-affected since the last successful TestFlight build, the `testflight`
   job also archives, signs, and uploads the staging flavor to TestFlight (see
   §8).
-- **Production**: when staging looks good, cut a release:
-  ```bash
-  git tag v0.2.0 && git push origin v0.2.0
-  ```
-  then **Releases → Draft a new release → choose the tag → Publish**. That fires
-  `Deploy production`, which waits for your approval (if you set required
-  reviewers) before deploying.
+- **Production**: every successful staging deploy also creates/updates a
+  **draft** release (`draft-release` job, `deploy-staging.yml`) tagged with
+  the same next-version guess the `version` job (`deploy.yml`) computed for
+  that run's staging TestFlight build (Conventional Commits since the last
+  real tag — see §8) and targeting the commit that just passed staging. So
+  when staging looks good: **Releases → open the existing draft (already
+  correctly tagged and targeted) → Publish**. That fires `Deploy production`,
+  which waits for your approval (if you set required reviewers) before
+  deploying. Publishing is the only manual step — nothing to hand-type, and
+  no separate `git tag`/push.
 - **Rollback**: re-run a previous successful `Deploy production` run, or
   `cd apps/api && pnpm wrangler rollback --env production`.
 
