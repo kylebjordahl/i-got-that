@@ -381,6 +381,21 @@ export const UpdateMemberFeedLinkInput = z.object({
 });
 export type UpdateMemberFeedLinkInput = z.infer<typeof UpdateMemberFeedLinkInput>;
 
+/**
+ * Reorder one member's feed links by priority — every link id of that member
+ * exactly once, in the new order (index 0 = highest priority). Priority breaks
+ * ties when feed-derived events overlap on that member's unified calendar: the
+ * earlier link wins and the later one is masked. Manual (human) events always
+ * outrank feeds.
+ */
+export const ReorderMemberFeedLinksInput = z.object({
+  familyMemberId: Id,
+  linkIds: z.array(Id).min(1),
+});
+export type ReorderMemberFeedLinksInput = z.infer<
+  typeof ReorderMemberFeedLinksInput
+>;
+
 /** Assign a task to a caretaker; defaults to the calling member when omitted. */
 export const AssignTaskInput = z.object({
   memberId: Id.optional(),

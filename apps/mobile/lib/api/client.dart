@@ -293,6 +293,15 @@ class ApiClient {
   Future<List<dynamic>> listFeeds(String familyId) async =>
       _list(await _dio.get('/families/$familyId/feeds', options: _auth), 'feeds');
 
+  /// Reorder one member's feed links by priority: every link id of that member
+  /// exactly once, new order (index 0 = highest priority). Breaks conflict ties
+  /// on that member's unified calendar; manual events always outrank feeds.
+  Future<void> reorderMemberFeedLinks(
+      String familyId, String memberId, List<String> linkIds) async {
+    await _dio.put('/families/$familyId/feeds/member-links/order',
+        data: {'familyMemberId': memberId, 'linkIds': linkIds}, options: _auth);
+  }
+
   /// Create an input feed: a public ICS URL (`kind: 'ics'`, pass `url`, with an
   /// optional `name` — blank ⇒ fetched from the feed) or a calendar from a
   /// connected account (`kind: 'caldav' | 'google'`, pass `externalAccountId` +

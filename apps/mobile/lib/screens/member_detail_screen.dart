@@ -165,6 +165,13 @@ class _SourceCalendarsSection extends ConsumerWidget {
       final link = links.where((l) => l.familyMemberId == member.id).firstOrNull;
       if (link != null) linked.add((feed, link));
     }
+    // Highest priority first — the order conflict resolution uses on this
+    // member's calendar (the API stores it per feed↔member link).
+    linked.sort((a, b) => a.$2.position.compareTo(b.$2.position));
+
+    // Reordering only matters (and is only offered) once there's more than one
+    // source that could collide.
+    final canReorder = canEdit && linked.length > 1;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -180,61 +187,117 @@ class _SourceCalendarsSection extends ConsumerWidget {
           style: AppText.subtitle,
         ),
         const SizedBox(height: 12),
-        AppCard(
-          child: Column(
+        if (linked.isEmpty)
+          AppCard(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 8),
+              child: Text('No source calendars yet', style: AppText.subtitle),
+            ),
+          )
+        else if (canReorder)
+          ReorderableListView(
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            // onReorderItem (not the deprecated onReorder) already adjusts
+            // newIndex for the item removed at oldIndex — see _reorder.
+            onReorderItem: (o, n) => _reorder(ref, linked, o, n),
             children: [
-              if (linked.isEmpty)
+              for (final (feed, link) in linked)
                 Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 8),
-                  child: Text('No source calendars yet', style: AppText.subtitle),
-                )
-              else
-                for (final (feed, link) in linked) ...[
-                  SettingRow(
-                    icon: feed.isBusy
-                        ? Icons.lock_clock_rounded
-                        : feed.kind == 'ics'
-                            ? Icons.rss_feed_rounded
-                            : Icons.calendar_month_rounded,
-                    iconColor: feed.isException
-                        ? AppColors.amber
-                        : feed.isBusy
-                            ? AppColors.purple
-                            : AppColors.feedBlue,
-                    title: feed.displayName,
-                    subtitle: feed.isException
-                        ? 'Exception-only · transformed'
-                        : feed.isBusy
-                            ? 'Busy-only · free/busy'
-                            : 'Standard · ${feed.sourceLabel}',
-                    trailing: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        if (!link.active)
-                          const TintBadge('off', color: AppColors.coral)
-                        else
-                          const TintBadge('on', color: AppColors.green),
-                        const SizedBox(width: 6),
-                        const Icon(Icons.chevron_right_rounded,
-                            color: AppColors.textMuted),
-                      ],
-                    ),
-                    onTap: () => _openLink(context, feed, link),
+                  key: ValueKey(link.id),
+                  padding: const EdgeInsets.only(bottom: 10),
+                  child: AppCard(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                    child: _feedRow(context, feed, link, draggable: true),
                   ),
-                  const Divider(height: 20),
-                ],
-              if (canEdit)
-                SettingRow(
-                  icon: Icons.add_rounded,
-                  iconColor: AppColors.feedBlue,
-                  title: 'Add another calendar',
-                  onTap: () => showAddCalendarSheet(context, ref, member),
                 ),
             ],
+          )
+        else
+          AppCard(
+            child: Column(
+              children: [
+                for (final (feed, link) in linked) ...[
+                  _feedRow(context, feed, link),
+                  const Divider(height: 20),
+                ],
+              ],
+            ),
           ),
-        ),
+        if (canReorder) ...[
+          const SizedBox(height: 4),
+          Text('Drag to set priority. When events overlap, the source higher '
+              'in this list wins — the other is trimmed or split around it. '
+              'Events added by hand always win over feeds.',
+              style: AppText.subtitle),
+          const SizedBox(height: 12),
+        ],
+        if (canEdit)
+          Center(
+            child: TextButton.icon(
+              onPressed: () => showAddCalendarSheet(context, ref, member),
+              icon: const Icon(Icons.add_rounded, size: 18, color: AppColors.feedBlue),
+              label: Text('Add another calendar',
+                  style: font(kBodyFont, 13, 700, color: AppColors.feedBlue)),
+            ),
+          ),
       ],
     );
+  }
+
+  /// One source-calendar row. In the reorderable layout (`draggable`) the
+  /// platform supplies the drag handle, so the trailing nav chevron is dropped;
+  /// the card still opens the link editor on tap.
+  Widget _feedRow(BuildContext context, FeedItem feed, FeedLink link,
+      {bool draggable = false}) {
+    return SettingRow(
+      icon: feed.isBusy
+          ? Icons.lock_clock_rounded
+          : feed.kind == 'ics'
+              ? Icons.rss_feed_rounded
+              : Icons.calendar_month_rounded,
+      iconColor: feed.isException
+          ? AppColors.amber
+          : feed.isBusy
+              ? AppColors.purple
+              : AppColors.feedBlue,
+      title: feed.displayName,
+      subtitle: feed.isException
+          ? 'Exception-only · transformed'
+          : feed.isBusy
+              ? 'Busy-only · free/busy'
+              : 'Standard · ${feed.sourceLabel}',
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (!link.active)
+            const TintBadge('off', color: AppColors.coral)
+          else
+            const TintBadge('on', color: AppColors.green),
+          if (!draggable) ...[
+            const SizedBox(width: 6),
+            const Icon(Icons.chevron_right_rounded, color: AppColors.textMuted),
+          ],
+        ],
+      ),
+      onTap: () => _openLink(context, feed, link),
+    );
+  }
+
+  Future<void> _reorder(
+      WidgetRef ref, List<(FeedItem, FeedLink)> linked, int oldIndex, int newIndex) async {
+    // onReorderItem already accounts for the removed item, so no newIndex fixup.
+    final order = linked.map((e) => e.$2.id).toList();
+    final moved = order.removeAt(oldIndex);
+    order.insert(newIndex, moved);
+    final familyId = await ref.read(familyProvider.future);
+    await ref.read(apiClientProvider).reorderMemberFeedLinks(familyId, member.id, order);
+    // The member's feeds each carry one of these links; refresh them plus the
+    // derived calendar so any re-prioritisation shows immediately.
+    for (final (feed, _) in linked) {
+      ref.invalidate(feedLinksProvider(feed.id));
+    }
+    ref.invalidate(calendarEventsProvider);
   }
 
   void _openLink(BuildContext context, FeedItem feed, FeedLink link) {
