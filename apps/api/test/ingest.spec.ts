@@ -188,6 +188,75 @@ describe('ingest: account-backed input feeds', () => {
     expect(after.status).toBe('error');
   });
 
+  it('deletes a source event whose UID no longer appears in a re-fetched ICS feed', async () => {
+    // Regression: only busy (free/busy) feeds ever reconciled deletions —
+    // a UID-keyed feed (e.g. an iCloud calendar's public ICS URL) only ever
+    // upserted, so an event removed upstream lingered in source_events
+    // forever and kept being synthesized back onto the unified calendar and
+    // mirrored right back out to the target calendar.
+    const user = await login('ingest-ics-delete@example.com');
+    const familyId = await createFamily(user.token, 'Ingest ICS Delete');
+    const db = getDb(env.DB);
+    const feed = (
+      await db
+        .insert(feeds)
+        .values({ familyId, kind: 'ics', url: 'https://example.invalid/cal.ics', mode: 'standard' })
+        .returning()
+    )[0]!;
+
+    const icsWithTwo = [
+      'BEGIN:VCALENDAR',
+      'VERSION:2.0',
+      'BEGIN:VEVENT',
+      'UID:keep@example.com',
+      'DTSTART:20260801T150000Z',
+      'DTEND:20260801T160000Z',
+      'SUMMARY:Keeps',
+      'END:VEVENT',
+      'BEGIN:VEVENT',
+      'UID:removed@example.com',
+      'DTSTART:20260802T150000Z',
+      'DTEND:20260802T160000Z',
+      'SUMMARY:Removed upstream',
+      'END:VEVENT',
+      'END:VCALENDAR',
+    ].join('\r\n');
+    const icsWithOne = [
+      'BEGIN:VCALENDAR',
+      'VERSION:2.0',
+      'BEGIN:VEVENT',
+      'UID:keep@example.com',
+      'DTSTART:20260801T150000Z',
+      'DTEND:20260801T160000Z',
+      'SUMMARY:Keeps',
+      'END:VEVENT',
+      'END:VCALENDAR',
+    ].join('\r\n');
+
+    let body = icsWithTwo;
+    const fetchImpl = (async () => ({
+      ok: true,
+      status: 200,
+      headers: { get: () => null },
+      text: async () => body,
+    })) as unknown as typeof fetch;
+
+    const window = {
+      windowStart: new Date('2026-07-01T00:00:00Z'),
+      windowEnd: new Date('2026-09-01T00:00:00Z'),
+    };
+    await ingestFeed(db, feed, { fetchImpl, ...window });
+    const afterFirst = await db.select().from(sourceEvents).where(eq(sourceEvents.feedId, feed.id));
+    expect(afterFirst.map((r) => r.icalUid).sort()).toEqual(['keep@example.com', 'removed@example.com']);
+
+    // The upstream calendar drops the second event; re-ingesting should
+    // reconcile it away, not leave it as a ghost.
+    body = icsWithOne;
+    await ingestFeed(db, feed, { fetchImpl, ...window });
+    const afterSecond = await db.select().from(sourceEvents).where(eq(sourceEvents.feedId, feed.id));
+    expect(afterSecond.map((r) => r.icalUid)).toEqual(['keep@example.com']);
+  });
+
   it('marks an ICS feed errored on a connection-level failure (not just a bad HTTP status)', async () => {
     // Regression: a thrown fetch (DNS/TLS/timeout) used to bypass the
     // status='error' update entirely — only a non-ok *response* set it —

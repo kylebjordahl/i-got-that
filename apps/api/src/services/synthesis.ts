@@ -298,7 +298,15 @@ export async function synthesizeFeed(
           : synthesizeStandard(linkConfig, occurrences);
 
     // Existing synthesized rows this link owns within the window (pd: rows are
-    // keyed to the decision, not the link, and are never touched here).
+    // keyed to the decision, not the link, and are never touched here). The
+    // overlap check must mirror the source-occurrence query above exactly: an
+    // event that started before the window but is still ongoing at
+    // window.start (e.g. an evening event in a negative-UTC-offset zone that
+    // straddles the UTC day boundary the window is computed from) is still
+    // reported by the engine every run. Without the same `dtend > window.start`
+    // clause here, its existing row would fall out of `existingByKey`, so
+    // `upsertIntent` would try to INSERT a duplicate of an unchanged event and
+    // crash the whole synthesis on the (familyMemberId, synthKey) unique index.
     const existing = await db
       .select()
       .from(calendarEvents)
@@ -306,8 +314,11 @@ export async function synthesizeFeed(
         and(
           eq(calendarEvents.linkId, link.id),
           eq(calendarEvents.provenance, 'synthesized'),
-          gte(calendarEvents.dtstart, window.start),
           lt(calendarEvents.dtstart, window.end),
+          or(
+            gte(calendarEvents.dtstart, window.start),
+            gt(calendarEvents.dtend, window.start),
+          ),
         ),
       );
     const linkOwnedExisting = existing.filter(
