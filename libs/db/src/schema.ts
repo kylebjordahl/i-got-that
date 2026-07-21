@@ -243,6 +243,13 @@ export const familyMemberFeeds = sqliteTable(
     weekdayMask: integer('weekday_mask'),
     dayStart: text('day_start'),
     dayEnd: text('day_end'),
+    // Priority rank of this feed *within this member's* unified calendar,
+    // ascending (0 = highest). Conflict resolution compares only the feeds on a
+    // single member's calendar, so priority is a property of the feed↔member
+    // link, not the feed: when two feed-derived events overlap, the lower-
+    // position link wins and the other is masked. Manual (human) events always
+    // outrank every feed. Lower = wins.
+    position: integer('position').notNull().default(0),
     // Location stamped on generated baseline events (e.g. the school). Null ⇒ none.
     location: text('location'),
     // Geocoded coordinates for `location` (validated at input via MapKit/etc.).
@@ -271,6 +278,10 @@ export const familyMemberFeeds = sqliteTable(
       t.familyMemberId,
     ),
     familyIdx: index('fmf_family_idx').on(t.familyId),
+    memberPositionIdx: index('fmf_member_position_idx').on(
+      t.familyMemberId,
+      t.position,
+    ),
   }),
 );
 

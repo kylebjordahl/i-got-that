@@ -29,6 +29,13 @@
       "when": 1784669536513,
       "tag": "0003_little_magus",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1784670078384,
+      "tag": "0004_little_moon_knight",
+      "breakpoints": true
     }
   ]
 }

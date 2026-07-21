@@ -295,6 +295,7 @@ class FeedLink {
     required this.id,
     required this.familyMemberId,
     required this.active,
+    this.position = 0,
     this.memberRelation,
     this.weekdayMask,
     this.dayStart,
@@ -310,6 +311,9 @@ class FeedLink {
   final String familyMemberId;
   final String? memberRelation;
   final bool active;
+  // Priority rank of this feed within the member's calendar (0 = highest);
+  // breaks conflict ties. Manual events always outrank feeds.
+  final int position;
   final int? weekdayMask;
   final String? dayStart; // "HH:MM"
   final String? dayEnd;
@@ -326,6 +330,7 @@ class FeedLink {
         familyMemberId: j['familyMemberId'] as String,
         memberRelation: j['memberRelation'] as String?,
         active: j['active'] as bool? ?? true,
+        position: j['position'] as int? ?? 0,
         weekdayMask: j['weekdayMask'] as int?,
         dayStart: j['dayStart'] as String?,
         dayEnd: j['dayEnd'] as String?,
