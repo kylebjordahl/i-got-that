@@ -22,6 +22,11 @@ const _tabHeight = 32.0;
 // Left indentation for edge tabs so they don't flush-align with the block
 // underneath — 1.5x the tab's pill corner radius (half its height).
 const _tabLeftInset = _tabHeight / 2 * 1.5;
+// Floor so a several-minute event still renders as a tappable, legible block
+// instead of a sliver — kept small so block height stays proportional to the
+// event's actual duration for everything else. `_ItemBlock` switches to a
+// compact single-line layout below `_ItemBlock._compactThreshold`.
+const _minBlockHeight = 30.0;
 // The grid always shows at least this window, then expands to fit the day's
 // events (and the now-line) so nothing is clipped — the page scrolls to reveal
 // the extra hours.
@@ -784,9 +789,10 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
         final top = (((ev.start.hour + ev.start.minute / 60) - _gridStart) * _hourPx)
             .clamp(0.0, _gridHeight);
         final height = _isBlock(ev.item)
-            // Tall enough for the title + time + an attendee-avatar footer.
+            // Proportional to the real duration; only floored for very short
+            // events (see `_minBlockHeight`).
             ? (ev.end.difference(ev.start).inMinutes / 60 * _hourPx)
-                .clamp(76.0, _gridHeight)
+                .clamp(_minBlockHeight, _gridHeight)
             : 34.0;
         placed.add(_Placed(
           item: ev.item,
@@ -1032,6 +1038,10 @@ class _ItemBlock extends StatelessWidget {
   final bool hasBottomTab;
   final VoidCallback? onTapBlock;
 
+  // Below this available height there isn't room for the title + time +
+  // avatar layout without overflowing; fall back to a single compact line.
+  static const _compactThreshold = 46.0;
+
   @override
   Widget build(BuildContext context) {
     final it = placed.item;
@@ -1049,58 +1059,66 @@ class _ItemBlock extends StatelessWidget {
         '${hasRange ? friendlyRange(start, end) : clockShort(start)}'
         '${human ? ' · manual' : ''}';
 
-    return GestureDetector(
-      onTap: onTapBlock,
-      behavior: HitTestBehavior.opaque,
-      child: Container(
-        clipBehavior: Clip.antiAlias,
-        padding: EdgeInsets.fromLTRB(11, hasTopTab ? 17 : 9, 11, hasBottomTab ? 17 : 9),
-        decoration: BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-            colors: [AppColors.tint(accent, 0.18), AppColors.tint(accent, 0.08)],
+    final titleSpan = TextSpan(children: [
+      TextSpan(
+          text: summary,
+          style: font(kBodyFont, 12.5, 600, color: AppColors.textPrimary)),
+      TextSpan(
+          text: ' · $personName',
+          style: font(kBodyFont, 12.5, 700, color: accent)),
+    ]);
+
+    return LayoutBuilder(builder: (context, constraints) {
+      final compact = constraints.maxHeight < _compactThreshold;
+      return GestureDetector(
+        onTap: onTapBlock,
+        behavior: HitTestBehavior.opaque,
+        child: Container(
+          clipBehavior: Clip.antiAlias,
+          padding: EdgeInsets.fromLTRB(
+            11,
+            hasTopTab ? 17 : (compact ? 5 : 9),
+            11,
+            hasBottomTab ? 17 : (compact ? 5 : 9),
           ),
-          borderRadius: BorderRadius.circular(14),
-          border: Border.all(color: accent.withValues(alpha: 0.55)),
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Expanded(
-                  child: Text.rich(
-                    TextSpan(children: [
-                      TextSpan(
-                          text: summary,
-                          style: font(kBodyFont, 12.5, 600,
-                              color: AppColors.textPrimary)),
-                      TextSpan(
-                          text: ' · $personName',
-                          style: font(kBodyFont, 12.5, 700, color: accent)),
-                    ]),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-                if (attendees.isNotEmpty) ...[
-                  const SizedBox(width: 6),
-                  _attendeeAvatars(),
-                ],
-              ],
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [AppColors.tint(accent, 0.18), AppColors.tint(accent, 0.08)],
             ),
-            const SizedBox(height: 2),
-            Text(subtitle,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: font(kBodyFont, 11, 500, color: AppColors.textTertiary)),
-          ],
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: accent.withValues(alpha: 0.55)),
+          ),
+          child: compact
+              ? Text.rich(titleSpan, maxLines: 1, overflow: TextOverflow.ellipsis)
+              : Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Expanded(
+                          child: Text.rich(titleSpan,
+                              maxLines: 1, overflow: TextOverflow.ellipsis),
+                        ),
+                        if (attendees.isNotEmpty) ...[
+                          const SizedBox(width: 6),
+                          _attendeeAvatars(),
+                        ],
+                      ],
+                    ),
+                    const SizedBox(height: 2),
+                    Text(subtitle,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: font(kBodyFont, 11, 500, color: AppColors.textTertiary)),
+                  ],
+                ),
         ),
-      ),
-    );
+      );
+    });
   }
 
   Widget _attendeeAvatars() {
