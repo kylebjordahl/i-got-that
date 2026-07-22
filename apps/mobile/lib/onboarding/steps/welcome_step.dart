@@ -189,7 +189,7 @@ class _WelcomeStepState extends ConsumerState<WelcomeStep> {
   }
 }
 
-/// The app mark: a gradient rounded square with two overlapping rings.
+/// The app mark: the app icon artwork, matching the launcher icon.
 class _LogoMark extends StatelessWidget {
   const _LogoMark();
 
@@ -198,14 +198,9 @@ class _LogoMark extends StatelessWidget {
     return Container(
       width: 58,
       height: 58,
-      alignment: Alignment.center,
+      clipBehavior: Clip.antiAlias,
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(18),
-        gradient: const LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: [AppColors.indigo, AppColors.purple],
-        ),
         boxShadow: [
           BoxShadow(
             color: AppColors.indigo.withValues(alpha: 0.5),
@@ -214,32 +209,7 @@ class _LogoMark extends StatelessWidget {
           ),
         ],
       ),
-      child: const SizedBox(
-        width: 30,
-        height: 18,
-        child: Stack(
-          alignment: Alignment.center,
-          children: [
-            Positioned(left: 0, child: _Ring()),
-            Positioned(right: 0, child: _Ring()),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _Ring extends StatelessWidget {
-  const _Ring();
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: 18,
-      height: 18,
-      decoration: BoxDecoration(
-        shape: BoxShape.circle,
-        border: Border.all(color: const Color(0xFF15121B), width: 2.1),
-      ),
+      child: Image.asset('assets/images/app_icon.png', fit: BoxFit.cover),
     );
   }
 }

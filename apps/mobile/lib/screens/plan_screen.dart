@@ -27,6 +27,9 @@ const _tabLeftInset = _tabHeight / 2 * 1.5;
 // the extra hours.
 const _defaultStartHour = 7;
 const _defaultEndHour = 19; // 7 PM
+// Minimum fling speed (logical px/s) for a horizontal grid drag to count as a
+// day-change swipe rather than an incidental sideways wobble.
+const _swipeVelocityThreshold = 250.0;
 
 /// One item on the Plan grid: a unified-calendar event (synthesized / human /
 /// claimed — colored by whose calendar it's on) or an unowned task (dashed).
@@ -55,7 +58,11 @@ class PlanScreen extends ConsumerStatefulWidget {
 }
 
 class _PlanScreenState extends ConsumerState<PlanScreen> {
-  late final DateTime _today = _dateOnly(DateTime.now());
+  // The current calendar day, recomputed live on every read so navigation (the
+  // "Today" button, the day strip's today marker) stays correct even when the
+  // page is left open past midnight. A cached value would freeze at the day the
+  // page was first built.
+  DateTime get _today => _dateOnly(DateTime.now());
   late DateTime _selected = _today;
 
   // Filters are stored as *exclusions* (empty ⇒ show all): a chip is selected
@@ -289,18 +296,28 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
         ),
         const SizedBox(height: 16),
         // The time grid scrolls on its own; the day chips above stay fixed. The
-        // amber edge glows flag events scrolled out of view above/below.
+        // amber edge glows flag events scrolled out of view above/below. A
+        // horizontal swipe over the grid steps the selected day ± 1, alongside
+        // the vertical drag the ScrollView already claims for its own axis.
         Expanded(
-          child: Stack(
-            children: [
-              SingleChildScrollView(
-                controller: _gridScroll,
-                padding: const EdgeInsets.fromLTRB(22, 0, 22, 130),
-                child: _grid(placed, byId, tabsByEvent, ownersByEvent, orphanTabs, eventsById),
-              ),
-              _EdgeGlow(controller: _gridScroll, placed: placed, top: true),
-              _EdgeGlow(controller: _gridScroll, placed: placed, top: false),
-            ],
+          child: GestureDetector(
+            behavior: HitTestBehavior.translucent,
+            onHorizontalDragEnd: (details) {
+              final v = details.primaryVelocity ?? 0.0;
+              if (v.abs() < _swipeVelocityThreshold) return;
+              _shiftDay(v < 0 ? 1 : -1);
+            },
+            child: Stack(
+              children: [
+                SingleChildScrollView(
+                  controller: _gridScroll,
+                  padding: const EdgeInsets.fromLTRB(22, 0, 22, 130),
+                  child: _grid(placed, byId, tabsByEvent, ownersByEvent, orphanTabs, eventsById),
+                ),
+                _EdgeGlow(controller: _gridScroll, placed: placed, top: true),
+                _EdgeGlow(controller: _gridScroll, placed: placed, top: false),
+              ],
+            ),
           ),
         ),
       ],
@@ -319,6 +336,35 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
         curve: Curves.easeOutCubic,
       );
     }
+  }
+
+  /// Step the selected day by [delta] (±1) — the grid's left/right swipe
+  /// gesture. Mirrors tapping a day chip, then nudges the day strip into view
+  /// if the swipe walked the selection off its visible range.
+  void _shiftDay(int delta) {
+    setState(() => _selected = _selected.add(Duration(days: delta)));
+    _keepSelectedDayChipVisible();
+  }
+
+  void _keepSelectedDayChipVisible() {
+    if (!_dayScroll.hasClients) return;
+    final idx = _dayAnchor + _selected.difference(_today).inDays;
+    final chipStart = idx * _dayTileExtent;
+    final chipEnd = chipStart + _dayTileExtent;
+    final viewport = _dayScroll.position.viewportDimension;
+    final viewStart = _dayScroll.offset;
+    final viewEnd = viewStart + viewport;
+    if (chipStart >= viewStart && chipEnd <= viewEnd) return;
+    // Land the new chip one tile in from whichever edge it crossed, so the
+    // next day over stays visible as a hint there's more to swipe to.
+    final target = chipStart < viewStart
+        ? chipStart - _dayTileExtent
+        : chipEnd - viewport + _dayTileExtent;
+    _dayScroll.animateTo(
+      target.clamp(0.0, _dayScroll.position.maxScrollExtent),
+      duration: const Duration(milliseconds: 250),
+      curve: Curves.easeOutCubic,
+    );
   }
 
   Widget _header() {
