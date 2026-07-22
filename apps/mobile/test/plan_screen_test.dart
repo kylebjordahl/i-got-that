@@ -339,11 +339,13 @@ void main() {
     // The child's synthesized practice, still unclaimed — before the dedup fix
     // this rendered twice: the real event block, plus a second, generic
     // "Attendance" block for the still-unowned task pointing at the same event.
+    // Give it a couple of hours so the block is tall enough to show its title
+    // (a compact block would collapse to just its time).
     final events = [
-      CalendarEventItem(id: 'fs', familyMemberId: 'delbert', provenance: 'synthesized', start: at(15, 15), end: at(16, 15), allDay: false, summary: 'Fiddle practice'),
+      CalendarEventItem(id: 'fs', familyMemberId: 'delbert', provenance: 'synthesized', start: at(14, 0), end: at(16, 15), allDay: false, summary: 'Fiddle practice'),
     ];
     final tasks = [
-      TaskItem(id: 'tf', familyMemberId: 'delbert', type: 'attendance', start: at(15, 15), end: at(16, 15), status: 'unowned', createdVia: 'generated', calendarEventId: 'fs'),
+      TaskItem(id: 'tf', familyMemberId: 'delbert', type: 'attendance', start: at(14, 0), end: at(16, 15), status: 'unowned', createdVia: 'generated', calendarEventId: 'fs'),
     ];
     await tester.pumpWidget(ProviderScope(
       overrides: [
@@ -528,6 +530,44 @@ void main() {
     // The exact time renders once per block, tag-free; the tagged variant is gone.
     expect(find.text('3:15 – 4:15 PM'), findsNWidgets(4));
     expect(find.textContaining('manual'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('a short event collapses to just its time, without overflow',
+      (tester) async {
+    final now = DateTime.now();
+    DateTime at(int h, int m) => DateTime(now.year, now.month, now.day, h, m);
+    // A 20-minute segment (once inflated to a fixed 76px, now its true height)
+    // is too short for the title line — it shows the start–end time alone.
+    final events = [
+      CalendarEventItem(id: 'q', familyMemberId: 'theo', provenance: 'synthesized', start: at(9, 0), end: at(9, 20), allDay: false, summary: 'Quick errand'),
+    ];
+    final tasks = [
+      TaskItem(id: 'att', familyMemberId: 'theo', type: 'attendance', start: at(9, 0), end: at(9, 20), status: 'unowned', createdVia: 'generated', calendarEventId: 'q'),
+    ];
+    await tester.pumpWidget(ProviderScope(
+      overrides: [
+        membersProvider.overrideWith((ref) async => [
+              _m('dad', 'Dad', caretaker: true),
+              _m('theo', 'Theo', child: true),
+            ]),
+        currentMemberProvider.overrideWith((ref) async => _m('dad', 'Dad', caretaker: true)),
+        allTasksProvider.overrideWith((ref) async => tasks),
+        calendarEventsProvider.overrideWith((ref) async => events),
+        pendingDecisionsProvider.overrideWith((ref) async => const []),
+        threadingThresholdProvider.overrideWith((ref) async => 30),
+      ],
+      child: MaterialApp(
+        theme: buildAppTheme(),
+        themeMode: ThemeMode.dark,
+        home: const Scaffold(body: SafeArea(child: PlanScreen())),
+      ),
+    ));
+    await tester.pumpAndSettle();
+
+    // The time shows; the summary is dropped for the compact block.
+    expect(find.text('9:00 – 9:20 AM'), findsOneWidget);
+    expect(find.textContaining('Quick errand'), findsNothing);
     expect(tester.takeException(), isNull);
   });
 }
