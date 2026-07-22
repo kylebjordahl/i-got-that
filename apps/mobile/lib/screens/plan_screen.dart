@@ -1045,9 +1045,10 @@ class _ItemBlock extends StatelessWidget {
     final personName = attendees.isNotEmpty ? attendees.first.relationName : 'child';
 
     final hasRange = end != null && end.isAfter(start);
-    final subtitle =
-        '${hasRange ? friendlyRange(start, end) : clockShort(start)}'
-        '${human ? ' · manual' : ''}';
+    // The exact start–end time is the one label a block must always show, so
+    // compute it on its own and let _TimeLabel drop the trailing "· manual" tag
+    // (and only then ellipsise the time) when the block is too narrow (issue 98).
+    final timeText = hasRange ? friendlyRange(start, end) : clockShort(start);
 
     return GestureDetector(
       onTap: onTapBlock,
@@ -1093,10 +1094,7 @@ class _ItemBlock extends StatelessWidget {
               ],
             ),
             const SizedBox(height: 2),
-            Text(subtitle,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: font(kBodyFont, 11, 500, color: AppColors.textTertiary)),
+            _TimeLabel(text: timeText, tag: human ? ' · manual' : null),
           ],
         ),
       ),
@@ -1117,6 +1115,45 @@ class _ItemBlock extends StatelessWidget {
       overlap: 9,
     );
   }
+}
+
+/// The event's exact start–end time on a Plan block. The time is the one label
+/// a block must always show, so a too-narrow block first drops the trailing
+/// "· manual" tag and only then truncates the time itself with an ellipsis —
+/// it never mangles the time to make room for the tag (issue 98).
+class _TimeLabel extends StatelessWidget {
+  const _TimeLabel({required this.text, this.tag});
+  final String text;
+  final String? tag;
+
+  @override
+  Widget build(BuildContext context) {
+    final style = font(kBodyFont, 11, 500, color: AppColors.textTertiary);
+    if (tag == null) {
+      return Text(text,
+          maxLines: 1, overflow: TextOverflow.ellipsis, style: style);
+    }
+    return LayoutBuilder(builder: (context, constraints) {
+      final maxWidth = constraints.maxWidth;
+      // Keep the tag only while the full time still fits alongside it; past that
+      // the tag is dropped, and the time truncates only as a last resort.
+      final fits = !maxWidth.isFinite ||
+          _measureWidth(text, style) + _measureWidth(tag!, style) <= maxWidth;
+      return Text(fits ? '$text$tag' : text,
+          maxLines: 1, overflow: TextOverflow.ellipsis, style: style);
+    });
+  }
+}
+
+/// Intrinsic (unwrapped) width of [text] in [style] — used to decide whether an
+/// optional label segment fits before the time is forced to truncate.
+double _measureWidth(String text, TextStyle style) {
+  final painter = TextPainter(
+    text: TextSpan(text: text, style: style),
+    maxLines: 1,
+    textDirection: TextDirection.ltr,
+  )..layout();
+  return painter.width;
 }
 
 /// A drop-off / pick-up transition rendered as a tab clipped onto the top or

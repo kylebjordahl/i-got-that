@@ -461,4 +461,73 @@ void main() {
     expect(find.text('Bring the permission slip'), findsOneWidget);
     expect(find.textContaining('8:30 AM – 3:00 PM'), findsWidgets);
   });
+
+  testWidgets('a wide manual block keeps the "· manual" tag beside its time',
+      (tester) async {
+    final now = DateTime.now();
+    DateTime at(int h, int m) => DateTime(now.year, now.month, now.day, h, m);
+    final events = [
+      CalendarEventItem(id: 'appt', familyMemberId: 'theo', provenance: 'human', start: at(15, 15), end: at(16, 15), allDay: false, summary: 'Dentist'),
+    ];
+    await tester.pumpWidget(ProviderScope(
+      overrides: [
+        membersProvider.overrideWith((ref) async => [
+              _m('dad', 'Dad', caretaker: true),
+              _m('theo', 'Theo', child: true),
+            ]),
+        currentMemberProvider.overrideWith((ref) async => _m('dad', 'Dad', caretaker: true)),
+        allTasksProvider.overrideWith((ref) async => const <TaskItem>[]),
+        calendarEventsProvider.overrideWith((ref) async => events),
+        pendingDecisionsProvider.overrideWith((ref) async => const []),
+        threadingThresholdProvider.overrideWith((ref) async => 30),
+      ],
+      child: MaterialApp(
+        theme: buildAppTheme(),
+        themeMode: ThemeMode.dark,
+        home: const Scaffold(body: SafeArea(child: PlanScreen())),
+      ),
+    ));
+    await tester.pumpAndSettle();
+
+    // A full-width block has room for the whole subtitle: time + the tag.
+    expect(find.text('3:15 – 4:15 PM · manual'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('a compact block drops the tag but never truncates the time',
+      (tester) async {
+    final now = DateTime.now();
+    DateTime at(int h, int m) => DateTime(now.year, now.month, now.day, h, m);
+    // Four manual events overlapping at 3:15 pack into columns too narrow to fit
+    // "· manual" beside the time — the tag is dropped, and each block still
+    // shows the whole start–end range rather than an ellipsised "3:15 – 4:1…".
+    final events = [
+      for (var i = 0; i < 4; i++)
+        CalendarEventItem(id: 'e$i', familyMemberId: 'theo', provenance: 'human', start: at(15, 15), end: at(16, 15), allDay: false, summary: 'Overlap $i'),
+    ];
+    await tester.pumpWidget(ProviderScope(
+      overrides: [
+        membersProvider.overrideWith((ref) async => [
+              _m('dad', 'Dad', caretaker: true),
+              _m('theo', 'Theo', child: true),
+            ]),
+        currentMemberProvider.overrideWith((ref) async => _m('dad', 'Dad', caretaker: true)),
+        allTasksProvider.overrideWith((ref) async => const <TaskItem>[]),
+        calendarEventsProvider.overrideWith((ref) async => events),
+        pendingDecisionsProvider.overrideWith((ref) async => const []),
+        threadingThresholdProvider.overrideWith((ref) async => 30),
+      ],
+      child: MaterialApp(
+        theme: buildAppTheme(),
+        themeMode: ThemeMode.dark,
+        home: const Scaffold(body: SafeArea(child: PlanScreen())),
+      ),
+    ));
+    await tester.pumpAndSettle();
+
+    // The exact time renders once per block, tag-free; the tagged variant is gone.
+    expect(find.text('3:15 – 4:15 PM'), findsNWidgets(4));
+    expect(find.textContaining('manual'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
 }
