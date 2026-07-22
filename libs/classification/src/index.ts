@@ -458,6 +458,89 @@ export function resolveTaskResult(
   };
 }
 
+// --- Stage C: assignment (auto-claim a task's owner) -----------------------
+
+/** Start of the Monday-anchored UTC week containing `d`. */
+export function startOfUtcWeek(d: Date): Date {
+  const day = startOfUtcDay(d);
+  return new Date(day.getTime() - weekdayBit(day) * DAY_MS);
+}
+
+/**
+ * Whether `occ` falls on an "on" week of a cadence anchored to `anchorDate`'s
+ * week. cadence 1 ⇒ always; cadence 2 ⇒ every other week starting the anchor's
+ * week; etc. Weeks are Monday-anchored in UTC, consistent with `weekdayBit` —
+ * so the whole assignment engine reads calendar days the same way synthesis's
+ * baseline `weekdayMask` does.
+ */
+export function weekParityMatches(
+  anchorDate: Date | null,
+  occ: Date,
+  cadenceWeeks: number,
+): boolean {
+  if (cadenceWeeks <= 1) return true;
+  if (!anchorDate) return true; // no anchor ⇒ fall back to weekly (defensive)
+  const weeks = Math.round(
+    (startOfUtcWeek(occ).getTime() - startOfUtcWeek(anchorDate).getTime()) /
+      (7 * DAY_MS),
+  );
+  return ((weeks % cadenceWeeks) + cadenceWeeks) % cadenceWeeks === 0;
+}
+
+/** One assignment rule (auto-claim pipeline). */
+export interface AssignmentRuleLike {
+  id: string;
+  position: number;
+  ownerMemberId: string;
+  aboutMemberId: string | null;
+  linkId: string | null;
+  taskType: TaskType | null;
+  weekdayMask: number;
+  cadenceWeeks: number;
+  anchorDate: Date | null;
+}
+
+/** The task facts an assignment rule matches against. */
+export interface AssignmentCandidate {
+  aboutMemberId: string;
+  linkId: string | null;
+  type: TaskType;
+  dtstart: Date;
+}
+
+/** A rule matches when every present filter matches and the cadence is "on". */
+export function assignmentRuleMatches(
+  rule: AssignmentRuleLike,
+  cand: AssignmentCandidate,
+): boolean {
+  if (rule.aboutMemberId && rule.aboutMemberId !== cand.aboutMemberId) return false;
+  if (rule.linkId && rule.linkId !== cand.linkId) return false;
+  if (rule.taskType && rule.taskType !== cand.type) return false;
+  if (
+    rule.weekdayMask &&
+    (rule.weekdayMask & (1 << weekdayBit(cand.dtstart))) === 0
+  ) {
+    return false;
+  }
+  return weekParityMatches(rule.anchorDate, cand.dtstart, rule.cadenceWeeks);
+}
+
+/**
+ * The first assignment rule (by `position`) that claims a task, or null.
+ * First-match-wins gives deterministic conflict resolution when several rules
+ * could apply. Owner validity (still a caretaker) is enforced by the caller.
+ */
+export function resolveTaskOwner(
+  cand: AssignmentCandidate,
+  rules: AssignmentRuleLike[],
+): AssignmentRuleLike | null {
+  const sorted = [...rules].sort((a, b) => a.position - b.position);
+  for (const rule of sorted) {
+    if (assignmentRuleMatches(rule, cand)) return rule;
+  }
+  return null;
+}
+
 export interface TaskIntent {
   type: TaskType;
   attendanceRequirement: AttendanceRequirement | null;

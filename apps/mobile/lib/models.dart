@@ -452,6 +452,93 @@ class TaskRule {
       );
 }
 
+/// A family auto-assignment rule (issue #24): when a generated task matches, it
+/// is claimed for [ownerMemberId]. Targeting filters ([aboutMemberId], [linkId],
+/// [taskType]) are ANDed and each is optional (null = "any"). The recurrence
+/// pattern ([weekdayMask] + [cadenceWeeks]/[anchorDate]) is inline — a pattern is
+/// never a resource the user manages separately.
+class AssignmentRule {
+  AssignmentRule({
+    required this.id,
+    required this.position,
+    required this.ownerMemberId,
+    required this.weekdayMask,
+    required this.cadenceWeeks,
+    this.aboutMemberId,
+    this.linkId,
+    this.taskType,
+    this.anchorDate,
+  });
+
+  final String id;
+  final int position;
+  final String ownerMemberId;
+  final String? aboutMemberId;
+  final String? linkId;
+  final String? taskType; // 'pickup' | 'dropoff' | 'attendance' | null (any)
+  final int weekdayMask; // Mon=bit0…Sun=bit6; 0 = any day
+  final int cadenceWeeks; // 1 = weekly, 2 = every other week
+  final DateTime? anchorDate;
+
+  bool get isBiweekly => cadenceWeeks > 1;
+
+  /// Selected weekdays as 0..6 (Mon..Sun); empty ⇒ any day.
+  Set<int> get weekdays => {
+        for (var i = 0; i < 7; i++)
+          if (weekdayMask & (1 << i) != 0) i,
+      };
+
+  factory AssignmentRule.fromJson(Map<String, dynamic> j) => AssignmentRule(
+        id: j['id'] as String,
+        position: j['position'] as int,
+        ownerMemberId: j['ownerMemberId'] as String,
+        aboutMemberId: j['aboutMemberId'] as String?,
+        linkId: j['linkId'] as String?,
+        taskType: j['taskType'] as String?,
+        weekdayMask: j['weekdayMask'] as int? ?? 0,
+        cadenceWeeks: j['cadenceWeeks'] as int? ?? 1,
+        anchorDate:
+            j['anchorDate'] == null ? null : parseTimestamp(j['anchorDate']),
+      );
+}
+
+/// A feed↔member link, as returned by the assignment-rules endpoint so the
+/// per-feed picker can label it (feed name + which member it feeds).
+class AssignmentLink {
+  AssignmentLink({
+    required this.id,
+    required this.feedId,
+    required this.familyMemberId,
+  });
+
+  final String id;
+  final String feedId;
+  final String familyMemberId;
+
+  factory AssignmentLink.fromJson(Map<String, dynamic> j) => AssignmentLink(
+        id: j['id'] as String,
+        feedId: j['feedId'] as String,
+        familyMemberId: j['familyMemberId'] as String,
+      );
+}
+
+/// The family's whole assignment pipeline + the links its per-feed picker needs.
+class AssignmentRuleSet {
+  AssignmentRuleSet({required this.rules, required this.links});
+
+  final List<AssignmentRule> rules;
+  final List<AssignmentLink> links;
+
+  factory AssignmentRuleSet.fromJson(Map<String, dynamic> j) => AssignmentRuleSet(
+        rules: (((j['rules'] as List?) ?? const [])
+            .map((r) => AssignmentRule.fromJson(r as Map<String, dynamic>))
+            .toList()),
+        links: (((j['links'] as List?) ?? const [])
+            .map((l) => AssignmentLink.fromJson(l as Map<String, dynamic>))
+            .toList()),
+      );
+}
+
 /// A calendar's terminal default in the task-rule pipeline.
 class TaskDefault {
   TaskDefault({

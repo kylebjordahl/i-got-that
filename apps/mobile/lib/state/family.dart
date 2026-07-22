@@ -231,6 +231,13 @@ final taskRulesProvider =
   return TaskRuleSet.fromJson(await api.getTaskRules(familyId, memberId));
 });
 
+/// The family's auto-assignment pipeline (issue #24).
+final assignmentRulesProvider = FutureProvider<AssignmentRuleSet>((ref) async {
+  final api = ref.watch(apiClientProvider);
+  final familyId = await ref.watch(familyProvider.future);
+  return AssignmentRuleSet.fromJson(await api.getAssignmentRules(familyId));
+});
+
 /// A member's unified-calendar target config (null ⇒ DB-only calendar).
 final memberCalendarProvider =
     FutureProvider.family<MemberCalendarConfig?, String>((ref, memberId) async {

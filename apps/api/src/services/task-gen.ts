@@ -1,5 +1,6 @@
 import {
   and,
+  assignmentRules,
   calendarEvents,
   type Db,
   eq,
@@ -15,12 +16,16 @@ import {
 } from '@igt/db';
 import {
   generateTaskIntents,
+  resolveTaskOwner,
   resolveTaskResult,
   transitionWindow,
+  type AssignmentCandidate,
+  type AssignmentRuleLike,
   type TaskDefault,
   type TaskIntent,
   type TaskRuleLike,
 } from '@igt/classification';
+import { removeClaimEvent, upsertClaimEvent } from './claim.js';
 
 type CalendarEventRow = typeof calendarEvents.$inferSelect;
 type TaskRow = typeof tasks.$inferSelect;
@@ -44,6 +49,85 @@ function toTaskRuleLike(r: typeof taskRules.$inferSelect): TaskRuleLike {
     dropoffWindowMin: r.dropoffWindowMin,
     pickupWindowMin: r.pickupWindowMin,
   };
+}
+
+function toAssignmentRuleLike(
+  r: typeof assignmentRules.$inferSelect,
+): AssignmentRuleLike {
+  return {
+    id: r.id,
+    position: r.position,
+    ownerMemberId: r.ownerMemberId,
+    aboutMemberId: r.aboutMemberId,
+    linkId: r.linkId,
+    taskType: r.taskType,
+    weekdayMask: r.weekdayMask,
+    cadenceWeeks: r.cadenceWeeks,
+    anchorDate: r.anchorDate,
+  };
+}
+
+/** Everything task-gen needs to auto-assign a member's tasks, loaded once. */
+interface AssignmentContext {
+  rules: AssignmentRuleLike[];
+  caretakerIds: Set<string>;
+}
+
+/**
+ * Reconcile one task's ownership against the family's assignment rules. A rule
+ * may claim an unowned task, move a rule-owned task to a new owner, or release a
+ * rule-owned task whose rule no longer matches. It never touches a task a human
+ * owns or has touched (`manualOwnerOverride`) — a manual action always wins.
+ * Returns true when ownership changed (so the caller can reconcile mirrors).
+ */
+async function reconcileTaskOwner(
+  db: Db,
+  task: TaskRow,
+  cand: AssignmentCandidate,
+  ctx: AssignmentContext,
+): Promise<boolean> {
+  if (
+    task.manualOwnerOverride ||
+    task.createdVia === 'manual' ||
+    task.status === 'dismissed' ||
+    (task.status === 'owned' && task.autoAssignedRuleId == null)
+  ) {
+    return false;
+  }
+
+  const match = resolveTaskOwner(cand, ctx.rules);
+  const owner = match && ctx.caretakerIds.has(match.ownerMemberId) ? match : null;
+
+  if (owner) {
+    if (task.ownerMemberId === owner.ownerMemberId && task.autoAssignedRuleId === owner.id) {
+      return false; // already correctly rule-owned
+    }
+    const updated = (
+      await db
+        .update(tasks)
+        .set({
+          ownerMemberId: owner.ownerMemberId,
+          status: 'owned',
+          autoAssignedRuleId: owner.id,
+        })
+        .where(eq(tasks.id, task.id))
+        .returning()
+    )[0];
+    if (updated) await upsertClaimEvent(db, updated);
+    return true;
+  }
+
+  if (task.autoAssignedRuleId != null) {
+    // Was rule-owned but no rule matches now → release back to the unowned pool.
+    await db
+      .update(tasks)
+      .set({ ownerMemberId: null, status: 'unowned', autoAssignedRuleId: null })
+      .where(eq(tasks.id, task.id));
+    await removeClaimEvent(db, task.id);
+    return true;
+  }
+
+  return false;
 }
 
 /**
@@ -141,6 +225,38 @@ export async function buildMemberTasks(
     pickupWindowMin: member.unifiedPickupWindowMin,
   };
 
+  // The family's assignment-rule pipeline that could apply to this member's
+  // tasks (about-any or about-this-member), plus who may own a task, loaded once.
+  const assignCtx: AssignmentContext = {
+    rules: (
+      await db
+        .select()
+        .from(assignmentRules)
+        .where(
+          and(
+            eq(assignmentRules.familyId, member.familyId),
+            or(
+              isNull(assignmentRules.aboutMemberId),
+              eq(assignmentRules.aboutMemberId, familyMemberId),
+            ),
+          ),
+        )
+    ).map(toAssignmentRuleLike),
+    caretakerIds: new Set(
+      (
+        await db
+          .select({ id: familyMembers.id })
+          .from(familyMembers)
+          .where(
+            and(
+              eq(familyMembers.familyId, member.familyId),
+              eq(familyMembers.isCaretaker, true),
+            ),
+          )
+      ).map((r) => r.id),
+    ),
+  };
+
   const dirty = await db
     .select()
     .from(calendarEvents)
@@ -218,23 +334,38 @@ export async function buildMemberTasks(
       }
       const existingByType = new Map(existing.map((t) => [t.type, t]));
       for (const intent of intents) {
+        // Auto-assignment reads the day/feed/child the EVENT falls on (task type
+        // aside), so weekday + every-other-week patterns key off the event date.
+        const cand: AssignmentCandidate = {
+          aboutMemberId: event.familyMemberId,
+          linkId: event.linkId ?? null,
+          type: intent.type,
+          dtstart: event.dtstart,
+        };
         const prior = existingByType.get(intent.type);
         if (prior) {
           await healTask(db, prior, intent.dtstart, intent.dtend, intent.location);
+          await reconcileTaskOwner(db, prior, cand, assignCtx);
         } else {
-          await db.insert(tasks).values({
-            familyId: event.familyId,
-            calendarEventId: event.id,
-            familyMemberId: event.familyMemberId,
-            type: intent.type,
-            attendanceRequirement: intent.attendanceRequirement,
-            dtstart: intent.dtstart,
-            dtend: intent.dtend,
-            location: intent.location,
-            status: 'unowned',
-            createdVia: 'generated',
-          });
+          const inserted = (
+            await db
+              .insert(tasks)
+              .values({
+                familyId: event.familyId,
+                calendarEventId: event.id,
+                familyMemberId: event.familyMemberId,
+                type: intent.type,
+                attendanceRequirement: intent.attendanceRequirement,
+                dtstart: intent.dtstart,
+                dtend: intent.dtend,
+                location: intent.location,
+                status: 'unowned',
+                createdVia: 'generated',
+              })
+              .returning()
+          )[0];
           result.tasksCreated++;
+          if (inserted) await reconcileTaskOwner(db, inserted, cand, assignCtx);
         }
       }
     }
@@ -315,4 +446,26 @@ export async function buildFamilyTasks(
     results.push(await buildMemberTasks(db, id));
   }
   return results;
+}
+
+/**
+ * Rebuild every member's tasks after an assignment-rule change. Assignment rules
+ * are family-scoped and their owner is a different member than the task is
+ * about, so a change can affect any child's tasks — force reconsideration by
+ * clearing every (non-claimed) event's `tasksBuiltHash`, then run family task-gen.
+ */
+export async function rebuildFamilyTasks(
+  db: Db,
+  familyId: string,
+): Promise<TaskGenResult[]> {
+  await db
+    .update(calendarEvents)
+    .set({ tasksBuiltHash: null })
+    .where(
+      and(
+        eq(calendarEvents.familyId, familyId),
+        ne(calendarEvents.provenance, 'claimed_task'),
+      ),
+    );
+  return buildFamilyTasks(db, familyId);
 }

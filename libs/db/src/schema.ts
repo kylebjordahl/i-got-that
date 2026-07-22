@@ -416,6 +416,55 @@ export const taskRules = sqliteTable(
   }),
 );
 
+// --- Assignment rules ------------------------------------------------------
+
+/**
+ * A family's auto-assignment pipeline: when a generated task matches a rule, the
+ * task is claimed for `ownerMemberId` (a caretaker) automatically instead of
+ * sitting unowned. One flat ordered list per family; first match in `position`
+ * order wins.
+ *
+ * The targeting filters (`aboutMemberId`, `linkId`, `taskType`) are ANDed and
+ * each is nullable = "any", covering both layers the issue asks for: a per-feed
+ * rule sets `linkId`; an overarching "all of Child B" rule sets `aboutMemberId`.
+ * The recurrence pattern (`weekdayMask` + `cadenceWeeks`/`anchorDate`) is inline
+ * — a pattern is never a resource the user manages separately.
+ */
+export const assignmentRules = sqliteTable(
+  'assignment_rules',
+  {
+    id: id(),
+    familyId: text('family_id')
+      .notNull()
+      .references(() => families.id, { onDelete: 'cascade' }),
+    // The caretaker the matching task is claimed for (the rule's result).
+    ownerMemberId: text('owner_member_id')
+      .notNull()
+      .references(() => familyMembers.id, { onDelete: 'cascade' }),
+    // Targeting filters; null = any.
+    aboutMemberId: text('about_member_id').references(() => familyMembers.id, {
+      onDelete: 'cascade',
+    }),
+    linkId: text('link_id').references(() => familyMemberFeeds.id, {
+      onDelete: 'cascade',
+    }),
+    taskType: text('task_type', { enum: TaskType.options }),
+    position: integer('position').notNull(),
+    // Recurrence pattern (inline). weekdayMask: Mon=bit0…Sun=bit6, 0 = any day.
+    weekdayMask: integer('weekday_mask').notNull().default(0),
+    // 1 = every week, 2 = every other week, …; anchored to anchorDate's week.
+    cadenceWeeks: integer('cadence_weeks').notNull().default(1),
+    anchorDate: integer('anchor_date', { mode: 'timestamp_ms' }),
+    createdAt: createdAt(),
+  },
+  (t) => ({
+    familyPositionIdx: index('assignment_rules_family_position_idx').on(
+      t.familyId,
+      t.position,
+    ),
+  }),
+);
+
 // --- Pending decisions -----------------------------------------------------
 
 /**
@@ -557,6 +606,17 @@ export const tasks = sqliteTable(
     ownerMemberId: text('owner_member_id').references(() => familyMembers.id, {
       onDelete: 'set null',
     }),
+    // Set to the assignment rule that auto-claimed this task; null for a human
+    // claim (or an unowned task). Lets task-gen recognise a rule-owned task so a
+    // rule edit can move or release it. Deliberately NOT a FK — deleting a rule
+    // must not cascade the task away; task-gen releases it on the next run.
+    autoAssignedRuleId: text('auto_assigned_rule_id'),
+    // True once a human performs any ownership action (assign / unassign /
+    // reassign / dismiss / restore). Auto-assignment permanently skips such
+    // tasks — a manual action always wins over the rule engine.
+    manualOwnerOverride: integer('manual_owner_override', { mode: 'boolean' })
+      .notNull()
+      .default(false),
     createdVia: text('created_via', { enum: TaskCreatedVia.options }).notNull(),
     createdAt: createdAt(),
   },

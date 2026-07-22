@@ -13,6 +13,7 @@ import '../widgets/app_bottom_nav.dart';
 import '../widgets/primitives.dart';
 import '../widgets/settings.dart';
 import '../widgets/slide_to_confirm.dart';
+import 'assignment_rules_screen.dart';
 import 'member_detail_screen.dart';
 
 /// Family — the hub (6l): Caretakers and Children render inline as two lists;
@@ -54,6 +55,24 @@ class FamilyScreen extends ConsumerWidget {
             padding: const EdgeInsets.symmetric(vertical: 40),
             child: Center(child: Text('No members yet — tap + to add one', style: AppText.subtitle)),
           ),
+        if ((me?.isAdmin ?? false) && caretakers.isNotEmpty) ...[
+          const SizedBox(height: 24),
+          const SectionEyebrow('Automation', color: AppColors.indigo),
+          const SizedBox(height: 12),
+          AppCard(
+            padding: EdgeInsets.zero,
+            child: SettingRow(
+              icon: Icons.rule_rounded,
+              iconColor: AppColors.indigo,
+              title: 'Assignment rules',
+              subtitle: 'Auto-claim tasks for a caretaker',
+              trailing: const Icon(Icons.chevron_right_rounded, color: AppColors.textMuted),
+              onTap: () => Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => const AssignmentRulesScreen()),
+              ),
+            ),
+          ),
+        ],
         if (me != null) ...[
           const SizedBox(height: 28),
           Center(

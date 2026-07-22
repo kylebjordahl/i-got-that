@@ -752,6 +752,81 @@ class ApiClient {
         data: {'ruleIds': ruleIds}, options: _auth);
   }
 
+  // --- Assignment rules (per family; issue #24) ------------------------------
+
+  String _assignmentRulesBase(String familyId) =>
+      '/families/$familyId/assignment-rules';
+
+  /// The family's assignment pipeline + feed↔member links: `{ rules, links }`.
+  Future<Map<String, dynamic>> getAssignmentRules(String familyId) async =>
+      _obj(await _dio.get(_assignmentRulesBase(familyId), options: _auth));
+
+  Future<Map<String, dynamic>> createAssignmentRule(
+    String familyId, {
+    required String ownerMemberId,
+    String? aboutMemberId,
+    String? linkId,
+    String? taskType,
+    int weekdayMask = 0,
+    int cadenceWeeks = 1,
+    int? anchorDate,
+    int? position,
+  }) async {
+    final res = await _dio.post(
+      _assignmentRulesBase(familyId),
+      data: {
+        'ownerMemberId': ownerMemberId,
+        if (aboutMemberId != null) 'aboutMemberId': aboutMemberId,
+        if (linkId != null) 'linkId': linkId,
+        if (taskType != null) 'taskType': taskType,
+        'weekdayMask': weekdayMask,
+        'cadenceWeeks': cadenceWeeks,
+        if (anchorDate != null) 'anchorDate': anchorDate,
+        if (position != null) 'position': position,
+      },
+      options: _auth,
+    );
+    return _obj(res);
+  }
+
+  /// Patch a rule. Nullable filters clear by passing an explicit `null`; omit
+  /// (leave `_unset`) to leave a field untouched.
+  Future<void> updateAssignmentRule(
+    String familyId,
+    String ruleId, {
+    String? ownerMemberId,
+    Object? aboutMemberId = _unset,
+    Object? linkId = _unset,
+    Object? taskType = _unset,
+    int? weekdayMask,
+    int? cadenceWeeks,
+    Object? anchorDate = _unset,
+  }) async {
+    await _dio.patch(
+      '${_assignmentRulesBase(familyId)}/$ruleId',
+      data: {
+        if (ownerMemberId != null) 'ownerMemberId': ownerMemberId,
+        if (aboutMemberId != _unset) 'aboutMemberId': aboutMemberId,
+        if (linkId != _unset) 'linkId': linkId,
+        if (taskType != _unset) 'taskType': taskType,
+        if (weekdayMask != null) 'weekdayMask': weekdayMask,
+        if (cadenceWeeks != null) 'cadenceWeeks': cadenceWeeks,
+        if (anchorDate != _unset) 'anchorDate': anchorDate,
+      },
+      options: _auth,
+    );
+  }
+
+  Future<void> deleteAssignmentRule(String familyId, String ruleId) async {
+    await _dio.delete('${_assignmentRulesBase(familyId)}/$ruleId', options: _auth);
+  }
+
+  Future<void> reorderAssignmentRules(
+      String familyId, List<String> ruleIds) async {
+    await _dio.put('${_assignmentRulesBase(familyId)}/order',
+        data: {'ruleIds': ruleIds}, options: _auth);
+  }
+
   /// Set a calendar's terminal default; `linkId` null = the unified calendar.
   Future<void> setTaskDefault(
     String familyId,
