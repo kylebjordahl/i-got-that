@@ -2,6 +2,7 @@ import { and, eq, families, feeds, getDb } from '@igt/db';
 import type { Bindings } from './env.js';
 import { googleRefresherFor } from './lib/google-oauth.js';
 import { reconcileClaimEvents } from './services/claim.js';
+import { reconcileFamilyConflicts } from './services/conflicts.js';
 import { getProductionRegistry, syncFamilyMirror } from './services/mirror.js';
 import { ingestFeed } from './services/ingest.js';
 import { readBackFamily } from './services/readback.js';
@@ -16,8 +17,11 @@ import { buildFamilyTasks } from './services/task-gen.js';
  *   2. read back each configured target calendar (human events land as
  *      first-class unified-calendar events) — before task-gen so they get
  *      their convertible attendance tasks this tick
- *   3. task generation for every member (calendar_events → tasks)
- *   4. claimed-event true-up + mirror reconcile (unified calendar → target)
+ *   3. resolve agenda overlaps: detect conflicts and apply resolved splits
+ *      (a member can't be in two places at once) — before task-gen so the
+ *      split segments spawn their own drop-off/pickup tasks
+ *   4. task generation for every member (calendar_events → tasks)
+ *   5. claimed-event true-up + mirror reconcile (unified calendar → target)
  *
  * The mirror true-up is cheap when nothing drifted (payloadHash skips
  * unchanged events), so it's safe to run every tick.
@@ -49,6 +53,9 @@ export async function scheduled(
             }
           }
           await readBackFamily(db, fam.id, secrets);
+          // Resolve agenda overlaps (split/trim by priority) before task-gen so
+          // the split segments drive their own drop-off/pickup tasks.
+          await reconcileFamilyConflicts(db, fam.id);
           await buildFamilyTasks(db, fam.id);
           await reconcileClaimEvents(db, fam.id);
           await syncFamilyMirror(db, registry, env.KEK, fam.id);

@@ -111,6 +111,15 @@ export type TaskResultType = z.infer<typeof TaskResultType>;
 export const PendingDecisionStatus = z.enum(['pending', 'resolved', 'dismissed']);
 export type PendingDecisionStatus = z.infer<typeof PendingDecisionStatus>;
 
+/**
+ * An overlap on one member's unified calendar (they can't be in two places at
+ * once). `pending` until an admin acts; `resolved` masks the lower-priority
+ * event around the higher one (trim/split); `dismissed` leaves the double-book
+ * acknowledged. Detected live, so a conflict auto-clears when the overlap goes.
+ */
+export const ConflictStatus = z.enum(['pending', 'resolved', 'dismissed']);
+export type ConflictStatus = z.infer<typeof ConflictStatus>;
+
 export const DeliveryMethod = z.enum(['email', 'caldav', 'google']);
 export type DeliveryMethod = z.infer<typeof DeliveryMethod>;
 
@@ -152,6 +161,24 @@ export const TimeOfDay = z
 export type TimeOfDay = z.infer<typeof TimeOfDay>;
 
 export const Id = z.string().min(1);
+
+/**
+ * A validated/geocoded location. `lat`/`lon` are what let calendar clients
+ * (notably Apple Calendar) compute travel time without re-geocoding the free
+ * text — we emit them as `GEO` + `X-APPLE-STRUCTURED-LOCATION`. `title` is the
+ * human label (defaults to the display `location` string when absent) and
+ * `address` the postal string. `radius` (metres) is Apple's geofence hint.
+ * Provider-agnostic on purpose: iOS MapKit fills it today; an OpenStreetMap /
+ * Photon server provider can fill the identical shape later.
+ */
+export const GeoLocation = z.object({
+  lat: z.number().min(-90).max(90),
+  lon: z.number().min(-180).max(180),
+  title: z.string().max(256).optional(),
+  address: z.string().max(512).optional(),
+  radius: z.number().positive().max(100_000).optional(),
+});
+export type GeoLocation = z.infer<typeof GeoLocation>;
 
 // --- API input schemas (v1 subset) --------------------------------------
 
@@ -346,6 +373,8 @@ export const MemberFeedLinkInput = z.object({
   dayStart: TimeOfDay.optional(),
   dayEnd: TimeOfDay.optional(),
   location: z.string().max(256).optional(),
+  /** Geocoded coordinates for the display `location` (enables travel time). */
+  locationGeo: GeoLocation.nullable().optional(),
 });
 export type MemberFeedLinkInput = z.infer<typeof MemberFeedLinkInput>;
 
@@ -355,9 +384,26 @@ export const UpdateMemberFeedLinkInput = z.object({
   dayStart: TimeOfDay.optional(),
   dayEnd: TimeOfDay.optional(),
   location: z.string().max(256).optional(),
+  /** Pass `null` to clear the geocode (e.g. location edited back to free text). */
+  locationGeo: GeoLocation.nullable().optional(),
   active: z.boolean().optional(),
 });
 export type UpdateMemberFeedLinkInput = z.infer<typeof UpdateMemberFeedLinkInput>;
+
+/**
+ * Reorder one member's feed links by priority — every link id of that member
+ * exactly once, in the new order (index 0 = highest priority). Priority breaks
+ * ties when feed-derived events overlap on that member's unified calendar: the
+ * earlier link wins and the later one is masked. Manual (human) events always
+ * outrank feeds.
+ */
+export const ReorderMemberFeedLinksInput = z.object({
+  familyMemberId: Id,
+  linkIds: z.array(Id).min(1),
+});
+export type ReorderMemberFeedLinksInput = z.infer<
+  typeof ReorderMemberFeedLinksInput
+>;
 
 /** Assign a task to a caretaker; defaults to the calling member when omitted. */
 export const AssignTaskInput = z.object({

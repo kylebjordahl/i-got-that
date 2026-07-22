@@ -21,6 +21,7 @@ import {
   OverrideMatchOp,
   OverrideOutcome,
   ReorderLinkRulesInput,
+  ReorderMemberFeedLinksInput,
   UpdateFeedInput,
   UpdateLinkRuleInput,
   UpdateMemberFeedLinkInput,
@@ -45,6 +46,10 @@ import { resolveAccountCredential } from '../lib/account-credentials.js';
 import { googleRefresherFor } from '../lib/google-oauth.js';
 import { requireAdmin, requireFamilyMember } from '../middleware/auth.js';
 import { reconcileClaimEvents } from '../services/claim.js';
+import {
+  reconcileFamilyConflicts,
+  reconcileMemberConflicts,
+} from '../services/conflicts.js';
 import { ingestFamilyFeeds, ingestFeed } from '../services/ingest.js';
 import { enqueueReconcile } from '../services/mirror.js';
 import { readBackFamily } from '../services/readback.js';
@@ -188,6 +193,9 @@ async function resynthesize(
     .from(familyMemberFeeds)
     .where(eq(familyMemberFeeds.feedId, feed.id));
   for (const familyMemberId of new Set(links.map((l) => l.familyMemberId))) {
+    // Re-resolve overlaps before task-gen so a config change re-applies (or
+    // clears) any splits on this member's agenda.
+    await reconcileMemberConflicts(db, familyMemberId);
     await buildMemberTasks(db, familyMemberId);
   }
   enqueueReconcile(c, { kind: 'family', familyId: feed.familyId });
@@ -295,6 +303,68 @@ feedRoutes.get('/', async (c) => {
   return c.json({ feeds: rows });
 });
 
+/**
+ * Reorder one member's feed links by priority (admin): every link id of that
+ * member exactly once, in the new order (index 0 = highest priority). Priority
+ * breaks conflict ties on that member's unified calendar — the earlier link
+ * wins and the later one is masked (manual events always outrank feeds).
+ * Persist-only for now; conflict resolution keys off these positions once it
+ * lands.
+ */
+feedRoutes.put('/member-links/order', requireAdmin, async (c) => {
+  const parsed = ReorderMemberFeedLinksInput.safeParse(
+    await c.req.json().catch(() => null),
+  );
+  if (!parsed.success) {
+    return c.json({ error: 'invalid', issues: parsed.error.issues }, 400);
+  }
+  const db = getDb(c.env.DB);
+  const familyId = c.get('member').familyId;
+  const { familyMemberId, linkIds } = parsed.data;
+
+  const existing = await db
+    .select({ id: familyMemberFeeds.id })
+    .from(familyMemberFeeds)
+    .where(
+      and(
+        eq(familyMemberFeeds.familyId, familyId),
+        eq(familyMemberFeeds.familyMemberId, familyMemberId),
+      ),
+    );
+  const existingIds = new Set(existing.map((l) => l.id));
+  if (
+    linkIds.length !== existing.length ||
+    !linkIds.every((id) => existingIds.has(id)) ||
+    new Set(linkIds).size !== linkIds.length
+  ) {
+    return c.json({ error: 'order_mismatch' }, 400);
+  }
+
+  for (let i = 0; i < linkIds.length; i++) {
+    await db
+      .update(familyMemberFeeds)
+      .set({ position: i })
+      .where(
+        and(
+          eq(familyMemberFeeds.id, linkIds[i]!),
+          eq(familyMemberFeeds.familyId, familyId),
+        ),
+      );
+  }
+
+  const rows = await db
+    .select({ id: familyMemberFeeds.id, position: familyMemberFeeds.position })
+    .from(familyMemberFeeds)
+    .where(
+      and(
+        eq(familyMemberFeeds.familyId, familyId),
+        eq(familyMemberFeeds.familyMemberId, familyMemberId),
+      ),
+    )
+    .orderBy(asc(familyMemberFeeds.position));
+  return c.json({ links: rows });
+});
+
 /** Link a member to a feed, with an optional baseline for exception feeds (admin). */
 feedRoutes.post('/:feedId/member-links', requireAdmin, async (c) => {
   const parsed = MemberFeedLinkInput.safeParse(await c.req.json().catch(() => null));
@@ -327,6 +397,14 @@ feedRoutes.post('/:feedId/member-links', requireAdmin, async (c) => {
   )[0];
   if (!feed || !member) return c.json({ error: 'not_found' }, 404);
 
+  // Append the new link at the end of this member's priority order (lowest
+  // priority) — admins reorder afterwards via PUT /feeds/member-links/order.
+  const memberLinks = await db
+    .select({ position: familyMemberFeeds.position })
+    .from(familyMemberFeeds)
+    .where(eq(familyMemberFeeds.familyMemberId, parsed.data.familyMemberId));
+  const nextPosition = memberLinks.reduce((m, l) => Math.max(m, l.position + 1), 0);
+
   const link = (
     await db
       .insert(familyMemberFeeds)
@@ -334,10 +412,12 @@ feedRoutes.post('/:feedId/member-links', requireAdmin, async (c) => {
         familyId,
         feedId,
         familyMemberId: parsed.data.familyMemberId,
+        position: nextPosition,
         weekdayMask: parsed.data.weekdayMask ?? null,
         dayStart: parsed.data.dayStart ?? null,
         dayEnd: parsed.data.dayEnd ?? null,
         location: parsed.data.location ?? null,
+        locationGeo: parsed.data.locationGeo ?? null,
       })
       .returning()
   )[0]!;
@@ -355,10 +435,12 @@ feedRoutes.get('/:feedId/member-links', async (c) => {
       id: familyMemberFeeds.id,
       familyMemberId: familyMemberFeeds.familyMemberId,
       memberRelation: familyMembers.relationName,
+      position: familyMemberFeeds.position,
       weekdayMask: familyMemberFeeds.weekdayMask,
       dayStart: familyMemberFeeds.dayStart,
       dayEnd: familyMemberFeeds.dayEnd,
       location: familyMemberFeeds.location,
+      locationGeo: familyMemberFeeds.locationGeo,
       defaultTaskType: familyMemberFeeds.defaultTaskType,
       defaultDropoffWindowMin: familyMemberFeeds.defaultDropoffWindowMin,
       defaultPickupWindowMin: familyMemberFeeds.defaultPickupWindowMin,
@@ -415,6 +497,7 @@ feedRoutes.patch('/:feedId/member-links/:linkId', requireAdmin, async (c) => {
   if (d.dayStart !== undefined) set.dayStart = d.dayStart;
   if (d.dayEnd !== undefined) set.dayEnd = d.dayEnd;
   if (d.location !== undefined) set.location = d.location;
+  if (d.locationGeo !== undefined) set.locationGeo = d.locationGeo;
   if (d.active !== undefined) set.active = d.active;
   if (Object.keys(set).length > 0) {
     await db.update(familyMemberFeeds).set(set).where(eq(familyMemberFeeds.id, link.id));
@@ -772,6 +855,7 @@ feedRoutes.post('/:feedId/refresh', async (c) => {
     .from(familyMemberFeeds)
     .where(eq(familyMemberFeeds.feedId, feed.id));
   for (const familyMemberId of new Set(links.map((l) => l.familyMemberId))) {
+    await reconcileMemberConflicts(db, familyMemberId);
     await buildMemberTasks(db, familyMemberId);
   }
   await reconcileClaimEvents(db, familyId);
@@ -796,6 +880,7 @@ feedRoutes.post('/refresh-all', async (c) => {
     synthesis.push(await synthesizeFeed(db, feed));
   }
   await readBackFamily(db, familyId, ingestSecrets(c.env));
+  await reconcileFamilyConflicts(db, familyId);
   await buildFamilyTasks(db, familyId);
   await reconcileClaimEvents(db, familyId);
   enqueueReconcile(c, { kind: 'family', familyId });

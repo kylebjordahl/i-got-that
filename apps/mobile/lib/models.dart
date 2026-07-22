@@ -254,16 +254,54 @@ class FeedItem {
 
 /// A feed↔member link. Carries the exception-feed baseline plus the task-gen
 /// config synthesis stamps onto the events it produces.
+/// A validated/geocoded location. `lat`/`lon` are what let calendar clients
+/// (notably Apple Calendar) compute travel time. Mirrors the `GeoLocation`
+/// domain schema on the API. Filled by the platform geocoder (MapKit on iOS);
+/// null when the user only typed free text.
+class GeoLocation {
+  const GeoLocation({
+    required this.lat,
+    required this.lon,
+    this.title,
+    this.address,
+    this.radius,
+  });
+
+  final double lat;
+  final double lon;
+  final String? title;
+  final String? address;
+  final double? radius;
+
+  factory GeoLocation.fromJson(Map<String, dynamic> j) => GeoLocation(
+        lat: (j['lat'] as num).toDouble(),
+        lon: (j['lon'] as num).toDouble(),
+        title: j['title'] as String?,
+        address: j['address'] as String?,
+        radius: (j['radius'] as num?)?.toDouble(),
+      );
+
+  Map<String, dynamic> toJson() => {
+        'lat': lat,
+        'lon': lon,
+        if (title != null) 'title': title,
+        if (address != null) 'address': address,
+        if (radius != null) 'radius': radius,
+      };
+}
+
 class FeedLink {
   FeedLink({
     required this.id,
     required this.familyMemberId,
     required this.active,
+    this.position = 0,
     this.memberRelation,
     this.weekdayMask,
     this.dayStart,
     this.dayEnd,
     this.location,
+    this.locationGeo,
     this.defaultTaskType = 'transition',
     this.defaultDropoffWindowMin = 15,
     this.defaultPickupWindowMin = 15,
@@ -273,10 +311,14 @@ class FeedLink {
   final String familyMemberId;
   final String? memberRelation;
   final bool active;
+  // Priority rank of this feed within the member's calendar (0 = highest);
+  // breaks conflict ties. Manual events always outrank feeds.
+  final int position;
   final int? weekdayMask;
   final String? dayStart; // "HH:MM"
   final String? dayEnd;
   final String? location;
+  final GeoLocation? locationGeo;
 
   /// This calendar's task-rule terminal default.
   final String defaultTaskType; // 'transition' | 'attendance'
@@ -288,10 +330,14 @@ class FeedLink {
         familyMemberId: j['familyMemberId'] as String,
         memberRelation: j['memberRelation'] as String?,
         active: j['active'] as bool? ?? true,
+        position: j['position'] as int? ?? 0,
         weekdayMask: j['weekdayMask'] as int?,
         dayStart: j['dayStart'] as String?,
         dayEnd: j['dayEnd'] as String?,
         location: j['location'] as String?,
+        locationGeo: j['locationGeo'] == null
+            ? null
+            : GeoLocation.fromJson(j['locationGeo'] as Map<String, dynamic>),
         defaultTaskType: j['defaultTaskType'] as String? ?? 'transition',
         defaultDropoffWindowMin: j['defaultDropoffWindowMin'] as int? ?? 15,
         defaultPickupWindowMin: j['defaultPickupWindowMin'] as int? ?? 15,
@@ -556,6 +602,58 @@ class PendingDecision {
       location: j['location'] as String?,
     );
   }
+}
+
+/// One of the two overlapping events in a [Conflict] (for the card copy).
+class ConflictEventRef {
+  ConflictEventRef({
+    required this.start,
+    required this.allDay,
+    this.end,
+    this.summary,
+    this.location,
+  });
+
+  final DateTime start;
+  final DateTime? end;
+  final bool allDay;
+  final String? summary;
+  final String? location;
+
+  factory ConflictEventRef.fromJson(Map<String, dynamic> j) {
+    final allDay = j['allDay'] as bool? ?? false;
+    return ConflictEventRef(
+      allDay: allDay,
+      start: allDay ? parseAllDayDate(j['dtstart']) : parseTimestamp(j['dtstart']),
+      end: j['dtend'] == null ? null : parseTimestamp(j['dtend']),
+      summary: j['summary'] as String?,
+      location: j['location'] as String?,
+    );
+  }
+}
+
+/// An agenda overlap on one member's unified calendar — they can't be in two
+/// places at once. The lower-priority [loser] is the one that would be split or
+/// trimmed around the higher-priority [winner] if resolved.
+class Conflict {
+  Conflict({
+    required this.id,
+    required this.familyMemberId,
+    required this.loser,
+    required this.winner,
+  });
+
+  final String id;
+  final String familyMemberId;
+  final ConflictEventRef loser;
+  final ConflictEventRef winner;
+
+  factory Conflict.fromJson(Map<String, dynamic> j) => Conflict(
+        id: j['id'] as String,
+        familyMemberId: j['familyMemberId'] as String,
+        loser: ConflictEventRef.fromJson(j['loser'] as Map<String, dynamic>),
+        winner: ConflictEventRef.fromJson(j['winner'] as Map<String, dynamic>),
+      );
 }
 
 /// A member's designated unified-calendar target (the write-through mirror).

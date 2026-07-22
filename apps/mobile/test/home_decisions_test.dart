@@ -49,6 +49,7 @@ void main() {
           unownedTasksProvider.overrideWith((ref) async => [task]),
           allTasksProvider.overrideWith((ref) async => [task]),
           pendingDecisionsProvider.overrideWith((ref) async => [decision]),
+          conflictsProvider.overrideWith((ref) async => const []),
           calendarEventsProvider.overrideWith((ref) async => const []),
           threadingThresholdProvider.overrideWith((ref) async => 30),
           feedsProvider.overrideWith((ref) async => [feed]),

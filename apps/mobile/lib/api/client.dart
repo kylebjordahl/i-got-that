@@ -1,4 +1,5 @@
 import 'package:dio/dio.dart';
+import '../models.dart';
 import 'dio_credentials.dart';
 
 /// Sentinel that distinguishes "omit this PATCH field" from "set to null".
@@ -292,6 +293,15 @@ class ApiClient {
   Future<List<dynamic>> listFeeds(String familyId) async =>
       _list(await _dio.get('/families/$familyId/feeds', options: _auth), 'feeds');
 
+  /// Reorder one member's feed links by priority: every link id of that member
+  /// exactly once, new order (index 0 = highest priority). Breaks conflict ties
+  /// on that member's unified calendar; manual events always outrank feeds.
+  Future<void> reorderMemberFeedLinks(
+      String familyId, String memberId, List<String> linkIds) async {
+    await _dio.put('/families/$familyId/feeds/member-links/order',
+        data: {'familyMemberId': memberId, 'linkIds': linkIds}, options: _auth);
+  }
+
   /// Create an input feed: a public ICS URL (`kind: 'ics'`, pass `url`, with an
   /// optional `name` — blank ⇒ fetched from the feed) or a calendar from a
   /// connected account (`kind: 'caldav' | 'google'`, pass `externalAccountId` +
@@ -332,6 +342,7 @@ class ApiClient {
     String? dayStart,
     String? dayEnd,
     String? location,
+    GeoLocation? locationGeo,
   }) async {
     final res = await _dio.post(
       '/families/$familyId/feeds/$feedId/member-links',
@@ -341,6 +352,7 @@ class ApiClient {
         if (dayStart != null) 'dayStart': dayStart,
         if (dayEnd != null) 'dayEnd': dayEnd,
         if (location != null) 'location': location,
+        if (locationGeo != null) 'locationGeo': locationGeo.toJson(),
       },
       options: _auth,
     );
@@ -359,6 +371,8 @@ class ApiClient {
     String? dayStart,
     String? dayEnd,
     String? location,
+    // Pass a GeoLocation to set, or `null` to clear; omit to leave unchanged.
+    Object? locationGeo = _unset,
     bool? active,
   }) async {
     await _dio.patch(
@@ -368,6 +382,8 @@ class ApiClient {
         if (dayStart != null) 'dayStart': dayStart,
         if (dayEnd != null) 'dayEnd': dayEnd,
         if (location != null) 'location': location,
+        if (!identical(locationGeo, _unset))
+          'locationGeo': (locationGeo as GeoLocation?)?.toJson(),
         if (active != null) 'active': active,
       },
       options: _auth,
@@ -574,6 +590,25 @@ class ApiClient {
 
   Future<void> dismissPendingDecision(String familyId, String decisionId) async {
     await _dio.post('/families/$familyId/pending-decisions/$decisionId/dismiss',
+        data: <String, dynamic>{}, options: _auth);
+  }
+
+  // --- Conflicts (agenda overlaps) ------------------------------------------
+
+  Future<List<dynamic>> listConflicts(String familyId) async => _list(
+      await _dio.get('/families/$familyId/conflicts', options: _auth),
+      'conflicts');
+
+  /// Resolve a conflict: split/trim the lower-priority event around the
+  /// higher-priority one (task-gen then spawns the drop-off/pickup at the split).
+  Future<void> resolveConflict(String familyId, String conflictId) async {
+    await _dio.post('/families/$familyId/conflicts/$conflictId/resolve',
+        data: <String, dynamic>{}, options: _auth);
+  }
+
+  /// Dismiss a conflict: acknowledge the double-book and leave both events as-is.
+  Future<void> dismissConflict(String familyId, String conflictId) async {
+    await _dio.post('/families/$familyId/conflicts/$conflictId/dismiss',
         data: <String, dynamic>{}, options: _auth);
   }
 

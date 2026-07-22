@@ -1,11 +1,39 @@
+import type { GeoLocation } from '@igt/domain';
 import ICAL from 'ical.js';
 import ical, {
   ICalAlarmType,
   ICalCalendarMethod,
   ICalEventStatus,
   type ICalEvent,
+  type ICalLocation,
 } from 'ical-generator';
 import { createDAVClient, fetchCalendarObjects } from 'tsdav';
+
+/**
+ * Resolve a display `location` string plus optional geocode into what
+ * ical-generator's `event.location()` accepts. With coords we return the
+ * structured form (title + address + `geo`), which makes ical-generator emit
+ * both `GEO` and Apple's `X-APPLE-STRUCTURED-LOCATION` — the properties Apple
+ * Calendar reads to compute travel time without re-geocoding. Without coords we
+ * fall back to the plain string (today's behaviour); with neither, `undefined`.
+ */
+function resolveIcalLocation(
+  location: string | null | undefined,
+  geo: GeoLocation | null | undefined,
+): ICalLocation | string | undefined {
+  if (geo) {
+    return {
+      title: geo.title ?? location ?? geo.address ?? 'Location',
+      address: geo.address ?? location ?? undefined,
+      // ical-generator only emits X-APPLE-STRUCTURED-LOCATION when a radius is
+      // present, and Apple needs that property (not bare GEO) to drive travel
+      // time — so default a metres radius when the geocode didn't supply one.
+      radius: geo.radius ?? 100,
+      geo: { lat: geo.lat, lon: geo.lon },
+    };
+  }
+  return location ? location : undefined;
+}
 
 /**
  * Thin wrappers over OSS libraries — we do NOT hand-roll iCalendar/CalDAV.
@@ -382,6 +410,8 @@ export interface InviteEventInput {
   summary: string;
   description?: string;
   location?: string;
+  /** Geocoded coords for `location` (emits GEO + X-APPLE-STRUCTURED-LOCATION). */
+  locationGeo?: GeoLocation | null;
   /** Minutes before start for display alarms (VALARM). */
   alertMinutes?: number[];
   /** IANA timezone (from the source feed) to render DTSTART/DTEND in; UTC if absent. */
@@ -421,7 +451,11 @@ function buildICalendar(
     status,
   });
   if (input.description) event.description(input.description);
-  if (input.location) event.location(input.location);
+  const inviteLocation = resolveIcalLocation(input.location, input.locationGeo);
+  if (inviteLocation) {
+    event.location(inviteLocation);
+    if (input.locationGeo) event.x('X-APPLE-TRAVEL-ADVISORY-BEHAVIOR', 'AUTOMATIC');
+  }
   if (method === ICalCalendarMethod.REQUEST) addAlarms(event, input.alertMinutes);
   event.organizer({
     name: input.organizerName ?? 'Family Logistics',
@@ -447,6 +481,8 @@ export function buildStoredEventICalendar(input: {
   summary: string;
   description?: string;
   location?: string;
+  /** Geocoded coords for `location` (emits GEO + X-APPLE-STRUCTURED-LOCATION). */
+  locationGeo?: GeoLocation | null;
   /** Minutes before start for display alarms (VALARM). */
   alertMinutes?: number[];
   /** IANA timezone (from the source feed) to render DTSTART/DTEND in; UTC if absent. */
@@ -465,11 +501,14 @@ export function buildStoredEventICalendar(input: {
     status: ICalEventStatus.CONFIRMED,
   });
   if (input.description) event.description(input.description);
-  if (input.location) {
-    event.location(input.location);
+  const storedLocation = resolveIcalLocation(input.location, input.locationGeo);
+  if (storedLocation) {
+    event.location(storedLocation);
     // Opt the event into Apple Calendar's automatic travel time. Apple only
-    // computes it once it geocodes the LOCATION, but without this flag it never
-    // tries. Harmless on Google/other clients, which ignore X-APPLE-* props.
+    // computes it once it can geocode the location; a structured location
+    // (GEO + X-APPLE-STRUCTURED-LOCATION) gives it the coordinates directly, so
+    // travel time works reliably. Without this flag Apple never tries at all.
+    // Harmless on Google/other clients, which ignore X-APPLE-* props.
     event.x('X-APPLE-TRAVEL-ADVISORY-BEHAVIOR', 'AUTOMATIC');
   }
   addAlarms(event, input.alertMinutes);

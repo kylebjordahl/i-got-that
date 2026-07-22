@@ -8,11 +8,13 @@ import {
 } from 'drizzle-orm/sqlite-core';
 import {
   AttendanceRequirement,
+  ConflictStatus,
   EventProvenance,
   ExternalAccountKind,
   FeedKind,
   FeedMode,
   FeedStatus,
+  GeoLocation,
   IdentityProvider,
   InviteStatus,
   InviteType,
@@ -242,8 +244,19 @@ export const familyMemberFeeds = sqliteTable(
     weekdayMask: integer('weekday_mask'),
     dayStart: text('day_start'),
     dayEnd: text('day_end'),
+    // Priority rank of this feed *within this member's* unified calendar,
+    // ascending (0 = highest). Conflict resolution compares only the feeds on a
+    // single member's calendar, so priority is a property of the feed↔member
+    // link, not the feed: when two feed-derived events overlap, the lower-
+    // position link wins and the other is masked. Manual (human) events always
+    // outrank every feed. Lower = wins.
+    position: integer('position').notNull().default(0),
     // Location stamped on generated baseline events (e.g. the school). Null ⇒ none.
     location: text('location'),
+    // Geocoded coordinates for `location` (validated at input via MapKit/etc.).
+    // When present, baseline events carry GEO + X-APPLE-STRUCTURED-LOCATION so
+    // Apple Calendar computes travel time. Null ⇒ free-text location only.
+    locationGeo: text('location_geo', { mode: 'json' }).$type<GeoLocation>(),
     // This calendar's task-rule terminal default (what an unmatched event
     // generates): 'transition' | 'attendance', with drop-off/pickup windows.
     defaultTaskType: text('default_task_type', {
@@ -266,6 +279,10 @@ export const familyMemberFeeds = sqliteTable(
       t.familyMemberId,
     ),
     familyIdx: index('fmf_family_idx').on(t.familyId),
+    memberPositionIdx: index('fmf_member_position_idx').on(
+      t.familyMemberId,
+      t.position,
+    ),
   }),
 );
 
@@ -452,6 +469,57 @@ export const pendingDecisions = sqliteTable(
   }),
 );
 
+// --- Conflicts (agenda overlaps on a member's unified calendar) ------------
+
+/**
+ * Two events overlap on one member's unified calendar — they can't be in two
+ * places at once. The higher-priority `winner` displaces the lower-priority,
+ * maskable `loser` (a synthesized feed event); resolving splits/trims the loser
+ * around the winner (task-gen then spawns the drop-off/pickup at each split).
+ * Identity is the pair of event `synthKey`s (stable across resynthesis), not row
+ * ids — there is deliberately no FK to calendar_events: the conflict service
+ * reconciles rows itself and a masked loser's row disappears while the split
+ * segments stand in for it. Detected live each pass, so a conflict auto-clears
+ * when the overlap no longer exists.
+ */
+export const conflicts = sqliteTable(
+  'conflicts',
+  {
+    id: id(),
+    familyId: text('family_id')
+      .notNull()
+      .references(() => families.id, { onDelete: 'cascade' }),
+    familyMemberId: text('family_member_id')
+      .notNull()
+      .references(() => familyMembers.id, { onDelete: 'cascade' }),
+    // synthKeys of the two overlapping events on this member's calendar.
+    loserKey: text('loser_key').notNull(),
+    winnerKey: text('winner_key').notNull(),
+    status: text('status', { enum: ConflictStatus.options })
+      .notNull()
+      .default('pending'),
+    resolvedByMemberId: text('resolved_by_member_id').references(
+      () => familyMembers.id,
+      { onDelete: 'set null' },
+    ),
+    resolvedAt: integer('resolved_at', { mode: 'timestamp_ms' }),
+    dismissedAt: integer('dismissed_at', { mode: 'timestamp_ms' }),
+    createdAt: createdAt(),
+  },
+  (t) => ({
+    memberPairUq: uniqueIndex('conflicts_member_pair_uq').on(
+      t.familyMemberId,
+      t.loserKey,
+      t.winnerKey,
+    ),
+    familyStatusIdx: index('conflicts_family_status_idx').on(
+      t.familyId,
+      t.status,
+    ),
+    memberIdx: index('conflicts_member_idx').on(t.familyMemberId),
+  }),
+);
+
 // --- Tasks ---------------------------------------------------------------
 
 export const tasks = sqliteTable(
@@ -568,6 +636,9 @@ export const calendarEvents = sqliteTable(
     allDay: integer('all_day', { mode: 'boolean' }).notNull().default(false),
     summary: text('summary'),
     location: text('location'),
+    // Geocoded coordinates for `location`, carried from the synthesizing link so
+    // the mirror can emit GEO + X-APPLE-STRUCTURED-LOCATION. Null ⇒ text only.
+    locationGeo: text('location_geo', { mode: 'json' }).$type<GeoLocation>(),
     description: text('description'),
     // Task typing is NOT stamped here — task-gen resolves it at build time from
     // the member's task-rule pipeline, keyed by this event's `linkId` (the
@@ -576,6 +647,11 @@ export const calendarEvents = sqliteTable(
     contentHash: text('content_hash').notNull(),
     // The content_hash task-gen last consumed; reprocess iff != contentHash.
     tasksBuiltHash: text('tasks_built_hash'),
+    // Set when a resolved agenda conflict has split/trimmed this event: the row
+    // stays (so conflict detection stays stable and synthesis keeps owning it),
+    // but task-gen, the mirror, and the calendar views skip it in favour of the
+    // `cf:<synthKey>:<i>` split segments the conflict service materialises.
+    maskedAt: integer('masked_at', { mode: 'timestamp_ms' }),
     createdAt: createdAt(),
   },
   (t) => ({
@@ -766,6 +842,7 @@ export const schema = {
   linkRules,
   taskRules,
   pendingDecisions,
+  conflicts,
   tasks,
   calendarEvents,
   memberCalendars,

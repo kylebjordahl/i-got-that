@@ -9,6 +9,7 @@ import {
   feeds,
   getDb,
   inArray,
+  isNull,
   memberCalendars,
   tasks,
 } from '@igt/db';
@@ -139,6 +140,10 @@ function hashMirrorPayload(
     event.dtend ? event.dtend.toISOString() : '',
     event.allDay ? '1' : '0',
     event.location ?? '',
+    // Re-mirror when only the geocode changes (same display text).
+    event.locationGeo
+      ? `${event.locationGeo.lat},${event.locationGeo.lon},${event.locationGeo.title ?? ''},${event.locationGeo.address ?? ''},${event.locationGeo.radius ?? ''}`
+      : '',
     event.description ?? '',
     alertMinutes.join(','),
     timezone ?? '',
@@ -241,6 +246,9 @@ export async function syncMemberMirror(
           and(
             eq(calendarEvents.familyMemberId, memberId),
             inArray(calendarEvents.provenance, ['synthesized', 'claimed_task']),
+            // A conflict-masked event is mirrored as its cf: split segments, not
+            // as its own full span.
+            isNull(calendarEvents.maskedAt),
           ),
         )
     : [];
@@ -302,6 +310,7 @@ export async function syncMemberMirror(
       summary,
       description: event.description ?? undefined,
       location: event.location ?? undefined,
+      locationGeo: event.locationGeo ?? undefined,
       alertMinutes: alertMinutes.length > 0 ? alertMinutes : undefined,
       timezone,
     };

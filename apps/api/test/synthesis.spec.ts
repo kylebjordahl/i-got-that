@@ -177,6 +177,38 @@ describe('synthesis: exception feeds (schedule only)', () => {
     expect(thu.dtend!.toISOString()).toBe('2026-07-09T14:45:00.000Z');
   });
 
+  it("stamps the link's geocoded location onto synthesized baseline events", async () => {
+    const f = await exceptionFixture('synth-geo@example.com');
+    await f.db
+      .update(familyMemberFeeds)
+      .set({
+        location: 'Lincoln Elementary',
+        locationGeo: {
+          lat: 37.331686,
+          lon: -122.030656,
+          title: 'Lincoln Elementary',
+          address: '123 Main St, Springfield',
+        },
+      })
+      .where(eq(familyMemberFeeds.id, f.linkId));
+
+    await synthesizeFeed(f.db, f.feed, WINDOW);
+
+    const mon = (
+      await f.db
+        .select()
+        .from(calendarEvents)
+        .where(eq(calendarEvents.synthKey, `bl:${f.linkId}:2026-07-06`))
+    )[0]!;
+    expect(mon.location).toBe('Lincoln Elementary');
+    expect(mon.locationGeo).toEqual({
+      lat: 37.331686,
+      lon: -122.030656,
+      title: 'Lincoln Elementary',
+      address: '123 Main St, Springfield',
+    });
+  });
+
   it('resynthesizes idempotently: rerun is a no-op; removing a rule reinstates the day', async () => {
     const f = await exceptionFixture('synth-idem@example.com');
     const cancel = await insertRule(f.db, f, {
