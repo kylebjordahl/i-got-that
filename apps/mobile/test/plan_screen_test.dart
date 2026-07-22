@@ -2,6 +2,7 @@ import 'package:caretaker_app/models.dart';
 import 'package:caretaker_app/screens/plan_screen.dart';
 import 'package:caretaker_app/state/family.dart';
 import 'package:caretaker_app/theme/app_theme.dart';
+import 'package:caretaker_app/util/format.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -460,5 +461,45 @@ void main() {
     expect(find.text('Lincoln Elementary'), findsOneWidget);
     expect(find.text('Bring the permission slip'), findsOneWidget);
     expect(find.textContaining('8:30 AM – 3:00 PM'), findsWidgets);
+  });
+
+  testWidgets('swiping the grid left/right steps the selected day', (tester) async {
+    final today = DateTime.now();
+    await tester.pumpWidget(ProviderScope(
+      overrides: [
+        membersProvider.overrideWith((ref) async => [
+              _m('dad', 'Dad', caretaker: true),
+              _m('theo', 'Theo', child: true),
+            ]),
+        allTasksProvider.overrideWith((ref) async => const []),
+        calendarEventsProvider.overrideWith((ref) async => const []),
+        pendingDecisionsProvider.overrideWith((ref) async => const []),
+        threadingThresholdProvider.overrideWith((ref) async => 30),
+      ],
+      child: MaterialApp(
+        theme: buildAppTheme(),
+        themeMode: ThemeMode.dark,
+        home: const Scaffold(body: SafeArea(child: PlanScreen())),
+      ),
+    ));
+    await tester.pumpAndSettle();
+    expect(find.text(longDateComma(today)), findsOneWidget);
+
+    // A leftward fling over the time grid steps to tomorrow.
+    await tester.fling(find.text('7 AM'), const Offset(-400, 0), 1000);
+    await tester.pumpAndSettle();
+    expect(find.text(longDateComma(today.add(const Duration(days: 1)))), findsOneWidget);
+
+    // A rightward fling steps back — past today to yesterday.
+    await tester.fling(find.text('7 AM'), const Offset(400, 0), 1000);
+    await tester.pumpAndSettle();
+    expect(find.text(longDateComma(today)), findsOneWidget);
+
+    await tester.fling(find.text('7 AM'), const Offset(400, 0), 1000);
+    await tester.pumpAndSettle();
+    expect(find.text(longDateComma(today.subtract(const Duration(days: 1)))), findsOneWidget);
+
+    // The grid's own vertical scroll still works — a swipe doesn't swallow it.
+    expect(tester.takeException(), isNull);
   });
 }
