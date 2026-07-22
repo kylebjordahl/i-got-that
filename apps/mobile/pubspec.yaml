@@ -33,6 +33,8 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+  assets:
+    - assets/images/app_icon.png
   # Round-5 redesign fonts. These are variable TTFs (one file per family with a
   # `wght` axis); the app theme picks weights via FontVariation('wght', …).
   fonts:
