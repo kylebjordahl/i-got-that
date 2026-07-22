@@ -593,6 +593,25 @@ class ApiClient {
         data: <String, dynamic>{}, options: _auth);
   }
 
+  // --- Conflicts (agenda overlaps) ------------------------------------------
+
+  Future<List<dynamic>> listConflicts(String familyId) async => _list(
+      await _dio.get('/families/$familyId/conflicts', options: _auth),
+      'conflicts');
+
+  /// Resolve a conflict: split/trim the lower-priority event around the
+  /// higher-priority one (task-gen then spawns the drop-off/pickup at the split).
+  Future<void> resolveConflict(String familyId, String conflictId) async {
+    await _dio.post('/families/$familyId/conflicts/$conflictId/resolve',
+        data: <String, dynamic>{}, options: _auth);
+  }
+
+  /// Dismiss a conflict: acknowledge the double-book and leave both events as-is.
+  Future<void> dismissConflict(String familyId, String conflictId) async {
+    await _dio.post('/families/$familyId/conflicts/$conflictId/dismiss',
+        data: <String, dynamic>{}, options: _auth);
+  }
+
   // --- Unified-calendar events -----------------------------------------------
 
   /// Events on unified calendars (family-wide, or one member's), optionally
