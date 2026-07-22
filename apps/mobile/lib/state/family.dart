@@ -205,6 +205,14 @@ final pendingDecisionsProvider = FutureProvider<List<PendingDecision>>((ref) asy
   return rows.map((e) => PendingDecision.fromJson(e as Map<String, dynamic>)).toList();
 });
 
+/// Open agenda conflicts (overlaps) awaiting an admin's resolution.
+final conflictsProvider = FutureProvider<List<Conflict>>((ref) async {
+  final api = ref.watch(apiClientProvider);
+  final familyId = await ref.watch(familyProvider.future);
+  final rows = await api.listConflicts(familyId);
+  return rows.map((e) => Conflict.fromJson(e as Map<String, dynamic>)).toList();
+});
+
 /// Every unified-calendar event in the family (Plan's data source).
 final calendarEventsProvider = FutureProvider<List<CalendarEventItem>>((ref) async {
   final api = ref.watch(apiClientProvider);

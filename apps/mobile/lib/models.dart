@@ -604,6 +604,58 @@ class PendingDecision {
   }
 }
 
+/// One of the two overlapping events in a [Conflict] (for the card copy).
+class ConflictEventRef {
+  ConflictEventRef({
+    required this.start,
+    required this.allDay,
+    this.end,
+    this.summary,
+    this.location,
+  });
+
+  final DateTime start;
+  final DateTime? end;
+  final bool allDay;
+  final String? summary;
+  final String? location;
+
+  factory ConflictEventRef.fromJson(Map<String, dynamic> j) {
+    final allDay = j['allDay'] as bool? ?? false;
+    return ConflictEventRef(
+      allDay: allDay,
+      start: allDay ? parseAllDayDate(j['dtstart']) : parseTimestamp(j['dtstart']),
+      end: j['dtend'] == null ? null : parseTimestamp(j['dtend']),
+      summary: j['summary'] as String?,
+      location: j['location'] as String?,
+    );
+  }
+}
+
+/// An agenda overlap on one member's unified calendar — they can't be in two
+/// places at once. The lower-priority [loser] is the one that would be split or
+/// trimmed around the higher-priority [winner] if resolved.
+class Conflict {
+  Conflict({
+    required this.id,
+    required this.familyMemberId,
+    required this.loser,
+    required this.winner,
+  });
+
+  final String id;
+  final String familyMemberId;
+  final ConflictEventRef loser;
+  final ConflictEventRef winner;
+
+  factory Conflict.fromJson(Map<String, dynamic> j) => Conflict(
+        id: j['id'] as String,
+        familyMemberId: j['familyMemberId'] as String,
+        loser: ConflictEventRef.fromJson(j['loser'] as Map<String, dynamic>),
+        winner: ConflictEventRef.fromJson(j['winner'] as Map<String, dynamic>),
+      );
+}
+
 /// A member's designated unified-calendar target (the write-through mirror).
 class MemberCalendarConfig {
   MemberCalendarConfig({

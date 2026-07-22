@@ -529,3 +529,106 @@ export function generateTaskIntents(
     },
   ];
 }
+
+// --- Stage C: conflict detection & masking (a member's unified calendar) -----
+
+/**
+ * A member can't be in two places at once. When events on one unified calendar
+ * overlap, the higher-priority one wins and the lower-priority *maskable* one is
+ * trimmed or split around it. Priority is a plain number, lower wins — the
+ * caller maps manual (human) events above every feed, and feeds by their
+ * per-member link position (see the conflict service). This stage is pure: it
+ * finds the overlaps and computes the split geometry; whether a split is applied
+ * is an admin decision recorded outside the engine.
+ */
+
+/** An event on a member's calendar as the conflict engine sees it. */
+export interface PriorityInterval {
+  /** Stable identity — the calendar_event synthKey. */
+  key: string;
+  dtstart: Date;
+  dtend: Date | null;
+  /** Lower wins; manual/human events rank above every feed. */
+  priority: number;
+  /** Only maskable events (synthesized feed events) can be trimmed/split. */
+  maskable: boolean;
+}
+
+/** A half-open interval [dtstart, dtend). */
+export interface Interval {
+  dtstart: Date;
+  dtend: Date;
+}
+
+/**
+ * Do two events occupy a common instant? Half-open [start, end): touching
+ * edges (one ends exactly as the other starts) don't overlap, and a point event
+ * (no end) can't double-book anything.
+ */
+export function intervalsOverlap(
+  a: { dtstart: Date; dtend: Date | null },
+  b: { dtstart: Date; dtend: Date | null },
+): boolean {
+  const ae = a.dtend?.getTime();
+  const be = b.dtend?.getTime();
+  if (ae == null || be == null) return false;
+  return a.dtstart.getTime() < be && b.dtstart.getTime() < ae;
+}
+
+/** One detected conflict: a maskable loser overlapped by a higher-priority winner. */
+export interface ConflictPair {
+  loserKey: string;
+  winnerKey: string;
+}
+
+/**
+ * Every (loser, winner) pair where a maskable event is overlapped by a strictly
+ * higher-priority one. Returned in a deterministic order (loser key, then winner
+ * key) so the caller can diff against stored conflicts and reconcile.
+ */
+export function detectConflicts(events: PriorityInterval[]): ConflictPair[] {
+  const pairs: ConflictPair[] = [];
+  for (const loser of events) {
+    if (!loser.maskable || loser.dtend == null) continue;
+    for (const winner of events) {
+      if (winner.key === loser.key) continue;
+      if (winner.priority >= loser.priority) continue; // only a strictly higher event wins
+      if (!intervalsOverlap(loser, winner)) continue;
+      pairs.push({ loserKey: loser.key, winnerKey: winner.key });
+    }
+  }
+  pairs.sort((a, b) =>
+    a.loserKey === b.loserKey
+      ? a.winnerKey.localeCompare(b.winnerKey)
+      : a.loserKey.localeCompare(b.loserKey),
+  );
+  return pairs;
+}
+
+/**
+ * Subtract a set of cut intervals from a base interval, yielding the surviving
+ * segments in order. A cut covering the whole base yields none (fully
+ * displaced); a cut in the middle splits the base in two (leave + return); a cut
+ * at an edge trims it (attend part). Cuts are clamped to the base and merged, so
+ * overlapping or adjacent winners collapse into one gap.
+ */
+export function subtractIntervals(base: Interval, cuts: Interval[]): Interval[] {
+  const bs = base.dtstart.getTime();
+  const be = base.dtend.getTime();
+  if (be <= bs) return [];
+  const clamped = cuts
+    .map((c) => ({
+      s: Math.max(bs, c.dtstart.getTime()),
+      e: Math.min(be, c.dtend.getTime()),
+    }))
+    .filter((c) => c.e > c.s)
+    .sort((a, b) => a.s - b.s);
+  const out: Interval[] = [];
+  let cursor = bs;
+  for (const c of clamped) {
+    if (c.s > cursor) out.push({ dtstart: new Date(cursor), dtend: new Date(c.s) });
+    cursor = Math.max(cursor, c.e);
+  }
+  if (cursor < be) out.push({ dtstart: new Date(cursor), dtend: new Date(be) });
+  return out;
+}

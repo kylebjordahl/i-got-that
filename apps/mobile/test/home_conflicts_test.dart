@@ -20,15 +20,24 @@ void main() {
   final me = _m('dad', 'Dad', caretaker: true, admin: true);
   final theo = _m('theo', 'Theo', child: true);
 
-  final decision = PendingDecision(
-    id: 'pd1',
-    feedId: 'f1',
-    linkId: 'link1',
+  final day = DateTime.now().add(const Duration(days: 1));
+  final conflict = Conflict(
+    id: 'c1',
     familyMemberId: 'theo',
-    start: DateTime.now().add(const Duration(days: 1)),
-    allDay: false,
-    summary: 'Book Fair',
+    loser: ConflictEventRef(
+      summary: 'School day',
+      allDay: false,
+      start: DateTime(day.year, day.month, day.day, 8, 30),
+      end: DateTime(day.year, day.month, day.day, 15, 0),
+    ),
+    winner: ConflictEventRef(
+      summary: 'Doctor appointment',
+      allDay: false,
+      start: DateTime(day.year, day.month, day.day, 10, 0),
+      end: DateTime(day.year, day.month, day.day, 11, 0),
+    ),
   );
+
   final task = TaskItem(
     id: 't1',
     familyMemberId: 'theo',
@@ -39,21 +48,16 @@ void main() {
     calendarEventId: 'e1',
   );
 
-  final feed = FeedItem(id: 'f1', kind: 'ics', mode: 'exception');
-  final link = FeedLink(id: 'link1', familyMemberId: 'theo', active: true);
-
   Widget app() => ProviderScope(
         overrides: [
           membersProvider.overrideWith((ref) async => [me, theo]),
           currentMemberProvider.overrideWith((ref) async => me),
           unownedTasksProvider.overrideWith((ref) async => [task]),
           allTasksProvider.overrideWith((ref) async => [task]),
-          pendingDecisionsProvider.overrideWith((ref) async => [decision]),
-          conflictsProvider.overrideWith((ref) async => const []),
+          pendingDecisionsProvider.overrideWith((ref) async => const []),
+          conflictsProvider.overrideWith((ref) async => [conflict]),
           calendarEventsProvider.overrideWith((ref) async => const []),
           threadingThresholdProvider.overrideWith((ref) async => 30),
-          feedsProvider.overrideWith((ref) async => [feed]),
-          feedLinksProvider('f1').overrideWith((ref) async => [link]),
         ],
         child: MaterialApp(
           theme: buildAppTheme(),
@@ -62,31 +66,20 @@ void main() {
         ),
       );
 
-  testWidgets('pending decisions rank above unclaimed tasks on Home', (tester) async {
-    await tester.pumpWidget(app());
-    await tester.pumpAndSettle();
-
-    expect(find.text('NEEDS A DECISION'), findsOneWidget);
-    expect(find.textContaining('Book Fair'), findsWidgets);
-    // The decision card offers Resolve + Dismiss (no type picker now).
-    expect(find.text('Resolve'), findsOneWidget);
-    expect(find.text('Dismiss'), findsOneWidget);
-
-    // The decision card sits above the claimable task row.
-    final decisionY = tester.getTopLeft(find.text('NEEDS A DECISION')).dy;
-    final taskY = tester.getTopLeft(find.text('Claim').first).dy;
-    expect(decisionY, lessThan(taskY));
-  });
-
-  testWidgets('Resolve opens the override-rule editor pre-filled with the event title',
+  testWidgets('a double-booking ranks at the top of Home with Split / Dismiss',
       (tester) async {
     await tester.pumpWidget(app());
     await tester.pumpAndSettle();
 
-    await tester.tap(find.text('Resolve'));
-    await tester.pumpAndSettle();
+    expect(find.text('DOUBLE-BOOKED'), findsOneWidget);
+    expect(find.textContaining('School day'), findsWidgets);
+    expect(find.textContaining('Doctor appointment'), findsWidgets);
+    expect(find.text('Split around it'), findsOneWidget);
+    expect(find.text('Dismiss'), findsOneWidget);
 
-    expect(find.text('New override rule'), findsOneWidget);
-    expect(find.text('Book Fair'), findsWidgets);
+    // The conflict card sits above the claimable task queue.
+    final conflictY = tester.getTopLeft(find.text('DOUBLE-BOOKED')).dy;
+    final taskY = tester.getTopLeft(find.text('Claim').first).dy;
+    expect(conflictY, lessThan(taskY));
   });
 }

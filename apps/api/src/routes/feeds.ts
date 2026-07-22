@@ -46,6 +46,10 @@ import { resolveAccountCredential } from '../lib/account-credentials.js';
 import { googleRefresherFor } from '../lib/google-oauth.js';
 import { requireAdmin, requireFamilyMember } from '../middleware/auth.js';
 import { reconcileClaimEvents } from '../services/claim.js';
+import {
+  reconcileFamilyConflicts,
+  reconcileMemberConflicts,
+} from '../services/conflicts.js';
 import { ingestFamilyFeeds, ingestFeed } from '../services/ingest.js';
 import { enqueueReconcile } from '../services/mirror.js';
 import { readBackFamily } from '../services/readback.js';
@@ -189,6 +193,9 @@ async function resynthesize(
     .from(familyMemberFeeds)
     .where(eq(familyMemberFeeds.feedId, feed.id));
   for (const familyMemberId of new Set(links.map((l) => l.familyMemberId))) {
+    // Re-resolve overlaps before task-gen so a config change re-applies (or
+    // clears) any splits on this member's agenda.
+    await reconcileMemberConflicts(db, familyMemberId);
     await buildMemberTasks(db, familyMemberId);
   }
   enqueueReconcile(c, { kind: 'family', familyId: feed.familyId });
@@ -848,6 +855,7 @@ feedRoutes.post('/:feedId/refresh', async (c) => {
     .from(familyMemberFeeds)
     .where(eq(familyMemberFeeds.feedId, feed.id));
   for (const familyMemberId of new Set(links.map((l) => l.familyMemberId))) {
+    await reconcileMemberConflicts(db, familyMemberId);
     await buildMemberTasks(db, familyMemberId);
   }
   await reconcileClaimEvents(db, familyId);
@@ -872,6 +880,7 @@ feedRoutes.post('/refresh-all', async (c) => {
     synthesis.push(await synthesizeFeed(db, feed));
   }
   await readBackFamily(db, familyId, ingestSecrets(c.env));
+  await reconcileFamilyConflicts(db, familyId);
   await buildFamilyTasks(db, familyId);
   await reconcileClaimEvents(db, familyId);
   enqueueReconcile(c, { kind: 'family', familyId });

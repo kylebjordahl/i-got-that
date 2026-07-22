@@ -59,7 +59,38 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     ref.invalidate(unownedTasksProvider);
     ref.invalidate(allTasksProvider);
     ref.invalidate(pendingDecisionsProvider);
+    ref.invalidate(conflictsProvider);
     ref.invalidate(calendarEventsProvider);
+  }
+
+  Future<void> _resolveConflict(Conflict conflict) async {
+    try {
+      final familyId = await ref.read(familyProvider.future);
+      await ref.read(apiClientProvider).resolveConflict(familyId, conflict.id);
+      _refresh();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Couldn\'t resolve: $e'),
+          margin: snackBarMarginAboveNav(context),
+        ));
+      }
+    }
+  }
+
+  Future<void> _dismissConflict(Conflict conflict) async {
+    try {
+      final familyId = await ref.read(familyProvider.future);
+      await ref.read(apiClientProvider).dismissConflict(familyId, conflict.id);
+      _refresh();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Couldn\'t dismiss: $e'),
+          margin: snackBarMarginAboveNav(context),
+        ));
+      }
+    }
   }
 
   Future<void> _refreshFeeds() async {
@@ -95,6 +126,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final me = ref.watch(currentMemberProvider).valueOrNull;
     final decisions =
         ref.watch(pendingDecisionsProvider).valueOrNull ?? const <PendingDecision>[];
+    final conflicts =
+        ref.watch(conflictsProvider).valueOrNull ?? const <Conflict>[];
     final threshold = ref.watch(threadingThresholdProvider).valueOrNull ?? 30;
     final events =
         ref.watch(calendarEventsProvider).valueOrNull ?? const <CalendarEventItem>[];
@@ -134,7 +167,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final coveringByDay = _groupByDay(covering);
     final unownedDays = unownedByDay.keys.toList()..sort();
     final coveringDays = coveringByDay.keys.toList()..sort();
-    final nothing = decisions.isEmpty && unowned.isEmpty && covering.isEmpty;
+    final nothing =
+        conflicts.isEmpty && decisions.isEmpty && unowned.isEmpty && covering.isEmpty;
 
     return RefreshIndicator(
       onRefresh: () async {
@@ -152,6 +186,26 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                 children: [
                   _header(now),
                   const SizedBox(height: 18),
+                  // Agenda conflicts rank ABOVE everything — a member can't be
+                  // in two places at once, so they block until an admin acts.
+                  if (conflicts.isNotEmpty) ...[
+                    SectionEyebrow(
+                      'Double-booked',
+                      color: AppColors.coral,
+                      trailing: TintBadge('${conflicts.length}', color: AppColors.coral),
+                    ),
+                    const SizedBox(height: 10),
+                    for (final conflict in conflicts) ...[
+                      _ConflictCard(
+                        conflict: conflict,
+                        member: byId[conflict.familyMemberId],
+                        onResolve: () => _resolveConflict(conflict),
+                        onDismiss: () => _dismissConflict(conflict),
+                      ),
+                      const SizedBox(height: 10),
+                    ],
+                    const SizedBox(height: 8),
+                  ],
                   // Pending decisions rank ABOVE unclaimed tasks — they block
                   // the pipeline until a human decides.
                   if (decisions.isNotEmpty) ...[
@@ -705,6 +759,93 @@ class _DecisionCard extends StatelessWidget {
               Expanded(
                 child: PillButton(
                     label: 'Resolve', variant: PillVariant.amber, onPressed: onResolve),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: PillButton(label: 'Dismiss', onPressed: onDismiss),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// An agenda overlap (6b, ranked above pending decisions): a coral card naming
+/// the two events that collide. "Split around it" accepts the default
+/// resolution — trim/split the lower-priority event around the higher one, which
+/// then generates its own drop-off/pickup; "Dismiss" accepts the double-book.
+class _ConflictCard extends StatelessWidget {
+  const _ConflictCard({
+    required this.conflict,
+    required this.member,
+    required this.onResolve,
+    required this.onDismiss,
+  });
+  final Conflict conflict;
+  final Member? member;
+  final VoidCallback onResolve;
+  final VoidCallback onDismiss;
+
+  @override
+  Widget build(BuildContext context) {
+    final memberColor =
+        member != null ? personColor(member!) : AppColors.textSecondary;
+    final winner = conflict.winner;
+    final loser = conflict.loser;
+    final when = winner.allDay
+        ? homeDayHeader(dayKey(winner.start), DateTime.now())
+        : friendlyTime(winner.start);
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: AppColors.tint(AppColors.coral, 0.07),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: AppColors.coral.withValues(alpha: 0.45)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const IconTile(icon: Icons.event_busy_rounded, color: AppColors.coral, size: 38),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text.rich(
+                      TextSpan(children: [
+                        TextSpan(
+                            text: loser.summary ?? 'An event',
+                            style: AppText.sectionItemTitle),
+                        TextSpan(
+                            text: ' · ${member?.relationName ?? 'member'}',
+                            style: font(kBodyFont, 14, 700, color: memberColor)),
+                      ]),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      'Overlaps ${winner.summary ?? 'another event'} · $when — '
+                      "can't be in two places at once.",
+                      style: font(kBodyFont, 12, 500, color: AppColors.coral),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: PillButton(
+                    label: 'Split around it',
+                    variant: PillVariant.amber,
+                    onPressed: onResolve),
               ),
               const SizedBox(width: 10),
               Expanded(

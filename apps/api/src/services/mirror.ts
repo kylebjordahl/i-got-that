@@ -9,6 +9,7 @@ import {
   feeds,
   getDb,
   inArray,
+  isNull,
   memberCalendars,
   tasks,
 } from '@igt/db';
@@ -245,6 +246,9 @@ export async function syncMemberMirror(
           and(
             eq(calendarEvents.familyMemberId, memberId),
             inArray(calendarEvents.provenance, ['synthesized', 'claimed_task']),
+            // A conflict-masked event is mirrored as its cf: split segments, not
+            // as its own full span.
+            isNull(calendarEvents.maskedAt),
           ),
         )
     : [];
