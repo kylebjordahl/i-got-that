@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
   coveredUtcDays,
+  detectConflicts,
   firstMatch,
   generateTaskIntents,
+  intervalsOverlap,
   resolveTaskResult,
   ruleMatches,
+  subtractIntervals,
   synthesizeBusy,
   synthesizeException,
   synthesizeStandard,
@@ -12,6 +15,7 @@ import {
   transitionWindow,
   wallTimeToUtc,
   type OverrideRuleLike,
+  type PriorityInterval,
   type SourceOccurrence,
   type TaskRuleLike,
 } from '../src/index.js';
@@ -327,5 +331,141 @@ describe('transitionWindow', () => {
     const w = transitionWindow(anchor, 0);
     expect(w.dtstart).toEqual(anchor);
     expect(w.dtend).toBeNull();
+  });
+});
+
+// --- Stage C: conflict detection & masking ---------------------------------
+
+describe('intervalsOverlap', () => {
+  const d = (s: string) => new Date(s);
+  it('true when two timed intervals share an instant', () => {
+    expect(
+      intervalsOverlap(
+        { dtstart: d('2026-07-06T08:30:00Z'), dtend: d('2026-07-06T15:00:00Z') },
+        { dtstart: d('2026-07-06T10:00:00Z'), dtend: d('2026-07-06T11:00:00Z') },
+      ),
+    ).toBe(true);
+  });
+  it('false when intervals only touch at an edge (half-open)', () => {
+    expect(
+      intervalsOverlap(
+        { dtstart: d('2026-07-06T08:00:00Z'), dtend: d('2026-07-06T10:00:00Z') },
+        { dtstart: d('2026-07-06T10:00:00Z'), dtend: d('2026-07-06T11:00:00Z') },
+      ),
+    ).toBe(false);
+  });
+  it('false when either event is a point (no end)', () => {
+    expect(
+      intervalsOverlap(
+        { dtstart: d('2026-07-06T10:00:00Z'), dtend: null },
+        { dtstart: d('2026-07-06T08:00:00Z'), dtend: d('2026-07-06T15:00:00Z') },
+      ),
+    ).toBe(false);
+  });
+});
+
+describe('detectConflicts', () => {
+  const d = (s: string) => new Date(s);
+  let seq = 0;
+  function ev(p: Partial<PriorityInterval>): PriorityInterval {
+    return {
+      key: p.key ?? `ev-${seq++}`,
+      dtstart: p.dtstart ?? d('2026-07-06T08:30:00Z'),
+      dtend: p.dtend ?? d('2026-07-06T15:00:00Z'),
+      priority: p.priority ?? 0,
+      maskable: p.maskable ?? true,
+    };
+  }
+
+  it('flags a maskable baseline overlapped by a higher-priority manual event', () => {
+    const baseline = ev({ key: 'bl:x', priority: 5, maskable: true });
+    const appt = ev({
+      key: 'ext:doctor',
+      priority: -1, // manual/human beats every feed
+      maskable: false,
+      dtstart: d('2026-07-06T10:00:00Z'),
+      dtend: d('2026-07-06T11:00:00Z'),
+    });
+    expect(detectConflicts([baseline, appt])).toEqual([
+      { loserKey: 'bl:x', winnerKey: 'ext:doctor' },
+    ]);
+  });
+
+  it('the lower-priority feed loses to the higher-priority feed (soccer vs doctor)', () => {
+    // Doctor feed ranks above the soccer feed → soccer is the maskable loser.
+    const soccer = ev({ key: 'ev:soccer', priority: 3 });
+    const doctor = ev({
+      key: 'ev:doctor',
+      priority: 1,
+      dtstart: d('2026-07-06T08:00:00Z'),
+      dtend: d('2026-07-06T10:00:00Z'),
+    });
+    expect(detectConflicts([soccer, doctor])).toEqual([
+      { loserKey: 'ev:soccer', winnerKey: 'ev:doctor' },
+    ]);
+  });
+
+  it('does not flag equal-priority overlaps (no clear winner)', () => {
+    const a = ev({ key: 'a', priority: 2 });
+    const b = ev({ key: 'b', priority: 2, dtstart: d('2026-07-06T10:00:00Z') });
+    expect(detectConflicts([a, b])).toEqual([]);
+  });
+
+  it('never masks a non-maskable loser, even when outranked', () => {
+    const human = ev({ key: 'ext:a', priority: -1, maskable: false });
+    const higher = ev({ key: 'ext:b', priority: -2, maskable: false, dtstart: d('2026-07-06T10:00:00Z') });
+    expect(detectConflicts([human, higher])).toEqual([]);
+  });
+
+  it('reports one pair per overlapping winner for a loser hit twice', () => {
+    const baseline = ev({ key: 'bl:x', priority: 5 });
+    const w1 = ev({ key: 'ext:a', priority: -1, maskable: false, dtstart: d('2026-07-06T09:00:00Z'), dtend: d('2026-07-06T10:00:00Z') });
+    const w2 = ev({ key: 'ext:b', priority: -1, maskable: false, dtstart: d('2026-07-06T13:00:00Z'), dtend: d('2026-07-06T14:00:00Z') });
+    expect(detectConflicts([baseline, w1, w2])).toEqual([
+      { loserKey: 'bl:x', winnerKey: 'ext:a' },
+      { loserKey: 'bl:x', winnerKey: 'ext:b' },
+    ]);
+  });
+});
+
+describe('subtractIntervals', () => {
+  const d = (s: string) => new Date(s);
+  const base = { dtstart: d('2026-07-06T08:30:00Z'), dtend: d('2026-07-06T15:00:00Z') };
+
+  it('splits the base in two around a middle cut (leave + return)', () => {
+    const out = subtractIntervals(base, [
+      { dtstart: d('2026-07-06T10:00:00Z'), dtend: d('2026-07-06T11:00:00Z') },
+    ]);
+    expect(out.map((s) => [s.dtstart.toISOString(), s.dtend.toISOString()])).toEqual([
+      ['2026-07-06T08:30:00.000Z', '2026-07-06T10:00:00.000Z'],
+      ['2026-07-06T11:00:00.000Z', '2026-07-06T15:00:00.000Z'],
+    ]);
+  });
+
+  it('trims to one segment when the cut hits an edge (attend part / late arrival)', () => {
+    const out = subtractIntervals(base, [
+      { dtstart: d('2026-07-06T08:00:00Z'), dtend: d('2026-07-06T10:00:00Z') },
+    ]);
+    expect(out.map((s) => [s.dtstart.toISOString(), s.dtend.toISOString()])).toEqual([
+      ['2026-07-06T10:00:00.000Z', '2026-07-06T15:00:00.000Z'],
+    ]);
+  });
+
+  it('yields nothing when a cut covers the whole base (fully displaced)', () => {
+    const out = subtractIntervals(base, [
+      { dtstart: d('2026-07-06T07:00:00Z'), dtend: d('2026-07-06T16:00:00Z') },
+    ]);
+    expect(out).toEqual([]);
+  });
+
+  it('merges overlapping/adjacent cuts into one gap', () => {
+    const out = subtractIntervals(base, [
+      { dtstart: d('2026-07-06T10:00:00Z'), dtend: d('2026-07-06T11:00:00Z') },
+      { dtstart: d('2026-07-06T10:30:00Z'), dtend: d('2026-07-06T12:00:00Z') },
+    ]);
+    expect(out.map((s) => [s.dtstart.toISOString(), s.dtend.toISOString()])).toEqual([
+      ['2026-07-06T08:30:00.000Z', '2026-07-06T10:00:00.000Z'],
+      ['2026-07-06T12:00:00.000Z', '2026-07-06T15:00:00.000Z'],
+    ]);
   });
 });

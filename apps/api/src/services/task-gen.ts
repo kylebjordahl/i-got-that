@@ -148,6 +148,10 @@ export async function buildMemberTasks(
       and(
         eq(calendarEvents.familyMemberId, familyMemberId),
         ne(calendarEvents.provenance, 'claimed_task'),
+        // A conflict-masked event is stood in for by its cf: split segments; it
+        // must not spawn its own tasks (the segments do). Its stale tasks are
+        // swept below alongside vanished events.
+        isNull(calendarEvents.maskedAt),
         or(
           isNull(calendarEvents.tasksBuiltHash),
           ne(calendarEvents.tasksBuiltHash, calendarEvents.contentHash),
@@ -242,8 +246,9 @@ export async function buildMemberTasks(
   }
 
   // Orphan sweep: unowned event-derived tasks (generated OR converted) whose
-  // event no longer exists. Fully-manual tasks (null calendarEventId) and
-  // owned tasks are left alone.
+  // event no longer exists — or has been conflict-masked (its cf: segments
+  // carry the tasks now). Fully-manual tasks (null calendarEventId) and owned
+  // tasks are left alone.
   const orphans = await db
     .select({ id: tasks.id })
     .from(tasks)
@@ -254,6 +259,7 @@ export async function buildMemberTasks(
         sql`${tasks.calendarEventId} IS NOT NULL AND NOT EXISTS (
           SELECT 1 FROM ${calendarEvents}
           WHERE ${calendarEvents.id} = ${tasks.calendarEventId}
+            AND ${calendarEvents.maskedAt} IS NULL
         )`,
       ),
     );

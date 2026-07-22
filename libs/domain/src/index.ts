@@ -111,6 +111,15 @@ export type TaskResultType = z.infer<typeof TaskResultType>;
 export const PendingDecisionStatus = z.enum(['pending', 'resolved', 'dismissed']);
 export type PendingDecisionStatus = z.infer<typeof PendingDecisionStatus>;
 
+/**
+ * An overlap on one member's unified calendar (they can't be in two places at
+ * once). `pending` until an admin acts; `resolved` masks the lower-priority
+ * event around the higher one (trim/split); `dismissed` leaves the double-book
+ * acknowledged. Detected live, so a conflict auto-clears when the overlap goes.
+ */
+export const ConflictStatus = z.enum(['pending', 'resolved', 'dismissed']);
+export type ConflictStatus = z.infer<typeof ConflictStatus>;
+
 export const DeliveryMethod = z.enum(['email', 'caldav', 'google']);
 export type DeliveryMethod = z.infer<typeof DeliveryMethod>;
 

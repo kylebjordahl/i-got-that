@@ -2,12 +2,14 @@ import {
   and,
   asc,
   calendarEvents,
+  conflicts,
   eq,
   familyMembers,
   feeds,
   getDb,
   gte,
   inArray,
+  isNull,
   lt,
   pendingDecisions,
   sourceEvents,
@@ -24,6 +26,7 @@ import { Hono } from 'hono';
 import type { HonoEnv } from '../env.js';
 import { requireFamilyMember } from '../middleware/auth.js';
 import { removeClaimEvent, upsertClaimEvent } from '../services/claim.js';
+import { reconcileMemberConflicts } from '../services/conflicts.js';
 import { enqueueReconcile, getProductionRegistry, syncFamilyMirror } from '../services/mirror.js';
 import { hashCalendarEvent } from '../services/synthesis.js';
 import { buildMemberTasks } from '../services/task-gen.js';
@@ -490,6 +493,7 @@ taskRoutes.post('/pending-decisions/:decisionId/resolve', async (c) => {
     })
     .where(eq(pendingDecisions.id, decision.id));
 
+  await reconcileMemberConflicts(db, decision.familyMemberId);
   await buildMemberTasks(db, decision.familyMemberId);
   enqueueReconcile(c, { kind: 'member', memberId: decision.familyMemberId });
   return c.json({ ok: true });
@@ -521,6 +525,121 @@ taskRoutes.post('/pending-decisions/:decisionId/dismiss', async (c) => {
   return c.json({ ok: true });
 });
 
+// --- Conflicts (agenda overlaps) -------------------------------------------
+
+/**
+ * Open agenda conflicts, each with its two overlapping events' details for the
+ * card copy. A conflict is a maskable event (the `loser`) overlapped by a
+ * higher-priority one (the `winner`) on a member's unified calendar. Rows whose
+ * events have vanished are skipped (they clear on the next reconcile).
+ */
+taskRoutes.get('/conflicts', async (c) => {
+  const db = getDb(c.env.DB);
+  const familyId = c.get('member').familyId;
+  const rows = await db
+    .select()
+    .from(conflicts)
+    .where(and(eq(conflicts.familyId, familyId), eq(conflicts.status, 'pending')))
+    .orderBy(asc(conflicts.createdAt));
+  if (rows.length === 0) return c.json({ conflicts: [] });
+
+  const memberIds = [...new Set(rows.map((r) => r.familyMemberId))];
+  const evs = await db
+    .select({
+      familyMemberId: calendarEvents.familyMemberId,
+      synthKey: calendarEvents.synthKey,
+      summary: calendarEvents.summary,
+      location: calendarEvents.location,
+      dtstart: calendarEvents.dtstart,
+      dtend: calendarEvents.dtend,
+      allDay: calendarEvents.allDay,
+    })
+    .from(calendarEvents)
+    .where(
+      and(
+        eq(calendarEvents.familyId, familyId),
+        inArray(calendarEvents.familyMemberId, memberIds),
+      ),
+    );
+  const evByKey = new Map(evs.map((e) => [`${e.familyMemberId}|${e.synthKey}`, e]));
+
+  const out = rows
+    .map((r) => ({
+      id: r.id,
+      familyMemberId: r.familyMemberId,
+      status: r.status,
+      createdAt: r.createdAt,
+      loser: evByKey.get(`${r.familyMemberId}|${r.loserKey}`) ?? null,
+      winner: evByKey.get(`${r.familyMemberId}|${r.winnerKey}`) ?? null,
+    }))
+    .filter((r) => r.loser && r.winner);
+  return c.json({ conflicts: out });
+});
+
+/** Load a conflict scoped to the caller's family. */
+async function loadConflict(
+  db: ReturnType<typeof getDb>,
+  familyId: string,
+  conflictId: string,
+) {
+  return (
+    await db
+      .select()
+      .from(conflicts)
+      .where(and(eq(conflicts.id, conflictId), eq(conflicts.familyId, familyId)))
+      .limit(1)
+  )[0];
+}
+
+/**
+ * Resolve a conflict — accept the default split: the lower-priority loser is
+ * trimmed/split around the higher-priority winner, and task-gen spawns the
+ * drop-off/pickup at each new segment boundary. Idempotent.
+ */
+taskRoutes.post('/conflicts/:conflictId/resolve', async (c) => {
+  const db = getDb(c.env.DB);
+  const me = c.get('member');
+  const conflict = await loadConflict(db, me.familyId, c.req.param('conflictId'));
+  if (!conflict) return c.json({ error: 'not_found' }, 404);
+  await db
+    .update(conflicts)
+    .set({
+      status: 'resolved',
+      resolvedByMemberId: me.id,
+      resolvedAt: new Date(),
+      dismissedAt: null,
+    })
+    .where(eq(conflicts.id, conflict.id));
+  await reconcileMemberConflicts(db, conflict.familyMemberId);
+  await buildMemberTasks(db, conflict.familyMemberId);
+  enqueueReconcile(c, { kind: 'member', memberId: conflict.familyMemberId });
+  return c.json({ ok: true });
+});
+
+/**
+ * Dismiss a conflict — acknowledge the double-booking and leave both events as
+ * they are (no split). Any split from a prior resolution is undone.
+ */
+taskRoutes.post('/conflicts/:conflictId/dismiss', async (c) => {
+  const db = getDb(c.env.DB);
+  const me = c.get('member');
+  const conflict = await loadConflict(db, me.familyId, c.req.param('conflictId'));
+  if (!conflict) return c.json({ error: 'not_found' }, 404);
+  await db
+    .update(conflicts)
+    .set({
+      status: 'dismissed',
+      dismissedAt: new Date(),
+      resolvedByMemberId: null,
+      resolvedAt: null,
+    })
+    .where(eq(conflicts.id, conflict.id));
+  await reconcileMemberConflicts(db, conflict.familyMemberId);
+  await buildMemberTasks(db, conflict.familyMemberId);
+  enqueueReconcile(c, { kind: 'member', memberId: conflict.familyMemberId });
+  return c.json({ ok: true });
+});
+
 // --- Unified-calendar events (Plan / member views) ---------------------------
 
 /**
@@ -535,7 +654,12 @@ taskRoutes.get('/calendar-events', async (c) => {
   const from = c.req.query('from');
   const to = c.req.query('to');
 
-  const conditions = [eq(calendarEvents.familyId, familyId)];
+  // Conflict-masked events are represented on the calendar by their cf: split
+  // segments, so hide the masked full-span row itself.
+  const conditions = [
+    eq(calendarEvents.familyId, familyId),
+    isNull(calendarEvents.maskedAt),
+  ];
   if (memberId) conditions.push(eq(calendarEvents.familyMemberId, memberId));
   if (from) {
     const d = new Date(from);
