@@ -257,6 +257,8 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
       for (final e in events)
         if (dayKey(e.start) == _selected &&
             !_exChildren.contains(e.familyMemberId) &&
+            !_exOwners.contains(e.familyMemberId) &&
+            (!_onlyMyKids || myKids.contains(e.familyMemberId)) &&
             !e.isClaimedTask &&
             !unownedAttendanceEventIds.contains(e.id))
           _PlanItem.event(e),
