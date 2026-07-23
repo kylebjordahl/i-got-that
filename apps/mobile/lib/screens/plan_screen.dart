@@ -15,10 +15,9 @@ import 'task_actions_sheet.dart';
 
 const _hourPx = 42.0;
 const _labelWidth = 46.0;
-// Edge-tab (drop-off / pick-up) height. Tall enough for the compact label +
-// owner avatar; tabs straddle their block's edge by half this and stack by the
-// full.
-const _tabHeight = 32.0;
+// Edge-tab (drop-off / pick-up) height — snug around the compact label + owner
+// avatar; tabs straddle their block's edge by half this and stack by the full.
+const _tabHeight = 24.0;
 // Left indentation for edge tabs so they don't flush-align with the block
 // underneath — 1.5x the tab's pill corner radius (half its height).
 const _tabLeftInset = _tabHeight / 2 * 1.5;
@@ -27,6 +26,12 @@ const _tabLeftInset = _tabHeight / 2 * 1.5;
 // the extra hours.
 const _defaultStartHour = 7;
 const _defaultEndHour = 19; // 7 PM
+// A block is only ever as tall as its real duration — short segments are no
+// longer inflated to a fixed height (which overlapped their neighbours on the
+// split calendars from #98). The only floor left is the compact single-line
+// layout's height, so even a brief block still renders its start–end time and
+// stays comfortably tappable.
+const _minBlockHeight = 26.0;
 // Minimum fling speed (logical px/s) for a horizontal grid drag to count as a
 // day-change swipe rather than an incidental sideways wobble.
 const _swipeVelocityThreshold = 250.0;
@@ -830,9 +835,10 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
         final top = (((ev.start.hour + ev.start.minute / 60) - _gridStart) * _hourPx)
             .clamp(0.0, _gridHeight);
         final height = _isBlock(ev.item)
-            // Tall enough for the title + time + an attendee-avatar footer.
+            // As tall as the event's real duration (never below the compact
+            // single-line floor); _ItemBlock adapts its content to whatever fits.
             ? (ev.end.difference(ev.start).inMinutes / 60 * _hourPx)
-                .clamp(76.0, _gridHeight)
+                .clamp(_minBlockHeight, _gridHeight)
             : 34.0;
         placed.add(_Placed(
           item: ev.item,
@@ -1091,16 +1097,41 @@ class _ItemBlock extends StatelessWidget {
     final personName = attendees.isNotEmpty ? attendees.first.relationName : 'child';
 
     final hasRange = end != null && end.isAfter(start);
-    final subtitle =
-        '${hasRange ? friendlyRange(start, end) : clockShort(start)}'
-        '${human ? ' · manual' : ''}';
+    // The exact start–end time is the one label a block must always show, so
+    // compute it on its own and let _TimeLabel drop the trailing "· manual" tag
+    // (and only then ellipsise the time) when the block is too narrow (issue 98).
+    final timeText = hasRange ? friendlyRange(start, end) : clockShort(start);
+
+    final titleRow = Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Expanded(
+          child: Text.rich(
+            TextSpan(children: [
+              TextSpan(
+                  text: summary,
+                  style: font(kBodyFont, 12.5, 600, color: AppColors.textPrimary)),
+              TextSpan(
+                  text: ' · $personName',
+                  style: font(kBodyFont, 12.5, 700, color: accent)),
+            ]),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+        if (attendees.isNotEmpty) ...[
+          const SizedBox(width: 6),
+          _attendeeAvatars(),
+        ],
+      ],
+    );
+    final time = _TimeLabel(text: timeText, tag: human ? ' · manual' : null);
 
     return GestureDetector(
       onTap: onTapBlock,
       behavior: HitTestBehavior.opaque,
       child: Container(
         clipBehavior: Clip.antiAlias,
-        padding: EdgeInsets.fromLTRB(11, hasTopTab ? 17 : 9, 11, hasBottomTab ? 17 : 9),
         decoration: BoxDecoration(
           gradient: LinearGradient(
             begin: Alignment.topLeft,
@@ -1110,41 +1141,43 @@ class _ItemBlock extends StatelessWidget {
           borderRadius: BorderRadius.circular(14),
           border: Border.all(color: accent.withValues(alpha: 0.55)),
         ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
+        // A block is only as tall as its duration now, so it fits its content to
+        // the space: the title over the time when there's room, else just the
+        // start–end time with the attendee avatars — the one thing a block must
+        // always show (issue 98). A straddling edge tag is cleared with extra
+        // padding derived from the tag height.
+        child: LayoutBuilder(builder: (context, constraints) {
+          final h = constraints.maxHeight;
+          const hPad = 11.0, gap = 2.0, timeLineH = 16.0, tabClear = _tabHeight / 2 + 2;
+          final rowH = attendees.isNotEmpty ? 20.0 : 16.0;
+          final topPad = hasTopTab ? tabClear : 9.0;
+          final botPad = hasBottomTab ? tabClear : 9.0;
+
+          if (h >= topPad + botPad + rowH + gap + timeLineH) {
+            return Padding(
+              padding: EdgeInsets.fromLTRB(hPad, topPad, hPad, botPad),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [titleRow, const SizedBox(height: gap), time],
+              ),
+            );
+          }
+          // Too short for two lines: keep the time (+ avatars), drop the title.
+          final vPad = ((h - rowH) / 2).clamp(1.0, topPad);
+          return Padding(
+            padding: EdgeInsets.symmetric(horizontal: hPad, vertical: vPad),
+            child: Row(
               children: [
-                Expanded(
-                  child: Text.rich(
-                    TextSpan(children: [
-                      TextSpan(
-                          text: summary,
-                          style: font(kBodyFont, 12.5, 600,
-                              color: AppColors.textPrimary)),
-                      TextSpan(
-                          text: ' · $personName',
-                          style: font(kBodyFont, 12.5, 700, color: accent)),
-                    ]),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
+                Expanded(child: time),
                 if (attendees.isNotEmpty) ...[
                   const SizedBox(width: 6),
                   _attendeeAvatars(),
                 ],
               ],
             ),
-            const SizedBox(height: 2),
-            Text(subtitle,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: font(kBodyFont, 11, 500, color: AppColors.textTertiary)),
-          ],
-        ),
+          );
+        }),
       ),
     );
   }
@@ -1163,6 +1196,45 @@ class _ItemBlock extends StatelessWidget {
       overlap: 9,
     );
   }
+}
+
+/// The event's exact start–end time on a Plan block. The time is the one label
+/// a block must always show, so a too-narrow block first drops the trailing
+/// "· manual" tag and only then truncates the time itself with an ellipsis —
+/// it never mangles the time to make room for the tag (issue 98).
+class _TimeLabel extends StatelessWidget {
+  const _TimeLabel({required this.text, this.tag});
+  final String text;
+  final String? tag;
+
+  @override
+  Widget build(BuildContext context) {
+    final style = font(kBodyFont, 11, 500, color: AppColors.textTertiary);
+    if (tag == null) {
+      return Text(text,
+          maxLines: 1, overflow: TextOverflow.ellipsis, style: style);
+    }
+    return LayoutBuilder(builder: (context, constraints) {
+      final maxWidth = constraints.maxWidth;
+      // Keep the tag only while the full time still fits alongside it; past that
+      // the tag is dropped, and the time truncates only as a last resort.
+      final fits = !maxWidth.isFinite ||
+          _measureWidth(text, style) + _measureWidth(tag!, style) <= maxWidth;
+      return Text(fits ? '$text$tag' : text,
+          maxLines: 1, overflow: TextOverflow.ellipsis, style: style);
+    });
+  }
+}
+
+/// Intrinsic (unwrapped) width of [text] in [style] — used to decide whether an
+/// optional label segment fits before the time is forced to truncate.
+double _measureWidth(String text, TextStyle style) {
+  final painter = TextPainter(
+    text: TextSpan(text: text, style: style),
+    maxLines: 1,
+    textDirection: TextDirection.ltr,
+  )..layout();
+  return painter.width;
 }
 
 /// A drop-off / pick-up transition rendered as a tab clipped onto the top or
@@ -1209,7 +1281,7 @@ class _EdgeTab extends StatelessWidget {
           PersonAvatar(
               initial: initialFor(owner!.relationName),
               color: personColor(owner!),
-              size: 18),
+              size: 16),
         ],
       ],
     );
@@ -1217,7 +1289,7 @@ class _EdgeTab extends StatelessWidget {
     // A rounded background (no hard clip) so the trailing owner avatar is never
     // cut by the pill's rounded end.
     final inner = Padding(
-      padding: const EdgeInsets.fromLTRB(10, 2, 10, 2),
+      padding: const EdgeInsets.fromLTRB(10, 1, 10, 1),
       child: row,
     );
 
