@@ -156,6 +156,17 @@ class _SourceCalendarsSection extends ConsumerWidget {
   final Member member;
   final bool canEdit;
 
+  // The reorderable list below is given an explicit (non-intrinsic) height —
+  // see the comment at its Overlay.wrap call site for why. These add up the
+  // fixed pieces of one row so that height stays in sync with the layout:
+  // SettingRow forced to one line (IconTile 44 + its own 6+6 padding), plus
+  // the AppCard's 4+4 vertical padding, plus the 10 bottom margin between
+  // cards.
+  static const double _kFeedRowHeight = 44 + 6 + 6;
+  static const double _kFeedCardPadding = 4 + 4;
+  static const double _kFeedCardSpacing = 10;
+  static const double _kFeedSlotHeight = _kFeedRowHeight + _kFeedCardPadding + _kFeedCardSpacing;
+
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final feeds = ref.watch(feedsProvider).valueOrNull ?? const <FeedItem>[];
@@ -195,23 +206,44 @@ class _SourceCalendarsSection extends ConsumerWidget {
             ),
           )
         else if (canReorder)
-          ReorderableListView(
-            shrinkWrap: true,
-            physics: const NeverScrollableScrollPhysics(),
-            // onReorderItem (not the deprecated onReorder) already adjusts
-            // newIndex for the item removed at oldIndex — see _reorder.
-            onReorderItem: (o, n) => _reorder(ref, linked, o, n),
-            children: [
-              for (final (feed, link) in linked)
-                Padding(
-                  key: ValueKey(link.id),
-                  padding: const EdgeInsets.only(bottom: 10),
-                  child: AppCard(
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-                    child: _feedRow(context, feed, link, draggable: true),
-                  ),
-                ),
-            ],
+          // ReorderableListView drops its dragged item into the nearest
+          // ancestor Overlay (Flutter looks it up via Overlay.of), which by
+          // default is the app-level one from MaterialApp/Navigator — so the
+          // floating card would paint above the whole screen, including the
+          // Unified calendar section below, instead of staying within this
+          // list. Overlay.wrap gives it a local Overlay to float in instead,
+          // clipped to (and sized to) just this list.
+          //
+          // That local Overlay can't be intrinsically sized (the parent
+          // _AccentSection stretches its accent bar via IntrinsicHeight, and
+          // ReorderableListView's shrink-wrapping viewport refuses to report
+          // an intrinsic height), so it's given an explicit height computed
+          // from the fixed per-row height above instead.
+          SizedBox(
+            height: linked.length * _kFeedSlotHeight,
+            child: Overlay.wrap(
+              child: ReorderableListView(
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                // onReorderItem (not the deprecated onReorder) already adjusts
+                // newIndex for the item removed at oldIndex — see _reorder.
+                onReorderItem: (o, n) => _reorder(ref, linked, o, n),
+                children: [
+                  for (final (feed, link) in linked)
+                    Padding(
+                      key: ValueKey(link.id),
+                      padding: const EdgeInsets.only(bottom: _kFeedCardSpacing),
+                      child: AppCard(
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                        child: SizedBox(
+                          height: _kFeedRowHeight,
+                          child: _feedRow(context, feed, link, draggable: true),
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            ),
           )
         else
           AppCard(
@@ -267,6 +299,9 @@ class _SourceCalendarsSection extends ConsumerWidget {
           : feed.isBusy
               ? 'Busy-only · free/busy'
               : 'Standard · ${feed.sourceLabel}',
+      // The draggable list gives each row a fixed height (see _kFeedRowHeight)
+      // instead of measuring it via intrinsics, so content must not wrap.
+      singleLine: draggable,
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [

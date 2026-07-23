@@ -127,6 +127,46 @@ void main() {
     expect(find.text('INVITE LINK'), findsNothing);
   });
 
+  testWidgets(
+      'reorderable source-calendars list gets its own local Overlay so the '
+      'drag proxy stays contained instead of painting over Unified calendar',
+      (tester) async {
+    final feedA = FeedItem(id: 'f1', kind: 'ics', mode: 'standard');
+    final feedB = FeedItem(id: 'f2', kind: 'google', mode: 'standard');
+    final linkA = FeedLink(id: 'link1', familyMemberId: 'theo', active: true, position: 0);
+    final linkB = FeedLink(id: 'link2', familyMemberId: 'theo', active: true, position: 1);
+
+    await pumpTall(
+      tester,
+      ProviderScope(
+        overrides: [
+          membersProvider.overrideWith((ref) async => [me, theo]),
+          currentMemberProvider.overrideWith((ref) async => me),
+          feedsProvider.overrideWith((ref) async => [feedA, feedB]),
+          feedLinksProvider('f1').overrideWith((ref) async => [linkA]),
+          feedLinksProvider('f2').overrideWith((ref) async => [linkB]),
+          accountsProvider.overrideWith((ref) async => const <ExternalAccount>[]),
+          memberCalendarProvider.overrideWith((ref, id) async => null),
+          calendarEventsProvider.overrideWith((ref) async => const []),
+        ],
+        child: MaterialApp(
+          theme: buildAppTheme(),
+          themeMode: ThemeMode.dark,
+          home: const MemberDetailScreen(memberId: 'theo'),
+        ),
+      ),
+    );
+
+    expect(find.byType(ReorderableListView), findsOneWidget);
+    expect(find.textContaining('Drag to set priority'), findsOneWidget);
+    // The MaterialApp/Navigator always contributes one root Overlay. Seeing a
+    // second one proves the reorderable list has its own local Overlay
+    // (Overlay.wrap) to float and clip its drag proxy in, rather than
+    // escaping to the app-level overlay and painting over whatever renders
+    // below it (the Unified calendar section).
+    expect(find.byType(Overlay), findsNWidgets(2));
+  });
+
   testWidgets('generating an invite link shows the token to copy/share', (tester) async {
     await pumpTall(
       tester,
