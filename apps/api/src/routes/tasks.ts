@@ -592,6 +592,33 @@ async function loadConflict(
 }
 
 /**
+ * The loser/winner events' current content_hash, to snapshot against a
+ * resolve/dismiss decision — see loserContentHash/winnerContentHash on the
+ * conflicts table.
+ */
+async function decisionHashes(
+  db: ReturnType<typeof getDb>,
+  familyMemberId: string,
+  loserKey: string,
+  winnerKey: string,
+) {
+  const rows = await db
+    .select({ synthKey: calendarEvents.synthKey, contentHash: calendarEvents.contentHash })
+    .from(calendarEvents)
+    .where(
+      and(
+        eq(calendarEvents.familyMemberId, familyMemberId),
+        inArray(calendarEvents.synthKey, [loserKey, winnerKey]),
+      ),
+    );
+  const byKey = new Map(rows.map((r) => [r.synthKey, r.contentHash]));
+  return {
+    loserContentHash: byKey.get(loserKey) ?? null,
+    winnerContentHash: byKey.get(winnerKey) ?? null,
+  };
+}
+
+/**
  * Resolve a conflict — accept the default split: the lower-priority loser is
  * trimmed/split around the higher-priority winner, and task-gen spawns the
  * drop-off/pickup at each new segment boundary. Idempotent.
@@ -601,6 +628,12 @@ taskRoutes.post('/conflicts/:conflictId/resolve', async (c) => {
   const me = c.get('member');
   const conflict = await loadConflict(db, me.familyId, c.req.param('conflictId'));
   if (!conflict) return c.json({ error: 'not_found' }, 404);
+  const hashes = await decisionHashes(
+    db,
+    conflict.familyMemberId,
+    conflict.loserKey,
+    conflict.winnerKey,
+  );
   await db
     .update(conflicts)
     .set({
@@ -608,6 +641,7 @@ taskRoutes.post('/conflicts/:conflictId/resolve', async (c) => {
       resolvedByMemberId: me.id,
       resolvedAt: new Date(),
       dismissedAt: null,
+      ...hashes,
     })
     .where(eq(conflicts.id, conflict.id));
   await reconcileMemberConflicts(db, conflict.familyMemberId);
@@ -625,6 +659,12 @@ taskRoutes.post('/conflicts/:conflictId/dismiss', async (c) => {
   const me = c.get('member');
   const conflict = await loadConflict(db, me.familyId, c.req.param('conflictId'));
   if (!conflict) return c.json({ error: 'not_found' }, 404);
+  const hashes = await decisionHashes(
+    db,
+    conflict.familyMemberId,
+    conflict.loserKey,
+    conflict.winnerKey,
+  );
   await db
     .update(conflicts)
     .set({
@@ -632,6 +672,7 @@ taskRoutes.post('/conflicts/:conflictId/dismiss', async (c) => {
       dismissedAt: new Date(),
       resolvedByMemberId: null,
       resolvedAt: null,
+      ...hashes,
     })
     .where(eq(conflicts.id, conflict.id));
   await reconcileMemberConflicts(db, conflict.familyMemberId);

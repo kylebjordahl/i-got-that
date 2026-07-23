@@ -190,6 +190,63 @@ describe('conflict detection & masking', () => {
     expect(events.map((e) => e.id)).toContain(seg0.id);
   });
 
+  it('reopens a resolved conflict when the winner event is later edited, even though the overlap persists', async () => {
+    const f = await fixture('conflict-reopen@example.com');
+    const { blKey, docKey } = await schoolAndDoctor(f.db, f);
+    await reconcileMemberConflicts(f.db, f.childId);
+    const conflict = (
+      await f.db.select().from(conflicts).where(eq(conflicts.familyMemberId, f.childId))
+    )[0]!;
+
+    const res = await call(
+      `/families/${f.familyId}/conflicts/${conflict.id}/resolve`,
+      authed(f.admin.token),
+    );
+    expect(res.status).toBe(200);
+
+    let row = (await f.db.select().from(conflicts).where(eq(conflicts.id, conflict.id)))[0]!;
+    expect(row.status).toBe('resolved');
+    expect(row.loserContentHash).not.toBeNull();
+    expect(row.winnerContentHash).not.toBeNull();
+
+    // The doctor's appointment gets rescheduled by 15 minutes on its source
+    // calendar, but still overlaps the school day the same way (same
+    // loser/winner synthKey pair) — the prior resolution must not silently
+    // keep applying to a decision that's now stale.
+    await f.db
+      .update(calendarEvents)
+      .set({
+        dtstart: futureAt(3, 10, 15),
+        dtend: futureAt(3, 11, 15),
+        contentHash: 'doc-hash-v2',
+      })
+      .where(eq(calendarEvents.synthKey, docKey));
+
+    const reconcileRes = await reconcileMemberConflicts(f.db, f.childId);
+    expect(reconcileRes.conflictsOpen).toBe(1);
+    expect(reconcileRes.masksApplied).toBe(0);
+
+    row = (await f.db.select().from(conflicts).where(eq(conflicts.id, conflict.id)))[0]!;
+    expect(row.status).toBe('pending');
+    expect(row.resolvedByMemberId).toBeNull();
+    expect(row.resolvedAt).toBeNull();
+    expect(row.loserContentHash).toBeNull();
+    expect(row.winnerContentHash).toBeNull();
+
+    // The mask is lifted and the split segments are gone — the baseline is
+    // whole again, awaiting a fresh decision.
+    const bl = (
+      await f.db.select().from(calendarEvents).where(eq(calendarEvents.synthKey, blKey))
+    )[0]!;
+    expect(bl.maskedAt).toBeNull();
+    const keys = await eventKeys(f.db, f.childId);
+    expect(keys).toEqual([blKey, docKey]);
+
+    // And it's surfaced again via the API.
+    const api = await call(`/families/${f.familyId}/conflicts`, bearer(f.admin.token));
+    expect(((await api.json()) as { conflicts: unknown[] }).conflicts).toHaveLength(1);
+  });
+
   it('dismissing leaves the double-book intact and applies no split', async () => {
     const f = await fixture('conflict-dismiss@example.com');
     const { blKey } = await schoolAndDoctor(f.db, f);
