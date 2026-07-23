@@ -1,5 +1,6 @@
 import { env, fetchMock } from 'cloudflare:test';
 import { and, calendarEvents, eq, getDb, memberCalendars } from '@igt/db';
+import { wallTimeToUtc } from '@igt/classification';
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { readBackMember } from '../src/services/readback.js';
 import { authed, bearer, call, patched, setupFamily } from './helpers.js';
@@ -14,17 +15,40 @@ beforeAll(() => {
 });
 afterEach(() => fetchMock.assertNoPendingInterceptors());
 
+/** A day a few days out (inside the default 30-day read-back window) at UTC midnight. */
+function futureDay(offsetDays: number): Date {
+  const d = new Date();
+  d.setUTCDate(d.getUTCDate() + offsetDays);
+  d.setUTCHours(0, 0, 0, 0);
+  return d;
+}
+
+/** `day` formatted as a bare (zoneless) ICS local date-time stamp. */
+function icsStamp(day: Date, hour: number, minute = 0): string {
+  const y = day.getUTCFullYear();
+  const m = String(day.getUTCMonth() + 1).padStart(2, '0');
+  const d = String(day.getUTCDate()).padStart(2, '0');
+  const hh = String(hour).padStart(2, '0');
+  const mm = String(minute).padStart(2, '0');
+  return `${y}${m}${d}T${hh}${mm}00`;
+}
+
 // Reproduces the reported bug via the read-back path: a provider invite
 // (Vagaro-style) manually added to a member's personal iCloud target
 // calendar, with DTSTART carrying a bare local wall-clock time — no TZID, no
 // trailing Z, and the object's own VCALENDAR has no VTIMEZONE either.
+// The appointment day is relative to "now" (not a hardcoded calendar date) —
+// read-back only looks forward from today, so a fixed past-tense date would
+// eventually fall outside its window and the fixture would stop exercising
+// the bug at all.
+const APPT_DAY = futureDay(3);
 const FLOATING_ICS = [
   'BEGIN:VCALENDAR',
   'VERSION:2.0',
   'BEGIN:VEVENT',
   'UID:appt-1',
-  'DTSTART:20260722T110000',
-  'DTEND:20260722T113000',
+  `DTSTART:${icsStamp(APPT_DAY, 11, 0)}`,
+  `DTEND:${icsStamp(APPT_DAY, 11, 30)}`,
   'SUMMARY:Chiropractic - Follow-Up Visit',
   'END:VEVENT',
   'END:VCALENDAR',
@@ -114,10 +138,10 @@ describe("member target calendar timezone (read-back's floating-time fix)", () =
     )[0]!;
 
     // Seed the initial (wrong) read-back directly, bypassing the HTTP route —
-    // no timezone known yet, so the floating time is misread as UTC.
+    // no timezone known yet, so the floating time is misread as UTC. No
+    // explicit window: the default (today forward 30 days) already covers
+    // APPT_DAY and matches what the route below uses.
     await readBackMember(db, cal, {
-      windowStart: new Date('2026-07-01T00:00:00Z'),
-      windowEnd: new Date('2026-08-01T00:00:00Z'),
       kek: env.KEK,
       fetchImpl: caldavFetchImpl([
         { href: '/calendars/child/home/floating-event.ics', etag: 'e1', data: FLOATING_ICS },
@@ -139,7 +163,11 @@ describe("member target calendar timezone (read-back's floating-time fix)", () =
 
     const before = await eventRow();
     expect(before).toBeDefined();
-    expect(before!.dtstart.toISOString()).toBe('2026-07-22T11:00:00.000Z'); // misread as UTC
+    // Misread as UTC: the bare wall-clock stamp taken literally as 11:00Z.
+    const misreadAsUtc = new Date(Date.UTC(
+      APPT_DAY.getUTCFullYear(), APPT_DAY.getUTCMonth(), APPT_DAY.getUTCDate(), 11, 0, 0,
+    ));
+    expect(before!.dtstart.toISOString()).toBe(misreadAsUtc.toISOString());
 
     // Same source data — the fix is a manual timezone correction, not an
     // upstream change — so the multistatus REPORT the route triggers below
@@ -165,8 +193,10 @@ describe("member target calendar timezone (read-back's floating-time fix)", () =
     expect(patchedTarget.timezone).toBe('America/Los_Angeles');
 
     const after = await eventRow();
-    // 11:00 AM PDT == 18:00Z — corrected in place by the PUT-triggered read-back.
-    expect(after!.dtstart.toISOString()).toBe('2026-07-22T18:00:00.000Z');
+    // 11:00 AM America/Los_Angeles — corrected in place by the PUT-triggered
+    // read-back (PDT/PST offset resolved for whichever day APPT_DAY lands on).
+    const correctedInstant = wallTimeToUtc(APPT_DAY, '11:00', 11, 'America/Los_Angeles');
+    expect(after!.dtstart.toISOString()).toBe(correctedInstant.toISOString());
   });
 
   it('lists as a caretaker without a target so read-back skips it', async () => {
