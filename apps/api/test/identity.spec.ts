@@ -309,6 +309,235 @@ describe('member editing & permissions', () => {
   });
 });
 
+describe('delete family', () => {
+  function del(token: string): RequestInit {
+    return { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } };
+  }
+
+  it('lets an admin delete the family; blocks non-admins', async () => {
+    const alice = await login('delfam-alice@example.com');
+    const bob = await login('delfam-bob@example.com');
+
+    const fam = await call('/families', authed(alice.token, { name: 'Doomed Fam' }));
+    const familyId = ((await fam.json()) as { family: { id: string } }).family.id;
+    await call(
+      `/families/${familyId}/members`,
+      authed(alice.token, { relationName: 'uncle', isCaretaker: true, userId: bob.userId }),
+    );
+
+    // Bob (non-admin) can't delete the family.
+    expect((await call(`/families/${familyId}`, del(bob.token))).status).toBe(403);
+
+    // Alice (admin) can.
+    expect((await call(`/families/${familyId}`, del(alice.token))).status).toBe(204);
+
+    // The family (and its members) are gone — Bob is no longer tenant-scoped in.
+    const membersAfter = await call(`/families/${familyId}/members`, {
+      headers: { Authorization: `Bearer ${bob.token}` },
+    });
+    expect(membersAfter.status).toBe(403);
+  });
+});
+
+describe('delete account', () => {
+  function delMe(token: string): RequestInit {
+    return { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } };
+  }
+
+  it('deletes the user; the session no longer works', async () => {
+    const alice = await login('delacct-alice@example.com');
+    expect((await call('/auth/me', delMe(alice.token))).status).toBe(204);
+
+    const me = await call('/me', { headers: { Authorization: `Bearer ${alice.token}` } });
+    expect(me.status).toBe(401);
+  });
+
+  it('blocks deleting the sole admin of a family with other members', async () => {
+    const alice = await login('delacct-solo-admin@example.com');
+    const bob = await login('delacct-solo-bob@example.com');
+
+    const fam = await call('/families', authed(alice.token, { name: 'Guarded Fam' }));
+    const familyId = ((await fam.json()) as { family: { id: string } }).family.id;
+    await call(
+      `/families/${familyId}/members`,
+      authed(alice.token, { relationName: 'uncle', isCaretaker: true, userId: bob.userId }),
+    );
+
+    expect((await call('/auth/me', delMe(alice.token))).status).toBe(409);
+
+    // The block didn't half-apply — Alice's session still works.
+    const me = await call('/me', { headers: { Authorization: `Bearer ${alice.token}` } });
+    expect(me.status).toBe(200);
+  });
+
+  it('allows deleting an admin account when a co-admin remains', async () => {
+    const alice = await login('delacct-coadmin-alice@example.com');
+    const bob = await login('delacct-coadmin-bob@example.com');
+
+    const fam = await call('/families', authed(alice.token, { name: 'Co-admin Fam' }));
+    const familyId = ((await fam.json()) as { family: { id: string } }).family.id;
+    await call(
+      `/families/${familyId}/members`,
+      authed(alice.token, {
+        relationName: 'uncle',
+        isCaretaker: true,
+        isAdmin: true,
+        userId: bob.userId,
+      }),
+    );
+
+    expect((await call('/auth/me', delMe(alice.token))).status).toBe(204);
+
+    // Bob (the remaining admin) still has access.
+    const members = await call(`/families/${familyId}/members`, {
+      headers: { Authorization: `Bearer ${bob.token}` },
+    });
+    expect(members.status).toBe(200);
+  });
+
+  it('allows deleting the sole admin when they are the only member (nothing to orphan)', async () => {
+    const alice = await login('delacct-alone@example.com');
+    await call('/families', authed(alice.token, { name: 'Solo Fam' }));
+
+    expect((await call('/auth/me', delMe(alice.token))).status).toBe(204);
+  });
+});
+
+describe('leave family', () => {
+  function leave(token: string): RequestInit {
+    return { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: '{}' };
+  }
+
+  it('lets a non-admin leave; the member row stays but unlinked', async () => {
+    const alice = await login('leave-alice@example.com');
+    const bob = await login('leave-bob@example.com');
+
+    const fam = await call('/families', authed(alice.token, { name: 'Leave Fam' }));
+    const familyId = ((await fam.json()) as { family: { id: string } }).family.id;
+    const addBob = await call(
+      `/families/${familyId}/members`,
+      authed(alice.token, { relationName: 'uncle', isCaretaker: true, userId: bob.userId }),
+    );
+    const bobMemberId = ((await addBob.json()) as { member: { id: string } }).member.id;
+
+    expect((await call(`/families/${familyId}/leave`, leave(bob.token))).status).toBe(204);
+
+    // Bob is no longer tenant-scoped into the family...
+    const bobList = await call(`/families/${familyId}/members`, {
+      headers: { Authorization: `Bearer ${bob.token}` },
+    });
+    expect(bobList.status).toBe(403);
+
+    // ...but the member row (and Alice's view of it) is untouched.
+    const aliceList = await call(`/families/${familyId}/members`, {
+      headers: { Authorization: `Bearer ${alice.token}` },
+    });
+    const { members } = (await aliceList.json()) as { members: { id: string }[] };
+    expect(members.some((m) => m.id === bobMemberId)).toBe(true);
+  });
+
+  it('blocks the sole admin from leaving a family with other members', async () => {
+    const alice = await login('leave-solo-admin@example.com');
+    const bob = await login('leave-solo-bob@example.com');
+
+    const fam = await call('/families', authed(alice.token, { name: 'Guarded Leave Fam' }));
+    const familyId = ((await fam.json()) as { family: { id: string } }).family.id;
+    await call(
+      `/families/${familyId}/members`,
+      authed(alice.token, { relationName: 'uncle', isCaretaker: true, userId: bob.userId }),
+    );
+
+    expect((await call(`/families/${familyId}/leave`, leave(alice.token))).status).toBe(409);
+
+    // The block didn't half-apply — Alice is still in.
+    const list = await call(`/families/${familyId}/members`, {
+      headers: { Authorization: `Bearer ${alice.token}` },
+    });
+    expect(list.status).toBe(200);
+  });
+
+  it('allows an admin to leave when a co-admin remains', async () => {
+    const alice = await login('leave-coadmin-alice@example.com');
+    const bob = await login('leave-coadmin-bob@example.com');
+
+    const fam = await call('/families', authed(alice.token, { name: 'Co-admin Leave Fam' }));
+    const familyId = ((await fam.json()) as { family: { id: string } }).family.id;
+    await call(
+      `/families/${familyId}/members`,
+      authed(alice.token, {
+        relationName: 'uncle',
+        isCaretaker: true,
+        isAdmin: true,
+        userId: bob.userId,
+      }),
+    );
+
+    expect((await call(`/families/${familyId}/leave`, leave(alice.token))).status).toBe(204);
+
+    const bobList = await call(`/families/${familyId}/members`, {
+      headers: { Authorization: `Bearer ${bob.token}` },
+    });
+    expect(bobList.status).toBe(200);
+  });
+
+  it('allows the sole admin to leave when they are the only member', async () => {
+    const alice = await login('leave-alone@example.com');
+    const fam = await call('/families', authed(alice.token, { name: 'Solo Leave Fam' }));
+    const familyId = ((await fam.json()) as { family: { id: string } }).family.id;
+
+    expect((await call(`/families/${familyId}/leave`, leave(alice.token))).status).toBe(204);
+  });
+});
+
+describe('account deletion eligibility', () => {
+  function deletable(token: string): RequestInit {
+    return { headers: { Authorization: `Bearer ${token}` } };
+  }
+
+  it('is deletable with no families, and after leaving a blocking family', async () => {
+    const alice = await login('elig-alice@example.com');
+
+    // No families at all — trivially deletable.
+    const before = await call('/auth/me/deletable', deletable(alice.token));
+    expect((await before.json()) as unknown).toEqual({ deletable: true });
+
+    const bob = await login('elig-bob@example.com');
+    const fam = await call('/families', authed(alice.token, { name: 'Elig Fam' }));
+    const familyId = ((await fam.json()) as { family: { id: string } }).family.id;
+    await call(
+      `/families/${familyId}/members`,
+      authed(alice.token, { relationName: 'uncle', isCaretaker: true, userId: bob.userId }),
+    );
+
+    // Sole admin of a family with another member — blocked.
+    const blocked = await call('/auth/me/deletable', deletable(alice.token));
+    expect((await blocked.json()) as unknown).toEqual({ deletable: false });
+
+    // Promote Bob so Alice is no longer the *sole* admin — she can now leave.
+    const bobMe = await call('/me', { headers: { Authorization: `Bearer ${bob.token}` } });
+    const bobMemberId = ((await bobMe.json()) as {
+      families: { member: { id: string } }[];
+    }).families[0]!.member.id;
+    await call(
+      `/families/${familyId}/members/${bobMemberId}`,
+      {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${alice.token}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ isAdmin: true }),
+      },
+    );
+
+    // Leaving the family clears the block.
+    await call(`/families/${familyId}/leave`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${alice.token}` },
+      body: '{}',
+    });
+    const after = await call('/auth/me/deletable', deletable(alice.token));
+    expect((await after.json()) as unknown).toEqual({ deletable: true });
+  });
+});
+
 describe('member-claim invites', () => {
   it('links an accepting user to a pre-created member (idempotent, single-claim)', async () => {
     const alice = await login('inv-alice@example.com');
@@ -328,8 +557,10 @@ describe('member-claim invites', () => {
       authed(alice.token),
     );
     expect(issued.status).toBe(201);
-    const { token } = (await issued.json()) as { token: string };
+    const { token, url } = (await issued.json()) as { token: string; url: string | null };
     expect(token).toBeTruthy();
+    // No PUBLIC_ORIGIN in the default test env ⇒ no composed deep link.
+    expect(url).toBeNull();
 
     // Public preview shows what you're joining.
     const preview = await call(`/invites/${token}`);
@@ -383,5 +614,82 @@ describe('member-claim invites', () => {
     expect(bobIssue.status).toBe(403);
 
     expect((await call('/invites/does-not-exist')).status).toBe(404);
+  });
+
+  it('composes a shareable deep-link URL from PUBLIC_ORIGIN', async () => {
+    const alice = await login('inv-url@example.com');
+    const famRes = await call('/families', authed(alice.token, { name: 'URL Fam' }));
+    const familyId = ((await famRes.json()) as { family: { id: string } }).family.id;
+    const memberRes = await call(
+      `/families/${familyId}/members`,
+      authed(alice.token, { relationName: 'Uncle', isCaretaker: true }),
+    );
+    const uncleId = ((await memberRes.json()) as { member: { id: string } }).member.id;
+
+    // Same DB (env.DB), but issue the invite through an env that has a public
+    // origin set — the response should carry the composed `/app/?invite=` link.
+    const ctx = createExecutionContext();
+    const res = await app.fetch(
+      new Request(`https://api.test/families/${familyId}/members/${uncleId}/invite`, authed(alice.token)),
+      { ...env, PUBLIC_ORIGIN: 'https://staging.igt.example' },
+      ctx,
+    );
+    await waitOnExecutionContext(ctx);
+    expect(res.status).toBe(201);
+    const { token, url } = (await res.json()) as { token: string; url: string };
+    expect(url).toBe(`https://staging.igt.example/app/?invite=${token}`);
+  });
+});
+
+describe('apple-app-site-association (iOS Universal Links)', () => {
+  async function fetchWith(path: string, bindings: typeof env) {
+    const ctx = createExecutionContext();
+    const res = await app.fetch(new Request(`https://api.test${path}`), bindings, ctx);
+    await waitOnExecutionContext(ctx);
+    return res;
+  }
+
+  it('404s when no APPLE_APP_ID_PREFIX is configured', async () => {
+    const res = await fetchWith('/.well-known/apple-app-site-association', env);
+    expect(res.status).toBe(404);
+  });
+
+  it('serves the configured appIDs matching /app/*', async () => {
+    const configured = {
+      ...env,
+      APPLE_APP_ID_PREFIX: 'ABCDE12345.com.kylebjordahl.igt, ABCDE12345.com.kylebjordahl.igt.staging',
+    };
+    const res = await fetchWith('/.well-known/apple-app-site-association', configured);
+    expect(res.status).toBe(200);
+    expect((await res.json()) as unknown).toEqual({
+      applinks: {
+        details: [
+          {
+            appIDs: ['ABCDE12345.com.kylebjordahl.igt', 'ABCDE12345.com.kylebjordahl.igt.staging'],
+            components: [{ '/': '/app/*', comment: 'invite + web app' }],
+          },
+        ],
+      },
+    });
+  });
+
+  it('reaches the app (not the /app redirect) at the apex when ASSETS is bound', async () => {
+    // With an ASSETS binding present the single-origin handler kicks in; the
+    // apex .well-known path must route to the API, not the bare-domain → /app/
+    // redirect. A stub ASSETS Fetcher stands in for the deployed web client.
+    const singleOrigin = {
+      ...env,
+      APPLE_APP_ID_PREFIX: 'ABCDE12345.com.kylebjordahl.igt',
+      ASSETS: { fetch: async () => new Response('nope', { status: 404 }) } as unknown as Fetcher,
+    };
+    const ctx = createExecutionContext();
+    const res = await app.fetch(
+      new Request('https://api.test/.well-known/apple-app-site-association'),
+      singleOrigin,
+      ctx,
+    );
+    await waitOnExecutionContext(ctx);
+    expect(res.status).toBe(200); // 302 would mean it fell through to the redirect
+    expect((await res.json()) as { applinks: unknown }).toHaveProperty('applinks');
   });
 });

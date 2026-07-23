@@ -9,7 +9,12 @@ on:
     branches: [main]
 
 concurrency:
-  group: deploy-staging
+  # Shared with deploy-production.yml: if a production release is published
+  # while a staging deploy is in flight (or vice versa), the later one queues
+  # behind the earlier one instead of racing it. deploy-production.yml's
+  # verify job relies on this — it only needs to poll briefly for event lag,
+  # not sit through an entire in-progress staging deploy.
+  group: deploy
   cancel-in-progress: false
 
 jobs:
@@ -40,3 +45,83 @@ jobs:
       APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
       APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
       APP_STORE_CONNECT_API_KEY_P8: ${{ secrets.APP_STORE_CONNECT_API_KEY_P8 }}
+
+  # Keeps a single auto-managed draft release pointed at the latest commit
+  # that passed staging, tagged with the same "next version" the `version`
+  # job (deploy.yml) already computed for this run's staging TestFlight
+  # build. That's the fix for a human manually typing `git tag vX.Y.Z` and
+  # picking a version number that can drift from what staging testers
+  # already saw — the draft's tag is always exactly what the automation
+  # would compute, because it's the exact same computed value.
+  #
+  # Deliberately does NOT publish the release — publishing (Releases →
+  # review the draft → Publish) stays a manual step, since that's what
+  # actually ships to production. This job only ever keeps the draft's
+  # tag/target/notes current so there's nothing left to manually get right
+  # by the time a human wants to publish it.
+  #
+  # Needs `staging` (not just runs after it): default `if: success()` means a
+  # failed or skipped staging deploy never touches the draft.
+  draft-release:
+    name: Draft next release
+    needs: staging
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Create/update the auto-managed draft release
+        uses: actions/github-script@v7
+        env:
+          BUILD_NAME: ${{ needs.staging.outputs.build_name }}
+        with:
+          script: |
+            const tagName = `v${process.env.BUILD_NAME}`;
+            const sha = context.payload.workflow_run.head_sha;
+            // Only ever touch a release *this automation* created — a human
+            // may have their own draft in flight (e.g. a hotfix) that must be
+            // left alone. Identified by a marker in the body rather than by
+            // tag_name, since the tag_name is exactly the thing that changes
+            // release to release as more commits land.
+            const marker = '<!-- auto-drafted-by: deploy-staging.yml -->';
+            const releases = await github.paginate(github.rest.repos.listReleases, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+            });
+            const existing = releases.find((r) => r.draft && r.body?.includes(marker));
+
+            if (existing && existing.tag_name === tagName && existing.target_commitish === sha) {
+              core.info(`Draft release '${tagName}' already targets ${sha} — nothing to do.`);
+              return;
+            }
+
+            // `generate_release_notes` on create/update only fills in notes
+            // the first time a release is *created* — the update endpoint
+            // doesn't support it at all, so it's silently ignored on every
+            // later re-run and the draft's notes would go stale as more
+            // commits land on main. Generating the notes explicitly here
+            // means both the create and update paths get fresh notes every
+            // run.
+            const { data: notes } = await github.rest.repos.generateReleaseNotes({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag_name: tagName,
+              target_commitish: sha,
+            });
+
+            const payload = {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag_name: tagName,
+              target_commitish: sha,
+              name: tagName,
+              draft: true,
+              body: `${marker}\n\n${notes.body}`,
+            };
+
+            if (existing) {
+              core.info(`Updating draft release ${existing.id}: '${existing.tag_name}' @ ${existing.target_commitish} -> '${tagName}' @ ${sha}.`);
+              await github.rest.repos.updateRelease({ ...payload, release_id: existing.id });
+            } else {
+              core.info(`Creating draft release '${tagName}' targeting ${sha}.`);
+              await github.rest.repos.createRelease(payload);
+            }

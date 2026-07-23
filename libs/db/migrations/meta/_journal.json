@@ -8,6 +8,55 @@
       "when": 1783572223068,
       "tag": "0000_tense_tombstone",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1784321758779,
+      "tag": "0001_white_doctor_spectrum",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1784613489137,
+      "tag": "0002_damp_mariko_yashida",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1784669536513,
+      "tag": "0003_little_magus",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1784670078384,
+      "tag": "0004_little_moon_knight",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1784687076180,
+      "tag": "0005_brainy_darwin",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1784687732722,
+      "tag": "0006_lucky_riptide",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1784782796522,
+      "tag": "0007_stiff_speed",
+      "breakpoints": true
     }
   ]
 }

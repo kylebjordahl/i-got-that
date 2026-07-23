@@ -107,17 +107,19 @@ class LoginIdentity {
   });
 
   final String id;
-  final String provider; // 'apple' | 'magic_link'
-  // Apple's opaque subject, or the magic-link email (shown for that provider).
+  final String provider; // 'apple' | 'magic_link' | 'google'
+  // Apple/Google's opaque subject, or the magic-link email (shown for email).
   final String providerRef;
 
   String get label => switch (provider) {
         'apple' => 'Sign in with Apple',
+        'google' => 'Sign in with Google',
         _ => providerRef,
       };
 
   String get kindLabel => switch (provider) {
         'apple' => 'Apple',
+        'google' => 'Google',
         _ => 'Magic link',
       };
 
@@ -140,6 +142,7 @@ class TaskItem {
     this.location,
     this.ownerMemberId,
     this.calendarEventId,
+    this.durationOverrideMin,
   });
 
   final String id;
@@ -159,8 +162,21 @@ class TaskItem {
   /// fully-manual tasks).
   final String? calendarEventId;
 
+  /// A user-set window length (minutes, signed) for a transition task, measured
+  /// from its anchor — the event's start for a drop-off, its end for a pickup.
+  /// Null ⇒ the window is the rule-derived default. See [signedDurationMin].
+  final int? durationOverrideMin;
+
   bool get isDismissed => status == 'dismissed';
   bool get isUnowned => status == 'unowned';
+  bool get isTransition => type == 'pickup' || type == 'dropoff';
+
+  /// The task's window length in signed minutes from its anchor: the explicit
+  /// override when set, otherwise derived from the stored span (a generated
+  /// transition always extends forward from its anchor, so it reads positive).
+  int get signedDurationMin =>
+      durationOverrideMin ??
+      (end == null ? 0 : end!.difference(start).inMinutes);
 
   factory TaskItem.fromJson(Map<String, dynamic> j) => TaskItem(
         id: j['id'] as String,
@@ -173,6 +189,7 @@ class TaskItem {
         createdVia: j['createdVia'] as String? ?? 'generated',
         ownerMemberId: j['ownerMemberId'] as String?,
         calendarEventId: j['calendarEventId'] as String?,
+        durationOverrideMin: j['durationOverrideMin'] as int?,
       );
 
   String get typeLabel => switch (type) {
@@ -192,20 +209,36 @@ class FeedItem {
     this.sourceCalendarName,
     this.timezone,
     this.status,
+    this.accountKind,
   });
 
   final String id;
   final String kind; // 'ics' | 'caldav' | 'google'
-  final String mode; // 'standard' | 'exception'
+  final String mode; // 'standard' | 'exception' | 'busy'
   final String? url;
   final String? sourceCalendarName;
   final String? timezone;
   final String? status;
+  // Account-backed feeds only: the linked account's kind ('google' | 'icloud'
+  // | 'caldav'), needed to tell an iCloud calendar apart from a generic CalDAV
+  // one — both share feed kind 'caldav'. Null for 'ics' feeds.
+  final String? accountKind;
 
   bool get isException => mode == 'exception';
 
+  /// Free/busy firewall feed: opaque availability blocks, google-kind only.
+  bool get isBusy => mode == 'busy';
+
   String get displayName =>
       sourceCalendarName ?? (url != null ? Uri.tryParse(url!)?.host ?? url! : 'Feed');
+
+  /// Human-readable feed source, e.g. "Google Calendar" / "iCloud Calendar" /
+  /// "CalDAV Calendar", instead of the raw kind.
+  String get sourceLabel => switch (kind) {
+        'google' => 'Google Calendar',
+        'caldav' => accountKind == 'icloud' ? 'iCloud Calendar' : 'CalDAV Calendar',
+        _ => kind.toUpperCase(),
+      };
 
   factory FeedItem.fromJson(Map<String, dynamic> j) => FeedItem(
         id: j['id'] as String,
@@ -215,21 +248,60 @@ class FeedItem {
         sourceCalendarName: j['sourceCalendarName'] as String?,
         timezone: j['timezone'] as String?,
         status: j['status'] as String?,
+        accountKind: j['accountKind'] as String?,
       );
 }
 
 /// A feed↔member link. Carries the exception-feed baseline plus the task-gen
 /// config synthesis stamps onto the events it produces.
+/// A validated/geocoded location. `lat`/`lon` are what let calendar clients
+/// (notably Apple Calendar) compute travel time. Mirrors the `GeoLocation`
+/// domain schema on the API. Filled by the platform geocoder (MapKit on iOS);
+/// null when the user only typed free text.
+class GeoLocation {
+  const GeoLocation({
+    required this.lat,
+    required this.lon,
+    this.title,
+    this.address,
+    this.radius,
+  });
+
+  final double lat;
+  final double lon;
+  final String? title;
+  final String? address;
+  final double? radius;
+
+  factory GeoLocation.fromJson(Map<String, dynamic> j) => GeoLocation(
+        lat: (j['lat'] as num).toDouble(),
+        lon: (j['lon'] as num).toDouble(),
+        title: j['title'] as String?,
+        address: j['address'] as String?,
+        radius: (j['radius'] as num?)?.toDouble(),
+      );
+
+  Map<String, dynamic> toJson() => {
+        'lat': lat,
+        'lon': lon,
+        if (title != null) 'title': title,
+        if (address != null) 'address': address,
+        if (radius != null) 'radius': radius,
+      };
+}
+
 class FeedLink {
   FeedLink({
     required this.id,
     required this.familyMemberId,
     required this.active,
+    this.position = 0,
     this.memberRelation,
     this.weekdayMask,
     this.dayStart,
     this.dayEnd,
     this.location,
+    this.locationGeo,
     this.defaultTaskType = 'transition',
     this.defaultDropoffWindowMin = 15,
     this.defaultPickupWindowMin = 15,
@@ -239,10 +311,14 @@ class FeedLink {
   final String familyMemberId;
   final String? memberRelation;
   final bool active;
+  // Priority rank of this feed within the member's calendar (0 = highest);
+  // breaks conflict ties. Manual events always outrank feeds.
+  final int position;
   final int? weekdayMask;
   final String? dayStart; // "HH:MM"
   final String? dayEnd;
   final String? location;
+  final GeoLocation? locationGeo;
 
   /// This calendar's task-rule terminal default.
   final String defaultTaskType; // 'transition' | 'attendance'
@@ -254,10 +330,14 @@ class FeedLink {
         familyMemberId: j['familyMemberId'] as String,
         memberRelation: j['memberRelation'] as String?,
         active: j['active'] as bool? ?? true,
+        position: j['position'] as int? ?? 0,
         weekdayMask: j['weekdayMask'] as int?,
         dayStart: j['dayStart'] as String?,
         dayEnd: j['dayEnd'] as String?,
         location: j['location'] as String?,
+        locationGeo: j['locationGeo'] == null
+            ? null
+            : GeoLocation.fromJson(j['locationGeo'] as Map<String, dynamic>),
         defaultTaskType: j['defaultTaskType'] as String? ?? 'transition',
         defaultDropoffWindowMin: j['defaultDropoffWindowMin'] as int? ?? 15,
         defaultPickupWindowMin: j['defaultPickupWindowMin'] as int? ?? 15,
@@ -437,6 +517,7 @@ class CalendarEventItem {
     required this.allDay,
     this.end,
     this.summary,
+    this.description,
     this.location,
     this.taskId,
   });
@@ -450,6 +531,7 @@ class CalendarEventItem {
   final DateTime? end;
   final bool allDay;
   final String? summary;
+  final String? description;
   final String? location;
 
   /// For claimed_task events: the task this event reflects (the recursion).
@@ -470,6 +552,7 @@ class CalendarEventItem {
       start: allDay ? parseAllDayDate(j['dtstart']) : parseTimestamp(j['dtstart']),
       end: j['dtend'] == null ? null : parseTimestamp(j['dtend']),
       summary: j['summary'] as String?,
+      description: j['description'] as String?,
       location: j['location'] as String?,
       taskId: j['taskId'] as String?,
     );
@@ -519,6 +602,58 @@ class PendingDecision {
       location: j['location'] as String?,
     );
   }
+}
+
+/// One of the two overlapping events in a [Conflict] (for the card copy).
+class ConflictEventRef {
+  ConflictEventRef({
+    required this.start,
+    required this.allDay,
+    this.end,
+    this.summary,
+    this.location,
+  });
+
+  final DateTime start;
+  final DateTime? end;
+  final bool allDay;
+  final String? summary;
+  final String? location;
+
+  factory ConflictEventRef.fromJson(Map<String, dynamic> j) {
+    final allDay = j['allDay'] as bool? ?? false;
+    return ConflictEventRef(
+      allDay: allDay,
+      start: allDay ? parseAllDayDate(j['dtstart']) : parseTimestamp(j['dtstart']),
+      end: j['dtend'] == null ? null : parseTimestamp(j['dtend']),
+      summary: j['summary'] as String?,
+      location: j['location'] as String?,
+    );
+  }
+}
+
+/// An agenda overlap on one member's unified calendar — they can't be in two
+/// places at once. The lower-priority [loser] is the one that would be split or
+/// trimmed around the higher-priority [winner] if resolved.
+class Conflict {
+  Conflict({
+    required this.id,
+    required this.familyMemberId,
+    required this.loser,
+    required this.winner,
+  });
+
+  final String id;
+  final String familyMemberId;
+  final ConflictEventRef loser;
+  final ConflictEventRef winner;
+
+  factory Conflict.fromJson(Map<String, dynamic> j) => Conflict(
+        id: j['id'] as String,
+        familyMemberId: j['familyMemberId'] as String,
+        loser: ConflictEventRef.fromJson(j['loser'] as Map<String, dynamic>),
+        winner: ConflictEventRef.fromJson(j['winner'] as Map<String, dynamic>),
+      );
 }
 
 /// A member's designated unified-calendar target (the write-through mirror).

@@ -22,8 +22,24 @@
 	<string>$(FLUTTER_BUILD_NAME)</string>
 	<key>CFBundleSignature</key>
 	<string>????</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<!-- Reversed iOS OAuth client id (google_sign_in's callback scheme),
+				     set per flavor in ios/Flutter/{staging,prod}*.xcconfig once the
+				     iOS OAuth client exists — see docs/AUTH.md's Google section. -->
+				<string>$(GOOGLE_IOS_URL_SCHEME)</string>
+			</array>
+		</dict>
+	</array>
 	<key>CFBundleVersion</key>
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
+	<key>GIDClientID</key>
+	<string>$(GOOGLE_IOS_CLIENT_ID)</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
 	<key>LSRequiresIPhoneOS</key>

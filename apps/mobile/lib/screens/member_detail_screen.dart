@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:share_plus/share_plus.dart';
 import '../models.dart';
 import '../state/auth.dart';
 import '../state/family.dart';
@@ -7,6 +9,8 @@ import '../state/nav.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_text.dart';
 import '../theme/person_colors.dart';
+import '../util/format.dart';
+import '../widgets/app_bottom_nav.dart';
 import '../widgets/primitives.dart';
 import '../widgets/settings.dart';
 import 'add_calendar_sheet.dart';
@@ -60,6 +64,13 @@ class MemberDetailScreen extends ConsumerWidget {
                         : null,
                   ),
                   const SizedBox(height: 24),
+                  if (isAdmin && !member.hasLogin) ...[
+                    _AccentSection(
+                      color: AppColors.indigo,
+                      child: _InviteSection(member: member),
+                    ),
+                    const SizedBox(height: 24),
+                  ],
                   _AccentSection(
                     color: AppColors.feedBlue,
                     child: _SourceCalendarsSection(member: member, canEdit: isAdmin),
@@ -130,8 +141,10 @@ class MemberDetailScreen extends ConsumerWidget {
       if (context.mounted) Navigator.of(context).pop();
     } catch (e) {
       if (context.mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('Remove failed: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Remove failed: $e'),
+          margin: snackBarMarginAboveNav(context),
+        ));
       }
     }
   }
@@ -144,6 +157,17 @@ class _SourceCalendarsSection extends ConsumerWidget {
   final Member member;
   final bool canEdit;
 
+  // The reorderable list below is given an explicit (non-intrinsic) height —
+  // see the comment at its Overlay.wrap call site for why. These add up the
+  // fixed pieces of one row so that height stays in sync with the layout:
+  // SettingRow forced to one line (IconTile 44 + its own 6+6 padding), plus
+  // the AppCard's 4+4 vertical padding, plus the 10 bottom margin between
+  // cards.
+  static const double _kFeedRowHeight = 44 + 6 + 6;
+  static const double _kFeedCardPadding = 4 + 4;
+  static const double _kFeedCardSpacing = 10;
+  static const double _kFeedSlotHeight = _kFeedRowHeight + _kFeedCardPadding + _kFeedCardSpacing;
+
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final feeds = ref.watch(feedsProvider).valueOrNull ?? const <FeedItem>[];
@@ -153,6 +177,13 @@ class _SourceCalendarsSection extends ConsumerWidget {
       final link = links.where((l) => l.familyMemberId == member.id).firstOrNull;
       if (link != null) linked.add((feed, link));
     }
+    // Highest priority first — the order conflict resolution uses on this
+    // member's calendar (the API stores it per feed↔member link).
+    linked.sort((a, b) => a.$2.position.compareTo(b.$2.position));
+
+    // Reordering only matters (and is only offered) once there's more than one
+    // source that could collide.
+    final canReorder = canEdit && linked.length > 1;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -168,54 +199,141 @@ class _SourceCalendarsSection extends ConsumerWidget {
           style: AppText.subtitle,
         ),
         const SizedBox(height: 12),
-        AppCard(
-          child: Column(
-            children: [
-              if (linked.isEmpty)
-                Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 8),
-                  child: Text('No source calendars yet', style: AppText.subtitle),
-                )
-              else
-                for (final (feed, link) in linked) ...[
-                  SettingRow(
-                    icon: feed.kind == 'ics'
-                        ? Icons.rss_feed_rounded
-                        : Icons.calendar_month_rounded,
-                    iconColor:
-                        feed.isException ? AppColors.amber : AppColors.feedBlue,
-                    title: feed.displayName,
-                    subtitle: feed.isException
-                        ? 'Exception-only · transformed'
-                        : 'Standard · ${feed.kind.toUpperCase()}',
-                    trailing: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        if (!link.active)
-                          const TintBadge('off', color: AppColors.coral)
-                        else
-                          const TintBadge('on', color: AppColors.green),
-                        const SizedBox(width: 6),
-                        const Icon(Icons.chevron_right_rounded,
-                            color: AppColors.textMuted),
-                      ],
+        if (linked.isEmpty)
+          AppCard(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 8),
+              child: Text('No source calendars yet', style: AppText.subtitle),
+            ),
+          )
+        else if (canReorder)
+          // ReorderableListView drops its dragged item into the nearest
+          // ancestor Overlay (Flutter looks it up via Overlay.of), which by
+          // default is the app-level one from MaterialApp/Navigator — so the
+          // floating card would paint above the whole screen, including the
+          // Unified calendar section below, instead of staying within this
+          // list. Overlay.wrap gives it a local Overlay to float in instead,
+          // clipped to (and sized to) just this list.
+          //
+          // That local Overlay can't be intrinsically sized (the parent
+          // _AccentSection stretches its accent bar via IntrinsicHeight, and
+          // ReorderableListView's shrink-wrapping viewport refuses to report
+          // an intrinsic height), so it's given an explicit height computed
+          // from the fixed per-row height above instead.
+          SizedBox(
+            height: linked.length * _kFeedSlotHeight,
+            child: Overlay.wrap(
+              child: ReorderableListView(
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                // onReorderItem (not the deprecated onReorder) already adjusts
+                // newIndex for the item removed at oldIndex — see _reorder.
+                onReorderItem: (o, n) => _reorder(ref, linked, o, n),
+                children: [
+                  for (final (feed, link) in linked)
+                    Padding(
+                      key: ValueKey(link.id),
+                      padding: const EdgeInsets.only(bottom: _kFeedCardSpacing),
+                      child: AppCard(
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                        child: SizedBox(
+                          height: _kFeedRowHeight,
+                          child: _feedRow(context, feed, link, draggable: true),
+                        ),
+                      ),
                     ),
-                    onTap: () => _openLink(context, feed, link),
-                  ),
+                ],
+              ),
+            ),
+          )
+        else
+          AppCard(
+            child: Column(
+              children: [
+                for (final (feed, link) in linked) ...[
+                  _feedRow(context, feed, link),
                   const Divider(height: 20),
                 ],
-              if (canEdit)
-                SettingRow(
-                  icon: Icons.add_rounded,
-                  iconColor: AppColors.feedBlue,
-                  title: 'Add another calendar',
-                  onTap: () => showAddCalendarSheet(context, ref, member),
-                ),
-            ],
+              ],
+            ),
           ),
-        ),
+        if (canReorder) ...[
+          const SizedBox(height: 4),
+          Text('Drag to set priority. When events overlap, the source higher '
+              'in this list wins — the other is trimmed or split around it. '
+              'Events added by hand always win over feeds.',
+              style: AppText.subtitle),
+          const SizedBox(height: 12),
+        ],
+        if (canEdit)
+          Center(
+            child: TextButton.icon(
+              onPressed: () => showAddCalendarSheet(context, ref, member),
+              icon: const Icon(Icons.add_rounded, size: 18, color: AppColors.feedBlue),
+              label: Text('Add another calendar',
+                  style: font(kBodyFont, 13, 700, color: AppColors.feedBlue)),
+            ),
+          ),
       ],
     );
+  }
+
+  /// One source-calendar row. In the reorderable layout (`draggable`) the
+  /// platform supplies the drag handle, so the trailing nav chevron is dropped;
+  /// the card still opens the link editor on tap.
+  Widget _feedRow(BuildContext context, FeedItem feed, FeedLink link,
+      {bool draggable = false}) {
+    return SettingRow(
+      icon: feed.isBusy
+          ? Icons.lock_clock_rounded
+          : feed.kind == 'ics'
+              ? Icons.rss_feed_rounded
+              : Icons.calendar_month_rounded,
+      iconColor: feed.isException
+          ? AppColors.amber
+          : feed.isBusy
+              ? AppColors.purple
+              : AppColors.feedBlue,
+      title: feed.displayName,
+      subtitle: feed.isException
+          ? 'Exception-only · transformed'
+          : feed.isBusy
+              ? 'Busy-only · free/busy'
+              : 'Standard · ${feed.sourceLabel}',
+      // The draggable list gives each row a fixed height (see _kFeedRowHeight)
+      // instead of measuring it via intrinsics, so content must not wrap.
+      singleLine: draggable,
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (!link.active)
+            const TintBadge('off', color: AppColors.coral)
+          else
+            const TintBadge('on', color: AppColors.green),
+          if (!draggable) ...[
+            const SizedBox(width: 6),
+            const Icon(Icons.chevron_right_rounded, color: AppColors.textMuted),
+          ],
+        ],
+      ),
+      onTap: () => _openLink(context, feed, link),
+    );
+  }
+
+  Future<void> _reorder(
+      WidgetRef ref, List<(FeedItem, FeedLink)> linked, int oldIndex, int newIndex) async {
+    // onReorderItem already accounts for the removed item, so no newIndex fixup.
+    final order = linked.map((e) => e.$2.id).toList();
+    final moved = order.removeAt(oldIndex);
+    order.insert(newIndex, moved);
+    final familyId = await ref.read(familyProvider.future);
+    await ref.read(apiClientProvider).reorderMemberFeedLinks(familyId, member.id, order);
+    // The member's feeds each carry one of these links; refresh them plus the
+    // derived calendar so any re-prioritisation shows immediately.
+    for (final (feed, _) in linked) {
+      ref.invalidate(feedLinksProvider(feed.id));
+    }
+    ref.invalidate(calendarEventsProvider);
   }
 
   void _openLink(BuildContext context, FeedItem feed, FeedLink link) {
@@ -223,6 +341,176 @@ class _SourceCalendarsSection extends ConsumerWidget {
       builder: (_) =>
           FeedBaselineScreen(member: member, feed: feed, existingLink: link),
     ));
+  }
+}
+
+/// "Invite link" — for a member with no login yet (a pre-created caretaker
+/// slot), an admin can issue a one-time code that links a real account to this
+/// member. Shown only while the slot is unclaimed; once linked this section
+/// disappears (gated by `!member.hasLogin` in the parent build).
+class _InviteSection extends ConsumerStatefulWidget {
+  const _InviteSection({required this.member});
+  final Member member;
+
+  @override
+  ConsumerState<_InviteSection> createState() => _InviteSectionState();
+}
+
+class _InviteSectionState extends ConsumerState<_InviteSection> {
+  String? _token;
+  String? _url;
+  DateTime? _expiresAt;
+  bool _busy = false;
+  String? _error;
+
+  /// The thing we share: the full deep-link URL when the server composed one
+  /// (deployed envs with PUBLIC_ORIGIN), else the raw token (local dev).
+  String? get _shareable => _url ?? _token;
+
+  Future<void> _generate() async {
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      final familyId = await ref.read(familyProvider.future);
+      final res =
+          await ref.read(apiClientProvider).issueMemberInvite(familyId, widget.member.id);
+      final expires = res['expiresAt'];
+      setState(() {
+        _token = res['token'] as String;
+        _url = res['url'] as String?;
+        _expiresAt = expires is String ? DateTime.tryParse(expires) : null;
+      });
+    } catch (e) {
+      setState(() => _error = 'Could not generate an invite: $e');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _share() async {
+    final link = _shareable;
+    if (link == null) return;
+    await Share.share(
+      link,
+      subject: 'Join ${widget.member.relationName} on I Got That',
+    );
+  }
+
+  void _copy() {
+    final link = _shareable;
+    if (link == null) return;
+    Clipboard.setData(ClipboardData(text: link));
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: const Text('Invite link copied'),
+      margin: snackBarMarginAboveNav(context),
+    ));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const SectionEyebrow('Invite link', color: AppColors.indigo),
+        const SizedBox(height: 8),
+        Text(
+          '${widget.member.relationName} has no login yet. Generate a link so '
+          'they can sign in and claim this profile.',
+          style: AppText.subtitle,
+        ),
+        const SizedBox(height: 12),
+        if (_token == null)
+          AppCard(
+            child: Row(
+              children: [
+                const IconTile(icon: Icons.link_rounded, color: AppColors.indigo),
+                const SizedBox(width: 14),
+                Expanded(
+                  child: Text('No active invite yet', style: AppText.sectionItemTitle),
+                ),
+                PillButton(
+                  label: _busy ? 'Generating…' : 'Generate',
+                  variant: PillVariant.indigo,
+                  onPressed: _busy ? null : _generate,
+                ),
+              ],
+            ),
+          )
+        else
+          AppCard(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: SelectableText(
+                        _shareable!,
+                        maxLines: 2,
+                        style: const TextStyle(fontFamily: 'monospace', fontSize: 13),
+                      ),
+                    ),
+                    IconButton(
+                      tooltip: 'Copy',
+                      icon: const Icon(Icons.copy_rounded, color: AppColors.textMuted),
+                      onPressed: _copy,
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    PillButton(
+                      label: 'Share link',
+                      variant: PillVariant.indigo,
+                      onPressed: _share,
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  _shareCopy(),
+                  style: AppText.subtitle,
+                ),
+                const SizedBox(height: 10),
+                SettingRow(
+                  icon: Icons.refresh_rounded,
+                  iconColor: AppColors.indigo,
+                  title: 'Generate a new link',
+                  onTap: _busy ? null : _generate,
+                ),
+              ],
+            ),
+          ),
+        if (_error != null) ...[
+          const SizedBox(height: 8),
+          Text(_error!, style: font(kBodyFont, 13, 500, color: AppColors.coral)),
+        ],
+      ],
+    );
+  }
+
+  /// Helper text under the invite link. When the server composed a URL, the
+  /// recipient just taps it (opens the app, or web). Without one (local dev), we
+  /// fall back to the paste-the-code instructions.
+  String _shareCopy() {
+    final name = widget.member.relationName;
+    final expiry = _expiresAt != null ? ' It expires ${_formatExpiry(_expiresAt!)}.' : '';
+    if (_url != null) {
+      return 'Send this to $name — tapping it opens the app (or the web) and '
+          'walks them through joining in one step.$expiry';
+    }
+    return 'Share this code with $name. Once they sign in, they can paste it '
+        'under "Redeem invite code" on the Me tab.$expiry';
+  }
+
+  String _formatExpiry(DateTime expiresAt) {
+    final days = expiresAt.toLocal().difference(DateTime.now()).inDays;
+    if (days <= 0) return 'soon';
+    if (days == 1) return 'in 1 day';
+    return 'in $days days';
   }
 }
 
@@ -354,6 +642,17 @@ class _UnifiedCalendarSection extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final target = ref.watch(memberCalendarProvider(member.id)).valueOrNull;
     final accounts = ref.watch(accountsProvider).valueOrNull ?? const <ExternalAccount>[];
+    final overrides = ref.watch(memberOverridesProvider(member.id)).valueOrNull ?? const <Conflict>[];
+    final now = DateTime.now();
+    // In-progress or upcoming: the loser's original span hasn't ended yet.
+    // All-day events compare by day (a bare timestamp reads as "already past"
+    // for anything but the first instant of today).
+    final activeOverrides = overrides.where((o) {
+      final loser = o.loser;
+      final end = loser.end ?? loser.start;
+      if (loser.allDay) return !dayKey(end).isBefore(dayKey(now));
+      return end.isAfter(now);
+    }).toList();
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -419,6 +718,10 @@ class _UnifiedCalendarSection extends ConsumerWidget {
             enabled: canEdit,
             onTap: () => _pickTarget(context, ref, null),
           ),
+        if (activeOverrides.isNotEmpty) ...[
+          const SizedBox(height: 20),
+          _OverridesList(member: member, overrides: activeOverrides, canEdit: canEdit),
+        ],
       ],
     );
   }
@@ -434,6 +737,109 @@ class _UnifiedCalendarSection extends ConsumerWidget {
       isScrollControlled: true,
       builder: (sheetCtx) =>
           _TargetPickerSheet(member: member, accounts: accounts, current: current),
+    );
+  }
+}
+
+/// "Overrides in effect" — resolved conflicts (split/masked events) for this
+/// member's in-progress or upcoming events. Lets an admin review and undo a
+/// bad "split around it" call from Home: reverting unmasks the event and puts
+/// the overlap back up for a fresh decision.
+class _OverridesList extends ConsumerWidget {
+  const _OverridesList({required this.member, required this.overrides, required this.canEdit});
+  final Member member;
+  final List<Conflict> overrides;
+  final bool canEdit;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SectionEyebrow(
+          'Overrides in effect',
+          color: AppColors.green,
+          trailing: TintBadge('${overrides.length}', color: AppColors.green),
+        ),
+        const SizedBox(height: 8),
+        Text(
+          'Events split or trimmed by a conflict decision. Revert to undo the '
+          'split and put the overlap back up for a decision.',
+          style: AppText.subtitle,
+        ),
+        const SizedBox(height: 12),
+        for (final o in overrides) ...[
+          _OverrideCard(
+            conflict: o,
+            onRevert: canEdit ? () => _revert(context, ref, o) : null,
+          ),
+          const SizedBox(height: 10),
+        ],
+      ],
+    );
+  }
+
+  Future<void> _revert(BuildContext context, WidgetRef ref, Conflict o) async {
+    try {
+      final familyId = await ref.read(familyProvider.future);
+      await ref.read(apiClientProvider).revertConflict(familyId, o.id);
+      ref.invalidate(memberOverridesProvider(member.id));
+      ref.invalidate(conflictsProvider);
+      ref.invalidate(calendarEventsProvider);
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text("Couldn't revert: $e"),
+          margin: snackBarMarginAboveNav(context),
+        ));
+      }
+    }
+  }
+}
+
+/// One overridden event: what it was split around, and when — with an inline
+/// revert control.
+class _OverrideCard extends StatelessWidget {
+  const _OverrideCard({required this.conflict, required this.onRevert});
+  final Conflict conflict;
+  final VoidCallback? onRevert;
+
+  @override
+  Widget build(BuildContext context) {
+    final winner = conflict.winner;
+    final loser = conflict.loser;
+    final when = winner.allDay
+        ? homeDayHeader(dayKey(winner.start), DateTime.now())
+        : friendlyTime(winner.start);
+    return AppCard(
+      child: Row(
+        children: [
+          const IconTile(icon: Icons.content_cut_rounded, color: AppColors.green, size: 38),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  loser.summary ?? 'An event',
+                  style: AppText.sectionItemTitle,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  'Split around ${winner.summary ?? 'another event'} · $when',
+                  style: AppText.subtitle,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 10),
+          PillButton(label: 'Revert', dense: true, onPressed: onRevert),
+        ],
+      ),
     );
   }
 }

@@ -1,11 +1,39 @@
+import type { GeoLocation } from '@igt/domain';
 import ICAL from 'ical.js';
 import ical, {
   ICalAlarmType,
   ICalCalendarMethod,
   ICalEventStatus,
   type ICalEvent,
+  type ICalLocation,
 } from 'ical-generator';
 import { createDAVClient, fetchCalendarObjects } from 'tsdav';
+
+/**
+ * Resolve a display `location` string plus optional geocode into what
+ * ical-generator's `event.location()` accepts. With coords we return the
+ * structured form (title + address + `geo`), which makes ical-generator emit
+ * both `GEO` and Apple's `X-APPLE-STRUCTURED-LOCATION` — the properties Apple
+ * Calendar reads to compute travel time without re-geocoding. Without coords we
+ * fall back to the plain string (today's behaviour); with neither, `undefined`.
+ */
+function resolveIcalLocation(
+  location: string | null | undefined,
+  geo: GeoLocation | null | undefined,
+): ICalLocation | string | undefined {
+  if (geo) {
+    return {
+      title: geo.title ?? location ?? geo.address ?? 'Location',
+      address: geo.address ?? location ?? undefined,
+      // ical-generator only emits X-APPLE-STRUCTURED-LOCATION when a radius is
+      // present, and Apple needs that property (not bare GEO) to drive travel
+      // time — so default a metres radius when the geocode didn't supply one.
+      radius: geo.radius ?? 100,
+      geo: { lat: geo.lat, lon: geo.lon },
+    };
+  }
+  return location ? location : undefined;
+}
 
 /**
  * Thin wrappers over OSS libraries — we do NOT hand-roll iCalendar/CalDAV.
@@ -33,15 +61,96 @@ export interface Occurrence {
 }
 
 /**
- * Convert an ICAL.Time to a JS Date. For date-only (all-day) values, ical.js's
- * `toJSDate()` resolves the *floating* date using the host runtime's timezone
- * (UTC on workerd, machine-local elsewhere) — which shifts all-day events by
- * the offset. Anchor them explicitly to UTC midnight from the y/m/d parts so the
- * calendar date is stable everywhere; timed values keep normal instant parsing.
+ * Resolve a wall-clock date/time in an IANA zone to the instant it denotes,
+ * DST-aware. `Intl.DateTimeFormat` can only format an instant *into* a zone,
+ * not parse one back out, so this guesses UTC==wall-clock, reads back what
+ * that guess renders as in `tz`, and corrects by the difference — exact
+ * except in the (here irrelevant) instant of a DST fall-back repeat.
  */
-function icalTimeToDate(t: ICAL.Time): Date {
+function zonedWallTimeToInstant(
+  year: number,
+  month: number,
+  day: number,
+  hour: number,
+  minute: number,
+  second: number,
+  tz: string,
+): Date {
+  const guess = Date.UTC(year, month - 1, day, hour, minute, second);
+  const dtf = new Intl.DateTimeFormat('en-US', {
+    timeZone: tz,
+    hourCycle: 'h23',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  });
+  const p: Record<string, number> = {};
+  for (const part of dtf.formatToParts(new Date(guess))) {
+    if (part.type !== 'literal') p[part.type] = Number(part.value);
+  }
+  // h23 can render midnight as 24; normalize back to 0 for Date.UTC.
+  const renderedAsUtc = Date.UTC(
+    p.year!,
+    p.month! - 1,
+    p.day!,
+    p.hour === 24 ? 0 : p.hour!,
+    p.minute!,
+    p.second!,
+  );
+  return new Date(guess - (renderedAsUtc - guess));
+}
+
+/**
+ * Convert an ICAL.Time to a JS Date.
+ *
+ * Date-only (all-day) values: ical.js's `toJSDate()` resolves the *floating*
+ * date using the host runtime's timezone (UTC on workerd, machine-local
+ * elsewhere) — which shifts all-day events by the offset. Anchor them
+ * explicitly to UTC midnight from the y/m/d parts so the calendar date is
+ * stable everywhere.
+ *
+ * Timed values with an explicit TZID or trailing `Z` already resolve to the
+ * correct instant via ical.js's own VTIMEZONE handling — keep `toJSDate()`.
+ * Timed values with *neither* (RFC 5545 "floating" time — no zone info at
+ * all, e.g. many booking-software exports) are a genuine ambiguity: the wall
+ * clock is meaningless without a zone. `toJSDate()` would resolve it using
+ * the host runtime's timezone, silently misinterpreting an 11:00 appointment
+ * as 11:00 UTC on workerd — hours off for any non-UTC provider. Given a
+ * `defaultTimezone` hint (the feed's known IANA zone), interpret the floating
+ * wall-clock time in that zone instead; with no hint, fall back to the old
+ * (host-timezone-dependent) behavior since that's the best information
+ * available.
+ */
+function icalTimeToDate(t: ICAL.Time, defaultTimezone?: string): Date {
   if (t.isDate) return new Date(Date.UTC(t.year, t.month - 1, t.day));
+  if (defaultTimezone && t.zone === ICAL.Timezone.localTimezone) {
+    return zonedWallTimeToInstant(t.year, t.month, t.day, t.hour, t.minute, t.second, defaultTimezone);
+  }
   return t.toJSDate();
+}
+
+/**
+ * An occurrence belongs in [windowStart, windowEnd) if it starts before the
+ * window closes, and either starts on/after windowStart or — being multi-day
+ * — is still ongoing (its end is after windowStart). Without the second
+ * clause, a still-relevant multi-day/all-day span that began before "now"
+ * (e.g. a closure spanning today through tomorrow) would be dropped from
+ * ingestion entirely, taking tomorrow's coverage down with it. Mirrors the
+ * overlap check the synthesis DB query already uses (`synthesisWindow`'s
+ * `dtstart < window.end AND (dtstart >= window.start OR dtend > window.start)`).
+ */
+function occurrenceInWindow(
+  start: Date,
+  end: Date | null,
+  windowStart: Date,
+  windowEnd: Date,
+): boolean {
+  if (start >= windowEnd) return false;
+  if (start >= windowStart) return true;
+  return end != null && end > windowStart;
 }
 
 export interface ExpandOptions {
@@ -51,6 +160,13 @@ export interface ExpandOptions {
   windowEnd?: Date;
   /** Safety cap on expanded occurrences per recurring event. */
   maxPerEvent?: number;
+  /**
+   * IANA zone to interpret "floating" timed values in (no TZID, no trailing
+   * `Z` — RFC 5545 leaves these ambiguous). Typically the feed's own
+   * previously-detected `extractTimezone` result; without it, floating times
+   * fall back to the host runtime's timezone (see `icalTimeToDate`).
+   */
+  defaultTimezone?: string;
 }
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -101,13 +217,14 @@ export function parseAndExpand(
   for (const ve of standalone) {
     const event = new ICAL.Event(ve);
     if (!event.startDate) continue;
-    const start = icalTimeToDate(event.startDate);
-    if (start < windowStart || start >= windowEnd) continue;
+    const start = icalTimeToDate(event.startDate, opts.defaultTimezone);
+    const end = event.endDate ? icalTimeToDate(event.endDate, opts.defaultTimezone) : null;
+    if (!occurrenceInWindow(start, end, windowStart, windowEnd)) continue;
     out.push({
       uid: event.uid,
       recurrenceId: null,
       start,
-      end: event.endDate ? icalTimeToDate(event.endDate) : null,
+      end,
       summary: event.summary ?? null,
       location: event.location ?? null,
       allDay: event.startDate.isDate,
@@ -123,17 +240,24 @@ export function parseAndExpand(
     let count = 0;
     let next: ICAL.Time | null;
     while ((next = iterator.next())) {
-      const startJs = next.toJSDate();
-      if (startJs >= windowEnd) break;
-      if (++count > maxPerEvent) break;
-      if (startJs < windowStart) continue;
-
+      // Compute the (possibly floating-timezone-corrected) start before the
+      // windowEnd break check — comparing the raw `next.toJSDate()` here would
+      // use the host runtime's timezone instead of `defaultTimezone`, which
+      // for zones behind UTC breaks the loop too early and silently drops
+      // trailing in-window occurrences.
       const details = event.getOccurrenceDetails(next);
+      const start = icalTimeToDate(details.startDate, opts.defaultTimezone);
+      if (start >= windowEnd) break;
+      if (++count > maxPerEvent) break;
+
+      const end = details.endDate ? icalTimeToDate(details.endDate, opts.defaultTimezone) : null;
+      if (!occurrenceInWindow(start, end, windowStart, windowEnd)) continue;
+
       out.push({
         uid: event.uid,
-        recurrenceId: startJs.toISOString(),
-        start: icalTimeToDate(details.startDate),
-        end: details.endDate ? icalTimeToDate(details.endDate) : null,
+        recurrenceId: start.toISOString(),
+        start,
+        end,
         summary: details.item.summary ?? null,
         location: details.item.location ?? null,
         allDay: details.startDate.isDate,
@@ -148,13 +272,14 @@ export function parseAndExpand(
     for (const ve of exVeList) {
       const event = new ICAL.Event(ve);
       if (!event.startDate || !event.recurrenceId) continue;
-      const start = icalTimeToDate(event.startDate);
-      if (start < windowStart || start >= windowEnd) continue;
+      const start = icalTimeToDate(event.startDate, opts.defaultTimezone);
+      const end = event.endDate ? icalTimeToDate(event.endDate, opts.defaultTimezone) : null;
+      if (!occurrenceInWindow(start, end, windowStart, windowEnd)) continue;
       out.push({
         uid: event.uid,
-        recurrenceId: icalTimeToDate(event.recurrenceId).toISOString(),
+        recurrenceId: icalTimeToDate(event.recurrenceId, opts.defaultTimezone).toISOString(),
         start,
-        end: event.endDate ? icalTimeToDate(event.endDate) : null,
+        end,
         summary: event.summary ?? null,
         location: event.location ?? null,
         allDay: event.startDate.isDate,
@@ -285,6 +410,8 @@ export interface InviteEventInput {
   summary: string;
   description?: string;
   location?: string;
+  /** Geocoded coords for `location` (emits GEO + X-APPLE-STRUCTURED-LOCATION). */
+  locationGeo?: GeoLocation | null;
   /** Minutes before start for display alarms (VALARM). */
   alertMinutes?: number[];
   /** IANA timezone (from the source feed) to render DTSTART/DTEND in; UTC if absent. */
@@ -324,7 +451,11 @@ function buildICalendar(
     status,
   });
   if (input.description) event.description(input.description);
-  if (input.location) event.location(input.location);
+  const inviteLocation = resolveIcalLocation(input.location, input.locationGeo);
+  if (inviteLocation) {
+    event.location(inviteLocation);
+    if (input.locationGeo) event.x('X-APPLE-TRAVEL-ADVISORY-BEHAVIOR', 'AUTOMATIC');
+  }
   if (method === ICalCalendarMethod.REQUEST) addAlarms(event, input.alertMinutes);
   event.organizer({
     name: input.organizerName ?? 'Family Logistics',
@@ -350,6 +481,8 @@ export function buildStoredEventICalendar(input: {
   summary: string;
   description?: string;
   location?: string;
+  /** Geocoded coords for `location` (emits GEO + X-APPLE-STRUCTURED-LOCATION). */
+  locationGeo?: GeoLocation | null;
   /** Minutes before start for display alarms (VALARM). */
   alertMinutes?: number[];
   /** IANA timezone (from the source feed) to render DTSTART/DTEND in; UTC if absent. */
@@ -368,11 +501,14 @@ export function buildStoredEventICalendar(input: {
     status: ICalEventStatus.CONFIRMED,
   });
   if (input.description) event.description(input.description);
-  if (input.location) {
-    event.location(input.location);
+  const storedLocation = resolveIcalLocation(input.location, input.locationGeo);
+  if (storedLocation) {
+    event.location(storedLocation);
     // Opt the event into Apple Calendar's automatic travel time. Apple only
-    // computes it once it geocodes the LOCATION, but without this flag it never
-    // tries. Harmless on Google/other clients, which ignore X-APPLE-* props.
+    // computes it once it can geocode the location; a structured location
+    // (GEO + X-APPLE-STRUCTURED-LOCATION) gives it the coordinates directly, so
+    // travel time works reliably. Without this flag Apple never tries at all.
+    // Harmless on Google/other clients, which ignore X-APPLE-* props.
     event.x('X-APPLE-TRAVEL-ADVISORY-BEHAVIOR', 'AUTOMATIC');
   }
   addAlarms(event, input.alertMinutes);
@@ -446,6 +582,11 @@ export async function fetchCalDavOccurrences(
   for (const obj of objects) {
     const data = typeof obj.data === 'string' ? obj.data : '';
     if (!data) continue;
+    // Each time-range REPORT object is its own per-object VCALENDAR, so its
+    // floating times (if any) need its own TZID/X-WR-TIMEZONE, not another
+    // object's — falling back to the caller's hint (or the collection's
+    // first-seen zone) only when this object carries none itself.
+    const objTimezone = extractTimezone(data) ?? opts.defaultTimezone ?? timezone ?? undefined;
     if (!timezone) timezone = extractTimezone(data);
     try {
       out.push(
@@ -453,6 +594,7 @@ export async function fetchCalDavOccurrences(
           windowStart,
           windowEnd,
           maxPerEvent: opts.maxPerEvent,
+          defaultTimezone: objTimezone,
         }),
       );
     } catch {
@@ -552,6 +694,86 @@ export async function fetchGoogleOccurrences(
     pageToken = json.nextPageToken;
   } while (pageToken);
   return { occurrences: out, timezone };
+}
+
+interface GoogleFreeBusyInterval {
+  start?: string;
+  end?: string;
+}
+interface GoogleFreeBusyResponse {
+  calendars?: Record<
+    string,
+    { busy?: GoogleFreeBusyInterval[]; errors?: { domain?: string; reason?: string }[] }
+  >;
+}
+
+/**
+ * Deterministic UID for a busy interval. Free/busy responses carry no event
+ * identity at all, so the interval itself is the identity: a moved/merged/split
+ * block is a *different* row, and busy ingest reconciles by deleting stale keys
+ * (see `ingest.ts`) rather than relying on per-UID updates.
+ */
+export function busyIntervalUid(start: Date, end: Date): string {
+  return `fb:${start.toISOString()}/${end.toISOString()}`;
+}
+
+/**
+ * Read opaque busy intervals from a calendar via `freebusy.query`. This is the
+ * privacy-preserving read behind busy-mode feeds: with only freeBusyReader
+ * access (e.g. a work calendar shared to the personal account as "see only
+ * free/busy"), Google returns start/end intervals and nothing else — the
+ * detail-stripping is enforced by Google's ACL, not by this code. A calendar
+ * that is unshared/nonexistent comes back as a per-calendar `errors` entry
+ * (reason `notFound` for both), which throws so the feed is marked 'error'.
+ * Returns `timezone: null`: intervals are absolute instants, not wall times.
+ */
+export async function fetchGoogleFreeBusy(
+  accessToken: string,
+  calendarId: string,
+  opts: ExpandOptions = {},
+  fetchImpl: typeof fetch = fetch.bind(globalThis),
+): Promise<AccountOccurrences> {
+  const windowStart = opts.windowStart ?? new Date();
+  const windowEnd = opts.windowEnd ?? new Date(Date.now() + 90 * DAY);
+  const res = await fetchImpl('https://www.googleapis.com/calendar/v3/freeBusy', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({
+      timeMin: windowStart.toISOString(),
+      timeMax: windowEnd.toISOString(),
+      items: [{ id: calendarId }],
+    }),
+  });
+  if (!res.ok) throw new Error(`google freebusy failed: ${res.status}`);
+  const json = (await res.json()) as GoogleFreeBusyResponse;
+  // Google keys the response by the requested id; fall back to the single
+  // entry in case it canonicalizes (we only ever query one calendar).
+  const cal =
+    json.calendars?.[calendarId] ?? Object.values(json.calendars ?? {})[0];
+  if (!cal) throw new Error('google freebusy: calendar missing from response');
+  if (cal.errors && cal.errors.length > 0) {
+    const reasons = cal.errors.map((e) => e.reason ?? 'unknown').join(',');
+    throw new Error(`google freebusy calendar error: ${reasons}`);
+  }
+  const occurrences: Occurrence[] = [];
+  for (const b of cal.busy ?? []) {
+    if (!b.start || !b.end) continue;
+    const start = new Date(b.start);
+    const end = new Date(b.end);
+    occurrences.push({
+      uid: busyIntervalUid(start, end),
+      recurrenceId: null,
+      start,
+      end,
+      summary: null,
+      location: null,
+      allDay: false,
+    });
+  }
+  return { occurrences, timezone: null };
 }
 
 export interface CalendarChoice {

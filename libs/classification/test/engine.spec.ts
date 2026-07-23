@@ -1,15 +1,21 @@
 import { describe, expect, it } from 'vitest';
 import {
   coveredUtcDays,
+  detectConflicts,
   firstMatch,
   generateTaskIntents,
+  intervalsOverlap,
   resolveTaskResult,
   ruleMatches,
+  subtractIntervals,
+  synthesizeBusy,
   synthesizeException,
   synthesizeStandard,
   taskRulesForCalendar,
+  transitionWindow,
   wallTimeToUtc,
   type OverrideRuleLike,
+  type PriorityInterval,
   type SourceOccurrence,
   type TaskRuleLike,
 } from '../src/index.js';
@@ -134,6 +140,39 @@ describe('synthesizeStandard', () => {
       summary: 'Soccer practice',
       location: 'Field 3',
     });
+  });
+});
+
+// --- Stage A: busy feeds ------------------------------------------------------
+
+describe('synthesizeBusy', () => {
+  it('emits detail-free fb: blocks labeled with the link summary, never pends', () => {
+    const interval = occ({
+      dtstart: new Date('2026-07-06T15:00:00Z'),
+      dtend: new Date('2026-07-06T16:30:00Z'),
+    });
+    const link = { ...schoolLink, baselineSummary: 'Busy (work)' };
+    const { events, pending } = synthesizeBusy(link, [interval]);
+    expect(pending).toEqual([]);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      synthKey: `fb:link-1:${interval.id}`,
+      sourceEventId: interval.id,
+      summary: 'Busy (work)',
+      location: null,
+      description: null,
+      allDay: false,
+    });
+    expect(events[0]!.dtstart.toISOString()).toBe('2026-07-06T15:00:00.000Z');
+    expect(events[0]!.dtend!.toISOString()).toBe('2026-07-06T16:30:00.000Z');
+  });
+
+  it('defaults the label to "Busy" and never leaks source text fields', () => {
+    // Even if a source row somehow carried text, busy synthesis drops it.
+    const interval = occ({ summary: 'should never appear', location: 'nor this' });
+    const { events } = synthesizeBusy({ ...schoolLink, baselineSummary: null }, [interval]);
+    expect(events[0]!.summary).toBe('Busy');
+    expect(events[0]!.location).toBeNull();
   });
 });
 
@@ -269,5 +308,164 @@ describe('generateTaskIntents', () => {
     );
     expect(intents[0]?.dtend).toBeNull();
     expect(intents[1]?.dtstart).toEqual(span.dtstart); // pickup falls back to start
+  });
+});
+
+describe('transitionWindow', () => {
+  const anchor = new Date('2026-07-06T15:30:00Z');
+
+  it('a positive length extends forward from the anchor', () => {
+    const w = transitionWindow(anchor, 30);
+    expect(w.dtstart).toEqual(anchor);
+    expect(w.dtend?.toISOString()).toBe('2026-07-06T16:00:00.000Z');
+  });
+
+  it('a negative length reverses the window before the anchor, keeping it ordered', () => {
+    const w = transitionWindow(anchor, -20);
+    expect(w.dtstart.toISOString()).toBe('2026-07-06T15:10:00.000Z');
+    expect(w.dtend).toEqual(anchor);
+    expect(w.dtstart.getTime()).toBeLessThan(w.dtend!.getTime());
+  });
+
+  it('zero collapses to a point in time', () => {
+    const w = transitionWindow(anchor, 0);
+    expect(w.dtstart).toEqual(anchor);
+    expect(w.dtend).toBeNull();
+  });
+});
+
+// --- Stage C: conflict detection & masking ---------------------------------
+
+describe('intervalsOverlap', () => {
+  const d = (s: string) => new Date(s);
+  it('true when two timed intervals share an instant', () => {
+    expect(
+      intervalsOverlap(
+        { dtstart: d('2026-07-06T08:30:00Z'), dtend: d('2026-07-06T15:00:00Z') },
+        { dtstart: d('2026-07-06T10:00:00Z'), dtend: d('2026-07-06T11:00:00Z') },
+      ),
+    ).toBe(true);
+  });
+  it('false when intervals only touch at an edge (half-open)', () => {
+    expect(
+      intervalsOverlap(
+        { dtstart: d('2026-07-06T08:00:00Z'), dtend: d('2026-07-06T10:00:00Z') },
+        { dtstart: d('2026-07-06T10:00:00Z'), dtend: d('2026-07-06T11:00:00Z') },
+      ),
+    ).toBe(false);
+  });
+  it('false when either event is a point (no end)', () => {
+    expect(
+      intervalsOverlap(
+        { dtstart: d('2026-07-06T10:00:00Z'), dtend: null },
+        { dtstart: d('2026-07-06T08:00:00Z'), dtend: d('2026-07-06T15:00:00Z') },
+      ),
+    ).toBe(false);
+  });
+});
+
+describe('detectConflicts', () => {
+  const d = (s: string) => new Date(s);
+  let seq = 0;
+  function ev(p: Partial<PriorityInterval>): PriorityInterval {
+    return {
+      key: p.key ?? `ev-${seq++}`,
+      dtstart: p.dtstart ?? d('2026-07-06T08:30:00Z'),
+      dtend: p.dtend ?? d('2026-07-06T15:00:00Z'),
+      priority: p.priority ?? 0,
+      maskable: p.maskable ?? true,
+    };
+  }
+
+  it('flags a maskable baseline overlapped by a higher-priority manual event', () => {
+    const baseline = ev({ key: 'bl:x', priority: 5, maskable: true });
+    const appt = ev({
+      key: 'ext:doctor',
+      priority: -1, // manual/human beats every feed
+      maskable: false,
+      dtstart: d('2026-07-06T10:00:00Z'),
+      dtend: d('2026-07-06T11:00:00Z'),
+    });
+    expect(detectConflicts([baseline, appt])).toEqual([
+      { loserKey: 'bl:x', winnerKey: 'ext:doctor' },
+    ]);
+  });
+
+  it('the lower-priority feed loses to the higher-priority feed (soccer vs doctor)', () => {
+    // Doctor feed ranks above the soccer feed → soccer is the maskable loser.
+    const soccer = ev({ key: 'ev:soccer', priority: 3 });
+    const doctor = ev({
+      key: 'ev:doctor',
+      priority: 1,
+      dtstart: d('2026-07-06T08:00:00Z'),
+      dtend: d('2026-07-06T10:00:00Z'),
+    });
+    expect(detectConflicts([soccer, doctor])).toEqual([
+      { loserKey: 'ev:soccer', winnerKey: 'ev:doctor' },
+    ]);
+  });
+
+  it('does not flag equal-priority overlaps (no clear winner)', () => {
+    const a = ev({ key: 'a', priority: 2 });
+    const b = ev({ key: 'b', priority: 2, dtstart: d('2026-07-06T10:00:00Z') });
+    expect(detectConflicts([a, b])).toEqual([]);
+  });
+
+  it('never masks a non-maskable loser, even when outranked', () => {
+    const human = ev({ key: 'ext:a', priority: -1, maskable: false });
+    const higher = ev({ key: 'ext:b', priority: -2, maskable: false, dtstart: d('2026-07-06T10:00:00Z') });
+    expect(detectConflicts([human, higher])).toEqual([]);
+  });
+
+  it('reports one pair per overlapping winner for a loser hit twice', () => {
+    const baseline = ev({ key: 'bl:x', priority: 5 });
+    const w1 = ev({ key: 'ext:a', priority: -1, maskable: false, dtstart: d('2026-07-06T09:00:00Z'), dtend: d('2026-07-06T10:00:00Z') });
+    const w2 = ev({ key: 'ext:b', priority: -1, maskable: false, dtstart: d('2026-07-06T13:00:00Z'), dtend: d('2026-07-06T14:00:00Z') });
+    expect(detectConflicts([baseline, w1, w2])).toEqual([
+      { loserKey: 'bl:x', winnerKey: 'ext:a' },
+      { loserKey: 'bl:x', winnerKey: 'ext:b' },
+    ]);
+  });
+});
+
+describe('subtractIntervals', () => {
+  const d = (s: string) => new Date(s);
+  const base = { dtstart: d('2026-07-06T08:30:00Z'), dtend: d('2026-07-06T15:00:00Z') };
+
+  it('splits the base in two around a middle cut (leave + return)', () => {
+    const out = subtractIntervals(base, [
+      { dtstart: d('2026-07-06T10:00:00Z'), dtend: d('2026-07-06T11:00:00Z') },
+    ]);
+    expect(out.map((s) => [s.dtstart.toISOString(), s.dtend.toISOString()])).toEqual([
+      ['2026-07-06T08:30:00.000Z', '2026-07-06T10:00:00.000Z'],
+      ['2026-07-06T11:00:00.000Z', '2026-07-06T15:00:00.000Z'],
+    ]);
+  });
+
+  it('trims to one segment when the cut hits an edge (attend part / late arrival)', () => {
+    const out = subtractIntervals(base, [
+      { dtstart: d('2026-07-06T08:00:00Z'), dtend: d('2026-07-06T10:00:00Z') },
+    ]);
+    expect(out.map((s) => [s.dtstart.toISOString(), s.dtend.toISOString()])).toEqual([
+      ['2026-07-06T10:00:00.000Z', '2026-07-06T15:00:00.000Z'],
+    ]);
+  });
+
+  it('yields nothing when a cut covers the whole base (fully displaced)', () => {
+    const out = subtractIntervals(base, [
+      { dtstart: d('2026-07-06T07:00:00Z'), dtend: d('2026-07-06T16:00:00Z') },
+    ]);
+    expect(out).toEqual([]);
+  });
+
+  it('merges overlapping/adjacent cuts into one gap', () => {
+    const out = subtractIntervals(base, [
+      { dtstart: d('2026-07-06T10:00:00Z'), dtend: d('2026-07-06T11:00:00Z') },
+      { dtstart: d('2026-07-06T10:30:00Z'), dtend: d('2026-07-06T12:00:00Z') },
+    ]);
+    expect(out.map((s) => [s.dtstart.toISOString(), s.dtend.toISOString()])).toEqual([
+      ['2026-07-06T08:30:00.000Z', '2026-07-06T10:00:00.000Z'],
+      ['2026-07-06T12:00:00.000Z', '2026-07-06T15:00:00.000Z'],
+    ]);
   });
 });

@@ -1,3 +1,4 @@
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models.dart';
@@ -34,6 +35,9 @@ class _AddCalendarSheetState extends ConsumerState<_AddCalendarSheet> {
   String _mode = 'exception';
   final _url = TextEditingController();
   final _name = TextEditingController();
+  // Busy mode: the free/busy-only calendar id (a work email address) — it never
+  // appears in the personal account's calendar list, so it is typed, not picked.
+  final _workEmail = TextEditingController();
 
   String? _accountId;
   List<Map<String, dynamic>> _calendars = const [];
@@ -47,7 +51,15 @@ class _AddCalendarSheetState extends ConsumerState<_AddCalendarSheet> {
   void dispose() {
     _url.dispose();
     _name.dispose();
+    _workEmail.dispose();
     super.dispose();
+  }
+
+  /// Busy mode rides freebusy.query, so it's only offered for google accounts.
+  bool get _busyModeAvailable {
+    if (_source != 'account') return false;
+    final accounts = ref.read(accountsProvider).valueOrNull ?? const <ExternalAccount>[];
+    return accounts.where((a) => a.id == _accountId).firstOrNull?.kind == 'google';
   }
 
   /// Feeds not yet linked to this member.
@@ -97,6 +109,8 @@ class _AddCalendarSheetState extends ConsumerState<_AddCalendarSheet> {
       _error = null;
       _calendars = const [];
       _calId = null;
+      // Busy mode is google-only; picking a non-google account drops back.
+      if (_mode == 'busy' && !_busyModeAvailable) _mode = 'exception';
     });
     try {
       final cals = await ref.read(apiClientProvider).listAccountCalendars(accountId);
@@ -134,27 +148,59 @@ class _AddCalendarSheetState extends ConsumerState<_AddCalendarSheet> {
       } else {
         final accounts = ref.read(accountsProvider).valueOrNull ?? const <ExternalAccount>[];
         final account = accounts.where((a) => a.id == _accountId).firstOrNull;
-        if (account == null || _calId == null) {
-          setState(() {
-            _busy = false;
-            _error = 'Pick an account and a calendar';
-          });
-          return;
+        if (_mode == 'busy') {
+          // Free/busy firewall: the calendar id is the typed work address, not a
+          // picked calendar (a free/busy-only share never appears in the list).
+          final workEmail = _workEmail.text.trim();
+          if (account == null || !workEmail.contains('@')) {
+            setState(() {
+              _busy = false;
+              _error = 'Pick a Google account and enter the work email address';
+            });
+            return;
+          }
+          created = await api.createFeed(
+            familyId,
+            mode: 'busy',
+            kind: 'google',
+            externalAccountId: account.id,
+            sourceCalendarId: workEmail,
+            sourceCalendarName:
+                _name.text.trim().isEmpty ? 'Busy (${widget.member.relationName})' : _name.text.trim(),
+          );
+        } else {
+          if (account == null || _calId == null) {
+            setState(() {
+              _busy = false;
+              _error = 'Pick an account and a calendar';
+            });
+            return;
+          }
+          final cal = _calendars.firstWhere((c) => c['id'] == _calId);
+          created = await api.createFeed(
+            familyId,
+            mode: _mode,
+            kind: account.method,
+            externalAccountId: account.id,
+            sourceCalendarId: _calId,
+            sourceCalendarName: cal['name'] as String?,
+          );
         }
-        final cal = _calendars.firstWhere((c) => c['id'] == _calId);
-        created = await api.createFeed(
-          familyId,
-          mode: _mode,
-          kind: account.method,
-          externalAccountId: account.id,
-          sourceCalendarId: _calId,
-          sourceCalendarName: cal['name'] as String?,
-        );
       }
       final feedId = (created['feed'] as Map<String, dynamic>)['id'] as String;
       await api.createMemberLink(familyId, feedId, familyMemberId: widget.member.id);
       _refresh(feedId);
       if (mounted) Navigator.of(context).pop();
+    } on DioException catch (e) {
+      final data = e.response?.data;
+      setState(() {
+        _busy = false;
+        _error = data is Map && data['error'] == 'freebusy_unavailable'
+            ? 'Google couldn\'t read free/busy for that address. In the work '
+                'calendar\'s sharing settings, share it with this Google account '
+                'as "See only free/busy (hide details)", then try again.'
+            : '$e';
+      });
     } catch (e) {
       setState(() {
         _busy = false;
@@ -215,8 +261,16 @@ class _AddCalendarSheetState extends ConsumerState<_AddCalendarSheet> {
               child: Row(
                 children: [
                   IconTile(
-                    icon: f.kind == 'ics' ? Icons.rss_feed_rounded : Icons.calendar_month_rounded,
-                    color: f.isException ? AppColors.amber : AppColors.feedBlue,
+                    icon: f.isBusy
+                        ? Icons.lock_clock_rounded
+                        : f.kind == 'ics'
+                            ? Icons.rss_feed_rounded
+                            : Icons.calendar_month_rounded,
+                    color: f.isException
+                        ? AppColors.amber
+                        : f.isBusy
+                            ? AppColors.purple
+                            : AppColors.feedBlue,
                     size: 38,
                   ),
                   const SizedBox(width: 12),
@@ -226,7 +280,12 @@ class _AddCalendarSheetState extends ConsumerState<_AddCalendarSheet> {
                       children: [
                         Text(f.displayName, maxLines: 1, overflow: TextOverflow.ellipsis, style: AppText.sectionItemTitle),
                         const SizedBox(height: 2),
-                        Text(f.isException ? 'Exception-only' : 'Standard · ${f.kind.toUpperCase()}',
+                        Text(
+                            f.isException
+                                ? 'Exception-only'
+                                : f.isBusy
+                                    ? 'Busy-only · free/busy'
+                                    : 'Standard · ${f.sourceLabel}',
                             style: AppText.subtitle),
                       ],
                     ),
@@ -301,7 +360,7 @@ class _AddCalendarSheetState extends ConsumerState<_AddCalendarSheet> {
         ),
         if (_loadingCals)
           const Padding(padding: EdgeInsets.only(top: 12), child: LinearProgressIndicator()),
-        if (_calendars.isNotEmpty) ...[
+        if (_mode != 'busy' && _calendars.isNotEmpty) ...[
           const SizedBox(height: 12),
           DropdownButtonFormField<String>(
             initialValue: _calId,
@@ -319,17 +378,48 @@ class _AddCalendarSheetState extends ConsumerState<_AddCalendarSheet> {
       ],
       const SizedBox(height: 14),
       _Segmented(
-        options: const [('exception', 'Exception-only'), ('standard', 'Standard')],
+        options: [
+          const ('exception', 'Exception-only'),
+          const ('standard', 'Standard'),
+          if (_busyModeAvailable) const ('busy', 'Busy-only'),
+        ],
         value: _mode,
         onChanged: (v) => setState(() => _mode = v),
       ),
       const SizedBox(height: 6),
       Text(
-        _mode == 'exception'
-            ? 'Empty on normal days; carries only deviations from a baseline.'
-            : 'Events mean what they say.',
+        switch (_mode) {
+          'exception' => 'Empty on normal days; carries only deviations from a baseline.',
+          'busy' => 'Opaque availability blocks via Google free/busy — event details '
+              'never leave the source calendar. For a work calendar shared to this '
+              'account as "see only free/busy".',
+          _ => 'Events mean what they say.',
+        },
         style: AppText.subtitle,
       ),
+      if (_mode == 'busy') ...[
+        const SizedBox(height: 14),
+        TextField(
+          controller: _workEmail,
+          keyboardType: TextInputType.emailAddress,
+          autocorrect: false,
+          decoration: const InputDecoration(
+            labelText: 'Work email (calendar id)',
+            hintText: 'you@company.com',
+          ),
+        ),
+        const SizedBox(height: 12),
+        TextField(
+          controller: _name,
+          decoration: const InputDecoration(labelText: 'Block label · optional', hintText: 'Busy (work)'),
+        ),
+        const SizedBox(height: 6),
+        Text(
+          'First, in the work calendar\'s sharing settings, share it with this '
+          'Google account as "See only free/busy (hide details)".',
+          style: AppText.subtitle,
+        ),
+      ],
       if (_error != null) ...[
         const SizedBox(height: 12),
         Text(_error!, style: font(kBodyFont, 13, 500, color: AppColors.coral)),

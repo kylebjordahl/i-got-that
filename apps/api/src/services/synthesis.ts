@@ -18,6 +18,7 @@ import {
 import {
   DAY_MS,
   startOfUtcDay,
+  synthesizeBusy,
   synthesizeException,
   synthesizeStandard,
   type EventIntent,
@@ -25,6 +26,7 @@ import {
   type SourceOccurrence,
   type SynthesisResult as EngineResult,
 } from '@igt/classification';
+import type { GeoLocation } from '@igt/domain';
 
 type FeedRow = typeof feeds.$inferSelect;
 type LinkRow = typeof familyMemberFeeds.$inferSelect;
@@ -60,14 +62,19 @@ export function hashCalendarEvent(e: {
   allDay: boolean;
   summary: string | null;
   location: string | null;
+  locationGeo?: GeoLocation | null;
   description: string | null;
 }): string {
+  const g = e.locationGeo;
   const parts = [
     e.dtstart.toISOString(),
     e.dtend ? e.dtend.toISOString() : '',
     e.allDay ? '1' : '0',
     e.summary ?? '',
     e.location ?? '',
+    // Include the geocode so a location that gains/loses/changes coordinates
+    // (but keeps the same text) still resynthesizes and re-mirrors.
+    g ? `${g.lat},${g.lon},${g.title ?? ''},${g.address ?? ''},${g.radius ?? ''}` : '',
     e.description ?? '',
   ].join('|');
   let h = 5381;
@@ -122,6 +129,7 @@ async function upsertIntent(
     allDay: intent.allDay,
     summary: intent.summary,
     location: intent.location,
+    locationGeo: intent.locationGeo,
     description: intent.description,
     sourceEventId: intent.sourceEventId,
     matchedRuleId: intent.matchedRuleId,
@@ -286,16 +294,27 @@ export async function synthesizeFeed(
       dayStart: link.dayStart,
       dayEnd: link.dayEnd,
       location: link.location,
+      locationGeo: link.locationGeo,
       baselineSummary: baselineSummaryFor(feed),
     };
 
     const engineResult =
-      feed.mode === 'exception'
-        ? synthesizeException(linkConfig, occurrences, rules, window, tz)
-        : synthesizeStandard(linkConfig, occurrences);
+      feed.mode === 'busy'
+        ? synthesizeBusy(linkConfig, occurrences)
+        : feed.mode === 'exception'
+          ? synthesizeException(linkConfig, occurrences, rules, window, tz)
+          : synthesizeStandard(linkConfig, occurrences);
 
     // Existing synthesized rows this link owns within the window (pd: rows are
-    // keyed to the decision, not the link, and are never touched here).
+    // keyed to the decision, not the link, and are never touched here). The
+    // overlap check must mirror the source-occurrence query above exactly: an
+    // event that started before the window but is still ongoing at
+    // window.start (e.g. an evening event in a negative-UTC-offset zone that
+    // straddles the UTC day boundary the window is computed from) is still
+    // reported by the engine every run. Without the same `dtend > window.start`
+    // clause here, its existing row would fall out of `existingByKey`, so
+    // `upsertIntent` would try to INSERT a duplicate of an unchanged event and
+    // crash the whole synthesis on the (familyMemberId, synthKey) unique index.
     const existing = await db
       .select()
       .from(calendarEvents)
@@ -303,12 +322,18 @@ export async function synthesizeFeed(
         and(
           eq(calendarEvents.linkId, link.id),
           eq(calendarEvents.provenance, 'synthesized'),
-          gte(calendarEvents.dtstart, window.start),
           lt(calendarEvents.dtstart, window.end),
+          or(
+            gte(calendarEvents.dtstart, window.start),
+            gt(calendarEvents.dtend, window.start),
+          ),
         ),
       );
     const linkOwnedExisting = existing.filter(
-      (e) => e.synthKey.startsWith('bl:') || e.synthKey.startsWith('ev:'),
+      (e) =>
+        e.synthKey.startsWith('bl:') ||
+        e.synthKey.startsWith('ev:') ||
+        e.synthKey.startsWith('fb:'),
     );
     const existingByKey = new Map(linkOwnedExisting.map((e) => [e.synthKey, e]));
     const desiredKeys = new Set(engineResult.events.map((e) => e.synthKey));
@@ -341,8 +366,13 @@ export async function synthesizeFeed(
   return result;
 }
 
-/** Summary stamped on baseline-day events (e.g. "Lincoln Elementary"). */
+/**
+ * Summary stamped on generated events: baseline days take the feed's name
+ * (e.g. "Lincoln Elementary"); busy blocks take the user's chosen label —
+ * the ONLY text a busy event ever carries.
+ */
 function baselineSummaryFor(feed: FeedRow): string {
+  if (feed.mode === 'busy') return feed.sourceCalendarName ?? 'Busy';
   return feed.sourceCalendarName ?? 'School day';
 }
 

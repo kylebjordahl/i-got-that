@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../state/auth.dart';
@@ -11,7 +12,16 @@ import '../widgets/settings.dart';
 /// provider, sign in / grant access, then pick calendars. Wired to the external-
 /// account API: iCloud/Outlook use CalDAV basic auth, Google uses OAuth.
 class ConnectAccountWizard extends ConsumerStatefulWidget {
-  const ConnectAccountWizard({super.key});
+  const ConnectAccountWizard({super.key, this.onConnected, this.skipCalendarStep = false});
+
+  /// Called with the freshly-connected account id once a connection succeeds.
+  /// The onboarding wizard uses this to pop straight back into its own flow.
+  final void Function(String accountId)? onConnected;
+
+  /// When true, the "choose calendars" step (3) is omitted — calendar selection
+  /// happens in context later (per-child / per-parent unified-calendar picks).
+  /// The wizard pops as soon as the account connects.
+  final bool skipCalendarStep;
 
   @override
   ConsumerState<ConnectAccountWizard> createState() => _ConnectAccountWizardState();
@@ -115,6 +125,13 @@ class _ConnectAccountWizardState extends ConsumerState<ConnectAccountWizard> {
       ref.invalidate(accountsProvider);
       _accountId = (res['account'] as Map<String, dynamic>?)?['id'] as String? ??
           (res['id'] as String?);
+      // Reused from onboarding: skip the calendar-selection step and hand the
+      // new account id straight back to the caller.
+      if (widget.skipCalendarStep) {
+        if (_accountId != null) widget.onConnected?.call(_accountId!);
+        if (mounted) Navigator.of(context).maybePop();
+        return;
+      }
       await _loadCalendars();
       if (mounted) setState(() => _step = 3);
     } catch (e) {
@@ -212,6 +229,25 @@ class _ConnectAccountWizardState extends ConsumerState<ConnectAccountWizard> {
           label: 'Go to Input feeds',
           busy: false,
           onPressed: () => Navigator.of(context).maybePop(),
+        ),
+      ];
+    }
+    // Web Google uses the server-hosted OAuth redirect (one tap, no pasting) —
+    // the same `/auth/google/start?link=1` flow that threads Google onto this
+    // account. It navigates the page away and returns to `#connected=google`, so
+    // there's no in-page calendar step; the account shows up on reload.
+    if (_isGoogle && kIsWeb) {
+      return [
+        _hero(Icons.calendar_month_rounded, 'Sign in to $_providerLabel',
+            'Authorize I Got That to read your Google calendars and manage handoffs.'),
+        const SizedBox(height: 20),
+        const _PermissionsCard(),
+        const SizedBox(height: 20),
+        _PrimaryButton(
+          label: 'Continue with $_providerLabel',
+          busy: false,
+          onPressed: () =>
+              ref.read(authControllerProvider.notifier).connectGoogleCalendar(),
         ),
       ];
     }

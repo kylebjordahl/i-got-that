@@ -1,4 +1,4 @@
-import { env } from 'cloudflare:test';
+import { env, fetchMock } from 'cloudflare:test';
 import {
   and,
   calendarEvents,
@@ -10,9 +10,22 @@ import {
   pendingDecisions,
   sourceEvents,
 } from '@igt/db';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { synthesizeFeed } from '../src/services/synthesis.js';
 import { authed, call, setupFamily } from './helpers.js';
+
+const EMPTY_ICS = 'BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//test//test//EN\r\nEND:VCALENDAR';
+
+// The 'link-rule (override) routes' spec below hits the real member-links
+// route, whose first call now opportunistically ingests a never-synced feed
+// (see resynthesize() in routes/feeds.ts) — stub that out so it resolves
+// deterministically instead of attempting a real DNS lookup for these feeds'
+// placeholder URLs.
+beforeAll(() => {
+  fetchMock.activate();
+  fetchMock.disableNetConnect();
+});
+afterEach(() => fetchMock.assertNoPendingInterceptors());
 
 // Fixed window (Mon Jul 6 – Sun Jul 12 2026) so weekday assertions are stable.
 const WINDOW = {
@@ -164,6 +177,38 @@ describe('synthesis: exception feeds (schedule only)', () => {
     expect(thu.dtend!.toISOString()).toBe('2026-07-09T14:45:00.000Z');
   });
 
+  it("stamps the link's geocoded location onto synthesized baseline events", async () => {
+    const f = await exceptionFixture('synth-geo@example.com');
+    await f.db
+      .update(familyMemberFeeds)
+      .set({
+        location: 'Lincoln Elementary',
+        locationGeo: {
+          lat: 37.331686,
+          lon: -122.030656,
+          title: 'Lincoln Elementary',
+          address: '123 Main St, Springfield',
+        },
+      })
+      .where(eq(familyMemberFeeds.id, f.linkId));
+
+    await synthesizeFeed(f.db, f.feed, WINDOW);
+
+    const mon = (
+      await f.db
+        .select()
+        .from(calendarEvents)
+        .where(eq(calendarEvents.synthKey, `bl:${f.linkId}:2026-07-06`))
+    )[0]!;
+    expect(mon.location).toBe('Lincoln Elementary');
+    expect(mon.locationGeo).toEqual({
+      lat: 37.331686,
+      lon: -122.030656,
+      title: 'Lincoln Elementary',
+      address: '123 Main St, Springfield',
+    });
+  });
+
   it('resynthesizes idempotently: rerun is a no-op; removing a rule reinstates the day', async () => {
     const f = await exceptionFixture('synth-idem@example.com');
     const cancel = await insertRule(f.db, f, {
@@ -305,10 +350,72 @@ describe('synthesis: standard feeds', () => {
       await db.select().from(pendingDecisions).where(eq(pendingDecisions.familyId, fam.familyId)),
     ).toHaveLength(0);
   });
+
+  it('resynthesizes idempotently when the window boundary lands inside an already-synthesized event', async () => {
+    // Regression: production 500 — an evening event in a negative-UTC-offset
+    // zone commonly starts before the UTC day rolls over and ends after
+    // (window.start is always a UTC midnight). The source-occurrence query
+    // already treats "started before the window but still ongoing at
+    // window.start" as in-window; the existing-calendar_events lookup used to
+    // check dtstart alone, so on the day the window boundary crossed into the
+    // event's span it couldn't find its own already-synthesized row, tried to
+    // INSERT a duplicate, and hit the (familyMemberId, synthKey) unique index
+    // — crashing the whole feed's synthesis (and the request that triggered it).
+    const fam = await setupFamily('synth-std-straddle@example.com');
+    const db = getDb(env.DB);
+    const feed = (
+      await db
+        .insert(feeds)
+        .values({
+          familyId: fam.familyId,
+          mode: 'standard',
+          url: 'https://feed.example.com/evening.ics',
+        })
+        .returning()
+    )[0]!;
+    await db
+      .insert(familyMemberFeeds)
+      .values({ familyId: fam.familyId, feedId: feed.id, familyMemberId: fam.childId });
+
+    // Straddles the WINDOW's start (2026-07-06T00:00:00Z): starts the evening
+    // before, ends 20 minutes after midnight UTC.
+    await insertSource(db, feed, {
+      icalUid: 'dentist',
+      summary: 'Dentist',
+      dtstart: new Date('2026-07-05T23:20:00Z'),
+      dtend: new Date('2026-07-06T00:20:00Z'),
+      allDay: false,
+    });
+
+    const r1 = await synthesizeFeed(db, feed, WINDOW);
+    expect(r1.eventsUpserted).toBe(1);
+
+    // Re-running against the same window with unchanged content must be a
+    // pure no-op, not a duplicate-key crash.
+    await expect(synthesizeFeed(db, feed, WINDOW)).resolves.toMatchObject({
+      eventsUpserted: 0,
+      eventsRemoved: 0,
+    });
+
+    const events = await db
+      .select()
+      .from(calendarEvents)
+      .where(eq(calendarEvents.familyMemberId, fam.childId));
+    expect(events).toHaveLength(1);
+    expect(events[0]!.summary).toBe('Dentist');
+  });
 });
 
 describe('link-rule (override) routes', () => {
   it('rejects override rules on standard feeds; orders inserts; reorders; deletes', async () => {
+    // One implicit ingest per feed (standard + exception), triggered by each
+    // feed's first member-link creation below.
+    fetchMock
+      .get('https://f')
+      .intercept({ path: (p: string) => p === '/x.ics' || p === '/e.ics', method: 'GET' })
+      .reply(200, EMPTY_ICS, { headers: { 'content-type': 'text/calendar' } })
+      .times(2);
+
     const fam = await setupFamily('rules-routes@example.com');
     const db = getDb(env.DB);
     const standard = (

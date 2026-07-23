@@ -8,11 +8,13 @@ import {
 } from 'drizzle-orm/sqlite-core';
 import {
   AttendanceRequirement,
+  ConflictStatus,
   EventProvenance,
   ExternalAccountKind,
   FeedKind,
   FeedMode,
   FeedStatus,
+  GeoLocation,
   IdentityProvider,
   InviteStatus,
   InviteType,
@@ -195,8 +197,12 @@ export const feeds = sqliteTable(
     sourceCalendarId: text('source_calendar_id'),
     sourceCalendarName: text('source_calendar_name'),
     mode: text('mode', { enum: FeedMode.options }).notNull(),
-    // IANA timezone the calendar's wall-clock times are in (from X-WR-TIMEZONE);
-    // used to interpret exception baseline times. Null ⇒ treated as UTC.
+    // IANA timezone the calendar's wall-clock times are in — auto-detected from
+    // the feed's own X-WR-TIMEZONE/VTIMEZONE on sync, or set manually for feeds
+    // that never advertise one (e.g. some booking-software ICS exports). Used
+    // to interpret exception baseline times and the feed's own floating
+    // (zone-less) VEVENT times. Null ⇒ exception baselines treated as UTC and
+    // floating VEVENT times fall back to the host runtime's timezone.
     timezone: text('timezone'),
     refreshMinutes: integer('refresh_minutes').notNull().default(360),
     etag: text('etag'),
@@ -238,8 +244,19 @@ export const familyMemberFeeds = sqliteTable(
     weekdayMask: integer('weekday_mask'),
     dayStart: text('day_start'),
     dayEnd: text('day_end'),
+    // Priority rank of this feed *within this member's* unified calendar,
+    // ascending (0 = highest). Conflict resolution compares only the feeds on a
+    // single member's calendar, so priority is a property of the feed↔member
+    // link, not the feed: when two feed-derived events overlap, the lower-
+    // position link wins and the other is masked. Manual (human) events always
+    // outrank every feed. Lower = wins.
+    position: integer('position').notNull().default(0),
     // Location stamped on generated baseline events (e.g. the school). Null ⇒ none.
     location: text('location'),
+    // Geocoded coordinates for `location` (validated at input via MapKit/etc.).
+    // When present, baseline events carry GEO + X-APPLE-STRUCTURED-LOCATION so
+    // Apple Calendar computes travel time. Null ⇒ free-text location only.
+    locationGeo: text('location_geo', { mode: 'json' }).$type<GeoLocation>(),
     // This calendar's task-rule terminal default (what an unmatched event
     // generates): 'transition' | 'attendance', with drop-off/pickup windows.
     defaultTaskType: text('default_task_type', {
@@ -262,6 +279,10 @@ export const familyMemberFeeds = sqliteTable(
       t.familyMemberId,
     ),
     familyIdx: index('fmf_family_idx').on(t.familyId),
+    memberPositionIdx: index('fmf_member_position_idx').on(
+      t.familyMemberId,
+      t.position,
+    ),
   }),
 );
 
@@ -448,6 +469,63 @@ export const pendingDecisions = sqliteTable(
   }),
 );
 
+// --- Conflicts (agenda overlaps on a member's unified calendar) ------------
+
+/**
+ * Two events overlap on one member's unified calendar — they can't be in two
+ * places at once. The higher-priority `winner` displaces the lower-priority,
+ * maskable `loser` (a synthesized feed event); resolving splits/trims the loser
+ * around the winner (task-gen then spawns the drop-off/pickup at each split).
+ * Identity is the pair of event `synthKey`s (stable across resynthesis), not row
+ * ids — there is deliberately no FK to calendar_events: the conflict service
+ * reconciles rows itself and a masked loser's row disappears while the split
+ * segments stand in for it. Detected live each pass, so a conflict auto-clears
+ * when the overlap no longer exists.
+ */
+export const conflicts = sqliteTable(
+  'conflicts',
+  {
+    id: id(),
+    familyId: text('family_id')
+      .notNull()
+      .references(() => families.id, { onDelete: 'cascade' }),
+    familyMemberId: text('family_member_id')
+      .notNull()
+      .references(() => familyMembers.id, { onDelete: 'cascade' }),
+    // synthKeys of the two overlapping events on this member's calendar.
+    loserKey: text('loser_key').notNull(),
+    winnerKey: text('winner_key').notNull(),
+    status: text('status', { enum: ConflictStatus.options })
+      .notNull()
+      .default('pending'),
+    resolvedByMemberId: text('resolved_by_member_id').references(
+      () => familyMembers.id,
+      { onDelete: 'set null' },
+    ),
+    resolvedAt: integer('resolved_at', { mode: 'timestamp_ms' }),
+    dismissedAt: integer('dismissed_at', { mode: 'timestamp_ms' }),
+    // Snapshot of the loser/winner events' content_hash at the moment a decision
+    // (resolve or dismiss) was made. A later change to either event's content
+    // (time, summary, location, ...) invalidates the decision — the reconciler
+    // reopens the conflict back to 'pending' and clears these.
+    loserContentHash: text('loser_content_hash'),
+    winnerContentHash: text('winner_content_hash'),
+    createdAt: createdAt(),
+  },
+  (t) => ({
+    memberPairUq: uniqueIndex('conflicts_member_pair_uq').on(
+      t.familyMemberId,
+      t.loserKey,
+      t.winnerKey,
+    ),
+    familyStatusIdx: index('conflicts_family_status_idx').on(
+      t.familyId,
+      t.status,
+    ),
+    memberIdx: index('conflicts_member_idx').on(t.familyMemberId),
+  }),
+);
+
 // --- Tasks ---------------------------------------------------------------
 
 export const tasks = sqliteTable(
@@ -472,6 +550,12 @@ export const tasks = sqliteTable(
     }),
     dtstart: integer('dtstart', { mode: 'timestamp_ms' }).notNull(),
     dtend: integer('dtend', { mode: 'timestamp_ms' }),
+    // A user-set window length (minutes, signed) for a transition task, measured
+    // from its anchor — the event's start for a drop-off, its end for a pickup.
+    // Positive extends forward from the anchor, negative reverses it (window sits
+    // before the anchor). Null ⇒ derived from the task-rule pipeline's window;
+    // when set, task-gen re-anchors around it instead of recomputing the window.
+    durationOverrideMin: integer('duration_override_min'),
     location: text('location'),
     status: text('status', { enum: TaskStatus.options })
       .notNull()
@@ -513,6 +597,7 @@ export const secrets = sqliteTable('secrets', {
  * (familyMemberId, synthKey), so config changes resynthesize without dupes:
  *   `bl:<linkId>:<YYYY-MM-DD>`  baseline day
  *   `ev:<linkId>:<sourceEventId>`  feed-event-derived
+ *   `fb:<linkId>:<sourceEventId>`  opaque busy block (free/busy firewall feed)
  *   `pd:<pendingDecisionId>`  resolved pending decision
  *   `task:<taskId>`  claimed task on the claimer's calendar (the recursion)
  *   `ext:<uid>:<recurrenceId|''>`  human event read back from the target
@@ -557,6 +642,9 @@ export const calendarEvents = sqliteTable(
     allDay: integer('all_day', { mode: 'boolean' }).notNull().default(false),
     summary: text('summary'),
     location: text('location'),
+    // Geocoded coordinates for `location`, carried from the synthesizing link so
+    // the mirror can emit GEO + X-APPLE-STRUCTURED-LOCATION. Null ⇒ text only.
+    locationGeo: text('location_geo', { mode: 'json' }).$type<GeoLocation>(),
     description: text('description'),
     // Task typing is NOT stamped here — task-gen resolves it at build time from
     // the member's task-rule pipeline, keyed by this event's `linkId` (the
@@ -565,6 +653,11 @@ export const calendarEvents = sqliteTable(
     contentHash: text('content_hash').notNull(),
     // The content_hash task-gen last consumed; reprocess iff != contentHash.
     tasksBuiltHash: text('tasks_built_hash'),
+    // Set when a resolved agenda conflict has split/trimmed this event: the row
+    // stays (so conflict detection stays stable and synthesis keeps owning it),
+    // but task-gen, the mirror, and the calendar views skip it in favour of the
+    // `cf:<synthKey>:<i>` split segments the conflict service materialises.
+    maskedAt: integer('masked_at', { mode: 'timestamp_ms' }),
     createdAt: createdAt(),
   },
   (t) => ({
@@ -609,6 +702,13 @@ export const memberCalendars = sqliteTable(
     targetCalendarName: text('target_calendar_name'),
     // JSON array of minutes-before-start for default alerts (max 2), e.g. [30,10].
     alertMinutes: text('alert_minutes', { mode: 'json' }).$type<number[]>(),
+    // IANA timezone the target calendar's wall-clock times are in — auto-detected
+    // from a read-back event's own TZID/VTIMEZONE, or set manually for events
+    // that carry neither (e.g. an externally-sourced ICS invite imported as a
+    // floating/zone-less VEVENT). Used to interpret the target's own floating
+    // read-back times (see readBackMember). Null ⇒ they fall back to the host
+    // runtime's timezone.
+    timezone: text('timezone'),
     active: integer('active', { mode: 'boolean' }).notNull().default(true),
     lastMirroredAt: integer('last_mirrored_at', { mode: 'timestamp_ms' }),
     lastReadBackAt: integer('last_read_back_at', { mode: 'timestamp_ms' }),
@@ -748,6 +848,7 @@ export const schema = {
   linkRules,
   taskRules,
   pendingDecisions,
+  conflicts,
   tasks,
   calendarEvents,
   memberCalendars,

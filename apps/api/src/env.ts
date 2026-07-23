@@ -46,6 +46,23 @@ export interface Bindings {
     /** Google OAuth client for the Calendar provider. Unset ⇒ Google OAuth off. */
     GOOGLE_OAUTH_CLIENT_ID?: string;
     GOOGLE_OAUTH_CLIENT_SECRET?: string;
+    /**
+     * Comma-separated allowed Google `aud` values for native Sign in with
+     * Google — the iOS OAuth client id(s) (one per flavor), distinct from
+     * GOOGLE_OAUTH_CLIENT_ID (the Web client used for the redirect flow and
+     * for redeeming a native `serverAuthCode`). Unset ⇒ native Google login
+     * disabled (web flow is unaffected).
+     */
+    GOOGLE_IOS_CLIENT_IDS?: string;
+    /**
+     * Comma-separated Apple App ID prefixes (`<TeamID>.<bundleId>`) for iOS
+     * Universal Links, served in the apple-app-site-association file at
+     * `/.well-known/apple-app-site-association`. List every bundle id that
+     * should open invite links (e.g. staging + production). Unset/empty ⇒ the
+     * AASA endpoint 404s and Universal Links are disabled (web fallback still
+     * works).
+     */
+    APPLE_APP_ID_PREFIX?: string;
 }
 
 /** Per-request context set by middleware. */

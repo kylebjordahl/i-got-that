@@ -1,6 +1,7 @@
 # Authentication
 
-Two login methods feed the same session model (a `sessions` row → bearer token).
+Three login methods feed the same session model (a `sessions` row → bearer
+token): magic link, Sign in with Apple, and Sign in with Google.
 
 ## Linking login methods (one user, many identities)
 
@@ -33,6 +34,36 @@ The Flutter client surfaces all of this on the **Me** tab under "Login methods"
 (list + add email + link Apple on web + unlink), following the account-card UI
 pattern.
 
+## Deleting an account
+
+`DELETE /auth/me` deletes the signed-in user (`services/auth.ts`'s
+`deleteUserAccount`). FK cascades drop their `sessions`, `identities`, and
+`external_accounts`; each `family_members` row they held is kept but unlinked
+(`userId` → `null`) rather than removed — the person stays in the family, just
+loses login capability, same outcome as `handleAppleAccountEvent`'s
+server-to-server `account-delete` case.
+
+Blocked with `409 last_admin` if the user is the sole admin of a family that
+still has other members — deleting the account would leave that family with no
+one able to manage it. The caller must promote a co-admin, leave the family
+(`POST /families/:familyId/leave` — self-service, same `userId` → `null`
+unlink as account deletion, blocked with the same `409 last_admin` guard), or
+delete the family outright (`DELETE /families/:familyId`, admin-only —
+cascades the whole family away), before deleting their own account.
+
+`GET /auth/me/deletable` reports whether the signed-in user is currently free
+to delete their account (`{ deletable: boolean }`), backed by the same guard
+(`services/auth.ts`'s `accountDeletionBlocked`). The client checks this before
+opening the delete-account speedbump so a block reads as the sheet's own
+message ("Before you can delete your account, you must either leave or delete
+all the families you are involved in.") instead of a toast raised after a
+failed slide.
+
+The Flutter client surfaces this on the **Me** tab as "Delete account", gated
+behind a slide-to-confirm speedbump (`widgets/slide_to_confirm.dart`); "Leave
+family" and "Delete family" on the **Family** tab use the same control, the
+latter admin-only.
+
 ## Session persistence on web (surviving a page refresh)
 
 The Flutter web SPA keeps its session token in memory only (`AuthState` in
@@ -57,10 +88,119 @@ dev` on `:8787`) is still "same-site" (same `localhost` host, different port).
 Cross-origin dev CORS (`apps/api/src/index.ts`) reflects the request `Origin`
 and sets `credentials: true`, which a wildcard `origin: '*'` can't do.
 
+## Session persistence on native (surviving an app relaunch)
+
+Native has no cookie jar, so it persists the bearer token itself: on a
+successful login, `AuthController` (`lib/state/auth.dart`) writes the
+`sessionToken` to the platform Keychain/Keystore via
+[`flutter_secure_storage`](https://pub.dev/packages/flutter_secure_storage)
+(`pubspec.yaml`); `logout()` deletes it. On startup, before falling back to
+the login screen, native reads that stored token and validates it against
+`GET /me`, discarding it on any failure (missing, expired, revoked, Keychain
+unreadable) rather than getting stuck. This mirrors the web cookie flow one
+layer down the stack — same "never trust a token you can't currently verify"
+shape, different storage primitive per platform.
+
 | Method | State | Notes |
 | --- | --- | --- |
 | **Magic link** (email) | Fully implemented | Needs outbound email, which is **off** (no paid plan). In **dev/staging** the request endpoint returns the token directly (`devToken`) so you can log in without a mailbox; in **production** it does not. |
 | **Sign in with Apple** | Server + web redirect flow **implemented + tested**; native (iOS) client wiring + Apple config required | The primary login for deployed environments (works without email). |
+| **Sign in with Google** | Server + web redirect flow **implemented + tested**; native (iOS) route + client wired, needs an iOS OAuth client per flavor in the Cloud Console before it'll actually run | Also **auto-connects the user's Google Calendar** as part of logging in (the same consent grants calendar access). |
+
+## Sign in with Google
+
+Google login reuses the calendar OAuth client (`GOOGLE_OAUTH_CLIENT_ID/SECRET`)
+and adds the OpenID scopes, so **one consent both identifies the user and grants
+calendar access**. On any Google sign-in we exchange the code for an id_token
+(identity) *and* a refresh token, then auto-connect that Google account's
+calendar as a user-owned `external_accounts` row (`kind='google'`) — the
+"automatically connect Google Calendar when a user logs in with Google" flow.
+
+Because it's a browser redirect flow, it works regardless of how the user
+originally signed in: the connect-account **wizard** (and the "Login methods"
+card on the **Me** tab) drive the same `?link=1` flow to let an Apple- or
+magic-link-authenticated user link a Google Calendar (threading a `google`
+identity onto their account when that Google login isn't already someone else's).
+
+### Web redirect flow
+
+Mirrors the Apple web flow, but Google uses `response_type=code` (a **GET**
+redirect back, not a form-POST):
+
+1. **`GET /auth/google/start`** — the browser navigates here (the "Continue with
+   Google" button). The server mints a `state`, stores it in a short-lived
+   signed cookie (`igt_google_oauth`, `SameSite=None; Secure; HttpOnly`), and
+   302-redirects to Google's consent screen with `access_type=offline`,
+   `prompt=consent` (both required to receive a refresh token), and the OpenID +
+   `calendar.events` + `calendar.readonly` scopes (the latter needed for the
+   "list a user's calendars" picker, `calendarList.list`). `?link=1` with a live
+   session (the same-origin `igt_session` cookie rides along) records the
+   current user id in the cookie so the callback threads Google onto them
+   instead of starting a new session.
+2. The user consents; Google redirects to **`GET /auth/google/callback`** (the
+   registered redirect URI) with `?code=…&state=…`. The `SameSite=None` cookie
+   rides along.
+3. The callback checks `state` against the cookie (login-CSRF guard), exchanges
+   the code for tokens over TLS (client-secret-authenticated, so the returned
+   id_token is trusted without a JWKS check — same trust model as the exchange),
+   reads `sub` + `email` from the id_token, finds/creates the user (or threads
+   the identity in link mode), **auto-connects their Google Calendar** from the
+   refresh token, issues a session, and 302-redirects to **`/app/#session=…`**
+   (login) or **`/app/#connected=google`** (link/connect). Failures redirect to
+   **`/app/#auth_error=…`**. A calendar-connect failure never blocks login — it's
+   logged and the session still issues.
+
+The redirect URI isn't its own config value — it's derived from **`PUBLIC_ORIGIN`**
+as `<PUBLIC_ORIGIN>/api/auth/google/callback`. If `GOOGLE_OAUTH_CLIENT_ID`,
+`GOOGLE_OAUTH_CLIENT_SECRET`, or `PUBLIC_ORIGIN` is unset, `/auth/google/start`
+and `/auth/google/callback` return **501** (Google login disabled).
+
+### What you need to configure
+
+**Google Cloud Console** (APIs & Services → Credentials, same project as the
+Web client below):
+1. **Web application** client (created for both staging and production) — used
+   for the web redirect flow *and* to redeem native's `serverAuthCode` (see
+   below):
+   - Add the **Authorized redirect URI** `<PUBLIC_ORIGIN>/api/auth/google/callback`
+     (e.g. `https://staging.igt.kylebjordahl.com/api/auth/google/callback`).
+2. **iOS** client, one per flavor (native login needs its own client — a Web
+   client can't be used as the native `aud`):
+   - `Create Credentials → OAuth client ID → iOS`, Bundle ID
+     `com.kylebjordahl.igt.staging` (staging) / `com.kylebjordahl.igt` (prod).
+   - No client secret — iOS clients are public. Note the **Client ID**
+     (`…apps.googleusercontent.com`) and the **reversed client ID**
+     (`com.googleusercontent.apps.…`, on the credential's detail page) for the
+     Flutter config below.
+3. Enable the **Google Calendar API** and add the `openid`, `email`, `profile`,
+   `.../auth/calendar.events`, and `.../auth/calendar.readonly` scopes to the
+   consent screen (shared by both client types — no per-client scope config).
+   If the consent screen is still in "Testing" publish status, add your test
+   Google accounts as test users.
+
+**This API:**
+```bash
+cd apps/api
+#   GOOGLE_OAUTH_CLIENT_ID  = <the Web client id>   (var in wrangler.jsonc per env)
+pnpm wrangler secret put GOOGLE_OAUTH_CLIENT_SECRET --env staging
+#   PUBLIC_ORIGIN           = https://staging.igt.kylebjordahl.com
+#   → derived redirect URI to register in the Cloud Console:
+#     https://staging.igt.kylebjordahl.com/api/auth/google/callback
+#   GOOGLE_IOS_CLIENT_IDS = <the iOS client id(s) for this env, comma-separated>
+#     (var in wrangler.jsonc per env — see the iOS bundle ids table below)
+```
+
+**Flutter client:** `lib/state/auth.dart` wires both platforms now:
+- **Web** navigates to the redirect endpoints (`loginWithGoogle`,
+  `connectGoogleCalendar`) as before.
+- **Native (iOS)** uses the `google_sign_in` package
+  (`loginWithGoogleNative`/`linkWithGoogleNative`) to obtain an ID token — and,
+  when `GOOGLE_SERVER_CLIENT_ID` (a `--dart-define`, set to the **Web** client
+  id) is configured, a `serverAuthCode` too — and posts them to
+  `POST /auth/google` / `POST /auth/link/google`. Requires `GIDClientID` +
+  the reversed-client-id URL scheme in `ios/Runner/Info.plist` (wired via
+  per-flavor xcconfig — see the placeholders in `ios/Flutter/{staging,prod}*.xcconfig`,
+  fill in once the iOS OAuth clients above exist).
 
 ## Sign in with Apple
 
@@ -223,11 +363,14 @@ App ID's Sign in with Apple config. Verification lives in
 mutations in `handleAppleAccountEvent` (`apps/api/src/services/auth.ts`). Requires
 `APPLE_CLIENT_IDS` set (else 501).
 
-## Google Calendar — OAuth (delivery target, not a login)
+## Google Calendar — OAuth (delivery / ingest target)
 
 The Google Calendar delivery provider needs an OAuth token. A pasted access
 token still works but expires in ~1h; the proper flow stores a **refresh token**
-and exchanges it for a fresh access token at delivery time.
+and exchanges it for a fresh access token at delivery time. (Signing in with
+Google connects an account this same way automatically — see "Sign in with
+Google" above; this section covers connecting a calendar directly, e.g. the
+native manual paste-the-code path.)
 
 ### Configure
 1. In **Google Cloud Console** → APIs & Services → Credentials, create an
@@ -259,6 +402,61 @@ and exchanges it for a fresh access token at delivery time.
 
 ## Onboarding a caretaker (no email)
 Until email is enabled, add caretakers with the **invite/share-link** flow (see
-the Family tab): an admin creates the member, shares the code, and the invitee
-signs in (Apple, or magic-link `devToken` on staging) and redeems the code to
-link their account to that member. See `docs/` and the `/invites` endpoints.
+the Family tab): an admin creates the member, then shares a link, and the
+invitee signs in (Apple, or magic-link `devToken` on staging) and is linked to
+that member — the second-caretaker join flow (`JoinFlow`) then walks them
+through connecting one calendar. See the `/invites` endpoints.
+
+### Invite deep link
+
+`POST /families/:familyId/members/:memberId/invite` returns
+`{ token, expiresAt, url }`. When `PUBLIC_ORIGIN` is set, `url` is a shareable
+deep link:
+
+```
+<PUBLIC_ORIGIN>/app/?invite=<token>
+```
+
+One URL serves both surfaces:
+
+- **Web** — the Flutter web client reads `?invite=` (or `#invite=`) from the
+  launch URL and renders the join flow (`onboarding/onboarding_entry.dart`).
+- **iOS** — the same URL is a **Universal Link**: with the app installed,
+  tapping it opens the app straight into the join flow (`app_links` captures the
+  link and seeds `activeInviteTokenProvider` in `main.dart`); without the app,
+  it falls back to the web flow above.
+
+The invitee never pastes a code. The manual **Redeem invite code** path (Me tab)
+stays as a fallback — the URL still contains the raw token.
+
+Without `PUBLIC_ORIGIN` (local dev / tests), `url` is `null` and the client
+shows the bare token with the paste-the-code instructions.
+
+### iOS Universal Links setup
+
+The Worker serves the association file at
+`/.well-known/apple-app-site-association` (apex path, **not** under `/api`),
+built from the `APPLE_APP_ID_PREFIX` env var — a comma-separated list of
+`<TeamID>.<bundleId>` (list staging + production bundle ids). Empty ⇒ the
+endpoint 404s and Universal Links are off (web fallback still works), mirroring
+how empty `APPLE_CLIENT_IDS` disables Apple login.
+
+```jsonc
+// wrangler.jsonc, per env
+"APPLE_APP_ID_PREFIX": "ABCDE12345.com.kylebjordahl.igt.staging"
+```
+
+The iOS app declares the domains in `ios/Runner/Runner.entitlements`
+(`com.apple.developer.associated-domains` → `applinks:<host>`).
+
+**Manual steps you own (Apple side):**
+
+1. Set `APPLE_APP_ID_PREFIX` per env (your 10-char Apple **Team ID** +
+   bundle id). Verify it's live:
+   `curl https://staging.igt.kylebjordahl.com/.well-known/apple-app-site-association`.
+2. Enable the **Associated Domains** capability on each App ID in the Apple
+   Developer portal, and regenerate provisioning profiles so the entitlement
+   ships in the build.
+3. The native leg can only be verified on a **real device / TestFlight**
+   against a deployed env (the Simulator + AASA don't cooperate) — tap the
+   invite link from Messages and confirm the app opens into the join flow.

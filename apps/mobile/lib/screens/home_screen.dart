@@ -8,7 +8,9 @@ import '../theme/app_text.dart';
 import '../theme/person_colors.dart';
 import '../util/format.dart';
 import '../util/task_visuals.dart';
+import '../widgets/app_bottom_nav.dart';
 import '../widgets/primitives.dart';
+import '../widgets/settings.dart';
 import '../widgets/task_row.dart';
 import 'feed_baseline_screen.dart';
 import 'task_actions_sheet.dart';
@@ -26,11 +28,69 @@ class HomeScreen extends ConsumerStatefulWidget {
 class _HomeScreenState extends ConsumerState<HomeScreen> {
   bool _refreshingFeeds = false;
 
+  // Children and task-type filters are stored as *exclusions* (empty ⇒ show
+  // all), same as Plan. The owner axis is inverted on purpose: Home is the
+  // claim hub, so unowned tasks always show and `_incOwners` is an opt-*in*
+  // set — a caretaker's claimed tasks only appear once you pick them here.
+  final Set<String> _exChildren = {};
+  final Set<String> _incOwners = {};
+  final Set<String> _exTypes = {};
+  bool _showCompleted = false;
+  bool _onlyMyKids = false;
+
+  int get _filterCount =>
+      (_exChildren.isNotEmpty ? 1 : 0) +
+      (_incOwners.isNotEmpty ? 1 : 0) +
+      (_exTypes.isNotEmpty ? 1 : 0) +
+      (_onlyMyKids ? 1 : 0);
+
+  // The child / task-type / only-my-kids axes. The owner axis is applied
+  // separately when partitioning into the "Needs an owner" vs "You're covering"
+  // sections (6b), so it isn't checked here.
+  bool _passesBase(TaskItem t, Set<String> myKids) {
+    if (_exChildren.contains(t.familyMemberId)) return false;
+    final group = t.type == 'attendance' ? 'attendance' : 'transition';
+    if (_exTypes.contains(group)) return false;
+    if (_onlyMyKids && !myKids.contains(t.familyMemberId)) return false;
+    return true;
+  }
+
   void _refresh() {
     ref.invalidate(unownedTasksProvider);
     ref.invalidate(allTasksProvider);
     ref.invalidate(pendingDecisionsProvider);
+    ref.invalidate(conflictsProvider);
     ref.invalidate(calendarEventsProvider);
+  }
+
+  Future<void> _resolveConflict(Conflict conflict) async {
+    try {
+      final familyId = await ref.read(familyProvider.future);
+      await ref.read(apiClientProvider).resolveConflict(familyId, conflict.id);
+      _refresh();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Couldn\'t resolve: $e'),
+          margin: snackBarMarginAboveNav(context),
+        ));
+      }
+    }
+  }
+
+  Future<void> _dismissConflict(Conflict conflict) async {
+    try {
+      final familyId = await ref.read(familyProvider.future);
+      await ref.read(apiClientProvider).dismissConflict(familyId, conflict.id);
+      _refresh();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Couldn\'t dismiss: $e'),
+          margin: snackBarMarginAboveNav(context),
+        ));
+      }
+    }
   }
 
   Future<void> _refreshFeeds() async {
@@ -43,8 +103,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       await ref.read(allTasksProvider.future);
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('Refresh failed: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Refresh failed: $e'),
+          margin: snackBarMarginAboveNav(context),
+        ));
       }
     } finally {
       if (mounted) setState(() => _refreshingFeeds = false);
@@ -64,30 +126,49 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final me = ref.watch(currentMemberProvider).valueOrNull;
     final decisions =
         ref.watch(pendingDecisionsProvider).valueOrNull ?? const <PendingDecision>[];
+    final conflicts =
+        ref.watch(conflictsProvider).valueOrNull ?? const <Conflict>[];
     final threshold = ref.watch(threadingThresholdProvider).valueOrNull ?? 30;
     final events =
         ref.watch(calendarEventsProvider).valueOrNull ?? const <CalendarEventItem>[];
     final eventsById = {for (final e in events) e.id: e};
     final byId = {for (final m in members) m.id: m};
     final now = DateTime.now();
+    final rawTasks = allAsync.valueOrNull ?? const <TaskItem>[];
+    // Children I'm covering (for the "only my kids" filter): kids with a task I own.
+    final myKids = {
+      for (final t in rawTasks)
+        if (t.ownerMemberId == me?.id) t.familyMemberId
+    };
 
-    // Unowned tasks + my own claimed tasks, upcoming only (no past tasks,
-    // regardless of claim state), grouped by day.
-    final visible = [
-      for (final t in allAsync.valueOrNull ?? const <TaskItem>[])
-        if (!t.isDismissed &&
+    // Upcoming tasks passing the base filters (child / type / only-my-kids).
+    // The mockup shows a single day, but this flexes to however many days of
+    // claimable work exist — each day keeps its own sticky header.
+    final upcoming = [
+      for (final t in rawTasks)
+        if ((_showCompleted || !t.isDismissed) &&
             !t.start.isBefore(now) &&
-            (t.status == 'unowned' || t.ownerMemberId == me?.id))
+            _passesBase(t, myKids))
           t
     ];
-    final byDay = <DateTime, List<TaskItem>>{};
-    for (final t in visible) {
-      (byDay[dayKey(t.start)] ??= []).add(t);
-    }
-    for (final list in byDay.values) {
-      list.sort((a, b) => a.start.compareTo(b.start));
-    }
-    final days = byDay.keys.toList()..sort();
+    // The two 6b buckets. "Needs an owner" is everything unclaimed; "You're
+    // covering" is what I own — plus any other caretakers opted into via
+    // Filters. My own claimed tasks always show.
+    final unowned = [for (final t in upcoming) if (t.isUnowned) t];
+    final covering = [
+      for (final t in upcoming)
+        if (!t.isUnowned &&
+            !t.isDismissed &&
+            (t.ownerMemberId == me?.id || _incOwners.contains(t.ownerMemberId)))
+          t
+    ];
+
+    final unownedByDay = _groupByDay(unowned);
+    final coveringByDay = _groupByDay(covering);
+    final unownedDays = unownedByDay.keys.toList()..sort();
+    final coveringDays = coveringByDay.keys.toList()..sort();
+    final nothing =
+        conflicts.isEmpty && decisions.isEmpty && unowned.isEmpty && covering.isEmpty;
 
     return RefreshIndicator(
       onRefresh: () async {
@@ -105,6 +186,26 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                 children: [
                   _header(now),
                   const SizedBox(height: 18),
+                  // Agenda conflicts rank ABOVE everything — a member can't be
+                  // in two places at once, so they block until an admin acts.
+                  if (conflicts.isNotEmpty) ...[
+                    SectionEyebrow(
+                      'Double-booked',
+                      color: AppColors.coral,
+                      trailing: TintBadge('${conflicts.length}', color: AppColors.coral),
+                    ),
+                    const SizedBox(height: 10),
+                    for (final conflict in conflicts) ...[
+                      _ConflictCard(
+                        conflict: conflict,
+                        member: byId[conflict.familyMemberId],
+                        onResolve: () => _resolveConflict(conflict),
+                        onDismiss: () => _dismissConflict(conflict),
+                      ),
+                      const SizedBox(height: 10),
+                    ],
+                    const SizedBox(height: 8),
+                  ],
                   // Pending decisions rank ABOVE unclaimed tasks — they block
                   // the pipeline until a human decides.
                   if (decisions.isNotEmpty) ...[
@@ -125,43 +226,134 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                     ],
                     const SizedBox(height: 8),
                   ],
-                  const _HintChip(),
-                  const SizedBox(height: 8),
                 ],
               ),
             ),
           ),
           if (allAsync.hasError)
             SliverToBoxAdapter(child: _pad(_error('${allAsync.error}')))
-          else if (days.isEmpty)
+          else if (nothing)
             SliverToBoxAdapter(
               child: _pad(_empty(allAsync.isLoading
                   ? 'Loading…'
                   : 'Nothing to cover — all clear 🎉')))
-          else
-            // Each day is its own SliverMainAxisGroup so its header stays pinned
-            // only within that day — the next day's header pushes it out instead
-            // of the headers stacking at the top.
-            for (final day in days)
-              SliverMainAxisGroup(
-                slivers: [
-                  SliverPersistentHeader(
-                    pinned: true,
-                    delegate: _DayHeaderDelegate(
-                      label: homeDayHeader(day, now),
-                      openCount: byDay[day]!.where((t) => t.status == 'unowned').length,
-                    ),
-                  ),
-                  SliverPadding(
-                    padding: const EdgeInsets.fromLTRB(22, 0, 22, 8),
-                    sliver: _daySliver(byDay[day]!, byId, eventsById, me, threshold),
-                  ),
-                ],
+          else ...[
+            // Needs an owner — the claim queue, threaded. On a single day the
+            // eyebrow carries the day + count ("Today · 3", as in 6b); across
+            // several days the per-day sticky headers take over.
+            if (unowned.isNotEmpty)
+              ..._section(
+                label: 'Needs an owner',
+                labelColor: AppColors.textPrimary,
+                trailing: Text(
+                  unownedDays.length == 1
+                      ? '${_relDayCap(unownedDays.first, now)} · ${unowned.length}'
+                      : '${unowned.length}',
+                  style: AppText.secondary,
+                ),
+                byDay: unownedByDay,
+                days: unownedDays,
+                showOpen: true,
+                thread: true,
+                now: now,
+                byId: byId,
+                eventsById: eventsById,
+                me: me,
+                threshold: threshold,
               ),
+            // You're covering — tasks I (or opted-in caretakers) already own.
+            if (covering.isNotEmpty)
+              ..._section(
+                label: "You're covering",
+                labelColor: AppColors.textMuted,
+                trailing: null,
+                byDay: coveringByDay,
+                days: coveringDays,
+                showOpen: false,
+                thread: false,
+                now: now,
+                byId: byId,
+                eventsById: eventsById,
+                me: me,
+                threshold: threshold,
+              ),
+          ],
           const SliverToBoxAdapter(child: SizedBox(height: 120)),
         ],
       ),
     );
+  }
+
+  Map<DateTime, List<TaskItem>> _groupByDay(List<TaskItem> tasks) {
+    final byDay = <DateTime, List<TaskItem>>{};
+    for (final t in tasks) {
+      (byDay[dayKey(t.start)] ??= []).add(t);
+    }
+    for (final list in byDay.values) {
+      list.sort((a, b) => a.start.compareTo(b.start));
+    }
+    return byDay;
+  }
+
+  /// A 6b section: an eyebrow header, then the tasks grouped by day. Each day is
+  /// its own SliverMainAxisGroup so its header stays pinned only within that day
+  /// — the next day's header pushes it out instead of stacking.
+  List<Widget> _section({
+    required String label,
+    required Color labelColor,
+    required Widget? trailing,
+    required Map<DateTime, List<TaskItem>> byDay,
+    required List<DateTime> days,
+    required bool showOpen,
+    required bool thread,
+    required DateTime now,
+    required Map<String, Member> byId,
+    required Map<String, CalendarEventItem> eventsById,
+    required Member? me,
+    required int threshold,
+  }) {
+    // A single day needs no sticky day header — the eyebrow already names it
+    // (matching 6b). Multiple days each get their own pinned header.
+    final showDayHeaders = days.length > 1;
+    return [
+      SliverToBoxAdapter(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(22, 6, 22, 8),
+          child: SectionEyebrow(label, color: labelColor, trailing: trailing),
+        ),
+      ),
+      for (final day in days)
+        if (showDayHeaders)
+          SliverMainAxisGroup(
+            slivers: [
+              SliverPersistentHeader(
+                pinned: true,
+                delegate: _DayHeaderDelegate(
+                  label: homeDayHeader(day, now),
+                  trailing: showOpen ? '${byDay[day]!.length} open' : null,
+                ),
+              ),
+              SliverPadding(
+                padding: const EdgeInsets.fromLTRB(22, 0, 22, 8),
+                sliver: _daySliver(byDay[day]!, byId, eventsById, me, threshold,
+                    thread: thread),
+              ),
+            ],
+          )
+        else
+          SliverPadding(
+            padding: const EdgeInsets.fromLTRB(22, 2, 22, 8),
+            sliver: _daySliver(byDay[day]!, byId, eventsById, me, threshold,
+                thread: thread),
+          ),
+    ];
+  }
+
+  /// "Today" / "Tomorrow" / "Fri Jul 11" — the capitalized relative day used in
+  /// the single-day section eyebrow.
+  String _relDayCap(DateTime day, DateTime now) {
+    final r = relativeDayLower(day, now);
+    return r.isEmpty ? r : '${r[0].toUpperCase()}${r.substring(1)}';
   }
 
   /// Stitch a day's tasks into threaded chains: consecutive tasks whose gap is
@@ -187,7 +379,17 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   }
 
   Widget _daySliver(List<TaskItem> tasks, Map<String, Member> byId,
-      Map<String, CalendarEventItem> eventsById, Member? me, int threshold) {
+      Map<String, CalendarEventItem> eventsById, Member? me, int threshold,
+      {bool thread = true}) {
+    // "You're covering" rows aren't threaded — they're already claimed, so the
+    // "same trip / claim both" affordance doesn't apply.
+    if (!thread) {
+      return SliverList.separated(
+        itemCount: tasks.length,
+        separatorBuilder: (_, __) => const SizedBox(height: 11),
+        itemBuilder: (_, i) => _row(tasks[i], byId, eventsById, me),
+      );
+    }
     final chains = _chains(tasks, threshold);
     return SliverList.separated(
       itemCount: chains.length,
@@ -236,8 +438,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       _refresh();
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('Couldn\'t open rule editor: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Couldn\'t open rule editor: $e'),
+          margin: snackBarMarginAboveNav(context),
+        ));
       }
     }
   }
@@ -249,8 +453,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       _refresh();
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('Dismiss failed: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Dismiss failed: $e'),
+          margin: snackBarMarginAboveNav(context),
+        ));
       }
     }
   }
@@ -275,8 +481,161 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             ],
           ),
         ),
+        FiltersButton(count: _filterCount, onTap: _openFilters),
+        const SizedBox(width: 8),
         RefreshFeedsButton(busy: _refreshingFeeds, onTap: _refreshFeeds),
       ],
+    );
+  }
+
+  /// Same filter categories as Plan (children / task type / show completed /
+  /// only my kids); the "Caretakers" section is opt-*in* here instead of
+  /// opt-out — Home only ever shows a claimed task once you pick its owner,
+  /// since the whole point of this screen is what's still unclaimed.
+  void _openFilters() {
+    final members = ref.read(membersProvider).valueOrNull ?? const <Member>[];
+    final me = ref.read(currentMemberProvider).valueOrNull;
+    final children = members.where((m) => m.requiresCaretaker).toList();
+    // My own covered tasks always show under "You're covering", so the opt-in
+    // list is only the *other* caretakers.
+    final caretakers =
+        members.where((m) => m.isCaretaker && m.id != me?.id).toList();
+
+    showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      useRootNavigator: true,
+      builder: (_) => StatefulBuilder(
+        builder: (context, setSheet) {
+          void toggle(Set<String> set, String key) => setSheet(() {
+                set.contains(key) ? set.remove(key) : set.add(key);
+                setState(() {});
+              });
+          return DraggableScrollableSheet(
+            expand: false,
+            initialChildSize: 0.72,
+            maxChildSize: 0.92,
+            builder: (context, scroll) => ListView(
+              controller: scroll,
+              padding: const EdgeInsets.fromLTRB(22, 4, 22, 28),
+              children: [
+                Row(
+                  children: [
+                    Text('Filters', style: AppText.subPageTitle),
+                    const Spacer(),
+                    TextButton(
+                      onPressed: () => setSheet(() {
+                        _exChildren.clear();
+                        _incOwners.clear();
+                        _exTypes.clear();
+                        _showCompleted = false;
+                        _onlyMyKids = false;
+                        setState(() {});
+                      }),
+                      child: const Text('Reset'),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                Text('Children', style: AppText.eyebrow()),
+                const SizedBox(height: 10),
+                Wrap(spacing: 8, runSpacing: 8, children: [
+                  for (final c in children)
+                    TaskFilterChip(
+                      label: c.relationName,
+                      dotColor: personColor(c),
+                      selected: !_exChildren.contains(c.id),
+                      onTap: () => toggle(_exChildren, c.id),
+                    ),
+                ]),
+                const SizedBox(height: 18),
+                Text('Also show claimed by', style: AppText.eyebrow()),
+                const SizedBox(height: 10),
+                Wrap(spacing: 8, runSpacing: 8, children: [
+                  for (final m in caretakers)
+                    TaskFilterChip(
+                      label: m.id == me?.id ? 'You' : m.relationName,
+                      dotColor: personColor(m),
+                      selected: _incOwners.contains(m.id),
+                      onTap: () => toggle(_incOwners, m.id),
+                    ),
+                ]),
+                const SizedBox(height: 18),
+                Text('Task type', style: AppText.eyebrow()),
+                const SizedBox(height: 10),
+                Wrap(spacing: 8, runSpacing: 8, children: [
+                  TaskFilterChip(
+                    label: 'Transitions',
+                    selected: !_exTypes.contains('transition'),
+                    onTap: () => toggle(_exTypes, 'transition'),
+                  ),
+                  TaskFilterChip(
+                    label: 'Attendance',
+                    selected: !_exTypes.contains('attendance'),
+                    onTap: () => toggle(_exTypes, 'attendance'),
+                  ),
+                ]),
+                const SizedBox(height: 20),
+                AppCard(
+                  child: Column(
+                    children: [
+                      SwitchRow(
+                        icon: Icons.check_circle_outline_rounded,
+                        iconColor: AppColors.green,
+                        title: 'Show completed',
+                        subtitle: 'Include tasks already done',
+                        value: _showCompleted,
+                        onChanged: (v) => setSheet(() {
+                          _showCompleted = v;
+                          setState(() {});
+                        }),
+                      ),
+                      const Divider(height: 20),
+                      SwitchRow(
+                        icon: Icons.person_outline_rounded,
+                        iconColor: AppColors.indigo,
+                        title: 'Only my kids',
+                        subtitle: "Hide children I don't cover",
+                        value: _onlyMyKids,
+                        onChanged: (v) => setSheet(() {
+                          _onlyMyKids = v;
+                          setState(() {});
+                        }),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 20),
+                Row(
+                  children: [
+                    PillButton(
+                      label: 'Clear',
+                      variant: PillVariant.ghost,
+                      onPressed: () => setSheet(() {
+                        _exChildren.clear();
+                        _incOwners.clear();
+                        _exTypes.clear();
+                        _showCompleted = false;
+                        _onlyMyKids = false;
+                        setState(() {});
+                      }),
+                    ),
+                    const Spacer(),
+                    PillButton(
+                      label: _filterCount == 0
+                          ? 'Apply'
+                          : 'Apply · $_filterCount filter${_filterCount == 1 ? '' : 's'}',
+                      variant: PillVariant.amber,
+                      onPressed: () => Navigator.of(context).pop(),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          );
+        },
+      ),
     );
   }
 
@@ -285,18 +644,34 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final child = byId[t.familyMemberId];
     final color = child != null ? personColor(child) : AppColors.textSecondary;
     final owned = t.status == 'owned';
-    final meColor = me == null ? AppColors.indigo : personColor(me);
+    final owner = owned ? byId[t.ownerMemberId] : null;
+    final ownerColor = owner != null ? personColor(owner) : AppColors.indigo;
+    final isMine = owner?.id == me?.id;
     return TaskRow(
       icon: taskIcon(t.type),
       iconColor: color,
+      // The source-person badge names whose calendar the task came from (6b).
+      // Only on the unclaimed rows, where the trailing chip isn't already an
+      // avatar of a person.
+      sourceInitial: !owned && child != null ? initialFor(child.relationName) : null,
+      sourceColor: !owned && child != null ? color : null,
       typeLabel: taskTitle(t, eventsById[t.calendarEventId]),
       personName: child?.relationName ?? 'child',
       personColor: color,
-      subtitle: '${taskCategory(t.type)} · ${friendlyTime(t.start)}',
-      ownedColor: owned ? meColor : null,
-      onTap: () => showTaskActions(context, ref, t),
+      subtitle: t.type == 'attendance' && t.end != null
+          ? 'Attendance · ${friendlyRange(t.start, t.end!)}'
+          : '${taskCategory(t.type)} · ${friendlyTime(t.start)}',
+      ownedColor: owned ? ownerColor : null,
+      onTap: () => showTaskActions(context, ref, t,
+          sourceEvent: t.calendarEventId == null ? null : eventsById[t.calendarEventId]),
       trailing: owned
-          ? YouChip(initial: initialFor(me?.relationName ?? '?'), color: meColor)
+          ? (isMine
+              ? YouChip(
+                  initial: initialFor(me?.relationName ?? '?'), color: ownerColor)
+              : _CoveredByChip(
+                  initial: initialFor(owner?.relationName ?? '?'),
+                  name: owner?.relationName ?? 'them',
+                  color: ownerColor))
           : PillButton(label: 'Claim', dense: true, onPressed: () => _claim(t.id)),
     );
   }
@@ -397,6 +772,93 @@ class _DecisionCard extends StatelessWidget {
   }
 }
 
+/// An agenda overlap (6b, ranked above pending decisions): a coral card naming
+/// the two events that collide. "Split around it" accepts the default
+/// resolution — trim/split the lower-priority event around the higher one, which
+/// then generates its own drop-off/pickup; "Dismiss" accepts the double-book.
+class _ConflictCard extends StatelessWidget {
+  const _ConflictCard({
+    required this.conflict,
+    required this.member,
+    required this.onResolve,
+    required this.onDismiss,
+  });
+  final Conflict conflict;
+  final Member? member;
+  final VoidCallback onResolve;
+  final VoidCallback onDismiss;
+
+  @override
+  Widget build(BuildContext context) {
+    final memberColor =
+        member != null ? personColor(member!) : AppColors.textSecondary;
+    final winner = conflict.winner;
+    final loser = conflict.loser;
+    final when = winner.allDay
+        ? homeDayHeader(dayKey(winner.start), DateTime.now())
+        : friendlyTime(winner.start);
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: AppColors.tint(AppColors.coral, 0.07),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: AppColors.coral.withValues(alpha: 0.45)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const IconTile(icon: Icons.event_busy_rounded, color: AppColors.coral, size: 38),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text.rich(
+                      TextSpan(children: [
+                        TextSpan(
+                            text: loser.summary ?? 'An event',
+                            style: AppText.sectionItemTitle),
+                        TextSpan(
+                            text: ' · ${member?.relationName ?? 'member'}',
+                            style: font(kBodyFont, 14, 700, color: memberColor)),
+                      ]),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      'Overlaps ${winner.summary ?? 'another event'} · $when — '
+                      "can't be in two places at once.",
+                      style: font(kBodyFont, 12, 500, color: AppColors.coral),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: PillButton(
+                    label: 'Split around it',
+                    variant: PillVariant.amber,
+                    onPressed: onResolve),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: PillButton(label: 'Dismiss', onPressed: onDismiss),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 /// Threaded chain (6d, treatment 1 — "connector thread"): separate cards joined
 /// by a dotted coral spine + "then… same trip" note; each leg stays
 /// independently claimable, with an optional "Claim both".
@@ -464,38 +926,37 @@ class _ThreadedChain extends StatelessWidget {
   }
 }
 
-/// The discoverability hint for the long-press quick-actions.
-class _HintChip extends StatelessWidget {
-  const _HintChip();
+/// The trailing chip on a "You're covering" row when the owner isn't me: the
+/// covering caretaker's avatar + name.
+class _CoveredByChip extends StatelessWidget {
+  const _CoveredByChip({
+    required this.initial,
+    required this.name,
+    required this.color,
+  });
+  final String initial;
+  final String name;
+  final Color color;
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-      decoration: BoxDecoration(
-        color: AppColors.card,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: AppColors.borderSubtle),
-      ),
-      child: Row(
-        children: [
-          const Icon(Icons.touch_app_outlined, size: 17, color: AppColors.textTertiary),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Text('Tap a task to reassign, change its type, or mark it not needed',
-                style: font(kBodyFont, 12.5, 500, color: AppColors.textSecondary)),
-          ),
-        ],
-      ),
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        PersonAvatar(initial: initial, color: color, size: 24),
+        const SizedBox(width: 6),
+        Text(name, style: font(kBodyFont, 12.5, 600, color: AppColors.textSecondary)),
+      ],
     );
   }
 }
 
-/// Sticky per-day header: "TODAY · TUE JUL 1" with the open (unclaimed) count.
+/// Sticky per-day header: "TODAY · TUE JUL 1" with an optional trailing note
+/// (the open-count on the claim queue; nothing on the covering list).
 class _DayHeaderDelegate extends SliverPersistentHeaderDelegate {
-  _DayHeaderDelegate({required this.label, required this.openCount});
+  _DayHeaderDelegate({required this.label, this.trailing});
   final String label;
-  final int openCount;
+  final String? trailing;
 
   @override
   double get minExtent => 42;
@@ -511,7 +972,7 @@ class _DayHeaderDelegate extends SliverPersistentHeaderDelegate {
       child: Row(
         children: [
           Expanded(child: Text(label, style: AppText.eyebrow(AppColors.amberHero))),
-          Text('$openCount open', style: AppText.secondary),
+          if (trailing != null) Text(trailing!, style: AppText.secondary),
         ],
       ),
     );
@@ -519,5 +980,5 @@ class _DayHeaderDelegate extends SliverPersistentHeaderDelegate {
 
   @override
   bool shouldRebuild(_DayHeaderDelegate old) =>
-      old.label != label || old.openCount != openCount;
+      old.label != label || old.trailing != trailing;
 }

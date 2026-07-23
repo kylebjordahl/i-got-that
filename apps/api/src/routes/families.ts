@@ -12,6 +12,7 @@ import {
   requireAdmin,
   requireFamilyMember,
 } from '../middleware/auth.js';
+import { wouldOrphanFamily } from '../services/families.js';
 import { enqueueReconcile } from '../services/mirror.js';
 import { rebuildMemberTasks } from '../services/task-gen.js';
 import { createMemberClaimInvite } from '../services/invites.js';
@@ -112,6 +113,36 @@ familyRoutes.patch('/:familyId', requireFamilyMember, requireAdmin, async (c) =>
   return c.json({ family });
 });
 
+/**
+ * Delete the family (admin). FKs cascade: members, feeds, tasks, calendar
+ * events, and calendar targets all go with it. `event_mirrors` rows
+ * deliberately have no FK (see schema note) and are left behind — same
+ * best-effort gap as member removal today; a future reconcile would need to
+ * run before the cascade to cancel remote copies.
+ */
+familyRoutes.delete('/:familyId', requireFamilyMember, requireAdmin, async (c) => {
+  const db = getDb(c.env.DB);
+  await db.delete(families).where(eq(families.id, c.get('member').familyId));
+  return c.body(null, 204);
+});
+
+/**
+ * Leave a family (self-service): unlink the caller's `userId` from their
+ * `family_members` row. The row (and their history/tasks) stays — same
+ * unlink-not-remove outcome as `deleteUserAccount`, just for one family
+ * instead of all of them. Blocked (`last_admin`) if the caller is the sole
+ * admin of a family that still has other members.
+ */
+familyRoutes.post('/:familyId/leave', requireFamilyMember, async (c) => {
+  const db = getDb(c.env.DB);
+  const me = c.get('member');
+  if (me.isAdmin && (await wouldOrphanFamily(db, me.familyId, me.id))) {
+    return c.json({ error: 'last_admin' }, 409);
+  }
+  await db.update(familyMembers).set({ userId: null }).where(eq(familyMembers.id, me.id));
+  return c.body(null, 204);
+});
+
 /** List members of a family (any member). */
 familyRoutes.get('/:familyId/members', requireFamilyMember, async (c) => {
   const db = getDb(c.env.DB);
@@ -160,9 +191,10 @@ familyRoutes.post(
 
 /**
  * Issue a member-claim invite (admin) — a share token that links whoever
- * accepts it (after logging in) to this pre-created member. Returns the token;
- * the client composes a shareable link/code. Works for users who already have
- * an account (no new user is created on accept).
+ * accepts it (after logging in) to this pre-created member. Returns the token
+ * plus an absolute deep-link `url` (when PUBLIC_ORIGIN is set) the client can
+ * share directly. Works for users who already have an account (no new user is
+ * created on accept).
  */
 familyRoutes.post(
   '/:familyId/members/:memberId/invite',
@@ -184,7 +216,14 @@ familyRoutes.post(
     if (member.userId) return c.json({ error: 'already_linked' }, 409);
 
     const invite = await createMemberClaimInvite(db, me.familyId, memberId, me.id);
-    return c.json({ token: invite.token, expiresAt: invite.expiresAt }, 201);
+    // Compose the shareable deep-link URL from the deployment's public origin.
+    // On iOS this opens the app (Universal Links); on web it drives the same
+    // join flow via the existing `?invite=` parser. Local dev / tests have no
+    // public origin ⇒ `url` is null and the client falls back to the raw token.
+    const url = c.env.PUBLIC_ORIGIN
+      ? `${c.env.PUBLIC_ORIGIN}/app/?invite=${invite.token}`
+      : null;
+    return c.json({ token: invite.token, expiresAt: invite.expiresAt, url }, 201);
   },
 );
 
@@ -273,12 +312,8 @@ familyRoutes.delete(
     )[0];
     if (!target) return c.json({ error: 'not_found' }, 404);
 
-    if (target.isAdmin) {
-      const admins = await db
-        .select({ id: familyMembers.id })
-        .from(familyMembers)
-        .where(and(eq(familyMembers.familyId, me.familyId), eq(familyMembers.isAdmin, true)));
-      if (admins.length <= 1) return c.json({ error: 'last_admin' }, 409);
+    if (target.isAdmin && (await wouldOrphanFamily(db, me.familyId, memberId))) {
+      return c.json({ error: 'last_admin' }, 409);
     }
 
     await db.delete(familyMembers).where(eq(familyMembers.id, memberId));

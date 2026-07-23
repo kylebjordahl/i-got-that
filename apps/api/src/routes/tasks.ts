@@ -2,11 +2,14 @@ import {
   and,
   asc,
   calendarEvents,
+  conflicts,
   eq,
   familyMembers,
   feeds,
   getDb,
   gte,
+  inArray,
+  isNull,
   lt,
   pendingDecisions,
   sourceEvents,
@@ -14,14 +17,17 @@ import {
 } from '@igt/db';
 import {
   AssignTaskInput,
+  ConflictStatus,
   ConvertTaskInput,
   ResolvePendingDecisionInput,
+  SetTaskDurationInput,
 } from '@igt/domain';
-import { wallTimeToUtc, startOfUtcDay } from '@igt/classification';
+import { transitionWindow, wallTimeToUtc, startOfUtcDay } from '@igt/classification';
 import { Hono } from 'hono';
 import type { HonoEnv } from '../env.js';
 import { requireFamilyMember } from '../middleware/auth.js';
 import { removeClaimEvent, upsertClaimEvent } from '../services/claim.js';
+import { reconcileMemberConflicts } from '../services/conflicts.js';
 import { enqueueReconcile, getProductionRegistry, syncFamilyMirror } from '../services/mirror.js';
 import { hashCalendarEvent } from '../services/synthesis.js';
 import { buildMemberTasks } from '../services/task-gen.js';
@@ -279,6 +285,90 @@ taskRoutes.post('/tasks/:taskId/convert', async (c) => {
   return c.json({ tasks: updated });
 });
 
+/**
+ * Set a transition task's (pickup / drop-off) window length in minutes,
+ * measured from its anchor — the parent event's start for a drop-off, its end
+ * for a pickup. A positive value extends the window forward from the anchor; a
+ * negative value reverses it, sitting before the anchor (so the drop-off/pickup
+ * runs the opposite direction); 0 collapses it to a point. The override is
+ * stamped on the task so a rebuild re-anchors around it rather than recomputing
+ * the rule-derived window, and the whole transition pair is frozen to `manual`
+ * (mirrors convert()) so reclassification can't wipe the customization. An owned
+ * task's claimed mirror event is re-synced.
+ */
+taskRoutes.post('/tasks/:taskId/duration', async (c) => {
+  const parsed = SetTaskDurationInput.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) return c.json({ error: 'invalid', issues: parsed.error.issues }, 400);
+  const { durationMinutes } = parsed.data;
+
+  const db = getDb(c.env.DB);
+  const me = c.get('member');
+
+  const task = (
+    await db
+      .select()
+      .from(tasks)
+      .where(and(eq(tasks.id, c.req.param('taskId')), eq(tasks.familyId, me.familyId)))
+      .limit(1)
+  )[0];
+  if (!task) return c.json({ error: 'task_not_found' }, 404);
+  if (task.type !== 'pickup' && task.type !== 'dropoff') {
+    return c.json({ error: 'not_a_transition' }, 400);
+  }
+
+  // The anchor stays pinned to the source event (drop-off ⇒ start, pickup ⇒
+  // end). Fall back to the task's own stored anchor when the event is gone,
+  // reading the anchored end according to the current override's sign.
+  let anchor: Date;
+  const event = task.calendarEventId
+    ? (
+        await db
+          .select()
+          .from(calendarEvents)
+          .where(eq(calendarEvents.id, task.calendarEventId))
+          .limit(1)
+      )[0]
+    : undefined;
+  if (event) {
+    anchor = task.type === 'pickup' ? (event.dtend ?? event.dtstart) : event.dtstart;
+  } else {
+    anchor =
+      task.durationOverrideMin != null && task.durationOverrideMin < 0 && task.dtend
+        ? task.dtend
+        : task.dtstart;
+  }
+
+  const { dtstart, dtend } = transitionWindow(anchor, durationMinutes);
+
+  // Freeze the transition pair so a rebuild won't reclassify or drop it, then
+  // stamp the new window + override on this task.
+  if (task.calendarEventId) {
+    await db
+      .update(tasks)
+      .set({ createdVia: 'manual' })
+      .where(
+        and(
+          eq(tasks.calendarEventId, task.calendarEventId),
+          inArray(tasks.type, ['pickup', 'dropoff']),
+        ),
+      );
+  }
+  const updated = (
+    await db
+      .update(tasks)
+      .set({ dtstart, dtend, durationOverrideMin: durationMinutes, createdVia: 'manual' })
+      .where(eq(tasks.id, task.id))
+      .returning()
+  )[0]!;
+
+  // Owned ⇒ the claimed mirror event tracks the task's window; re-sync it.
+  if (updated.status === 'owned' && updated.ownerMemberId) {
+    await upsertClaimEvent(db, updated);
+    enqueueReconcile(c, { kind: 'member', memberId: updated.ownerMemberId });
+  }
+  return c.json({ task: updated });
+});
+
 // --- Pending decisions -----------------------------------------------------
 
 /** Open pending decisions, with the source event's payload for the card copy. */
@@ -404,6 +494,7 @@ taskRoutes.post('/pending-decisions/:decisionId/resolve', async (c) => {
     })
     .where(eq(pendingDecisions.id, decision.id));
 
+  await reconcileMemberConflicts(db, decision.familyMemberId);
   await buildMemberTasks(db, decision.familyMemberId);
   enqueueReconcile(c, { kind: 'member', memberId: decision.familyMemberId });
   return c.json({ ok: true });
@@ -435,6 +526,201 @@ taskRoutes.post('/pending-decisions/:decisionId/dismiss', async (c) => {
   return c.json({ ok: true });
 });
 
+// --- Conflicts (agenda overlaps) -------------------------------------------
+
+/**
+ * Agenda conflicts, each with its two overlapping events' details for the card
+ * copy. A conflict is a maskable event (the `loser`) overlapped by a
+ * higher-priority one (the `winner`) on a member's unified calendar. Rows whose
+ * events have vanished are skipped (they clear on the next reconcile).
+ *
+ * Defaults to `status=pending` (Home's decision queue). Pass `status=resolved`
+ * to list overrides currently in effect (e.g. a member's masked/split events),
+ * and `memberId` to scope to one member.
+ */
+taskRoutes.get('/conflicts', async (c) => {
+  const db = getDb(c.env.DB);
+  const familyId = c.get('member').familyId;
+  const statusParam = c.req.query('status') ?? 'pending';
+  const status = ConflictStatus.options.includes(statusParam as ConflictStatus)
+    ? (statusParam as ConflictStatus)
+    : 'pending';
+  const memberId = c.req.query('memberId');
+  const conditions = [eq(conflicts.familyId, familyId), eq(conflicts.status, status)];
+  if (memberId) conditions.push(eq(conflicts.familyMemberId, memberId));
+  const rows = await db
+    .select()
+    .from(conflicts)
+    .where(and(...conditions))
+    .orderBy(asc(conflicts.createdAt));
+  if (rows.length === 0) return c.json({ conflicts: [] });
+
+  const memberIds = [...new Set(rows.map((r) => r.familyMemberId))];
+  const evs = await db
+    .select({
+      familyMemberId: calendarEvents.familyMemberId,
+      synthKey: calendarEvents.synthKey,
+      summary: calendarEvents.summary,
+      location: calendarEvents.location,
+      dtstart: calendarEvents.dtstart,
+      dtend: calendarEvents.dtend,
+      allDay: calendarEvents.allDay,
+    })
+    .from(calendarEvents)
+    .where(
+      and(
+        eq(calendarEvents.familyId, familyId),
+        inArray(calendarEvents.familyMemberId, memberIds),
+      ),
+    );
+  const evByKey = new Map(evs.map((e) => [`${e.familyMemberId}|${e.synthKey}`, e]));
+
+  const out = rows
+    .map((r) => ({
+      id: r.id,
+      familyMemberId: r.familyMemberId,
+      status: r.status,
+      createdAt: r.createdAt,
+      loser: evByKey.get(`${r.familyMemberId}|${r.loserKey}`) ?? null,
+      winner: evByKey.get(`${r.familyMemberId}|${r.winnerKey}`) ?? null,
+    }))
+    .filter((r) => r.loser && r.winner);
+  return c.json({ conflicts: out });
+});
+
+/** Load a conflict scoped to the caller's family. */
+async function loadConflict(
+  db: ReturnType<typeof getDb>,
+  familyId: string,
+  conflictId: string,
+) {
+  return (
+    await db
+      .select()
+      .from(conflicts)
+      .where(and(eq(conflicts.id, conflictId), eq(conflicts.familyId, familyId)))
+      .limit(1)
+  )[0];
+}
+
+/**
+ * The loser/winner events' current content_hash, to snapshot against a
+ * resolve/dismiss decision — see loserContentHash/winnerContentHash on the
+ * conflicts table.
+ */
+async function decisionHashes(
+  db: ReturnType<typeof getDb>,
+  familyMemberId: string,
+  loserKey: string,
+  winnerKey: string,
+) {
+  const rows = await db
+    .select({ synthKey: calendarEvents.synthKey, contentHash: calendarEvents.contentHash })
+    .from(calendarEvents)
+    .where(
+      and(
+        eq(calendarEvents.familyMemberId, familyMemberId),
+        inArray(calendarEvents.synthKey, [loserKey, winnerKey]),
+      ),
+    );
+  const byKey = new Map(rows.map((r) => [r.synthKey, r.contentHash]));
+  return {
+    loserContentHash: byKey.get(loserKey) ?? null,
+    winnerContentHash: byKey.get(winnerKey) ?? null,
+  };
+}
+
+/**
+ * Resolve a conflict — accept the default split: the lower-priority loser is
+ * trimmed/split around the higher-priority winner, and task-gen spawns the
+ * drop-off/pickup at each new segment boundary. Idempotent.
+ */
+taskRoutes.post('/conflicts/:conflictId/resolve', async (c) => {
+  const db = getDb(c.env.DB);
+  const me = c.get('member');
+  const conflict = await loadConflict(db, me.familyId, c.req.param('conflictId'));
+  if (!conflict) return c.json({ error: 'not_found' }, 404);
+  const hashes = await decisionHashes(
+    db,
+    conflict.familyMemberId,
+    conflict.loserKey,
+    conflict.winnerKey,
+  );
+  await db
+    .update(conflicts)
+    .set({
+      status: 'resolved',
+      resolvedByMemberId: me.id,
+      resolvedAt: new Date(),
+      dismissedAt: null,
+      ...hashes,
+    })
+    .where(eq(conflicts.id, conflict.id));
+  await reconcileMemberConflicts(db, conflict.familyMemberId);
+  await buildMemberTasks(db, conflict.familyMemberId);
+  enqueueReconcile(c, { kind: 'member', memberId: conflict.familyMemberId });
+  return c.json({ ok: true });
+});
+
+/**
+ * Dismiss a conflict — acknowledge the double-booking and leave both events as
+ * they are (no split). Any split from a prior resolution is undone.
+ */
+taskRoutes.post('/conflicts/:conflictId/dismiss', async (c) => {
+  const db = getDb(c.env.DB);
+  const me = c.get('member');
+  const conflict = await loadConflict(db, me.familyId, c.req.param('conflictId'));
+  if (!conflict) return c.json({ error: 'not_found' }, 404);
+  const hashes = await decisionHashes(
+    db,
+    conflict.familyMemberId,
+    conflict.loserKey,
+    conflict.winnerKey,
+  );
+  await db
+    .update(conflicts)
+    .set({
+      status: 'dismissed',
+      dismissedAt: new Date(),
+      resolvedByMemberId: null,
+      resolvedAt: null,
+      ...hashes,
+    })
+    .where(eq(conflicts.id, conflict.id));
+  await reconcileMemberConflicts(db, conflict.familyMemberId);
+  await buildMemberTasks(db, conflict.familyMemberId);
+  enqueueReconcile(c, { kind: 'member', memberId: conflict.familyMemberId });
+  return c.json({ ok: true });
+});
+
+/**
+ * Revert a resolved conflict — undo a prior "split around it" decision. The
+ * loser is unmasked and its `cf:` split segments removed, and the conflict
+ * goes back to pending so it re-enters the decision queue (it re-resolves or
+ * clears on the next reconcile if the overlap itself is gone).
+ */
+taskRoutes.post('/conflicts/:conflictId/revert', async (c) => {
+  const db = getDb(c.env.DB);
+  const me = c.get('member');
+  const conflict = await loadConflict(db, me.familyId, c.req.param('conflictId'));
+  if (!conflict) return c.json({ error: 'not_found' }, 404);
+  await db
+    .update(conflicts)
+    .set({
+      status: 'pending',
+      resolvedByMemberId: null,
+      resolvedAt: null,
+      dismissedAt: null,
+      loserContentHash: null,
+      winnerContentHash: null,
+    })
+    .where(eq(conflicts.id, conflict.id));
+  await reconcileMemberConflicts(db, conflict.familyMemberId);
+  await buildMemberTasks(db, conflict.familyMemberId);
+  enqueueReconcile(c, { kind: 'member', memberId: conflict.familyMemberId });
+  return c.json({ ok: true });
+});
+
 // --- Unified-calendar events (Plan / member views) ---------------------------
 
 /**
@@ -449,7 +735,12 @@ taskRoutes.get('/calendar-events', async (c) => {
   const from = c.req.query('from');
   const to = c.req.query('to');
 
-  const conditions = [eq(calendarEvents.familyId, familyId)];
+  // Conflict-masked events are represented on the calendar by their cf: split
+  // segments, so hide the masked full-span row itself.
+  const conditions = [
+    eq(calendarEvents.familyId, familyId),
+    isNull(calendarEvents.maskedAt),
+  ];
   if (memberId) conditions.push(eq(calendarEvents.familyMemberId, memberId));
   if (from) {
     const d = new Date(from);
@@ -471,6 +762,7 @@ taskRoutes.get('/calendar-events', async (c) => {
       dtend: calendarEvents.dtend,
       allDay: calendarEvents.allDay,
       summary: calendarEvents.summary,
+      description: calendarEvents.description,
       location: calendarEvents.location,
     })
     .from(calendarEvents)

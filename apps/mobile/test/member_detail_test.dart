@@ -1,5 +1,7 @@
+import 'package:caretaker_app/api/client.dart';
 import 'package:caretaker_app/models.dart';
 import 'package:caretaker_app/screens/member_detail_screen.dart';
+import 'package:caretaker_app/state/auth.dart';
 import 'package:caretaker_app/state/family.dart';
 import 'package:caretaker_app/theme/app_theme.dart';
 import 'package:flutter/material.dart';
@@ -7,14 +9,25 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 Member _m(String id, String name,
-        {bool caretaker = false, bool admin = false, bool child = false}) =>
+        {bool caretaker = false, bool admin = false, bool child = false, String? userId}) =>
     Member(
       id: id,
       relationName: name,
       isCaretaker: caretaker,
       isAdmin: admin,
       requiresCaretaker: child,
+      userId: userId,
     );
+
+/// Fakes the invite-issuing endpoint so the "Invite link" section can be
+/// exercised without a real network call.
+class _FakeApiClient extends ApiClient {
+  _FakeApiClient() : super(baseUrl: 'http://test');
+
+  @override
+  Future<Map<String, dynamic>> issueMemberInvite(String familyId, String memberId) async =>
+      {'token': 'fake-invite-token', 'expiresAt': DateTime.now().add(const Duration(days: 14)).toIso8601String()};
+}
 
 void main() {
   final me = _m('dad', 'Dad', caretaker: true, admin: true);
@@ -76,5 +89,110 @@ void main() {
     expect(find.text('Can claim tasks'), findsOneWidget);
     expect(find.text('SOURCE CALENDARS'), findsOneWidget);
     expect(find.text('FAMILY LOGISTICS'), findsOneWidget);
+  });
+
+  testWidgets(
+      'an admin sees an "Invite link" section, just above Source calendars, '
+      'for a member with no login yet', (tester) async {
+    await pumpTall(tester, app('theo'));
+
+    expect(find.text('INVITE LINK'), findsOneWidget);
+    expect(find.text('No active invite yet'), findsOneWidget);
+    expect(find.text('Generate'), findsOneWidget);
+
+    // Ordering: below the profile card / above Source calendars.
+    final invite = tester.getTopLeft(find.text('INVITE LINK'));
+    final sources = tester.getTopLeft(find.text('SOURCE CALENDARS'));
+    expect(invite.dy, lessThan(sources.dy));
+  });
+
+  testWidgets('no invite section once the member already has a login', (tester) async {
+    final linked = _m('theo', 'Theo', child: true, userId: 'user-theo');
+    await pumpTall(tester, ProviderScope(
+      overrides: [
+        membersProvider.overrideWith((ref) async => [me, linked]),
+        currentMemberProvider.overrideWith((ref) async => me),
+        feedsProvider.overrideWith((ref) async => const <FeedItem>[]),
+        accountsProvider.overrideWith((ref) async => const <ExternalAccount>[]),
+        memberCalendarProvider.overrideWith((ref, id) async => null),
+        calendarEventsProvider.overrideWith((ref) async => const []),
+      ],
+      child: MaterialApp(
+        theme: buildAppTheme(),
+        themeMode: ThemeMode.dark,
+        home: const MemberDetailScreen(memberId: 'theo'),
+      ),
+    ));
+
+    expect(find.text('INVITE LINK'), findsNothing);
+  });
+
+  testWidgets(
+      'reorderable source-calendars list gets its own local Overlay so the '
+      'drag proxy stays contained instead of painting over Unified calendar',
+      (tester) async {
+    final feedA = FeedItem(id: 'f1', kind: 'ics', mode: 'standard');
+    final feedB = FeedItem(id: 'f2', kind: 'google', mode: 'standard');
+    final linkA = FeedLink(id: 'link1', familyMemberId: 'theo', active: true, position: 0);
+    final linkB = FeedLink(id: 'link2', familyMemberId: 'theo', active: true, position: 1);
+
+    await pumpTall(
+      tester,
+      ProviderScope(
+        overrides: [
+          membersProvider.overrideWith((ref) async => [me, theo]),
+          currentMemberProvider.overrideWith((ref) async => me),
+          feedsProvider.overrideWith((ref) async => [feedA, feedB]),
+          feedLinksProvider('f1').overrideWith((ref) async => [linkA]),
+          feedLinksProvider('f2').overrideWith((ref) async => [linkB]),
+          accountsProvider.overrideWith((ref) async => const <ExternalAccount>[]),
+          memberCalendarProvider.overrideWith((ref, id) async => null),
+          calendarEventsProvider.overrideWith((ref) async => const []),
+        ],
+        child: MaterialApp(
+          theme: buildAppTheme(),
+          themeMode: ThemeMode.dark,
+          home: const MemberDetailScreen(memberId: 'theo'),
+        ),
+      ),
+    );
+
+    expect(find.byType(ReorderableListView), findsOneWidget);
+    expect(find.textContaining('Drag to set priority'), findsOneWidget);
+    // The MaterialApp/Navigator always contributes one root Overlay. Seeing a
+    // second one proves the reorderable list has its own local Overlay
+    // (Overlay.wrap) to float and clip its drag proxy in, rather than
+    // escaping to the app-level overlay and painting over whatever renders
+    // below it (the Unified calendar section).
+    expect(find.byType(Overlay), findsNWidgets(2));
+  });
+
+  testWidgets('generating an invite link shows the token to copy/share', (tester) async {
+    await pumpTall(
+      tester,
+      ProviderScope(
+        overrides: [
+          apiClientProvider.overrideWithValue(_FakeApiClient()),
+          familyProvider.overrideWith((ref) async => 'fam-1'),
+          membersProvider.overrideWith((ref) async => [me, theo]),
+          currentMemberProvider.overrideWith((ref) async => me),
+          feedsProvider.overrideWith((ref) async => const <FeedItem>[]),
+          accountsProvider.overrideWith((ref) async => const <ExternalAccount>[]),
+          memberCalendarProvider.overrideWith((ref, id) async => null),
+          calendarEventsProvider.overrideWith((ref) async => const []),
+        ],
+        child: MaterialApp(
+          theme: buildAppTheme(),
+          themeMode: ThemeMode.dark,
+          home: const MemberDetailScreen(memberId: 'theo'),
+        ),
+      ),
+    );
+
+    await tester.tap(find.text('Generate'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('fake-invite-token'), findsOneWidget);
+    expect(find.text('No active invite yet'), findsNothing);
   });
 }

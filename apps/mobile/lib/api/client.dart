@@ -1,4 +1,5 @@
 import 'package:dio/dio.dart';
+import '../models.dart';
 import 'dio_credentials.dart';
 
 /// Sentinel that distinguishes "omit this PATCH field" from "set to null".
@@ -51,6 +52,19 @@ class ApiClient {
     return data;
   }
 
+  /// Native Sign in with Google: exchange the ID token (+ an optional
+  /// `serverAuthCode`, which auto-connects the user's Google Calendar the
+  /// same way the web redirect flow does) for a session.
+  Future<Map<String, dynamic>> signInWithGoogle(String idToken, {String? serverAuthCode}) async {
+    final res = await _dio.post('/auth/google', data: {
+      'idToken': idToken,
+      if (serverAuthCode != null) 'serverAuthCode': serverAuthCode,
+    });
+    final data = _obj(res);
+    _sessionToken = data['sessionToken'] as String;
+    return data;
+  }
+
   Future<Map<String, dynamic>> me() async => _obj(await _dio.get('/me', options: _auth));
 
   /// Invalidate the session server-side and clear the web session cookie.
@@ -59,6 +73,23 @@ class ApiClient {
   Future<void> logout() async {
     await _dio.post('/auth/logout', data: <String, dynamic>{}, options: _auth);
     _sessionToken = null;
+  }
+
+  /// Delete the signed-in user's own account. Family memberships are kept but
+  /// unlinked, not removed; the server 409s (`last_admin`) if this would leave
+  /// a family with other members and no admin.
+  Future<void> deleteMyAccount() async {
+    await _dio.delete('/auth/me', options: _auth);
+    _sessionToken = null;
+  }
+
+  /// Whether the signed-in user is currently free to delete their account —
+  /// false while they're the sole admin of a family that has other members.
+  /// Checked before opening the delete-account speedbump so a block shows
+  /// immediately rather than as a toast behind a failed slide attempt.
+  Future<bool> accountDeletable() async {
+    final res = await _dio.get('/auth/me/deletable', options: _auth);
+    return _obj(res)['deletable'] as bool;
   }
 
   // --- Login methods (thread multiple identities into one account) --------
@@ -79,13 +110,30 @@ class ApiClient {
         data: {'identityToken': identityToken}, options: _auth);
   }
 
+  /// Thread a native Sign in with Google identity onto the current user (an
+  /// optional `serverAuthCode` still auto-connects the calendar).
+  Future<void> linkGoogle(String idToken, {String? serverAuthCode}) async {
+    await _dio.post('/auth/link/google', data: {
+      'idToken': idToken,
+      if (serverAuthCode != null) 'serverAuthCode': serverAuthCode,
+    }, options: _auth);
+  }
+
   /// Detach a login method (the server blocks removing the last one).
   Future<void> unlinkIdentity(String identityId) async {
     await _dio.delete('/auth/identities/$identityId', options: _auth);
   }
 
-  Future<Map<String, dynamic>> createFamily(String name) async =>
-      _obj(await _dio.post('/families', data: {'name': name}, options: _auth));
+  /// Create a family. An optional [relationName] names the creator's own
+  /// (admin) member in the same call — the first-run wizard's "create family +
+  /// name yourself" step (the route creates that member either way).
+  Future<Map<String, dynamic>> createFamily(String name, {String? relationName}) async =>
+      _obj(await _dio.post('/families',
+          data: {
+            'name': name,
+            if (relationName != null) 'relationName': relationName,
+          },
+          options: _auth));
 
   /// The family row (carries `threadingThresholdMinutes`).
   Future<Map<String, dynamic>> getFamily(String familyId) async =>
@@ -106,6 +154,19 @@ class ApiClient {
       },
       options: _auth,
     );
+  }
+
+  /// Delete the family (admin). 204 on success; members, feeds, tasks, and
+  /// calendar data all go with it.
+  Future<void> deleteFamily(String familyId) async {
+    await _dio.delete('/families/$familyId', options: _auth);
+  }
+
+  /// Leave a family (self-service): unlinks the caller from their member row
+  /// while keeping it (and its history) intact. 204 on success; the server
+  /// blocks (409 `last_admin`) if this would leave the family adminless.
+  Future<void> leaveFamily(String familyId) async {
+    await _dio.post('/families/$familyId/leave', data: <String, dynamic>{}, options: _auth);
   }
 
   // --- Family members ----------------------------------------------------
@@ -162,7 +223,8 @@ class ApiClient {
     await _dio.delete('/families/$familyId/members/$memberId', options: _auth);
   }
 
-  /// Issue a member-claim invite (admin). Returns `{ token, expiresAt }`.
+  /// Issue a member-claim invite (admin). Returns `{ token, expiresAt, url }`
+  /// where `url` is the shareable deep link (null in local dev with no origin).
   Future<Map<String, dynamic>> issueMemberInvite(String familyId, String memberId) async =>
       _obj(await _dio.post('/families/$familyId/members/$memberId/invite',
           data: <String, dynamic>{}, options: _auth));
@@ -231,6 +293,15 @@ class ApiClient {
   Future<List<dynamic>> listFeeds(String familyId) async =>
       _list(await _dio.get('/families/$familyId/feeds', options: _auth), 'feeds');
 
+  /// Reorder one member's feed links by priority: every link id of that member
+  /// exactly once, new order (index 0 = highest priority). Breaks conflict ties
+  /// on that member's unified calendar; manual events always outrank feeds.
+  Future<void> reorderMemberFeedLinks(
+      String familyId, String memberId, List<String> linkIds) async {
+    await _dio.put('/families/$familyId/feeds/member-links/order',
+        data: {'familyMemberId': memberId, 'linkIds': linkIds}, options: _auth);
+  }
+
   /// Create an input feed: a public ICS URL (`kind: 'ics'`, pass `url`, with an
   /// optional `name` — blank ⇒ fetched from the feed) or a calendar from a
   /// connected account (`kind: 'caldav' | 'google'`, pass `externalAccountId` +
@@ -271,6 +342,7 @@ class ApiClient {
     String? dayStart,
     String? dayEnd,
     String? location,
+    GeoLocation? locationGeo,
   }) async {
     final res = await _dio.post(
       '/families/$familyId/feeds/$feedId/member-links',
@@ -280,6 +352,7 @@ class ApiClient {
         if (dayStart != null) 'dayStart': dayStart,
         if (dayEnd != null) 'dayEnd': dayEnd,
         if (location != null) 'location': location,
+        if (locationGeo != null) 'locationGeo': locationGeo.toJson(),
       },
       options: _auth,
     );
@@ -298,6 +371,8 @@ class ApiClient {
     String? dayStart,
     String? dayEnd,
     String? location,
+    // Pass a GeoLocation to set, or `null` to clear; omit to leave unchanged.
+    Object? locationGeo = _unset,
     bool? active,
   }) async {
     await _dio.patch(
@@ -307,6 +382,8 @@ class ApiClient {
         if (dayStart != null) 'dayStart': dayStart,
         if (dayEnd != null) 'dayEnd': dayEnd,
         if (location != null) 'location': location,
+        if (!identical(locationGeo, _unset))
+          'locationGeo': (locationGeo as GeoLocation?)?.toJson(),
         if (active != null) 'active': active,
       },
       options: _auth,
@@ -454,6 +531,16 @@ class ApiClient {
         data: {'types': types}, options: _auth);
   }
 
+  /// Set a transition task's (pickup / drop-off) window length in minutes,
+  /// measured from its anchor (the parent event's start for a drop-off, its end
+  /// for a pickup). Positive extends the window forward from the anchor;
+  /// negative reverses it to sit before the anchor; 0 collapses it to a point.
+  Future<void> setTaskDuration(
+      String familyId, String taskId, int durationMinutes) async {
+    await _dio.post('/families/$familyId/tasks/$taskId/duration',
+        data: {'durationMinutes': durationMinutes}, options: _auth);
+  }
+
   /// The raw feed events behind the tasks (for the oversight view).
   Future<List<dynamic>> listSourceEvents(String familyId) async =>
       _list(await _dio.get('/families/$familyId/source-events', options: _auth), 'events');
@@ -503,6 +590,48 @@ class ApiClient {
 
   Future<void> dismissPendingDecision(String familyId, String decisionId) async {
     await _dio.post('/families/$familyId/pending-decisions/$decisionId/dismiss',
+        data: <String, dynamic>{}, options: _auth);
+  }
+
+  // --- Conflicts (agenda overlaps) ------------------------------------------
+
+  /// Agenda conflicts. Defaults to the open ('pending') decision queue; pass
+  /// `status: 'resolved'` to list overrides currently in effect, optionally
+  /// scoped to one member.
+  Future<List<dynamic>> listConflicts(
+    String familyId, {
+    String? status,
+    String? memberId,
+  }) async =>
+      _list(
+        await _dio.get(
+          '/families/$familyId/conflicts',
+          queryParameters: {
+            if (status != null) 'status': status,
+            if (memberId != null) 'memberId': memberId,
+          },
+          options: _auth,
+        ),
+        'conflicts',
+      );
+
+  /// Resolve a conflict: split/trim the lower-priority event around the
+  /// higher-priority one (task-gen then spawns the drop-off/pickup at the split).
+  Future<void> resolveConflict(String familyId, String conflictId) async {
+    await _dio.post('/families/$familyId/conflicts/$conflictId/resolve',
+        data: <String, dynamic>{}, options: _auth);
+  }
+
+  /// Dismiss a conflict: acknowledge the double-book and leave both events as-is.
+  Future<void> dismissConflict(String familyId, String conflictId) async {
+    await _dio.post('/families/$familyId/conflicts/$conflictId/dismiss',
+        data: <String, dynamic>{}, options: _auth);
+  }
+
+  /// Revert a resolved conflict: undo a prior "split around it" decision,
+  /// unmasking the event and putting the overlap back up for a fresh decision.
+  Future<void> revertConflict(String familyId, String conflictId) async {
+    await _dio.post('/families/$familyId/conflicts/$conflictId/revert',
         data: <String, dynamic>{}, options: _auth);
   }
 

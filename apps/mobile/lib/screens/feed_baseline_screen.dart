@@ -1,10 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models.dart';
+import '../services/geocoding.dart';
 import '../state/auth.dart';
 import '../state/family.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_text.dart';
+import '../widgets/app_bottom_nav.dart';
+import '../widgets/location_picker.dart';
 import '../widgets/primitives.dart';
 import '../widgets/settings.dart';
 
@@ -37,6 +40,7 @@ class _FeedBaselineScreenState extends ConsumerState<FeedBaselineScreen> {
   final _location = TextEditingController();
   final _dayStart = TextEditingController(text: '08:30');
   final _dayEnd = TextEditingController(text: '14:45');
+  GeoLocation? _locationGeo;
   bool _busy = false;
   String? _error;
 
@@ -51,6 +55,7 @@ class _FeedBaselineScreenState extends ConsumerState<FeedBaselineScreen> {
       ..clear()
       ..addAll([for (var i = 0; i < 7; i++) if ((mask & (1 << i)) != 0) i]);
     _location.text = ex.location ?? '';
+    _locationGeo = ex.locationGeo;
     _dayStart.text = ex.dayStart ?? '08:30';
     _dayEnd.text = ex.dayEnd ?? '14:45';
   }
@@ -88,6 +93,7 @@ class _FeedBaselineScreenState extends ConsumerState<FeedBaselineScreen> {
             sourceCalendarName: _feed.sourceCalendarName,
             timezone: _feed.timezone,
             status: _feed.status,
+            accountKind: _feed.accountKind,
           ));
       _refresh();
     } catch (e) {
@@ -112,6 +118,9 @@ class _FeedBaselineScreenState extends ConsumerState<FeedBaselineScreen> {
             dayStart: _isException ? _dayStart.text.trim() : null,
             dayEnd: _isException ? _dayEnd.text.trim() : null,
             location: _location.text.trim().isEmpty ? null : _location.text.trim(),
+            // Only keep the geocode when the text still matches the picked place;
+            // an empty field clears both. `null` is a real value here (clear).
+            locationGeo: _location.text.trim().isEmpty ? null : _locationGeo,
           );
       _refresh();
       if (mounted) Navigator.of(context).pop(true);
@@ -143,7 +152,10 @@ class _FeedBaselineScreenState extends ConsumerState<FeedBaselineScreen> {
       if (mounted) Navigator.of(context).pop(true);
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Unlink failed: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Unlink failed: $e'),
+          margin: snackBarMarginAboveNav(context),
+        ));
       }
     }
   }
@@ -169,24 +181,37 @@ class _FeedBaselineScreenState extends ConsumerState<FeedBaselineScreen> {
                       icon: _feed.kind == 'ics' ? Icons.rss_feed_rounded : Icons.calendar_month_rounded,
                       iconColor: AppColors.feedBlue,
                       title: _feed.displayName,
-                      subtitle: _feed.kind.toUpperCase(),
+                      subtitle: _feed.sourceLabel,
                     ),
                   ),
                   const SizedBox(height: 24),
                   const SectionEyebrow('Feed type'),
                   const SizedBox(height: 8),
-                  Text(
-                    'Exception-only feeds are empty on normal days and carry only '
-                    'deviations; normal days come from the baseline below.',
-                    style: AppText.subtitle,
-                  ),
-                  const SizedBox(height: 12),
-                  _Segmented(
-                    options: const [('standard', 'Standard'), ('exception', 'Exception-only')],
-                    value: _feed.mode,
-                    activeColor: _isException ? AppColors.amber : AppColors.indigo,
-                    onChanged: _busy ? null : _setMode,
-                  ),
+                  if (_feed.isBusy) ...[
+                    // Busy feeds can't change mode (the server refuses:
+                    // interval-keyed data is incompatible with the other
+                    // pipelines) — recreate the feed instead.
+                    Text(
+                      'Busy-only: opaque availability blocks read via Google '
+                      'free/busy — event details never leave the source '
+                      'calendar. The type is fixed; to change it, remove this '
+                      'feed and set up a new one.',
+                      style: AppText.subtitle,
+                    ),
+                  ] else ...[
+                    Text(
+                      'Exception-only feeds are empty on normal days and carry only '
+                      'deviations; normal days come from the baseline below.',
+                      style: AppText.subtitle,
+                    ),
+                    const SizedBox(height: 12),
+                    _Segmented(
+                      options: const [('standard', 'Standard'), ('exception', 'Exception-only')],
+                      value: _feed.mode,
+                      activeColor: _isException ? AppColors.amber : AppColors.indigo,
+                      onChanged: _busy ? null : _setMode,
+                    ),
+                  ],
                   if (_isException) ...[
                     const SizedBox(height: 24),
                     const SectionEyebrow('Baseline — the normal school day', color: AppColors.amber),
@@ -217,7 +242,12 @@ class _FeedBaselineScreenState extends ConsumerState<FeedBaselineScreen> {
                             ],
                           ),
                           const SizedBox(height: 14),
-                          _field(_location, 'Default location', 'Prefilled onto every task'),
+                          LocationPickerField(
+                            controller: _location,
+                            geo: _locationGeo,
+                            geocoder: ref.watch(geocoderProvider),
+                            onChanged: (_, geo) => setState(() => _locationGeo = geo),
+                          ),
                         ],
                       ),
                     ),

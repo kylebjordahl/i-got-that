@@ -16,6 +16,7 @@ import {
 import {
   generateTaskIntents,
   resolveTaskResult,
+  transitionWindow,
   type TaskDefault,
   type TaskIntent,
   type TaskRuleLike,
@@ -147,6 +148,10 @@ export async function buildMemberTasks(
       and(
         eq(calendarEvents.familyMemberId, familyMemberId),
         ne(calendarEvents.provenance, 'claimed_task'),
+        // A conflict-masked event is stood in for by its cf: split segments; it
+        // must not spawn its own tasks (the segments do). Its stale tasks are
+        // swept below alongside vanished events.
+        isNull(calendarEvents.maskedAt),
         or(
           isNull(calendarEvents.tasksBuiltHash),
           ne(calendarEvents.tasksBuiltHash, calendarEvents.contentHash),
@@ -155,6 +160,17 @@ export async function buildMemberTasks(
     );
 
   for (const event of dirty) {
+    // Busy blocks (`fb:` — free/busy firewall intervals) are opaque
+    // availability, never family logistics: they must not spawn claimable
+    // tasks even for members whose events otherwise generate them. Stamp the
+    // hash so the row doesn't stay dirty forever.
+    if (event.synthKey.startsWith('fb:')) {
+      await db
+        .update(calendarEvents)
+        .set({ tasksBuiltHash: event.contentHash })
+        .where(eq(calendarEvents.id, event.id));
+      continue;
+    }
     const fallback =
       (event.linkId && linkDefault.get(event.linkId)) || unifiedDefault;
     const resolution = resolveTaskResult(
@@ -177,11 +193,20 @@ export async function buildMemberTasks(
       .from(tasks)
       .where(eq(tasks.calendarEventId, event.id));
 
-    // User-converted tasks freeze the type set; only heal their anchors.
+    // User-converted tasks freeze the type set; only heal their anchors. A
+    // transition task with a user-set duration override re-derives both ends
+    // from the (moved) anchor so its signed window is preserved; others keep
+    // their own dtend and just re-anchor dtstart.
     const manual = existing.filter((t) => t.createdVia === 'manual');
     if (manual.length > 0) {
       for (const t of manual) {
-        await healTask(db, t, anchorStart(event, t.type), t.dtend, event.location);
+        const anchor = anchorStart(event, t.type);
+        if (t.durationOverrideMin != null && t.type !== 'attendance') {
+          const w = transitionWindow(anchor, t.durationOverrideMin);
+          await healTask(db, t, w.dtstart, w.dtend, event.location);
+        } else {
+          await healTask(db, t, anchor, t.dtend, event.location);
+        }
       }
     } else {
       const desiredByType = new Map(intents.map((i) => [i.type, i]));
@@ -221,8 +246,9 @@ export async function buildMemberTasks(
   }
 
   // Orphan sweep: unowned event-derived tasks (generated OR converted) whose
-  // event no longer exists. Fully-manual tasks (null calendarEventId) and
-  // owned tasks are left alone.
+  // event no longer exists — or has been conflict-masked (its cf: segments
+  // carry the tasks now). Fully-manual tasks (null calendarEventId) and owned
+  // tasks are left alone.
   const orphans = await db
     .select({ id: tasks.id })
     .from(tasks)
@@ -233,6 +259,7 @@ export async function buildMemberTasks(
         sql`${tasks.calendarEventId} IS NOT NULL AND NOT EXISTS (
           SELECT 1 FROM ${calendarEvents}
           WHERE ${calendarEvents.id} = ${tasks.calendarEventId}
+            AND ${calendarEvents.maskedAt} IS NULL
         )`,
       ),
     );

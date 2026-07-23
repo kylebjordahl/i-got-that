@@ -8,7 +8,10 @@ on:
     types: [published]
 
 concurrency:
-  group: deploy-production
+  # Shared with deploy-staging.yml: if this release is published while a
+  # staging deploy is in flight, this whole workflow queues behind it
+  # (free — no runner spent waiting) instead of racing it or failing outright.
+  group: deploy
   cancel-in-progress: false
 
 permissions:
@@ -20,9 +23,20 @@ jobs:
   # through CI and staging, but enforce it here too so a hand-cut / mis-targeted
   # release can't push an unvalidated commit to production. (Longer term we should
   # also block cutting the release itself.)
+  #
+  # The heavy lifting — not racing a staging deploy that's still in flight —
+  # is done by the shared "deploy" concurrency group above: this whole
+  # workflow queues (for free, no runner spent waiting) until any in-progress
+  # deploy-staging.yml run finishes. So by the time this step runs, a staging
+  # run that was in flight has already completed. The only gap left is the
+  # brief lag between CI going green and the workflow_run event actually
+  # kicking off deploy-staging.yml — poll briefly for that, then give up
+  # (a commit that never got a run at all is a mis-targeted release, not a
+  # pending one).
   verify:
     name: Require CI + staging green for ${{ github.sha }}
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Verify required workflows succeeded for this commit
         env:
@@ -34,25 +48,40 @@ jobs:
           # github.sha on a release event is the tagged commit. CI runs on push to
           # main (head_sha = that commit); the staging deploy is a workflow_run off
           # CI, so it inherits the same head_sha — both are keyed by ${SHA}.
+          poll_interval=15
+          timeout_seconds=$((5 * 60))
+
           for wf in ci.yml deploy-staging.yml; do
-            count=$(gh api \
-              "repos/${REPO}/actions/workflows/${wf}/runs?head_sha=${SHA}&status=success" \
-              --jq '.total_count')
-            if [ "${count:-0}" -eq 0 ]; then
-              echo "::error::No successful '${wf}' run found for ${SHA}." \
-                   "Refusing to deploy to production — ensure CI and the staging" \
-                   "deploy both passed on this commit before publishing a release."
-              exit 1
-            fi
-            echo "✓ ${wf} has a successful run for ${SHA}"
+            elapsed=0
+            while true; do
+              runs=$(gh api "repos/${REPO}/actions/workflows/${wf}/runs?head_sha=${SHA}&per_page=1" --jq '.workflow_runs')
+              status=$(echo "$runs" | jq -r '.[0].status // "missing"')
+              conclusion=$(echo "$runs" | jq -r '.[0].conclusion // "none"')
+
+              if [ "$status" = "completed" ] && [ "$conclusion" = "success" ]; then
+                echo "✓ ${wf} has a successful run for ${SHA}"
+                break
+              fi
+
+              if [ "$status" = "completed" ]; then
+                echo "::error::${wf} run for ${SHA} completed with conclusion '${conclusion}'." \
+                     "Refusing to deploy to production."
+                exit 1
+              fi
+
+              if [ "$elapsed" -ge "$timeout_seconds" ]; then
+                echo "::error::No successful '${wf}' run found for ${SHA} after ${timeout_seconds}s" \
+                     "(last status: ${status}). Refusing to deploy to production — ensure CI and" \
+                     "the staging deploy both passed on this commit before publishing a release."
+                exit 1
+              fi
+
+              echo "… ${wf} for ${SHA} is '${status}' — waiting ${poll_interval}s"
+              sleep "$poll_interval"
+              elapsed=$((elapsed + poll_interval))
+            done
           done
 
-  # No TestFlight job here yet: `deploy.yml`'s `testflight` job only runs for
-  # `environment: staging` (prod has no real API domain to build against). To
-  # enable it: add the six `IOS_*`/`APP_STORE_CONNECT_*` secrets to the
-  # `production` GitHub Environment, add an `ExportOptions-prod.plist`, pass
-  # the secrets through below, and drop the `environment == 'staging'` gate
-  # in deploy.yml (or extend it to also allow production).
   production:
     needs: verify
     uses: ./.github/workflows/deploy.yml
@@ -63,3 +92,9 @@ jobs:
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      IOS_DIST_CERT_P12_BASE64: ${{ secrets.IOS_DIST_CERT_P12_BASE64 }}
+      IOS_DIST_CERT_PASSWORD: ${{ secrets.IOS_DIST_CERT_PASSWORD }}
+      IOS_PROD_PROFILE_BASE64: ${{ secrets.IOS_PROD_PROFILE_BASE64 }}
+      APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+      APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+      APP_STORE_CONNECT_API_KEY_P8: ${{ secrets.APP_STORE_CONNECT_API_KEY_P8 }}

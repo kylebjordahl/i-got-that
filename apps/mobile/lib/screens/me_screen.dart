@@ -2,6 +2,7 @@ import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import '../models.dart';
 import '../state/auth.dart';
 import '../state/family.dart';
@@ -9,8 +10,10 @@ import '../state/nav.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_text.dart';
 import '../theme/person_colors.dart';
+import '../widgets/app_bottom_nav.dart';
 import '../widgets/primitives.dart';
 import '../widgets/settings.dart';
+import '../widgets/slide_to_confirm.dart';
 import 'connect_account_wizard.dart';
 import 'dialogs.dart';
 
@@ -25,6 +28,8 @@ class MeScreen extends ConsumerWidget {
     final user = ref.watch(authControllerProvider).user;
     final email = user?['email'] as String? ?? 'you@example.com';
     final familyCount = ref.watch(familyInfoProvider).valueOrNull?.count ?? 1;
+    final families = ref.watch(familiesListProvider).valueOrNull ?? const <({String id, String name})>[];
+    final defaultFamilyId = ref.watch(defaultFamilyIdProvider).valueOrNull;
     final accounts = ref.watch(accountsProvider).valueOrNull ?? const <ExternalAccount>[];
     final identities =
         ref.watch(loginIdentitiesProvider).valueOrNull ?? const <LoginIdentity>[];
@@ -142,6 +147,18 @@ class MeScreen extends ConsumerWidget {
                   onTap: () => _linkApple(context, ref),
                 ),
               ],
+              // Offer Google until one is linked; the same consent also
+              // connects the user's Google Calendar (web redirects; native
+              // uses the OS sheet).
+              if (!identities.any((i) => i.provider == 'google')) ...[
+                const Divider(height: 20),
+                SettingRow(
+                  icon: Icons.g_mobiledata_rounded,
+                  iconColor: AppColors.blue,
+                  title: 'Link Sign in with Google',
+                  onTap: () => _linkGoogle(context, ref),
+                ),
+              ],
             ],
           ),
         ),
@@ -157,6 +174,18 @@ class MeScreen extends ConsumerWidget {
                 title: 'Redeem invite code',
                 onTap: () => showRedeemInviteDialog(context, ref),
               ),
+              if (families.length > 1) ...[
+                const Divider(height: 20),
+                SettingRow(
+                  icon: Icons.home_filled,
+                  iconColor: AppColors.indigo,
+                  title: 'Default family',
+                  subtitle:
+                      '${families.where((f) => f.id == defaultFamilyId).map((f) => f.name).firstOrNull ?? "Account default"} '
+                      '· only affects this device',
+                  onTap: () => _openDefaultFamilyPicker(context, ref, families, defaultFamilyId),
+                ),
+              ],
               const Divider(height: 20),
               SwitchRow(
                 icon: Icons.notifications_none_rounded,
@@ -183,23 +212,92 @@ class MeScreen extends ConsumerWidget {
         ],
         const SizedBox(height: 28),
         _SignOutButton(onTap: () => _signOut(context, ref)),
+        const SizedBox(height: 14),
+        Center(
+          child: TextButton(
+            onPressed: () => _confirmDeleteAccount(context, ref),
+            child: Text('Delete account',
+                style: font(kBodyFont, 13, 700, color: AppColors.coral.withValues(alpha: 0.75))),
+          ),
+        ),
       ],
+    );
+  }
+
+  void _openDefaultFamilyPicker(BuildContext context, WidgetRef ref,
+      List<({String id, String name})> families, String? current) {
+    showModalBottomSheet<void>(
+      context: context,
+      useRootNavigator: true,
+      showDragHandle: true,
+      // `sheetCtx`, not the outer `context`: `context` here is the Me screen's
+      // own build context, which lives on the *inner* content Navigator
+      // (`rootNavigatorKey`, AppShell's only route — see `_AuthedRoot` in
+      // main.dart). This sheet was raised with `useRootNavigator: true`, i.e.
+      // on MaterialApp's outer Navigator, so popping via `Navigator.of(context)`
+      // would instead pop AppShell off the inner Navigator — leaving it empty
+      // (a blank screen) while the sheet itself never closes.
+      builder: (sheetCtx) => Padding(
+        padding: const EdgeInsets.fromLTRB(22, 4, 22, 28),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Default family', style: AppText.subPageTitle),
+            const SizedBox(height: 6),
+            Text(
+              'Which family this app opens to by default. This only affects this '
+              'device — other devices and family members are unaffected.',
+              style: AppText.subtitle,
+            ),
+            const SizedBox(height: 12),
+            SettingRow(
+              icon: Icons.auto_awesome_rounded,
+              iconColor: current == null ? AppColors.indigo : AppColors.textMuted,
+              title: 'Account default',
+              subtitle: 'Whichever family is first on your account',
+              trailing:
+                  current == null ? const Icon(Icons.check_rounded, color: AppColors.indigo) : null,
+              onTap: () {
+                ref.read(defaultFamilyIdProvider.notifier).set(null);
+                Navigator.of(sheetCtx).pop();
+              },
+            ),
+            for (final f in families) ...[
+              const Divider(height: 20),
+              SettingRow(
+                icon: Icons.home_rounded,
+                iconColor: f.id == current ? AppColors.indigo : AppColors.textMuted,
+                title: f.name,
+                trailing:
+                    f.id == current ? const Icon(Icons.check_rounded, color: AppColors.indigo) : null,
+                onTap: () {
+                  ref.read(defaultFamilyIdProvider.notifier).set(f.id);
+                  Navigator.of(sheetCtx).pop();
+                },
+              ),
+            ],
+          ],
+        ),
+      ),
     );
   }
 
   Future<void> _disconnect(BuildContext context, WidgetRef ref, ExternalAccount a) async {
     final ok = await showDialog<bool>(
       context: context,
-      builder: (_) => AlertDialog(
+      builder: (dialogContext) => AlertDialog(
         title: const Text('Disconnect account?'),
         content: Text('Remove ${a.kindLabel} (${a.username ?? a.name})? Feeds and '
             'delivery methods using it will stop working.'),
         actions: [
-          TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Cancel')),
+          TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: const Text('Cancel')),
           PillButton(
             label: 'Disconnect',
             variant: PillVariant.white,
-            onPressed: () => Navigator.of(context).pop(true),
+            onPressed: () => Navigator.of(dialogContext).pop(true),
           ),
         ],
       ),
@@ -210,7 +308,10 @@ class MeScreen extends ConsumerWidget {
       ref.invalidate(accountsProvider);
     } catch (e) {
       if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Failed: $e'),
+          margin: snackBarMarginAboveNav(context),
+        ));
       }
     }
   }
@@ -219,16 +320,18 @@ class MeScreen extends ConsumerWidget {
       BuildContext context, WidgetRef ref, LoginIdentity id) async {
     final ok = await showDialog<bool>(
       context: context,
-      builder: (_) => AlertDialog(
+      builder: (dialogContext) => AlertDialog(
         title: const Text('Remove login method?'),
         content: Text("You'll no longer be able to sign in with ${id.kindLabel} "
             '(${id.label}). Your other methods keep working.'),
         actions: [
-          TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Cancel')),
+          TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: const Text('Cancel')),
           PillButton(
             label: 'Remove',
             variant: PillVariant.white,
-            onPressed: () => Navigator.of(context).pop(true),
+            onPressed: () => Navigator.of(dialogContext).pop(true),
           ),
         ],
       ),
@@ -239,7 +342,10 @@ class MeScreen extends ConsumerWidget {
       ref.invalidate(loginIdentitiesProvider);
     } catch (e) {
       if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Failed: $e'),
+          margin: snackBarMarginAboveNav(context),
+        ));
       }
     }
   }
@@ -261,6 +367,40 @@ class MeScreen extends ConsumerWidget {
           ? 'That Apple ID is already linked to a different account.'
           : 'Failed: $e';
       if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(msg),
+          margin: snackBarMarginAboveNav(context),
+        ));
+      }
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Failed: $e'),
+          margin: snackBarMarginAboveNav(context),
+        ));
+      }
+    }
+  }
+
+  Future<void> _linkGoogle(BuildContext context, WidgetRef ref) async {
+    final auth = ref.read(authControllerProvider.notifier);
+    // Web can't get a token in-page — a full-page redirect links Google (and
+    // connects the calendar) and the reload refreshes the list. Native drives
+    // the OS sheet inline.
+    if (kIsWeb) {
+      auth.connectGoogleCalendar();
+      return;
+    }
+    try {
+      await auth.linkWithGoogleNative();
+      ref.invalidate(loginIdentitiesProvider);
+      ref.invalidate(accountsProvider);
+    } on DioException catch (e) {
+      final code = (e.response?.data as Map<String, dynamic>?)?['error'];
+      final msg = code == 'identity_linked_to_other_user'
+          ? 'That Google account is already linked to a different account.'
+          : 'Failed: $e';
+      if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
       }
     } catch (e) {
@@ -270,17 +410,25 @@ class MeScreen extends ConsumerWidget {
     }
   }
 
-  IconData _identityIcon(String provider) =>
-      provider == 'apple' ? Icons.apple : Icons.alternate_email_rounded;
+  IconData _identityIcon(String provider) => switch (provider) {
+        'apple' => Icons.apple,
+        'google' => Icons.g_mobiledata_rounded,
+        _ => Icons.alternate_email_rounded,
+      };
 
-  Color _identityColor(String provider) =>
-      provider == 'apple' ? AppColors.textPrimary : AppColors.indigo;
+  Color _identityColor(String provider) => switch (provider) {
+        'apple' => AppColors.textPrimary,
+        'google' => AppColors.blue,
+        _ => AppColors.indigo,
+      };
 
-  void _showAbout(BuildContext context) {
+  Future<void> _showAbout(BuildContext context) async {
+    final info = await PackageInfo.fromPlatform();
+    if (!context.mounted) return;
     showAboutDialog(
       context: context,
       applicationName: 'I Got That',
-      applicationVersion: '0.1.0',
+      applicationVersion: '${info.version} (${info.buildNumber})',
       children: const [
         Padding(
           padding: EdgeInsets.only(top: 8),
@@ -293,15 +441,17 @@ class MeScreen extends ConsumerWidget {
   Future<void> _signOut(BuildContext context, WidgetRef ref) async {
     final ok = await showDialog<bool>(
       context: context,
-      builder: (_) => AlertDialog(
+      builder: (dialogContext) => AlertDialog(
         title: const Text('Sign out?'),
         content: const Text("You'll need to sign in again to manage your families."),
         actions: [
-          TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Cancel')),
+          TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: const Text('Cancel')),
           PillButton(
             label: 'Sign out',
             variant: PillVariant.white,
-            onPressed: () => Navigator.of(context).pop(true),
+            onPressed: () => Navigator.of(dialogContext).pop(true),
           ),
         ],
       ),
@@ -310,6 +460,36 @@ class MeScreen extends ConsumerWidget {
       ref.read(navIndexProvider.notifier).state = 0;
       ref.read(authControllerProvider.notifier).logout();
     }
+  }
+
+  Future<void> _confirmDeleteAccount(BuildContext context, WidgetRef ref) async {
+    // Checked up front (rather than letting the slide fail) so a block reads
+    // as the sheet's own message, not a toast that lands behind the sheet and
+    // the floating nav.
+    final blocked = !(await ref.read(accountDeletableProvider.future));
+    if (!context.mounted) return;
+    return showSlideToConfirmSheet(
+      context,
+      title: blocked ? "Can't delete account yet" : 'Delete account?',
+      description: blocked
+          ? 'Before you can delete your account, you must either leave or '
+              'delete all the families you are involved in.'
+          : "This permanently deletes your login and connected "
+              "calendar accounts. Families you belong to keep their data — "
+              "you're just removed as a member with login access. This can't be "
+              'undone.',
+      slideLabel: 'Slide to delete account',
+      blocked: blocked,
+      onConfirmed: () => ref.read(authControllerProvider.notifier).deleteAccount(),
+      errorMessage: (e) {
+        final data = e is DioException ? e.response?.data : null;
+        final code = (data as Map<String, dynamic>?)?['error'];
+        return code == 'last_admin'
+            ? "You're the only admin of a family with other members — "
+                'promote a co-admin or delete the family first.'
+            : 'Failed: $e';
+      },
+    );
   }
 
   IconData _accountIcon(String kind) => switch (kind) {

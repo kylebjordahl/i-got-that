@@ -14,6 +14,7 @@ class SettingRow extends StatelessWidget {
     this.subtitle,
     this.trailing,
     this.onTap,
+    this.singleLine = false,
   });
 
   final IconData icon;
@@ -22,6 +23,10 @@ class SettingRow extends StatelessWidget {
   final String? subtitle;
   final Widget? trailing;
   final VoidCallback? onTap;
+  /// Caps title/subtitle to one line (ellipsized) instead of wrapping.
+  /// Needed by callers that give this row a fixed height (e.g. a drag list
+  /// sized without intrinsics), where a wrapped second line would overflow.
+  final bool singleLine;
 
   @override
   Widget build(BuildContext context) {
@@ -42,10 +47,20 @@ class SettingRow extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(title, style: AppText.sectionItemTitle),
+                  Text(
+                    title,
+                    style: AppText.sectionItemTitle,
+                    maxLines: singleLine ? 1 : null,
+                    overflow: singleLine ? TextOverflow.ellipsis : null,
+                  ),
                   if (subtitle != null) ...[
                     const SizedBox(height: 2),
-                    Text(subtitle!, style: AppText.subtitle),
+                    Text(
+                      subtitle!,
+                      style: AppText.subtitle,
+                      maxLines: singleLine ? 1 : null,
+                      overflow: singleLine ? TextOverflow.ellipsis : null,
+                    ),
                   ],
                 ],
               ),

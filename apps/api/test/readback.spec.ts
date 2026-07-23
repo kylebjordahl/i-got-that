@@ -4,8 +4,11 @@ import {
   calendarEvents,
   eq,
   externalAccounts,
+  familyMemberFeeds,
+  feeds,
   getDb,
   memberCalendars,
+  sourceEvents,
   tasks,
 } from '@igt/db';
 import { describe, expect, it } from 'vitest';
@@ -147,6 +150,82 @@ describe('read-back (human events from the target calendar)', () => {
     expect(
       await f.db.select().from(tasks).where(eq(tasks.familyMemberId, f.childId)),
     ).toHaveLength(0);
+  });
+
+  it('skips an event already ingested via a feed sourced from this same target calendar', async () => {
+    // Reproduces the duplication bug: a member's own input feed can point at
+    // the exact same external calendar as their read-back target (e.g. a feed
+    // added to pull the member's own schedule into synthesis). An event on
+    // that calendar then arrives twice — once via synthesis (`ev:`/`bl:`),
+    // once via read-back (`human`) — unless read-back defers to synthesis.
+    const f = await googleTargetFixture('readback-feed-overlap@example.com');
+    const feed = (
+      await f.db
+        .insert(feeds)
+        .values({
+          familyId: f.familyId,
+          kind: 'google',
+          externalAccountId: (
+            await f.db
+              .select()
+              .from(externalAccounts)
+              .where(eq(externalAccounts.userId, f.admin.userId))
+              .limit(1)
+          )[0]!.id,
+          sourceCalendarId: 'kid-calendar-id', // same calendar as f.cal's target
+          mode: 'standard',
+        })
+        .returning()
+    )[0]!;
+    await f.db.insert(familyMemberFeeds).values({
+      familyId: f.familyId,
+      feedId: feed.id,
+      familyMemberId: f.childId,
+    });
+    await f.db.insert(sourceEvents).values({
+      feedId: feed.id,
+      familyId: f.familyId,
+      icalUid: 'flight-pdx-bil@example.com',
+      recurrenceId: '',
+      summary: 'Flight PDX -> BIL',
+      dtstart: new Date('2026-07-09T15:00:00Z'),
+      dtend: new Date('2026-07-09T17:00:00Z'),
+      allDay: false,
+      contentHash: 'h1',
+    });
+
+    const flight = {
+      iCalUID: 'flight-pdx-bil@example.com',
+      status: 'confirmed',
+      summary: 'Flight PDX -> BIL',
+      start: { dateTime: '2026-07-09T15:00:00Z' },
+      end: { dateTime: '2026-07-09T17:00:00Z' },
+    };
+    const genuinelyHuman = {
+      iCalUID: 'dentist@google.com',
+      status: 'confirmed',
+      summary: 'Dentist',
+      start: { dateTime: '2026-07-10T15:00:00Z' },
+      end: { dateTime: '2026-07-10T16:00:00Z' },
+    };
+
+    const r = await readBackMember(f.db, f.cal, {
+      ...opts,
+      fetchImpl: googleFetch([flight, genuinelyHuman]),
+    });
+    expect(r.upserted).toBe(1);
+
+    const humans = await f.db
+      .select()
+      .from(calendarEvents)
+      .where(
+        and(
+          eq(calendarEvents.familyMemberId, f.childId),
+          eq(calendarEvents.provenance, 'human'),
+        ),
+      );
+    expect(humans).toHaveLength(1);
+    expect(humans[0]!.summary).toBe('Dentist');
   });
 
   it('skips an inactive target and one without a resolvable credential', async () => {

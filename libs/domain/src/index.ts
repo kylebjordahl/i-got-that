@@ -18,9 +18,11 @@ export type ExternalAccountKind = z.infer<typeof ExternalAccountKind>;
 
 /**
  * `standard` = feed events mean what they say; `exception` = the feed is empty
- * on normal days and only carries deviations from a per-link baseline.
+ * on normal days and only carries deviations from a per-link baseline; `busy` =
+ * the feed carries only opaque availability intervals (Google free/busy — the
+ * "calendar firewall" input), synthesized as detail-free blocks.
  */
-export const FeedMode = z.enum(['standard', 'exception']);
+export const FeedMode = z.enum(['standard', 'exception', 'busy']);
 export type FeedMode = z.infer<typeof FeedMode>;
 
 export const FeedStatus = z.enum(['active', 'paused', 'error']);
@@ -109,6 +111,15 @@ export type TaskResultType = z.infer<typeof TaskResultType>;
 export const PendingDecisionStatus = z.enum(['pending', 'resolved', 'dismissed']);
 export type PendingDecisionStatus = z.infer<typeof PendingDecisionStatus>;
 
+/**
+ * An overlap on one member's unified calendar (they can't be in two places at
+ * once). `pending` until an admin acts; `resolved` masks the lower-priority
+ * event around the higher one (trim/split); `dismissed` leaves the double-book
+ * acknowledged. Detected live, so a conflict auto-clears when the overlap goes.
+ */
+export const ConflictStatus = z.enum(['pending', 'resolved', 'dismissed']);
+export type ConflictStatus = z.infer<typeof ConflictStatus>;
+
 export const DeliveryMethod = z.enum(['email', 'caldav', 'google']);
 export type DeliveryMethod = z.infer<typeof DeliveryMethod>;
 
@@ -122,7 +133,7 @@ export type MirrorStatus = z.infer<typeof MirrorStatus>;
 export const RsvpStatus = z.enum(['none', 'accepted', 'declined']);
 export type RsvpStatus = z.infer<typeof RsvpStatus>;
 
-export const IdentityProvider = z.enum(['apple', 'magic_link']);
+export const IdentityProvider = z.enum(['apple', 'magic_link', 'google']);
 export type IdentityProvider = z.infer<typeof IdentityProvider>;
 
 /** `claim_member` links an accepting user to a pre-created family member. */
@@ -151,6 +162,24 @@ export type TimeOfDay = z.infer<typeof TimeOfDay>;
 
 export const Id = z.string().min(1);
 
+/**
+ * A validated/geocoded location. `lat`/`lon` are what let calendar clients
+ * (notably Apple Calendar) compute travel time without re-geocoding the free
+ * text — we emit them as `GEO` + `X-APPLE-STRUCTURED-LOCATION`. `title` is the
+ * human label (defaults to the display `location` string when absent) and
+ * `address` the postal string. `radius` (metres) is Apple's geofence hint.
+ * Provider-agnostic on purpose: iOS MapKit fills it today; an OpenStreetMap /
+ * Photon server provider can fill the identical shape later.
+ */
+export const GeoLocation = z.object({
+  lat: z.number().min(-90).max(90),
+  lon: z.number().min(-180).max(180),
+  title: z.string().max(256).optional(),
+  address: z.string().max(512).optional(),
+  radius: z.number().positive().max(100_000).optional(),
+});
+export type GeoLocation = z.infer<typeof GeoLocation>;
+
 // --- API input schemas (v1 subset) --------------------------------------
 
 export const MagicLinkRequestInput = z.object({
@@ -169,6 +198,19 @@ export const AppleSignInInput = z.object({
 });
 export type AppleSignInInput = z.infer<typeof AppleSignInInput>;
 
+/**
+ * Sign in with Google (native): the identity token from the `google_sign_in`
+ * SDK, plus an optional one-time `serverAuthCode` (requested alongside it via
+ * `serverClientId`) redeemable for a refresh token — the native counterpart
+ * of the web redirect flow's "one consent, two outcomes" (identifies the user
+ * *and* auto-connects their Google Calendar).
+ */
+export const GoogleSignInInput = z.object({
+  idToken: z.string().min(1),
+  serverAuthCode: z.string().min(1).optional(),
+});
+export type GoogleSignInInput = z.infer<typeof GoogleSignInInput>;
+
 export const CreateFamilyInput = z.object({
   name: z.string().min(1).max(120),
   /** The creator's relation label within the new family (e.g. "mom"). */
@@ -177,6 +219,27 @@ export const CreateFamilyInput = z.object({
 export type CreateFamilyInput = z.infer<typeof CreateFamilyInput>;
 
 const RefreshMinutes = z.number().int().min(15).max(10080).default(360);
+
+/**
+ * A manual IANA timezone override (e.g. "America/Los_Angeles") for a feed or
+ * target calendar whose events don't all carry their own timezone info —
+ * some sources (booking-software ICS exports, imported invites) send bare
+ * local wall-clock times with no TZID/Z at all (RFC 5545 "floating" time).
+ * Auto-detection on sync still takes priority whenever a document/event does
+ * carry a timezone; this is only the fallback for the ones that don't.
+ */
+const IanaTimezone = z
+  .string()
+  .min(1)
+  .max(100)
+  .refine((tz) => {
+    try {
+      new Intl.DateTimeFormat('en-US', { timeZone: tz });
+      return true;
+    } catch {
+      return false;
+    }
+  }, 'invalid IANA timezone');
 
 /**
  * Create an input feed. Either a public ICS URL (`kind: 'ics'`, the default) or a
@@ -211,6 +274,11 @@ export const CreateFeedInput = z
         ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['sourceCalendarId'], message: 'sourceCalendarId is required for account feeds' });
       }
     }
+    // Free/busy reads go through the Google freebusy API; no other transport
+    // carries the intervals-only guarantee.
+    if (v.mode === 'busy' && v.kind !== 'google') {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['mode'], message: "mode 'busy' requires kind 'google'" });
+    }
   });
 export type CreateFeedInput = z.infer<typeof CreateFeedInput>;
 
@@ -222,6 +290,8 @@ export const UpdateFeedInput = z.object({
   mode: FeedMode.optional(),
   refreshMinutes: z.number().int().min(15).max(10080).optional(),
   status: FeedStatus.optional(),
+  /** See `IanaTimezone`. `null` clears an existing manual override. */
+  timezone: IanaTimezone.nullable().optional(),
 });
 export type UpdateFeedInput = z.infer<typeof UpdateFeedInput>;
 
@@ -303,6 +373,8 @@ export const MemberFeedLinkInput = z.object({
   dayStart: TimeOfDay.optional(),
   dayEnd: TimeOfDay.optional(),
   location: z.string().max(256).optional(),
+  /** Geocoded coordinates for the display `location` (enables travel time). */
+  locationGeo: GeoLocation.nullable().optional(),
 });
 export type MemberFeedLinkInput = z.infer<typeof MemberFeedLinkInput>;
 
@@ -312,9 +384,26 @@ export const UpdateMemberFeedLinkInput = z.object({
   dayStart: TimeOfDay.optional(),
   dayEnd: TimeOfDay.optional(),
   location: z.string().max(256).optional(),
+  /** Pass `null` to clear the geocode (e.g. location edited back to free text). */
+  locationGeo: GeoLocation.nullable().optional(),
   active: z.boolean().optional(),
 });
 export type UpdateMemberFeedLinkInput = z.infer<typeof UpdateMemberFeedLinkInput>;
+
+/**
+ * Reorder one member's feed links by priority — every link id of that member
+ * exactly once, in the new order (index 0 = highest priority). Priority breaks
+ * ties when feed-derived events overlap on that member's unified calendar: the
+ * earlier link wins and the later one is masked. Manual (human) events always
+ * outrank feeds.
+ */
+export const ReorderMemberFeedLinksInput = z.object({
+  familyMemberId: Id,
+  linkIds: z.array(Id).min(1),
+});
+export type ReorderMemberFeedLinksInput = z.infer<
+  typeof ReorderMemberFeedLinksInput
+>;
 
 /** Assign a task to a caretaker; defaults to the calling member when omitted. */
 export const AssignTaskInput = z.object({
@@ -331,6 +420,18 @@ export const ConvertTaskInput = z.object({
   types: z.array(TaskType).min(1),
 });
 export type ConvertTaskInput = z.infer<typeof ConvertTaskInput>;
+
+/**
+ * Set a transition task's (pickup / drop-off) window length, in minutes from
+ * its anchor — the parent event's start for a drop-off, its end for a pickup.
+ * A positive value extends the window forward from the anchor; a negative value
+ * reverses it, extending backward from the anchor (the opposite direction); 0
+ * collapses it to a point in time. Capped at ±24h.
+ */
+export const SetTaskDurationInput = z.object({
+  durationMinutes: z.number().int().gte(-1440).lte(1440),
+});
+export type SetTaskDurationInput = z.infer<typeof SetTaskDurationInput>;
 
 // --- Override rules (the feed's schedule pipeline) ------------------------
 
@@ -575,5 +676,11 @@ export const SetMemberCalendarTargetInput = z.object({
   targetCalendarId: z.string().min(1),
   targetCalendarName: z.string().max(256).optional(),
   alertMinutes: AlertMinutes.optional(),
+  /**
+   * See `IanaTimezone`. This PUT fully replaces the target row, so — like
+   * `alertMinutes` — omitting it clears any previously-set value rather than
+   * preserving it.
+   */
+  timezone: IanaTimezone.optional(),
 });
 export type SetMemberCalendarTargetInput = z.infer<typeof SetMemberCalendarTargetInput>;

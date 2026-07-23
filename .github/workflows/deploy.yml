@@ -23,6 +23,14 @@ on:
         required: false
         type: string
         default: ""
+    outputs:
+      build_name:
+        description: >-
+          Marketing version computed by the `version` job (see below) for
+          this run — the same value embedded in the iOS/web builds. Exposed
+          so deploy-staging.yml can keep a draft release's tag in sync with
+          it without re-deriving the version itself.
+        value: ${{ jobs.version.outputs.build_name }}
     secrets:
       CLOUDFLARE_API_TOKEN:
         required: true
@@ -32,14 +40,16 @@ on:
         required: true
       AWS_SECRET_ACCESS_KEY:
         required: true
-      # iOS TestFlight signing/upload. Only used by the `testflight` job,
-      # which only runs for `environment: staging` — optional so the
-      # production caller (which doesn't pass these yet) still validates.
+      # iOS TestFlight signing/upload, used by the `testflight` job for both
+      # environments (staging/prod each have their own profile secret below).
+      # Optional so a caller that doesn't do TestFlight yet still validates.
       IOS_DIST_CERT_P12_BASE64:
         required: false
       IOS_DIST_CERT_PASSWORD:
         required: false
       IOS_STAGING_PROFILE_BASE64:
+        required: false
+      IOS_PROD_PROFILE_BASE64:
         required: false
       APP_STORE_CONNECT_KEY_ID:
         required: false
@@ -49,8 +59,99 @@ on:
         required: false
 
 jobs:
+  # Computed once and shared via job outputs, rather than in the `deploy` and
+  # `testflight` jobs separately: those build on different runners (ubuntu vs
+  # macOS) and can't share step outputs directly, but the web client and the
+  # iOS app must embed the exact same marketing version for a given workflow
+  # run.
+  version:
+    name: Determine app version
+    runs-on: ubuntu-latest
+    outputs:
+      build_name: ${{ steps.version.outputs.build_name }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+          # Full history + tags: derivation below needs to walk commits since
+          # the last tag (staging) or find the tag on this exact commit
+          # (production), neither of which a shallow clone can do.
+          fetch-depth: 0
+
+      # Marketing version (`--build-name` / CFBundleShortVersionString on
+      # iOS; the `version` field of the web client's `version.json`):
+      # - production always ships the exact version of the GitHub Release that
+      #   triggered this deploy — that release's tag is always present on the
+      #   released commit.
+      # - staging deploys ahead of any release, so it guesses the *next*
+      #   version by bumping the latest tag according to Conventional Commits
+      #   (`feat` -> minor, `fix`/other -> patch, `!` or `BREAKING CHANGE` ->
+      #   major) found since that tag. When that can't be determined
+      #   semantically — no tag yet, or nothing since it is in Conventional
+      #   Commits form — it falls back to plain `git describe` form: the last
+      #   tag plus the commit count and short hash since it (with `0.0.0`
+      #   standing in for "no tag yet").
+      - name: Determine app version
+        id: version
+        uses: actions/github-script@v7
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+        with:
+          script: |
+            const environment = process.env.ENVIRONMENT;
+
+            const git = async (...args) => {
+              const { stdout } = await exec.getExecOutput('git', args, { ignoreReturnCode: true });
+              return stdout.trim();
+            };
+
+            const latestTag = await git('describe', '--tags', '--abbrev=0');
+            let buildName;
+
+            if (environment === 'production') {
+              const tagsOnHead = (await git('tag', '--points-at', 'HEAD')).split('\n').filter(Boolean);
+              const releaseTag = tagsOnHead.find((t) => /^v?\d+\.\d+\.\d+/.test(t));
+              if (!releaseTag) {
+                core.setFailed(`No version tag found on the released commit (${await git('rev-parse', 'HEAD')}).`);
+                return;
+              }
+              buildName = releaseTag.replace(/^v/, '');
+              core.info(`Production build name: ${buildName} (from release tag ${releaseTag})`);
+            } else {
+              const baseVersion = latestTag.replace(/^v/, '') || '0.0.0';
+              const logRange = latestTag ? `${latestTag}..HEAD` : 'HEAD';
+              const subjects = await git('log', logRange, '--format=%s');
+
+              let bump = '';
+              if (latestTag && subjects) {
+                if (/^[a-z]+(\(.+\))?!:/m.test(subjects) || /BREAKING CHANGE/.test(subjects)) {
+                  bump = 'major';
+                } else if (/^feat(\(.+\))?:/m.test(subjects)) {
+                  bump = 'minor';
+                } else if (/^fix(\(.+\))?:/m.test(subjects)) {
+                  bump = 'patch';
+                }
+              }
+
+              if (bump) {
+                const [major, minor, patch] = baseVersion.split('.').map(Number);
+                buildName = bump === 'major' ? `${major + 1}.0.0`
+                  : bump === 'minor' ? `${major}.${minor + 1}.0`
+                  : `${major}.${minor}.${patch + 1}`;
+                core.info(`Staging build name: ${buildName} (next ${bump} version after ${latestTag})`);
+              } else {
+                const commitCount = await git('rev-list', logRange, '--count');
+                const shortHash = await git('rev-parse', '--short', 'HEAD');
+                buildName = `${baseVersion}-${commitCount}-g${shortHash}`;
+                core.info(`Staging build name: ${buildName} (no semantic bump determinable since ${latestTag || 'the start of history'})`);
+              }
+            }
+
+            core.setOutput('build_name', buildName);
+
   deploy:
     name: Deploy → ${{ inputs.environment }}
+    needs: version
     runs-on: ubuntu-latest
     # Binds to the GitHub Environment — add required reviewers there to gate
     # production behind a manual approval.
@@ -68,7 +169,7 @@ jobs:
             exit 1
           fi
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref }}
       - uses: ./.github/actions/pnpm-install
@@ -76,17 +177,22 @@ jobs:
       # Build the Flutter web client and stage it under apps/api/public/app so
       # the Worker serves it (same origin) at /app. API base is the relative
       # /api on that origin. The built bundle is cached and keyed on the mobile
-      # sources: a backend/infra-only deploy restores it and skips the Flutter
-      # SDK download + web build (the slowest part of the deploy). Only a change
-      # under apps/mobile busts the cache and triggers a rebuild.
+      # sources *and the environment* (APP_ENV is baked into the bundle — it
+      # drives the staging-only beta ribbon — so the two envs must never share a
+      # cache entry): a backend/infra-only deploy restores it and skips the
+      # Flutter SDK download + web build (the slowest part of the deploy). Only
+      # a change under apps/mobile busts the cache and triggers a rebuild. The
+      # marketing version and build number are *not* part of the cache key —
+      # see "Stamp web client version" below, which re-embeds this run's
+      # values on every deploy regardless of cache hit/miss.
       - name: Restore built web client
         id: web-client-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: apps/api/public/app
           key: >-
-            web-client-${{ hashFiles('apps/mobile/lib/**', 'apps/mobile/web/**',
-            'apps/mobile/pubspec.yaml', 'apps/mobile/pubspec.lock') }}
+            web-client-${{ inputs.environment }}-${{ hashFiles('apps/mobile/lib/**',
+            'apps/mobile/web/**', 'apps/mobile/pubspec.yaml', 'apps/mobile/pubspec.lock') }}
       - uses: subosito/flutter-action@v2
         if: steps.web-client-cache.outputs.cache-hit != 'true'
         with:
@@ -98,7 +204,10 @@ jobs:
         run: |
           flutter create . --platforms=web --project-name caretaker_app
           flutter pub get
-          flutter build web --base-href /app/ --dart-define=API_BASE_URL=/api
+          flutter build web --base-href /app/ --dart-define=API_BASE_URL=/api \
+            --dart-define=APP_ENV=${{ inputs.environment }} \
+            --build-name=${{ needs.version.outputs.build_name }} \
+            --build-number=${{ github.run_number }}
       - name: Stage web assets
         if: steps.web-client-cache.outputs.cache-hit != 'true'
         run: |
@@ -117,7 +226,20 @@ jobs:
           fi
           echo "Serving $(find apps/api/public/app -type f | wc -l) web asset file(s)."
 
-      - uses: hashicorp/setup-terraform@v3
+      # Runs unconditionally, even on a cache hit: `flutter build web` bakes
+      # the marketing version + build number into this one small JSON file
+      # (fetched at runtime by package_info_plus, not compiled into the JS/wasm
+      # bundle), so it's cheap to re-stamp on every deploy without forcing a
+      # full rebuild — keeping the web client's displayed version identical to
+      # this run's TestFlight build (`testflight` job below) even when the
+      # compiled bundle itself is stale/reused.
+      - name: Stamp web client version
+        run: |
+          cat > apps/api/public/app/version.json <<JSON
+          {"app_name":"caretaker_app","package_name":"caretaker_app","version":"${{ needs.version.outputs.build_name }}","build_number":"${{ github.run_number }}"}
+          JSON
+
+      - uses: hashicorp/setup-terraform@v4
       - name: Terraform apply (${{ inputs.environment }} infra)
         working-directory: infra/terraform
         env:
@@ -147,7 +269,6 @@ jobs:
   # commits, not just the most recent one.
   check-mobile-changed:
     name: Check for mobile app changes
-    if: inputs.environment == 'staging'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -155,7 +276,7 @@ jobs:
     outputs:
       changed: ${{ steps.mobile-changed.outputs.changed }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref }}
           # Full history: the last successful TestFlight build may be many
@@ -163,22 +284,27 @@ jobs:
           fetch-depth: 0
       - uses: ./.github/actions/pnpm-install
 
-      # Walk "Deploy staging" runs newest-first and find the most recent one
-      # whose `testflight` job actually succeeded (as opposed to no-op'd —
-      # see the job-level `if` below, a no-op reports as skipped, not
-      # success). That run's commit is the last point we know TestFlight is
-      # up to date, so it's the right base for the Nx-affected diff below.
+      # Walk this environment's "Deploy <env>" runs newest-first and find the
+      # most recent one whose `testflight` job actually succeeded (as opposed
+      # to no-op'd — see the job-level `if` below, a no-op reports as
+      # skipped, not success). That run's commit is the last point we know
+      # TestFlight is up to date, so it's the right base for the Nx-affected
+      # diff below. Staging and production are tracked independently (each
+      # has its own "deploy-<env>.yml" caller workflow and its own last
+      # successful build), since they archive/upload on very different
+      # cadences.
       - name: Find commit of last successful TestFlight build
         id: base-sha
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
+          ENVIRONMENT: ${{ inputs.environment }}
         run: |
           set -euo pipefail
           BASE_SHA=""
-          for run_id in $(gh api "repos/${REPO}/actions/workflows/deploy-staging.yml/runs?status=completed&per_page=30" --jq '.workflow_runs[].id'); do
+          for run_id in $(gh api "repos/${REPO}/actions/workflows/deploy-${ENVIRONMENT}.yml/runs?status=completed&per_page=30" --jq '.workflow_runs[].id'); do
             conclusion=$(gh api "repos/${REPO}/actions/runs/${run_id}/jobs" \
-              --jq '[.jobs[] | select(.name | endswith("TestFlight → staging"))][0].conclusion // empty')
+              --jq "[.jobs[] | select(.name | endswith(\"TestFlight → ${ENVIRONMENT}\"))][0].conclusion // empty")
             if [ "$conclusion" = "success" ]; then
               BASE_SHA=$(gh api "repos/${REPO}/actions/runs/${run_id}" --jq '.head_sha')
               break
@@ -210,24 +336,39 @@ jobs:
             echo "mobile is not Nx-affected since the last successful TestFlight build — skipping."
           fi
 
-  # Archives, signs, and uploads the mobile app's `staging` flavor to
-  # TestFlight. Staging-only for now (prod has no real API domain yet — see
-  # the note in deploy-production.yml for how to enable it). Needs macOS for
-  # Xcode/codesign, so it's a separate job from `deploy` (which stays on
-  # ubuntu-latest) rather than an extra step there.
+  # Archives, signs, and uploads the mobile app's flavor for this environment
+  # to TestFlight. Needs macOS for Xcode/codesign, so it's a separate job from
+  # `deploy` (which stays on ubuntu-latest) rather than an extra step there.
   #
   # Gated at the job level (rather than per-step) on `check-mobile-changed`
   # so a no-op shows up as skipped, not a false green success.
   testflight:
     name: TestFlight → ${{ inputs.environment }}
-    needs: check-mobile-changed
-    if: inputs.environment == 'staging' && needs.check-mobile-changed.outputs.changed == 'true'
+    needs: [check-mobile-changed, version]
+    if: needs.check-mobile-changed.outputs.changed == 'true'
     runs-on: macos-latest
     environment: ${{ inputs.environment }}
+    env:
+      # Flutter flavor + Apple bundle id differ per env (see apps/mobile/ios/):
+      # staging -> "staging" flavor / com.kylebjordahl.igt.staging
+      # production -> "prod" flavor / com.kylebjordahl.igt
+      FLAVOR: ${{ inputs.environment == 'production' && 'prod' || 'staging' }}
+      API_BASE_URL: ${{ inputs.environment == 'production' && 'https://igt.kylebjordahl.com/api' || 'https://staging.igt.kylebjordahl.com/api' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref }}
+
+      # macos-latest's default Xcode still lags Apple's App Store Connect
+      # SDK requirement (e.g. Xcode 16.4/iOS 18.5 SDK when Apple requires the
+      # iOS 26 SDK), so upload-testflight-build fails validation with a 409
+      # SDK version error even though the archive/build steps succeed. Pin to
+      # the latest stable Xcode on the runner rather than a hardcoded
+      # version path, which would go stale the next time the runner image
+      # drops an older point release.
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
 
       - uses: subosito/flutter-action@v2
         with:
@@ -243,30 +384,36 @@ jobs:
           flutter pub get
 
       - name: Import distribution signing certificate
-        uses: apple-actions/import-codesign-certs@v3
+        uses: apple-actions/import-codesign-certs@v7
         with:
           p12-file-base64: ${{ secrets.IOS_DIST_CERT_P12_BASE64 }}
           p12-password: ${{ secrets.IOS_DIST_CERT_PASSWORD }}
 
       - name: Install App Store provisioning profile
+        env:
+          PROFILE_BASE64: ${{ inputs.environment == 'production' && secrets.IOS_PROD_PROFILE_BASE64 || secrets.IOS_STAGING_PROFILE_BASE64 }}
         run: |
           PROFILE_DIR="$HOME/Library/MobileDevice/Provisioning Profiles"
           mkdir -p "$PROFILE_DIR"
-          echo "${{ secrets.IOS_STAGING_PROFILE_BASE64 }}" | base64 --decode \
-            > "$PROFILE_DIR/staging-appstore.mobileprovision"
+          echo "$PROFILE_BASE64" | base64 --decode \
+            > "$PROFILE_DIR/$FLAVOR-appstore.mobileprovision"
 
-      - name: Build signed IPA (staging)
+      # Marketing version comes from the `version` job above (shared with the
+      # web client build in `deploy`, so both embed the same value for this
+      # run) — see its "Determine app version" step for how it's derived.
+      - name: Build signed IPA (${{ inputs.environment }})
         working-directory: apps/mobile
         run: |
-          flutter build ipa --flavor staging \
-            --export-options-plist ios/ExportOptions-staging.plist \
-            --dart-define=API_BASE_URL=https://staging.igt.kylebjordahl.com/api \
+          flutter build ipa --flavor "$FLAVOR" \
+            --export-options-plist "ios/ExportOptions-$FLAVOR.plist" \
+            --dart-define=API_BASE_URL="$API_BASE_URL" \
+            --dart-define=APP_ENV="${{ inputs.environment }}" \
+            --build-name=${{ needs.version.outputs.build_name }} \
             --build-number=${{ github.run_number }}
 
       # `github.run_number` is a small monotonic int, satisfying TestFlight's
       # "strictly increasing build number" rule without a fragile round-trip
-      # to query the latest existing build. Marketing version stays whatever
-      # `pubspec.yaml`'s `version` says.
+      # to query the latest existing build.
 
       # Resolve the glob to a concrete file ourselves: the upload action hands
       # app-path straight to `xcrun altool`, which doesn't do shell-style glob
@@ -284,7 +431,7 @@ jobs:
           echo "path=apps/mobile/$ipa_path" >> "$GITHUB_OUTPUT"
 
       - name: Upload to TestFlight
-        uses: apple-actions/upload-testflight-build@v3
+        uses: apple-actions/upload-testflight-build@v5
         with:
           app-path: ${{ steps.locate-ipa.outputs.path }}
           issuer-id: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}

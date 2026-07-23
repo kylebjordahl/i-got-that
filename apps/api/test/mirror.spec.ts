@@ -88,6 +88,7 @@ async function insertEvent(
     allDay: values.allDay ?? false,
     summary: values.summary ?? 'School day',
     location: values.location ?? null,
+    locationGeo: values.locationGeo ?? null,
     description: null,
   };
   return (
@@ -180,6 +181,32 @@ describe('mirror reconcile (syncMemberMirror)', () => {
     expect(
       await db.select().from(eventMirrors).where(eq(eventMirrors.calendarEventId, event.id)),
     ).toHaveLength(0);
+  });
+
+  it("carries a synthesized event's geocode into the delivery payload", async () => {
+    const fam = await setupFamily('mirror-geo@example.com');
+    const db = getDb(env.DB);
+    await connectTarget(db, fam, fam.childId);
+
+    const geo = {
+      lat: 37.331686,
+      lon: -122.030656,
+      title: 'Lincoln Elementary',
+      address: '123 Main St, Springfield',
+    };
+    await insertEvent(db, fam.familyId, fam.childId, {
+      synthKey: 'bl:l1:2026-07-06',
+      summary: 'School day',
+      location: 'Lincoln Elementary',
+      locationGeo: geo,
+    });
+
+    const fake = new FakeProvider('caldav');
+    const registry = new DeliveryProviderRegistry().register(fake);
+    const r = await syncMemberMirror(db, registry, env.KEK, fam.childId);
+    expect(r.created).toBe(1);
+    expect(fake.upserts[0]!.event.location).toBe('Lincoln Elementary');
+    expect(fake.upserts[0]!.event.locationGeo).toEqual(geo);
   });
 
   it('mirrors claimed_task events too, and purge cancels everything', async () => {

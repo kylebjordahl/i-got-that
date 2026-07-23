@@ -2,10 +2,18 @@ import { describe, expect, it } from 'vitest';
 import type { Bindings } from '../src/env.js';
 import {
   buildGoogleAuthorizeUrl,
+  decodeGoogleIdToken,
   exchangeGoogleCode,
   googleOAuthConfigured,
   refreshGoogleAccessToken,
 } from '../src/lib/google-oauth.js';
+
+/** Craft a base64url JWT (unsigned — we only decode the payload). */
+function fakeIdToken(claims: Record<string, unknown>): string {
+  const b64url = (s: string) =>
+    btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  return `${b64url(JSON.stringify({ alg: 'RS256' }))}.${b64url(JSON.stringify(claims))}.sig`;
+}
 
 const env = {
   GOOGLE_OAUTH_CLIENT_ID: 'client-id-123',
@@ -30,7 +38,27 @@ describe('Google OAuth', () => {
     expect(p.get('access_type')).toBe('offline');
     expect(p.get('prompt')).toBe('consent');
     expect(p.get('scope')).toContain('calendar.events');
+    expect(p.get('scope')).toContain('calendar.readonly');
+    // freebusy.query (busy-mode feeds) is NOT covered by the other two scopes.
+    expect(p.get('scope')).toContain('calendar.freebusy');
     expect(p.get('state')).toBe('s1');
+  });
+
+  it('adds the OpenID scopes when identity is requested (login flow)', () => {
+    const url = new URL(
+      buildGoogleAuthorizeUrl(env, { redirectUri: 'https://app.example/cb', identity: true }),
+    );
+    const scope = url.searchParams.get('scope') ?? '';
+    expect(scope).toContain('openid');
+    expect(scope).toContain('email');
+    expect(scope).toContain('profile');
+    expect(scope).toContain('calendar.events');
+    expect(scope).toContain('calendar.readonly');
+  });
+
+  it('omits the OpenID scopes for a plain calendar consent', () => {
+    const url = new URL(buildGoogleAuthorizeUrl(env, { redirectUri: 'https://app.example/cb' }));
+    expect(url.searchParams.get('scope')).not.toContain('openid');
   });
 
   it('throws when not configured', () => {
@@ -71,5 +99,35 @@ describe('Google OAuth', () => {
     await expect(
       refreshGoogleAccessToken(env, 'rt', fakeFetch as typeof fetch),
     ).rejects.toThrow(/refresh failed/);
+  });
+
+  it('passes through the id_token from the code exchange (login flow)', async () => {
+    const idToken = fakeIdToken({ sub: 'g-1', email: 'a@example.com' });
+    const fakeFetch = async () =>
+      new Response(
+        JSON.stringify({ access_token: 'at', refresh_token: 'rt', id_token: idToken }),
+        { status: 200 },
+      );
+    const tokens = await exchangeGoogleCode(
+      env,
+      { code: 'c', redirectUri: 'https://app.example/cb' },
+      fakeFetch as typeof fetch,
+    );
+    expect(tokens.idToken).toBe(idToken);
+  });
+});
+
+describe('decodeGoogleIdToken', () => {
+  it('extracts sub + email from the payload', () => {
+    const id = decodeGoogleIdToken(fakeIdToken({ sub: 'google-sub-9', email: 'me@example.com' }));
+    expect(id).toEqual({ sub: 'google-sub-9', email: 'me@example.com' });
+  });
+
+  it('throws on a malformed token', () => {
+    expect(() => decodeGoogleIdToken('not-a-jwt')).toThrow(/malformed/);
+  });
+
+  it('throws when the sub claim is missing', () => {
+    expect(() => decodeGoogleIdToken(fakeIdToken({ email: 'x@y.z' }))).toThrow(/missing sub/);
   });
 });

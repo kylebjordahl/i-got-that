@@ -3,9 +3,12 @@ import {
   calendarEvents,
   type Db,
   eq,
+  familyMemberFeeds,
   gte,
+  inArray,
   lt,
   memberCalendars,
+  sourceEvents,
 } from '@igt/db';
 import {
   fetchCalDavOccurrences,
@@ -69,12 +72,18 @@ export async function readBackMember(
   if (!credential) return result;
 
   const window = synthesisWindow(opts);
-  const expand = { windowStart: window.start, windowEnd: window.end };
+  // `cal.timezone` is whatever a prior read-back auto-detected (from some
+  // read-back event's own TZID/VTIMEZONE) or an admin manually set — used to
+  // resolve floating (zone-less) read-back events, which an externally
+  // sourced ICS invite added to the target calendar may carry (some sources
+  // never advertise a timezone for those at all).
+  const expand = { windowStart: window.start, windowEnd: window.end, defaultTimezone: cal.timezone ?? undefined };
 
   let occurrences: Occurrence[];
+  let timezone: string | null;
   if (cal.targetMethod === 'caldav') {
     if (credential.kind !== 'basic') return result;
-    ({ occurrences } = await fetchCalDavOccurrences(
+    ({ occurrences, timezone } = await fetchCalDavOccurrences(
       {
         collectionUrl: cal.targetCalendarId,
         username: credential.username,
@@ -91,7 +100,7 @@ export async function readBackMember(
         ? await opts.googleRefresh(credential.refreshToken)
         : undefined);
     if (!accessToken) return result;
-    ({ occurrences } = await fetchGoogleOccurrences(
+    ({ occurrences, timezone } = await fetchGoogleOccurrences(
       accessToken,
       cal.targetCalendarId,
       expand,
@@ -100,7 +109,33 @@ export async function readBackMember(
   }
   result.fetched = true;
 
-  const human = occurrences.filter((o) => !o.uid.startsWith(MIRROR_UID_PREFIX));
+  // A second recursion guard, alongside the `igt-` UID check: if this target
+  // calendar is *also* the source of one of this member's own input feeds
+  // (the same external calendar plumbed in twice — once as a feed, once as
+  // the read-back target), an event on it already arrives via synthesis. Skip
+  // it here too, identified the same way synthesis dedupes within a feed:
+  // (icalUid, recurrenceId). Without this, that one real-world event spawns
+  // two calendar_events rows (`synthesized` + `human`) and two task sets.
+  const linkedFeedIds = (
+    await db
+      .select({ feedId: familyMemberFeeds.feedId })
+      .from(familyMemberFeeds)
+      .where(eq(familyMemberFeeds.familyMemberId, cal.familyMemberId))
+  ).map((r) => r.feedId);
+  const feedSourceKeys = new Set<string>();
+  if (linkedFeedIds.length > 0) {
+    const rows = await db
+      .select({ icalUid: sourceEvents.icalUid, recurrenceId: sourceEvents.recurrenceId })
+      .from(sourceEvents)
+      .where(inArray(sourceEvents.feedId, linkedFeedIds));
+    for (const r of rows) feedSourceKeys.add(`${r.icalUid}:${r.recurrenceId ?? ''}`);
+  }
+
+  const human = occurrences.filter(
+    (o) =>
+      !o.uid.startsWith(MIRROR_UID_PREFIX) &&
+      !feedSourceKeys.has(`${o.uid}:${o.recurrenceId ?? ''}`),
+  );
 
   const existing = await db
     .select()
@@ -163,7 +198,7 @@ export async function readBackMember(
 
   await db
     .update(memberCalendars)
-    .set({ lastReadBackAt: new Date() })
+    .set({ lastReadBackAt: new Date(), timezone: timezone ?? cal.timezone })
     .where(eq(memberCalendars.id, cal.id));
   return result;
 }

@@ -1,6 +1,7 @@
 import {
   parseEcmaRegex,
   type AttendanceRequirement,
+  type GeoLocation,
   type OverrideMatchField,
   type OverrideMatchOp,
   type OverrideOutcome,
@@ -213,6 +214,8 @@ export interface LinkConfigLike {
   dayStart: string | null;
   dayEnd: string | null;
   location: string | null;
+  /** Geocoded coords for `location`; stamped onto generated baseline events. */
+  locationGeo?: GeoLocation | null;
   /** Summary for generated baseline-day events (e.g. the feed's name). */
   baselineSummary?: string | null;
 }
@@ -227,6 +230,8 @@ export interface EventIntent {
   allDay: boolean;
   summary: string | null;
   location: string | null;
+  /** Geocoded coords for `location` (baseline events only); null for feed events. */
+  locationGeo: GeoLocation | null;
   description: string | null;
 }
 
@@ -256,6 +261,7 @@ function occurrenceEvent(linkId: string, occ: SourceOccurrence): EventIntent {
     allDay: occ.allDay,
     summary: occ.summary,
     location: occ.location,
+    locationGeo: null,
     description: occ.description ?? null,
   };
 }
@@ -275,6 +281,34 @@ export function synthesizeStandard(
   occurrences: SourceOccurrence[],
 ): SynthesisResult {
   return { events: occurrences.map((o) => occurrenceEvent(link.id, o)), pending: [] };
+}
+
+/**
+ * Busy feed (the calendar-firewall input): occurrences are opaque availability
+ * intervals read via Google free/busy — they carry no titles or locations by
+ * construction. Each lands on the unified calendar as a detail-free block
+ * labeled with the link's summary ("Busy" when unnamed). No override rules
+ * apply and nothing ever pends; the interval itself is the whole payload.
+ */
+export function synthesizeBusy(
+  link: LinkConfigLike,
+  occurrences: SourceOccurrence[],
+): SynthesisResult {
+  return {
+    events: occurrences.map((occ) => ({
+      synthKey: `fb:${link.id}:${occ.id}`,
+      sourceEventId: occ.id,
+      matchedRuleId: null,
+      dtstart: occ.dtstart,
+      dtend: occ.dtend,
+      allDay: occ.allDay,
+      summary: link.baselineSummary ?? 'Busy',
+      location: null,
+      locationGeo: null,
+      description: null,
+    })),
+    pending: [],
+  };
 }
 
 /**
@@ -342,6 +376,7 @@ export function synthesizeException(
         allDay: false,
         summary: link.baselineSummary ?? null,
         location: link.location ?? null,
+        locationGeo: link.locationGeo ?? null,
         description: null,
       });
     }
@@ -437,6 +472,25 @@ function windowEnd(anchor: Date, windowMin: number): Date | null {
 }
 
 /**
+ * Resolve a transition task's `[dtstart, dtend]` around its anchor for a signed
+ * window length (minutes). A positive length extends the window forward from the
+ * anchor (`dtstart` at the anchor); a negative length reverses it, placing the
+ * window before the anchor (`dtend` at the anchor) so the stored interval stays
+ * ordered; 0 collapses to a point (`dtend: null`). Used for user-set duration
+ * overrides — the anchor stays fixed to the event while the window flips sides.
+ */
+export function transitionWindow(
+  anchor: Date,
+  durationMin: number,
+): { dtstart: Date; dtend: Date | null } {
+  if (durationMin === 0) return { dtstart: anchor, dtend: null };
+  if (durationMin > 0) {
+    return { dtstart: anchor, dtend: new Date(anchor.getTime() + durationMin * 60_000) };
+  }
+  return { dtstart: new Date(anchor.getTime() + durationMin * 60_000), dtend: anchor };
+}
+
+/**
  * What claimable tasks an event spawns, given its resolved result type. A
  * `transition` yields a drop-off (padded from the event start) and a pickup
  * (padded from the event end); `attendance` yields one task spanning the event.
@@ -474,4 +528,107 @@ export function generateTaskIntents(
       location,
     },
   ];
+}
+
+// --- Stage C: conflict detection & masking (a member's unified calendar) -----
+
+/**
+ * A member can't be in two places at once. When events on one unified calendar
+ * overlap, the higher-priority one wins and the lower-priority *maskable* one is
+ * trimmed or split around it. Priority is a plain number, lower wins — the
+ * caller maps manual (human) events above every feed, and feeds by their
+ * per-member link position (see the conflict service). This stage is pure: it
+ * finds the overlaps and computes the split geometry; whether a split is applied
+ * is an admin decision recorded outside the engine.
+ */
+
+/** An event on a member's calendar as the conflict engine sees it. */
+export interface PriorityInterval {
+  /** Stable identity — the calendar_event synthKey. */
+  key: string;
+  dtstart: Date;
+  dtend: Date | null;
+  /** Lower wins; manual/human events rank above every feed. */
+  priority: number;
+  /** Only maskable events (synthesized feed events) can be trimmed/split. */
+  maskable: boolean;
+}
+
+/** A half-open interval [dtstart, dtend). */
+export interface Interval {
+  dtstart: Date;
+  dtend: Date;
+}
+
+/**
+ * Do two events occupy a common instant? Half-open [start, end): touching
+ * edges (one ends exactly as the other starts) don't overlap, and a point event
+ * (no end) can't double-book anything.
+ */
+export function intervalsOverlap(
+  a: { dtstart: Date; dtend: Date | null },
+  b: { dtstart: Date; dtend: Date | null },
+): boolean {
+  const ae = a.dtend?.getTime();
+  const be = b.dtend?.getTime();
+  if (ae == null || be == null) return false;
+  return a.dtstart.getTime() < be && b.dtstart.getTime() < ae;
+}
+
+/** One detected conflict: a maskable loser overlapped by a higher-priority winner. */
+export interface ConflictPair {
+  loserKey: string;
+  winnerKey: string;
+}
+
+/**
+ * Every (loser, winner) pair where a maskable event is overlapped by a strictly
+ * higher-priority one. Returned in a deterministic order (loser key, then winner
+ * key) so the caller can diff against stored conflicts and reconcile.
+ */
+export function detectConflicts(events: PriorityInterval[]): ConflictPair[] {
+  const pairs: ConflictPair[] = [];
+  for (const loser of events) {
+    if (!loser.maskable || loser.dtend == null) continue;
+    for (const winner of events) {
+      if (winner.key === loser.key) continue;
+      if (winner.priority >= loser.priority) continue; // only a strictly higher event wins
+      if (!intervalsOverlap(loser, winner)) continue;
+      pairs.push({ loserKey: loser.key, winnerKey: winner.key });
+    }
+  }
+  pairs.sort((a, b) =>
+    a.loserKey === b.loserKey
+      ? a.winnerKey.localeCompare(b.winnerKey)
+      : a.loserKey.localeCompare(b.loserKey),
+  );
+  return pairs;
+}
+
+/**
+ * Subtract a set of cut intervals from a base interval, yielding the surviving
+ * segments in order. A cut covering the whole base yields none (fully
+ * displaced); a cut in the middle splits the base in two (leave + return); a cut
+ * at an edge trims it (attend part). Cuts are clamped to the base and merged, so
+ * overlapping or adjacent winners collapse into one gap.
+ */
+export function subtractIntervals(base: Interval, cuts: Interval[]): Interval[] {
+  const bs = base.dtstart.getTime();
+  const be = base.dtend.getTime();
+  if (be <= bs) return [];
+  const clamped = cuts
+    .map((c) => ({
+      s: Math.max(bs, c.dtstart.getTime()),
+      e: Math.min(be, c.dtend.getTime()),
+    }))
+    .filter((c) => c.e > c.s)
+    .sort((a, b) => a.s - b.s);
+  const out: Interval[] = [];
+  let cursor = bs;
+  for (const c of clamped) {
+    if (c.s > cursor) out.push({ dtstart: new Date(cursor), dtend: new Date(c.s) });
+    cursor = Math.max(cursor, c.e);
+  }
+  if (cursor < be) out.push({ dtstart: new Date(cursor), dtend: new Date(be) });
+  return out;
 }

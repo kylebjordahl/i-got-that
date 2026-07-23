@@ -47,6 +47,7 @@ export class CalDavProvider implements DeliveryProvider {
       summary: event.summary,
       description: event.description,
       location: event.location,
+      locationGeo: event.locationGeo,
       alertMinutes: event.alertMinutes,
       timezone: event.timezone,
     });

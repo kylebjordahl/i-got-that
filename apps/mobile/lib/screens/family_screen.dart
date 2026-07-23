@@ -1,13 +1,18 @@
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models.dart';
+import '../onboarding/onboarding_entry.dart';
 import '../state/auth.dart';
 import '../state/family.dart';
+import '../state/nav.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_text.dart';
 import '../theme/person_colors.dart';
+import '../widgets/app_bottom_nav.dart';
 import '../widgets/primitives.dart';
 import '../widgets/settings.dart';
+import '../widgets/slide_to_confirm.dart';
 import 'member_detail_screen.dart';
 
 /// Family — the hub (6l): Caretakers and Children render inline as two lists;
@@ -49,7 +54,95 @@ class FamilyScreen extends ConsumerWidget {
             padding: const EdgeInsets.symmetric(vertical: 40),
             child: Center(child: Text('No members yet — tap + to add one', style: AppText.subtitle)),
           ),
+        if (me != null) ...[
+          const SizedBox(height: 28),
+          Center(
+            child: TextButton(
+              onPressed: () => _confirmLeaveFamily(context, ref, me, members),
+              child: Text('Leave family',
+                  style: font(kBodyFont, 13, 700, color: AppColors.coral.withValues(alpha: 0.75))),
+            ),
+          ),
+        ],
+        if (me?.isAdmin ?? false) ...[
+          const SizedBox(height: 8),
+          Center(
+            child: TextButton(
+              onPressed: () => _confirmDeleteFamily(context, ref),
+              child: Text('Delete family',
+                  style: font(kBodyFont, 13, 700, color: AppColors.coral.withValues(alpha: 0.75))),
+            ),
+          ),
+        ],
       ],
+    );
+  }
+
+  Future<void> _confirmDeleteFamily(BuildContext context, WidgetRef ref) {
+    return showSlideToConfirmSheet(
+      context,
+      title: 'Delete family?',
+      description: 'This permanently deletes every member, feed, task, and '
+          "calendar event in this family. This can't be undone.",
+      slideLabel: 'Slide to delete family',
+      onConfirmed: () async {
+        final familyId = await ref.read(familyProvider.future);
+        await ref.read(apiClientProvider).deleteFamily(familyId);
+        // Drop the override and let the app re-decide: onboarding if that was
+        // the last family, else the next one it finds.
+        ref.read(selectedFamilyIdProvider.notifier).state = null;
+        ref.read(onboardingActiveProvider.notifier).state = null;
+        ref.invalidate(hasFamilyProvider);
+        ref.invalidate(familiesListProvider);
+        ref.invalidate(familyProvider);
+      },
+      errorMessage: (e) => e is DioException ? 'Failed: ${e.message}' : 'Failed: $e',
+    );
+  }
+
+  Future<void> _confirmLeaveFamily(
+    BuildContext context,
+    WidgetRef ref,
+    Member me,
+    List<Member> members,
+  ) {
+    // The last remaining admin can't leave a family that still has other
+    // members — computed from state already loaded for this screen, so (like
+    // account deletion) the block shows up front rather than as a toast after
+    // a failed slide.
+    final isSoleAdmin = me.isAdmin &&
+        members.length > 1 &&
+        !members.any((m) => m.id != me.id && m.isAdmin);
+    return showSlideToConfirmSheet(
+      context,
+      title: isSoleAdmin ? "Can't leave yet" : 'Leave family?',
+      description: isSoleAdmin
+          ? "You're the only admin here — promote a co-admin first, or "
+              'delete the family instead.'
+          : "You'll lose access to this family's feeds, tasks, and "
+              "calendar. Your history stays, and you can rejoin if invited "
+              'again.',
+      slideLabel: 'Slide to leave family',
+      blocked: isSoleAdmin,
+      onConfirmed: () async {
+        final familyId = await ref.read(familyProvider.future);
+        await ref.read(apiClientProvider).leaveFamily(familyId);
+        // Same reset as delete family: let the app re-decide between
+        // onboarding (if that was the last family) and the next one.
+        ref.read(selectedFamilyIdProvider.notifier).state = null;
+        ref.read(onboardingActiveProvider.notifier).state = null;
+        ref.invalidate(hasFamilyProvider);
+        ref.invalidate(familiesListProvider);
+        ref.invalidate(familyProvider);
+      },
+      errorMessage: (e) {
+        final data = e is DioException ? e.response?.data : null;
+        final code = (data as Map<String, dynamic>?)?['error'];
+        return code == 'last_admin'
+            ? "You're the only admin here — promote a co-admin first, or "
+                'delete the family instead.'
+            : 'Failed: $e';
+      },
     );
   }
 
@@ -68,6 +161,8 @@ class FamilyScreen extends ConsumerWidget {
   }
 
   Widget _header(BuildContext context, WidgetRef ref, ({String name, int count})? info, bool isAdmin) {
+    final name = info?.name ?? 'Family';
+    final multipleFamilies = (info?.count ?? 1) > 1;
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -75,15 +170,9 @@ class FamilyScreen extends ConsumerWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Row(
-                children: [
-                  Flexible(child: Text(info?.name ?? 'Family', style: AppText.screenTitleAlt)),
-                  if ((info?.count ?? 1) > 1) ...[
-                    const SizedBox(width: 8),
-                    _SwitcherButton(onTap: () => _openSwitcher(context, ref)),
-                  ],
-                ],
-              ),
+              multipleFamilies
+                  ? _FamilySelect(name: name, onTap: () => _openSwitcher(context, ref))
+                  : Text(name, style: AppText.screenTitleAlt),
               const SizedBox(height: 3),
               Text.rich(TextSpan(
                 style: AppText.subtitle,
@@ -109,7 +198,15 @@ class FamilyScreen extends ConsumerWidget {
       context: context,
       useRootNavigator: true,
       showDragHandle: true,
-      builder: (_) => Padding(
+      // `sheetCtx`, not the outer `context`: `context` here is the Family
+      // screen's own build context, which lives on the *inner* content
+      // Navigator (`rootNavigatorKey`, AppShell's only route — see the note
+      // in `_promptName` below and in `_AuthedRoot`). This sheet was raised
+      // with `useRootNavigator: true`, i.e. on MaterialApp's outer Navigator,
+      // so popping via `Navigator.of(context)` would instead pop AppShell off
+      // the inner Navigator — leaving it empty (a blank screen) while the
+      // sheet itself never closes.
+      builder: (sheetCtx) => Padding(
         padding: const EdgeInsets.fromLTRB(22, 4, 22, 28),
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -127,7 +224,7 @@ class FamilyScreen extends ConsumerWidget {
                     : null,
                 onTap: () {
                   ref.read(selectedFamilyIdProvider.notifier).state = f.id;
-                  Navigator.of(context).pop();
+                  Navigator.of(sheetCtx).pop();
                 },
               ),
           ],
@@ -190,15 +287,23 @@ Future<void> _createAndOpen(BuildContext context, WidgetRef ref, {required bool 
           isCaretaker: !isChild,
           requiresCaretaker: isChild,
         );
+    // Wait for the refetch to land (not a fire-and-forget invalidate) so the
+    // detail screen finds the new member on its very first build.
     ref.invalidate(membersProvider);
+    await ref.read(membersProvider.future);
     final id = (res['member'] as Map<String, dynamic>)['id'] as String;
-    if (!context.mounted) return;
-    Navigator.of(context).push(
+    // Push via the key rather than `Navigator.of(context)` so this doesn't
+    // depend on `context` still happening to be the inner Navigator's own
+    // element (see the note on `_promptName` above for why that's fragile).
+    rootNavigatorKey.currentState!.push(
       MaterialPageRoute(builder: (_) => MemberDetailScreen(memberId: id)),
     );
   } catch (e) {
     if (context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed: $e')));
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('Failed: $e'),
+        margin: snackBarMarginAboveNav(context),
+      ));
     }
   }
 }
@@ -207,20 +312,28 @@ Future<String?> _promptName(BuildContext context, String title) {
   final controller = TextEditingController();
   return showDialog<String>(
     context: context,
-    builder: (_) => AlertDialog(
+    // `dialogContext`, not the outer `context`: `context` here is
+    // `rootNavigatorKey.currentContext` (the inner content Navigator's own
+    // element), and `Navigator.of` special-cases that to resolve to the
+    // Navigator itself rather than an ancestor. Popping through it removes
+    // AppShell — the inner Navigator's only route — leaving it empty, while
+    // this dialog (opened on the outer Navigator, showDialog's default)
+    // never actually closes.
+    builder: (dialogContext) => AlertDialog(
       title: Text(title),
       content: TextField(
         controller: controller,
         autofocus: true,
         decoration: const InputDecoration(labelText: 'Name / relation'),
-        onSubmitted: (v) => Navigator.of(context).pop(v),
+        onSubmitted: (v) => Navigator.of(dialogContext).pop(v),
       ),
       actions: [
-        TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('Cancel')),
+        TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(), child: const Text('Cancel')),
         PillButton(
           label: 'Continue',
           variant: PillVariant.amber,
-          onPressed: () => Navigator.of(context).pop(controller.text),
+          onPressed: () => Navigator.of(dialogContext).pop(controller.text),
         ),
       ],
     ),
@@ -269,27 +382,36 @@ class _PersonRow extends StatelessWidget {
   }
 }
 
-class _SwitcherButton extends StatelessWidget {
-  const _SwitcherButton({required this.onTap});
+/// The Family-screen title, styled as an explicit select control (name +
+/// unfold-chevron, both tappable) — shown in place of a plain title once the
+/// account belongs to more than one family.
+class _FamilySelect extends StatelessWidget {
+  const _FamilySelect({required this.name, required this.onTap});
+  final String name;
   final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
     return Material(
-      color: AppColors.card,
-      shape: const CircleBorder(),
+      color: Colors.transparent,
       child: InkWell(
         onTap: onTap,
-        customBorder: const CircleBorder(),
-        child: Container(
-          width: 30,
-          height: 30,
-          alignment: Alignment.center,
-          decoration: BoxDecoration(
-            shape: BoxShape.circle,
-            border: Border.all(color: AppColors.border),
+        borderRadius: BorderRadius.circular(10),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 2),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Flexible(
+                child: Text(name,
+                    style: AppText.screenTitleAlt,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis),
+              ),
+              const SizedBox(width: 6),
+              const Icon(Icons.unfold_more_rounded, size: 22, color: AppColors.textMuted),
+            ],
           ),
-          child: const Icon(Icons.expand_more_rounded, size: 20, color: AppColors.textSecondary),
         ),
       ),
     );

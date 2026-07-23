@@ -21,6 +21,7 @@ import {
   OverrideMatchOp,
   OverrideOutcome,
   ReorderLinkRulesInput,
+  ReorderMemberFeedLinksInput,
   UpdateFeedInput,
   UpdateLinkRuleInput,
   UpdateMemberFeedLinkInput,
@@ -38,11 +39,17 @@ const MergedRuleShape = z
     params: z.unknown().optional(),
   })
   .superRefine(validateOverrideRuleShape);
+import { fetchGoogleFreeBusy } from '@igt/ical';
 import { Hono } from 'hono';
 import type { Bindings, HonoEnv } from '../env.js';
+import { resolveAccountCredential } from '../lib/account-credentials.js';
 import { googleRefresherFor } from '../lib/google-oauth.js';
 import { requireAdmin, requireFamilyMember } from '../middleware/auth.js';
 import { reconcileClaimEvents } from '../services/claim.js';
+import {
+  reconcileFamilyConflicts,
+  reconcileMemberConflicts,
+} from '../services/conflicts.js';
 import { ingestFamilyFeeds, ingestFeed } from '../services/ingest.js';
 import { enqueueReconcile } from '../services/mirror.js';
 import { readBackFamily } from '../services/readback.js';
@@ -52,6 +59,40 @@ import { buildFamilyTasks, buildMemberTasks } from '../services/task-gen.js';
 /** Ingest secrets (KEK + Google refresher) needed to read account-backed feeds. */
 function ingestSecrets(env: Bindings) {
   return { kek: env.KEK, googleRefresh: googleRefresherFor(env) };
+}
+
+/**
+ * Creation-time probe for busy feeds: verify the target calendar actually
+ * answers `freebusy.query` for this account BEFORE the feed row exists, so a
+ * missing "share as see-only-free/busy" grant (or a pre-freebusy-scope token)
+ * surfaces as an actionable setup error instead of a feed stuck in 'error'.
+ * Returns null on success, else a short reason string.
+ */
+async function probeFreeBusy(
+  db: ReturnType<typeof getDb>,
+  env: Bindings,
+  accountId: string,
+  calendarId: string,
+): Promise<string | null> {
+  try {
+    const credential = await resolveAccountCredential(db, env.KEK, accountId);
+    if (!credential || credential.kind !== 'oauth') return 'no_account_credential';
+    const refresh = googleRefresherFor(env);
+    const accessToken =
+      credential.accessToken ??
+      (credential.refreshToken && refresh
+        ? await refresh(credential.refreshToken)
+        : undefined);
+    if (!accessToken) return 'no_access_token';
+    const now = new Date();
+    await fetchGoogleFreeBusy(accessToken, calendarId, {
+      windowStart: now,
+      windowEnd: new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000),
+    });
+    return null;
+  } catch (err) {
+    return err instanceof Error ? err.message : 'freebusy_probe_failed';
+  }
 }
 
 /** Mounted under /families/:familyId/feeds (auth applied by parent router). */
@@ -105,6 +146,15 @@ feedRoutes.post('/', requireAdmin, async (c) => {
     if (!account) return c.json({ error: 'account_not_found' }, 404);
     const expectedKind = account.kind === 'google' ? 'google' : 'caldav';
     if (d.kind !== expectedKind) return c.json({ error: 'account_kind_mismatch' }, 400);
+    // Busy feeds point at a calendar shared to this account as free/busy-only
+    // (it won't appear in the account's own calendarList) — probe the grant now
+    // so a mis-set share fails the creation with guidance, not the first sync.
+    if (d.mode === 'busy') {
+      const probeError = await probeFreeBusy(db, c.env, account.id, d.sourceCalendarId!);
+      if (probeError) {
+        return c.json({ error: 'freebusy_unavailable', detail: probeError }, 400);
+      }
+    }
     values.externalAccountId = account.id;
     values.sourceCalendarId = d.sourceCalendarId ?? null;
     values.sourceCalendarName = d.sourceCalendarName ?? null;
@@ -120,12 +170,32 @@ async function resynthesize(
   db: ReturnType<typeof getDb>,
   feed: typeof feeds.$inferSelect,
 ): Promise<void> {
+  // A brand-new feed has never been ingested (lastSyncedAt is null), so
+  // source_events is empty — a rule created right after setup (e.g. one meant
+  // to override a near-term occurrence) would otherwise have nothing to match
+  // until the next cron tick or a manual "Refresh feeds" tap. Ingest once,
+  // synchronously, before the first synthesis. Best-effort: a failed ingest
+  // here shouldn't block the mutation that already committed (the rule/link/
+  // etc. row); it also isn't retried on every subsequent edit, since a failed
+  // ingest marks the feed 'error' and cron only re-ingests 'active' feeds — an
+  // 'error' feed already requires a manual "Refresh feeds" tap to recover, so
+  // there's nothing this call could usefully retry once that's happened.
+  if (!feed.lastSyncedAt && feed.status !== 'error') {
+    try {
+      await ingestFeed(db, feed, ingestSecrets(c.env));
+    } catch {
+      // swallow — ingestFeed already marked the feed 'error'.
+    }
+  }
   await synthesizeFeed(db, feed);
   const links = await db
     .select({ familyMemberId: familyMemberFeeds.familyMemberId })
     .from(familyMemberFeeds)
     .where(eq(familyMemberFeeds.feedId, feed.id));
   for (const familyMemberId of new Set(links.map((l) => l.familyMemberId))) {
+    // Re-resolve overlaps before task-gen so a config change re-applies (or
+    // clears) any splits on this member's agenda.
+    await reconcileMemberConflicts(db, familyMemberId);
     await buildMemberTasks(db, familyMemberId);
   }
   enqueueReconcile(c, { kind: 'family', familyId: feed.familyId });
@@ -133,9 +203,11 @@ async function resynthesize(
 
 /**
  * Update an input feed's config (admin). Only `mode` / `refreshMinutes` /
- * `status` are editable — the source (ICS url or the account's target calendar)
- * is immutable; change it by deleting and recreating the feed. A mode change
- * resynthesizes the feed (mode drives the whole pipeline shape).
+ * `status` / `timezone` are editable — the source (ICS url or the account's
+ * target calendar) is immutable; change it by deleting and recreating the
+ * feed. A mode change resynthesizes the feed (mode drives the whole pipeline
+ * shape); a timezone change re-ingests it (source_events' own dtstart/dtend
+ * may need reinterpreting, not just resynthesizing).
  */
 feedRoutes.patch('/:feedId', requireAdmin, async (c) => {
   const parsed = UpdateFeedInput.safeParse(await c.req.json().catch(() => null));
@@ -155,16 +227,43 @@ feedRoutes.patch('/:feedId', requireAdmin, async (c) => {
   if (!feed) return c.json({ error: 'not_found' }, 404);
 
   const d = parsed.data;
+  // The busy keyspace (interval-derived source events, `fb:` synthKeys) is
+  // incompatible with the UID-keyed standard/exception pipelines — a mode
+  // transition would strand rows on both sides. Recreate the feed instead.
+  if (
+    d.mode !== undefined &&
+    d.mode !== feed.mode &&
+    (d.mode === 'busy' || feed.mode === 'busy')
+  ) {
+    return c.json({ error: 'busy_mode_immutable' }, 400);
+  }
+  const timezoneChanged = d.timezone !== undefined && d.timezone !== feed.timezone;
   const set: Partial<typeof feeds.$inferInsert> = {};
   if (d.mode !== undefined) set.mode = d.mode;
   if (d.refreshMinutes !== undefined) set.refreshMinutes = d.refreshMinutes;
   if (d.status !== undefined) set.status = d.status;
+  if (d.timezone !== undefined) set.timezone = d.timezone;
+  if (timezoneChanged) {
+    // The ICS document itself may be byte-for-byte unchanged (this is a
+    // manual correction, not a source-side edit) — clear the etag so the
+    // re-ingest below can't 304 its way out of reinterpreting the feed's
+    // already-stored (wrong) floating-time occurrences.
+    set.etag = null;
+  }
   if (Object.keys(set).length > 0) {
     await db.update(feeds).set(set).where(eq(feeds.id, feed.id));
   }
 
-  const updated = (await db.select().from(feeds).where(eq(feeds.id, feed.id)).limit(1))[0]!;
-  if (d.mode !== undefined && d.mode !== feed.mode) {
+  let updated = (await db.select().from(feeds).where(eq(feeds.id, feed.id)).limit(1))[0]!;
+  if (timezoneChanged) {
+    try {
+      await ingestFeed(db, updated, ingestSecrets(c.env));
+    } catch {
+      // swallow — ingestFeed already marked the feed 'error'; admin can retry via /refresh.
+    }
+    updated = (await db.select().from(feeds).where(eq(feeds.id, feed.id)).limit(1))[0]!;
+  }
+  if ((d.mode !== undefined && d.mode !== feed.mode) || timezoneChanged) {
     await db
       .update(sourceEvents)
       .set({ synthesizedHash: null })
@@ -177,10 +276,93 @@ feedRoutes.patch('/:feedId', requireAdmin, async (c) => {
 /** List a family's feeds. */
 feedRoutes.get('/', async (c) => {
   const rows = await getDb(c.env.DB)
-    .select()
+    .select({
+      id: feeds.id,
+      familyId: feeds.familyId,
+      kind: feeds.kind,
+      url: feeds.url,
+      externalAccountId: feeds.externalAccountId,
+      sourceCalendarId: feeds.sourceCalendarId,
+      sourceCalendarName: feeds.sourceCalendarName,
+      mode: feeds.mode,
+      timezone: feeds.timezone,
+      refreshMinutes: feeds.refreshMinutes,
+      etag: feeds.etag,
+      lastSyncedAt: feeds.lastSyncedAt,
+      lastRefreshRequestedAt: feeds.lastRefreshRequestedAt,
+      status: feeds.status,
+      createdAt: feeds.createdAt,
+      // Account-backed feeds only: the connected account's kind, so the
+      // client can distinguish "iCloud Calendar" from a generic "CalDAV
+      // Calendar" (both collapse to feed kind 'caldav').
+      accountKind: externalAccounts.kind,
+    })
     .from(feeds)
+    .leftJoin(externalAccounts, eq(externalAccounts.id, feeds.externalAccountId))
     .where(eq(feeds.familyId, c.get('member').familyId));
   return c.json({ feeds: rows });
+});
+
+/**
+ * Reorder one member's feed links by priority (admin): every link id of that
+ * member exactly once, in the new order (index 0 = highest priority). Priority
+ * breaks conflict ties on that member's unified calendar — the earlier link
+ * wins and the later one is masked (manual events always outrank feeds).
+ * Persist-only for now; conflict resolution keys off these positions once it
+ * lands.
+ */
+feedRoutes.put('/member-links/order', requireAdmin, async (c) => {
+  const parsed = ReorderMemberFeedLinksInput.safeParse(
+    await c.req.json().catch(() => null),
+  );
+  if (!parsed.success) {
+    return c.json({ error: 'invalid', issues: parsed.error.issues }, 400);
+  }
+  const db = getDb(c.env.DB);
+  const familyId = c.get('member').familyId;
+  const { familyMemberId, linkIds } = parsed.data;
+
+  const existing = await db
+    .select({ id: familyMemberFeeds.id })
+    .from(familyMemberFeeds)
+    .where(
+      and(
+        eq(familyMemberFeeds.familyId, familyId),
+        eq(familyMemberFeeds.familyMemberId, familyMemberId),
+      ),
+    );
+  const existingIds = new Set(existing.map((l) => l.id));
+  if (
+    linkIds.length !== existing.length ||
+    !linkIds.every((id) => existingIds.has(id)) ||
+    new Set(linkIds).size !== linkIds.length
+  ) {
+    return c.json({ error: 'order_mismatch' }, 400);
+  }
+
+  for (let i = 0; i < linkIds.length; i++) {
+    await db
+      .update(familyMemberFeeds)
+      .set({ position: i })
+      .where(
+        and(
+          eq(familyMemberFeeds.id, linkIds[i]!),
+          eq(familyMemberFeeds.familyId, familyId),
+        ),
+      );
+  }
+
+  const rows = await db
+    .select({ id: familyMemberFeeds.id, position: familyMemberFeeds.position })
+    .from(familyMemberFeeds)
+    .where(
+      and(
+        eq(familyMemberFeeds.familyId, familyId),
+        eq(familyMemberFeeds.familyMemberId, familyMemberId),
+      ),
+    )
+    .orderBy(asc(familyMemberFeeds.position));
+  return c.json({ links: rows });
 });
 
 /** Link a member to a feed, with an optional baseline for exception feeds (admin). */
@@ -215,6 +397,14 @@ feedRoutes.post('/:feedId/member-links', requireAdmin, async (c) => {
   )[0];
   if (!feed || !member) return c.json({ error: 'not_found' }, 404);
 
+  // Append the new link at the end of this member's priority order (lowest
+  // priority) — admins reorder afterwards via PUT /feeds/member-links/order.
+  const memberLinks = await db
+    .select({ position: familyMemberFeeds.position })
+    .from(familyMemberFeeds)
+    .where(eq(familyMemberFeeds.familyMemberId, parsed.data.familyMemberId));
+  const nextPosition = memberLinks.reduce((m, l) => Math.max(m, l.position + 1), 0);
+
   const link = (
     await db
       .insert(familyMemberFeeds)
@@ -222,10 +412,12 @@ feedRoutes.post('/:feedId/member-links', requireAdmin, async (c) => {
         familyId,
         feedId,
         familyMemberId: parsed.data.familyMemberId,
+        position: nextPosition,
         weekdayMask: parsed.data.weekdayMask ?? null,
         dayStart: parsed.data.dayStart ?? null,
         dayEnd: parsed.data.dayEnd ?? null,
         location: parsed.data.location ?? null,
+        locationGeo: parsed.data.locationGeo ?? null,
       })
       .returning()
   )[0]!;
@@ -243,10 +435,12 @@ feedRoutes.get('/:feedId/member-links', async (c) => {
       id: familyMemberFeeds.id,
       familyMemberId: familyMemberFeeds.familyMemberId,
       memberRelation: familyMembers.relationName,
+      position: familyMemberFeeds.position,
       weekdayMask: familyMemberFeeds.weekdayMask,
       dayStart: familyMemberFeeds.dayStart,
       dayEnd: familyMemberFeeds.dayEnd,
       location: familyMemberFeeds.location,
+      locationGeo: familyMemberFeeds.locationGeo,
       defaultTaskType: familyMemberFeeds.defaultTaskType,
       defaultDropoffWindowMin: familyMemberFeeds.defaultDropoffWindowMin,
       defaultPickupWindowMin: familyMemberFeeds.defaultPickupWindowMin,
@@ -303,6 +497,7 @@ feedRoutes.patch('/:feedId/member-links/:linkId', requireAdmin, async (c) => {
   if (d.dayStart !== undefined) set.dayStart = d.dayStart;
   if (d.dayEnd !== undefined) set.dayEnd = d.dayEnd;
   if (d.location !== undefined) set.location = d.location;
+  if (d.locationGeo !== undefined) set.locationGeo = d.locationGeo;
   if (d.active !== undefined) set.active = d.active;
   if (Object.keys(set).length > 0) {
     await db.update(familyMemberFeeds).set(set).where(eq(familyMemberFeeds.id, link.id));
@@ -660,6 +855,7 @@ feedRoutes.post('/:feedId/refresh', async (c) => {
     .from(familyMemberFeeds)
     .where(eq(familyMemberFeeds.feedId, feed.id));
   for (const familyMemberId of new Set(links.map((l) => l.familyMemberId))) {
+    await reconcileMemberConflicts(db, familyMemberId);
     await buildMemberTasks(db, familyMemberId);
   }
   await reconcileClaimEvents(db, familyId);
@@ -684,6 +880,7 @@ feedRoutes.post('/refresh-all', async (c) => {
     synthesis.push(await synthesizeFeed(db, feed));
   }
   await readBackFamily(db, familyId, ingestSecrets(c.env));
+  await reconcileFamilyConflicts(db, familyId);
   await buildFamilyTasks(db, familyId);
   await reconcileClaimEvents(db, familyId);
   enqueueReconcile(c, { kind: 'family', familyId });

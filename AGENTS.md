@@ -140,3 +140,21 @@ paths in particular).
 - Match the surrounding code's style/idioms; keep changes focused.
 - Update `docs/` when you change deploy/auth/config behaviour.
 - Outstanding work is tracked as GitHub issues — check open issues before starting.
+- **Agents: open the PR and mark it ready for review yourselves.** Once the
+  work is actually done — tests/typecheck pass and the change is verified —
+  open the PR (draft is fine while work is in progress) and flip it out of
+  draft (`gh pr ready <PR#>`) rather than leaving it sitting as a draft. Do
+  this proactively; don't wait for the user to ask.
+- **Sync with `main` before marking ready.** This repo requires branches to be
+  up-to-date with `main` before merge, so an out-of-date branch blocks merging
+  even once marked ready. Update the branch first — `gh pr update-branch
+  <PR#>` (or `git fetch origin && git merge origin/main` and push) — then run
+  `gh pr ready <PR#>`.
+- **Never write a literal NUL byte (`\0`) into a source file** — e.g. as a
+  string/template-literal separator. A NUL makes git treat the whole file as
+  binary (no line diff, `Bin X -> Y bytes` in stat, "Cannot merge binary
+  files" on the next conflicting merge). Use an ordinary separator character
+  instead (this codebase's convention is `:`, as in `synthKey`s like
+  `bl:<linkId>:<date>`). If a merge conflict ever reports a source file as
+  binary, that's the smell to check for first — see PR #118 for a case where
+  this had already landed on `main` and had to be cleaned up mid-merge.

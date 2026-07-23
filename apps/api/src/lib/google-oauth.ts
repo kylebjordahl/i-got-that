@@ -10,7 +10,19 @@ import type { Bindings } from '../env.js';
 
 const AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
 const TOKEN_URL = 'https://oauth2.googleapis.com/token';
-const SCOPE = 'https://www.googleapis.com/auth/calendar.events';
+/** `calendar.events` grants read/write on events within a known calendar;
+ *  `calendar.readonly` additionally covers `calendarList.list`, needed by the
+ *  "pick a calendar" flow (`fetchGoogleCalendars`); `calendar.freebusy` covers
+ *  `freebusy.query` for busy-mode feeds — the intervals-only read of a work
+ *  calendar shared as "see only free/busy" (neither of the other two scopes
+ *  authorizes it). Accounts connected before a scope was added must be
+ *  reconnected once to grant it. */
+const SCOPE =
+  'https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/calendar.readonly https://www.googleapis.com/auth/calendar.freebusy';
+/** OpenID Connect scopes so the same consent that grants calendar access also
+ *  identifies the user (id_token with `sub` + `email`) — used by the login /
+ *  connect redirect flow (`/auth/google/*`). */
+const IDENTITY_SCOPES = 'openid email profile';
 
 function requireClient(env: Bindings): { id: string; secret: string } {
   if (!env.GOOGLE_OAUTH_CLIENT_ID || !env.GOOGLE_OAUTH_CLIENT_SECRET) {
@@ -37,17 +49,19 @@ export function googleRefresherFor(
 }
 
 /** The consent URL to send the user to. `access_type=offline` + `prompt=consent`
- *  are required to receive a refresh token. */
+ *  are required to receive a refresh token. Pass `identity: true` (the login /
+ *  connect redirect flow) to also request the OpenID scopes, so the returned
+ *  token set carries an id_token identifying the user. */
 export function buildGoogleAuthorizeUrl(
   env: Bindings,
-  opts: { redirectUri: string; state?: string },
+  opts: { redirectUri: string; state?: string; identity?: boolean },
 ): string {
   const client = requireClient(env);
   const params = new URLSearchParams({
     client_id: client.id,
     redirect_uri: opts.redirectUri,
     response_type: 'code',
-    scope: SCOPE,
+    scope: opts.identity ? `${IDENTITY_SCOPES} ${SCOPE}` : SCOPE,
     access_type: 'offline',
     prompt: 'consent',
     include_granted_scopes: 'true',
@@ -59,11 +73,46 @@ export function buildGoogleAuthorizeUrl(
 export interface GoogleTokens {
   accessToken: string;
   refreshToken?: string;
+  /** OpenID Connect id_token (present only when identity scopes were granted). */
+  idToken?: string;
 }
 
+/** The identity claims we read out of a Google id_token. */
+export interface GoogleIdentity {
+  sub: string;
+  email?: string;
+}
+
+/**
+ * Decode the claims from a Google id_token. No signature check is needed: the
+ * token is delivered straight from Google's token endpoint over TLS in response
+ * to our client-secret-authenticated code exchange (not via the browser), so it
+ * is already trusted — the same trust model as the code exchange itself.
+ */
+export function decodeGoogleIdToken(idToken: string): GoogleIdentity {
+  const parts = idToken.split('.');
+  if (parts.length !== 3) throw new Error('google id_token malformed');
+  const json = new TextDecoder().decode(
+    Uint8Array.from(
+      atob(parts[1]!.replace(/-/g, '+').replace(/_/g, '/')),
+      (ch) => ch.charCodeAt(0),
+    ),
+  );
+  const claims = JSON.parse(json) as { sub?: string; email?: string };
+  if (!claims.sub) throw new Error('google id_token missing sub');
+  return { sub: claims.sub, email: claims.email };
+}
+
+/**
+ * Exchange an authorization code for tokens. `redirectUri` is required for
+ * the web redirect flow (must match the one used at the authorize step);
+ * native's `serverAuthCode` (from `google_sign_in`'s `serverClientId` option)
+ * is a one-time code issued to an installed app, which Google's token
+ * endpoint accepts without a `redirect_uri`.
+ */
 export async function exchangeGoogleCode(
   env: Bindings,
-  opts: { code: string; redirectUri: string },
+  opts: { code: string; redirectUri?: string },
   fetchImpl: typeof fetch = fetch,
 ): Promise<GoogleTokens> {
   const client = requireClient(env);
@@ -71,9 +120,9 @@ export async function exchangeGoogleCode(
     code: opts.code,
     client_id: client.id,
     client_secret: client.secret,
-    redirect_uri: opts.redirectUri,
     grant_type: 'authorization_code',
   });
+  if (opts.redirectUri) body.set('redirect_uri', opts.redirectUri);
   const res = await fetchImpl(TOKEN_URL, {
     method: 'POST',
     headers: { 'content-type': 'application/x-www-form-urlencoded' },
@@ -82,8 +131,16 @@ export async function exchangeGoogleCode(
   if (!res.ok) {
     throw new Error(`google code exchange failed: ${res.status} ${await res.text().catch(() => '')}`);
   }
-  const json = (await res.json()) as { access_token: string; refresh_token?: string };
-  return { accessToken: json.access_token, refreshToken: json.refresh_token };
+  const json = (await res.json()) as {
+    access_token: string;
+    refresh_token?: string;
+    id_token?: string;
+  };
+  return {
+    accessToken: json.access_token,
+    refreshToken: json.refresh_token,
+    idToken: json.id_token,
+  };
 }
 
 export async function refreshGoogleAccessToken(

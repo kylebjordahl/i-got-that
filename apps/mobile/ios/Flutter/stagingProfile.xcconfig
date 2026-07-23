@@ -4,3 +4,10 @@
 ASSET_PREFIX=staging
 BUNDLE_NAME=IGT Staging
 BUNDLE_DISPLAY_NAME=IGT Staging
+
+// Native Sign in with Google (staging). Fill in once the staging iOS OAuth
+// client exists in the Cloud Console (bundle id com.kylebjordahl.igt.staging)
+// — see docs/AUTH.md's Google section. Empty ⇒ native Google sign-in fails at
+// runtime with a clear "no client ID" error (web flow is unaffected).
+GOOGLE_IOS_CLIENT_ID=503268168924-honi8hhgikagd2gbu2tpb9qrf0n6eqcm.apps.googleusercontent.com
+GOOGLE_IOS_URL_SCHEME=com.googleusercontent.apps.503268168924-honi8hhgikagd2gbu2tpb9qrf0n6eqcm
