@@ -635,6 +635,67 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets(
+      'excluding a caretaker in "Caretakers" hides events on their own calendar',
+      (tester) async {
+    // Tall enough that the filter sheet's chips/Apply are on-screen without
+    // needing to scroll the sheet first.
+    tester.view.physicalSize = const Size(800, 1400);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+
+    final now = DateTime.now();
+    DateTime at(int h, int m) => DateTime(now.year, now.month, now.day, h, m);
+    final me = _m('mom', 'Mom', caretaker: true);
+    final dad = _m('dad', 'Dad', caretaker: true);
+    // A caretaker can have their own unified calendar too — a plain human
+    // event that isn't tied to any child or task at all.
+    final events = [
+      CalendarEventItem(id: 'dentist', familyMemberId: 'dad', provenance: 'human', start: at(9, 0), end: at(11, 0), allDay: false, summary: 'Dentist'),
+      CalendarEventItem(id: 'school', familyMemberId: 'theo', provenance: 'synthesized', start: at(8, 30), end: at(15, 0), allDay: false, summary: 'School day'),
+    ];
+    await tester.pumpWidget(ProviderScope(
+      overrides: [
+        membersProvider.overrideWith((ref) async => [
+              me,
+              dad,
+              _m('theo', 'Theo', child: true),
+            ]),
+        currentMemberProvider.overrideWith((ref) async => me),
+        allTasksProvider.overrideWith((ref) async => const <TaskItem>[]),
+        calendarEventsProvider.overrideWith((ref) async => events),
+        pendingDecisionsProvider.overrideWith((ref) async => const []),
+        threadingThresholdProvider.overrideWith((ref) async => 30),
+      ],
+      child: MaterialApp(
+        theme: buildAppTheme(),
+        themeMode: ThemeMode.dark,
+        home: const Scaffold(body: SafeArea(child: PlanScreen())),
+      ),
+    ));
+    await tester.pumpAndSettle();
+
+    // Both blocks show before filtering.
+    expect(find.textContaining('Dentist'), findsOneWidget);
+    expect(find.textContaining('School day'), findsOneWidget);
+
+    await tester.tap(find.text('Filters'));
+    await tester.pumpAndSettle();
+    // Deselect Dad's chip under "Caretakers".
+    await tester.tap(find.text('Dad'));
+    await tester.pump();
+    await tester.tap(find.text('Apply · 1 filter'));
+    await tester.pumpAndSettle();
+
+    // Dad's own calendar event is hidden; Theo's is untouched.
+    expect(find.textContaining('Dentist'), findsNothing);
+    expect(find.textContaining('School day'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('swiping the grid left/right steps the selected day', (tester) async {
     final today = DateTime.now();
     await tester.pumpWidget(ProviderScope(
