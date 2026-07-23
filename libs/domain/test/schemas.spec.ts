@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  CreateAssignmentRuleInput,
   CreateLinkRuleInput,
   CreateFeedInput,
   CreateTaskRuleInput,
@@ -145,6 +146,35 @@ describe('domain schemas', () => {
     // regex matcher with a bad pattern → invalid.
     expect(
       CreateTaskRuleInput.safeParse({ resultType: 'transition', matchOp: 'regex', matchValue: '(' }).success,
+    ).toBe(false);
+  });
+
+  it('validates assignment rules (owner required, anchor required when biweekly)', () => {
+    // Minimal rule: just an owner (defaults to any day, weekly).
+    const ok = CreateAssignmentRuleInput.safeParse({ ownerMemberId: 'm1' });
+    expect(ok.success).toBe(true);
+    if (ok.success) {
+      expect(ok.data.weekdayMask).toBe(0);
+      expect(ok.data.cadenceWeeks).toBe(1);
+    }
+    // Owner is required.
+    expect(CreateAssignmentRuleInput.safeParse({ weekdayMask: 1 }).success).toBe(false);
+    // cadenceWeeks > 1 without an anchor → invalid.
+    expect(
+      CreateAssignmentRuleInput.safeParse({ ownerMemberId: 'm1', cadenceWeeks: 2 }).success,
+    ).toBe(false);
+    // cadenceWeeks > 1 with an anchor → valid.
+    expect(
+      CreateAssignmentRuleInput.safeParse({
+        ownerMemberId: 'm1',
+        cadenceWeeks: 2,
+        anchorDate: Date.UTC(2026, 6, 6),
+        weekdayMask: 5,
+      }).success,
+    ).toBe(true);
+    // Out-of-range weekday mask is rejected.
+    expect(
+      CreateAssignmentRuleInput.safeParse({ ownerMemberId: 'm1', weekdayMask: 255 }).success,
     ).toBe(false);
   });
 });

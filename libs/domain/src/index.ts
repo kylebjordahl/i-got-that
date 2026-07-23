@@ -628,6 +628,73 @@ export const SetTaskDefaultInput = z.object({
 });
 export type SetTaskDefaultInput = z.infer<typeof SetTaskDefaultInput>;
 
+// --- Assignment rules (per family: auto-assign an owner to matching tasks) --
+
+/**
+ * How often a rule's weekdays recur: 1 = every week, 2 = every other week, etc.
+ * Anchored to `anchorDate`'s week (see CreateAssignmentRuleInput).
+ */
+const CadenceWeeks = z.number().int().min(1).max(4);
+
+/**
+ * Create an assignment rule for a family. When a generated task matches, the
+ * task is auto-claimed for `ownerMemberId` (a caretaker). First match in
+ * `position` order wins; a human touching a task's ownership afterwards opts it
+ * out of the rules for good (`manualOwnerOverride`).
+ *
+ * The targeting filters are ANDed and each is optional (null = "any"):
+ *  - `aboutMemberId` — only tasks about this dependent ("all Child B events").
+ *  - `linkId`        — only tasks from this source calendar/feed (the per-feed layer).
+ *  - `taskType`      — only pickup / dropoff / attendance ("I do pickup").
+ *
+ * The recurrence pattern is inline (never a separately-managed resource):
+ *  - `weekdayMask` — which days-of-week fire (0 = any day).
+ *  - `cadenceWeeks` + `anchorDate` — "every other week" and friends; `anchorDate`
+ *    is required whenever `cadenceWeeks > 1` (it fixes which week the cycle starts).
+ */
+export const CreateAssignmentRuleInput = z
+  .object({
+    ownerMemberId: Id,
+    aboutMemberId: Id.nullable().optional(),
+    linkId: Id.nullable().optional(),
+    taskType: TaskType.nullable().optional(),
+    weekdayMask: WeekdayMask.default(0),
+    cadenceWeeks: CadenceWeeks.default(1),
+    /** Epoch ms of any date in the week the cycle starts. Required if cadenceWeeks > 1. */
+    anchorDate: z.number().int().nonnegative().nullable().optional(),
+    position: z.number().int().min(0).optional(),
+  })
+  .superRefine((v, ctx) => {
+    if (v.cadenceWeeks > 1 && (v.anchorDate === undefined || v.anchorDate === null)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['anchorDate'],
+        message: 'anchorDate is required when cadenceWeeks > 1',
+      });
+    }
+  });
+export type CreateAssignmentRuleInput = z.infer<typeof CreateAssignmentRuleInput>;
+
+/** Partial update for an assignment rule; nullable fields clear with `null`. */
+export const UpdateAssignmentRuleInput = z
+  .object({
+    ownerMemberId: Id.optional(),
+    aboutMemberId: Id.nullable().optional(),
+    linkId: Id.nullable().optional(),
+    taskType: TaskType.nullable().optional(),
+    weekdayMask: WeekdayMask.optional(),
+    cadenceWeeks: CadenceWeeks.optional(),
+    anchorDate: z.number().int().nonnegative().nullable().optional(),
+  })
+  .refine((v) => Object.keys(v).length > 0, { message: 'no fields to update' });
+export type UpdateAssignmentRuleInput = z.infer<typeof UpdateAssignmentRuleInput>;
+
+/** Full ordering of a family's assignment rules — every rule id once, new order. */
+export const ReorderAssignmentRulesInput = z.object({
+  ruleIds: z.array(Id).min(1),
+});
+export type ReorderAssignmentRulesInput = z.infer<typeof ReorderAssignmentRulesInput>;
+
 // --- Pending decisions -----------------------------------------------------
 
 /**

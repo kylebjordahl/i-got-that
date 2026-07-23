@@ -124,4 +124,52 @@ void main() {
       expect(geo.toJson(), {'lat': 40.7128, 'lon': -74.006});
     });
   });
+
+  group('AssignmentRule.fromJson', () {
+    test('parses filters, weekday mask and biweekly anchor', () {
+      final r = AssignmentRule.fromJson({
+        'id': 'ar1',
+        'position': 0,
+        'ownerMemberId': 'parentA',
+        'aboutMemberId': 'childB',
+        'linkId': null,
+        'taskType': 'pickup',
+        'weekdayMask': 5, // Mon (bit0) + Wed (bit2)
+        'cadenceWeeks': 2,
+        'anchorDate': 1783036800000, // 2026-07-03T00:00Z
+      });
+      expect(r.ownerMemberId, 'parentA');
+      expect(r.aboutMemberId, 'childB');
+      expect(r.taskType, 'pickup');
+      expect(r.weekdays, {0, 2});
+      expect(r.isBiweekly, isTrue);
+      expect(r.anchorDate, isNotNull);
+    });
+
+    test('defaults an unfiltered weekly rule (any day)', () {
+      final r = AssignmentRule.fromJson({
+        'id': 'ar2',
+        'position': 1,
+        'ownerMemberId': 'parentA',
+      });
+      expect(r.weekdayMask, 0);
+      expect(r.weekdays, isEmpty);
+      expect(r.cadenceWeeks, 1);
+      expect(r.isBiweekly, isFalse);
+      expect(r.anchorDate, isNull);
+    });
+
+    test('AssignmentRuleSet parses rules and links', () {
+      final set = AssignmentRuleSet.fromJson({
+        'rules': [
+          {'id': 'ar1', 'position': 0, 'ownerMemberId': 'p1'},
+        ],
+        'links': [
+          {'id': 'l1', 'feedId': 'f1', 'familyMemberId': 'c1'},
+        ],
+      });
+      expect(set.rules, hasLength(1));
+      expect(set.links.single.feedId, 'f1');
+    });
+  });
 }
