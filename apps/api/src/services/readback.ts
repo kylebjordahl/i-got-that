@@ -3,9 +3,12 @@ import {
   calendarEvents,
   type Db,
   eq,
+  familyMemberFeeds,
   gte,
+  inArray,
   lt,
   memberCalendars,
+  sourceEvents,
 } from '@igt/db';
 import {
   fetchCalDavOccurrences,
@@ -106,7 +109,33 @@ export async function readBackMember(
   }
   result.fetched = true;
 
-  const human = occurrences.filter((o) => !o.uid.startsWith(MIRROR_UID_PREFIX));
+  // A second recursion guard, alongside the `igt-` UID check: if this target
+  // calendar is *also* the source of one of this member's own input feeds
+  // (the same external calendar plumbed in twice — once as a feed, once as
+  // the read-back target), an event on it already arrives via synthesis. Skip
+  // it here too, identified the same way synthesis dedupes within a feed:
+  // (icalUid, recurrenceId). Without this, that one real-world event spawns
+  // two calendar_events rows (`synthesized` + `human`) and two task sets.
+  const linkedFeedIds = (
+    await db
+      .select({ feedId: familyMemberFeeds.feedId })
+      .from(familyMemberFeeds)
+      .where(eq(familyMemberFeeds.familyMemberId, cal.familyMemberId))
+  ).map((r) => r.feedId);
+  const feedSourceKeys = new Set<string>();
+  if (linkedFeedIds.length > 0) {
+    const rows = await db
+      .select({ icalUid: sourceEvents.icalUid, recurrenceId: sourceEvents.recurrenceId })
+      .from(sourceEvents)
+      .where(inArray(sourceEvents.feedId, linkedFeedIds));
+    for (const r of rows) feedSourceKeys.add(`${r.icalUid}:${r.recurrenceId ?? ''}`);
+  }
+
+  const human = occurrences.filter(
+    (o) =>
+      !o.uid.startsWith(MIRROR_UID_PREFIX) &&
+      !feedSourceKeys.has(`${o.uid}:${o.recurrenceId ?? ''}`),
+  );
 
   const existing = await db
     .select()
