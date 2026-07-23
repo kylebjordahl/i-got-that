@@ -9,6 +9,7 @@ import '../state/nav.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_text.dart';
 import '../theme/person_colors.dart';
+import '../util/format.dart';
 import '../widgets/app_bottom_nav.dart';
 import '../widgets/primitives.dart';
 import '../widgets/settings.dart';
@@ -641,6 +642,17 @@ class _UnifiedCalendarSection extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final target = ref.watch(memberCalendarProvider(member.id)).valueOrNull;
     final accounts = ref.watch(accountsProvider).valueOrNull ?? const <ExternalAccount>[];
+    final overrides = ref.watch(memberOverridesProvider(member.id)).valueOrNull ?? const <Conflict>[];
+    final now = DateTime.now();
+    // In-progress or upcoming: the loser's original span hasn't ended yet.
+    // All-day events compare by day (a bare timestamp reads as "already past"
+    // for anything but the first instant of today).
+    final activeOverrides = overrides.where((o) {
+      final loser = o.loser;
+      final end = loser.end ?? loser.start;
+      if (loser.allDay) return !dayKey(end).isBefore(dayKey(now));
+      return end.isAfter(now);
+    }).toList();
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -706,6 +718,10 @@ class _UnifiedCalendarSection extends ConsumerWidget {
             enabled: canEdit,
             onTap: () => _pickTarget(context, ref, null),
           ),
+        if (activeOverrides.isNotEmpty) ...[
+          const SizedBox(height: 20),
+          _OverridesList(member: member, overrides: activeOverrides, canEdit: canEdit),
+        ],
       ],
     );
   }
@@ -721,6 +737,109 @@ class _UnifiedCalendarSection extends ConsumerWidget {
       isScrollControlled: true,
       builder: (sheetCtx) =>
           _TargetPickerSheet(member: member, accounts: accounts, current: current),
+    );
+  }
+}
+
+/// "Overrides in effect" — resolved conflicts (split/masked events) for this
+/// member's in-progress or upcoming events. Lets an admin review and undo a
+/// bad "split around it" call from Home: reverting unmasks the event and puts
+/// the overlap back up for a fresh decision.
+class _OverridesList extends ConsumerWidget {
+  const _OverridesList({required this.member, required this.overrides, required this.canEdit});
+  final Member member;
+  final List<Conflict> overrides;
+  final bool canEdit;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SectionEyebrow(
+          'Overrides in effect',
+          color: AppColors.green,
+          trailing: TintBadge('${overrides.length}', color: AppColors.green),
+        ),
+        const SizedBox(height: 8),
+        Text(
+          'Events split or trimmed by a conflict decision. Revert to undo the '
+          'split and put the overlap back up for a decision.',
+          style: AppText.subtitle,
+        ),
+        const SizedBox(height: 12),
+        for (final o in overrides) ...[
+          _OverrideCard(
+            conflict: o,
+            onRevert: canEdit ? () => _revert(context, ref, o) : null,
+          ),
+          const SizedBox(height: 10),
+        ],
+      ],
+    );
+  }
+
+  Future<void> _revert(BuildContext context, WidgetRef ref, Conflict o) async {
+    try {
+      final familyId = await ref.read(familyProvider.future);
+      await ref.read(apiClientProvider).revertConflict(familyId, o.id);
+      ref.invalidate(memberOverridesProvider(member.id));
+      ref.invalidate(conflictsProvider);
+      ref.invalidate(calendarEventsProvider);
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text("Couldn't revert: $e"),
+          margin: snackBarMarginAboveNav(context),
+        ));
+      }
+    }
+  }
+}
+
+/// One overridden event: what it was split around, and when — with an inline
+/// revert control.
+class _OverrideCard extends StatelessWidget {
+  const _OverrideCard({required this.conflict, required this.onRevert});
+  final Conflict conflict;
+  final VoidCallback? onRevert;
+
+  @override
+  Widget build(BuildContext context) {
+    final winner = conflict.winner;
+    final loser = conflict.loser;
+    final when = winner.allDay
+        ? homeDayHeader(dayKey(winner.start), DateTime.now())
+        : friendlyTime(winner.start);
+    return AppCard(
+      child: Row(
+        children: [
+          const IconTile(icon: Icons.content_cut_rounded, color: AppColors.green, size: 38),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  loser.summary ?? 'An event',
+                  style: AppText.sectionItemTitle,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  'Split around ${winner.summary ?? 'another event'} · $when',
+                  style: AppText.subtitle,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 10),
+          PillButton(label: 'Revert', dense: true, onPressed: onRevert),
+        ],
+      ),
     );
   }
 }
