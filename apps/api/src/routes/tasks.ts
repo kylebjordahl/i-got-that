@@ -17,6 +17,7 @@ import {
 } from '@igt/db';
 import {
   AssignTaskInput,
+  ConflictStatus,
   ConvertTaskInput,
   ResolvePendingDecisionInput,
   SetTaskDurationInput,
@@ -528,18 +529,29 @@ taskRoutes.post('/pending-decisions/:decisionId/dismiss', async (c) => {
 // --- Conflicts (agenda overlaps) -------------------------------------------
 
 /**
- * Open agenda conflicts, each with its two overlapping events' details for the
- * card copy. A conflict is a maskable event (the `loser`) overlapped by a
+ * Agenda conflicts, each with its two overlapping events' details for the card
+ * copy. A conflict is a maskable event (the `loser`) overlapped by a
  * higher-priority one (the `winner`) on a member's unified calendar. Rows whose
  * events have vanished are skipped (they clear on the next reconcile).
+ *
+ * Defaults to `status=pending` (Home's decision queue). Pass `status=resolved`
+ * to list overrides currently in effect (e.g. a member's masked/split events),
+ * and `memberId` to scope to one member.
  */
 taskRoutes.get('/conflicts', async (c) => {
   const db = getDb(c.env.DB);
   const familyId = c.get('member').familyId;
+  const statusParam = c.req.query('status') ?? 'pending';
+  const status = ConflictStatus.options.includes(statusParam as ConflictStatus)
+    ? (statusParam as ConflictStatus)
+    : 'pending';
+  const memberId = c.req.query('memberId');
+  const conditions = [eq(conflicts.familyId, familyId), eq(conflicts.status, status)];
+  if (memberId) conditions.push(eq(conflicts.familyMemberId, memberId));
   const rows = await db
     .select()
     .from(conflicts)
-    .where(and(eq(conflicts.familyId, familyId), eq(conflicts.status, 'pending')))
+    .where(and(...conditions))
     .orderBy(asc(conflicts.createdAt));
   if (rows.length === 0) return c.json({ conflicts: [] });
 
@@ -673,6 +685,34 @@ taskRoutes.post('/conflicts/:conflictId/dismiss', async (c) => {
       resolvedByMemberId: null,
       resolvedAt: null,
       ...hashes,
+    })
+    .where(eq(conflicts.id, conflict.id));
+  await reconcileMemberConflicts(db, conflict.familyMemberId);
+  await buildMemberTasks(db, conflict.familyMemberId);
+  enqueueReconcile(c, { kind: 'member', memberId: conflict.familyMemberId });
+  return c.json({ ok: true });
+});
+
+/**
+ * Revert a resolved conflict — undo a prior "split around it" decision. The
+ * loser is unmasked and its `cf:` split segments removed, and the conflict
+ * goes back to pending so it re-enters the decision queue (it re-resolves or
+ * clears on the next reconcile if the overlap itself is gone).
+ */
+taskRoutes.post('/conflicts/:conflictId/revert', async (c) => {
+  const db = getDb(c.env.DB);
+  const me = c.get('member');
+  const conflict = await loadConflict(db, me.familyId, c.req.param('conflictId'));
+  if (!conflict) return c.json({ error: 'not_found' }, 404);
+  await db
+    .update(conflicts)
+    .set({
+      status: 'pending',
+      resolvedByMemberId: null,
+      resolvedAt: null,
+      dismissedAt: null,
+      loserContentHash: null,
+      winnerContentHash: null,
     })
     .where(eq(conflicts.id, conflict.id));
   await reconcileMemberConflicts(db, conflict.familyMemberId);

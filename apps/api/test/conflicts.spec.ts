@@ -190,6 +190,61 @@ describe('conflict detection & masking', () => {
     expect(events.map((e) => e.id)).toContain(seg0.id);
   });
 
+  it('reverting undoes the split and re-surfaces the conflict as pending', async () => {
+    const f = await fixture('conflict-revert@example.com');
+    const { blKey, docKey } = await schoolAndDoctor(f.db, f);
+    await reconcileMemberConflicts(f.db, f.childId);
+    const conflict = (
+      await f.db.select().from(conflicts).where(eq(conflicts.familyMemberId, f.childId))
+    )[0]!;
+
+    const resolveRes = await call(
+      `/families/${f.familyId}/conflicts/${conflict.id}/resolve`,
+      authed(f.admin.token),
+    );
+    expect(resolveRes.status).toBe(200);
+    // A resolved conflict shows up as an override in effect for the member.
+    const overridesRes = await call(
+      `/families/${f.familyId}/conflicts?status=resolved&memberId=${f.childId}`,
+      bearer(f.admin.token),
+    );
+    const { conflicts: overrides } = (await overridesRes.json()) as {
+      conflicts: { id: string }[];
+    };
+    expect(overrides.map((o) => o.id)).toEqual([conflict.id]);
+
+    const revertRes = await call(
+      `/families/${f.familyId}/conflicts/${conflict.id}/revert`,
+      authed(f.admin.token),
+    );
+    expect(revertRes.status).toBe(200);
+
+    // The baseline is unmasked and the split segments are gone.
+    const bl = (
+      await f.db.select().from(calendarEvents).where(eq(calendarEvents.synthKey, blKey))
+    )[0]!;
+    expect(bl.maskedAt).toBeNull();
+    const keys = await eventKeys(f.db, f.childId);
+    expect(keys).toEqual([blKey, docKey]);
+
+    // Back in the pending decision queue, and no longer listed as an override.
+    const row = (
+      await f.db.select().from(conflicts).where(eq(conflicts.id, conflict.id))
+    )[0]!;
+    expect(row.status).toBe('pending');
+    expect(row.resolvedAt).toBeNull();
+    const api = await call(`/families/${f.familyId}/conflicts`, bearer(f.admin.token));
+    const { conflicts: pending } = (await api.json()) as { conflicts: { id: string }[] };
+    expect(pending.map((c) => c.id)).toEqual([conflict.id]);
+    const overridesAfter = await call(
+      `/families/${f.familyId}/conflicts?status=resolved&memberId=${f.childId}`,
+      bearer(f.admin.token),
+    );
+    expect(
+      ((await overridesAfter.json()) as { conflicts: unknown[] }).conflicts,
+    ).toHaveLength(0);
+  });
+
   it('reopens a resolved conflict when the winner event is later edited, even though the overlap persists', async () => {
     const f = await fixture('conflict-reopen@example.com');
     const { blKey, docKey } = await schoolAndDoctor(f.db, f);

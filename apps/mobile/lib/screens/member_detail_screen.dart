@@ -9,6 +9,7 @@ import '../state/nav.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_text.dart';
 import '../theme/person_colors.dart';
+import '../util/format.dart';
 import '../widgets/app_bottom_nav.dart';
 import '../widgets/primitives.dart';
 import '../widgets/settings.dart';
@@ -156,6 +157,17 @@ class _SourceCalendarsSection extends ConsumerWidget {
   final Member member;
   final bool canEdit;
 
+  // The reorderable list below is given an explicit (non-intrinsic) height —
+  // see the comment at its Overlay.wrap call site for why. These add up the
+  // fixed pieces of one row so that height stays in sync with the layout:
+  // SettingRow forced to one line (IconTile 44 + its own 6+6 padding), plus
+  // the AppCard's 4+4 vertical padding, plus the 10 bottom margin between
+  // cards.
+  static const double _kFeedRowHeight = 44 + 6 + 6;
+  static const double _kFeedCardPadding = 4 + 4;
+  static const double _kFeedCardSpacing = 10;
+  static const double _kFeedSlotHeight = _kFeedRowHeight + _kFeedCardPadding + _kFeedCardSpacing;
+
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final feeds = ref.watch(feedsProvider).valueOrNull ?? const <FeedItem>[];
@@ -195,23 +207,44 @@ class _SourceCalendarsSection extends ConsumerWidget {
             ),
           )
         else if (canReorder)
-          ReorderableListView(
-            shrinkWrap: true,
-            physics: const NeverScrollableScrollPhysics(),
-            // onReorderItem (not the deprecated onReorder) already adjusts
-            // newIndex for the item removed at oldIndex — see _reorder.
-            onReorderItem: (o, n) => _reorder(ref, linked, o, n),
-            children: [
-              for (final (feed, link) in linked)
-                Padding(
-                  key: ValueKey(link.id),
-                  padding: const EdgeInsets.only(bottom: 10),
-                  child: AppCard(
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-                    child: _feedRow(context, feed, link, draggable: true),
-                  ),
-                ),
-            ],
+          // ReorderableListView drops its dragged item into the nearest
+          // ancestor Overlay (Flutter looks it up via Overlay.of), which by
+          // default is the app-level one from MaterialApp/Navigator — so the
+          // floating card would paint above the whole screen, including the
+          // Unified calendar section below, instead of staying within this
+          // list. Overlay.wrap gives it a local Overlay to float in instead,
+          // clipped to (and sized to) just this list.
+          //
+          // That local Overlay can't be intrinsically sized (the parent
+          // _AccentSection stretches its accent bar via IntrinsicHeight, and
+          // ReorderableListView's shrink-wrapping viewport refuses to report
+          // an intrinsic height), so it's given an explicit height computed
+          // from the fixed per-row height above instead.
+          SizedBox(
+            height: linked.length * _kFeedSlotHeight,
+            child: Overlay.wrap(
+              child: ReorderableListView(
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                // onReorderItem (not the deprecated onReorder) already adjusts
+                // newIndex for the item removed at oldIndex — see _reorder.
+                onReorderItem: (o, n) => _reorder(ref, linked, o, n),
+                children: [
+                  for (final (feed, link) in linked)
+                    Padding(
+                      key: ValueKey(link.id),
+                      padding: const EdgeInsets.only(bottom: _kFeedCardSpacing),
+                      child: AppCard(
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                        child: SizedBox(
+                          height: _kFeedRowHeight,
+                          child: _feedRow(context, feed, link, draggable: true),
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            ),
           )
         else
           AppCard(
@@ -267,6 +300,9 @@ class _SourceCalendarsSection extends ConsumerWidget {
           : feed.isBusy
               ? 'Busy-only · free/busy'
               : 'Standard · ${feed.sourceLabel}',
+      // The draggable list gives each row a fixed height (see _kFeedRowHeight)
+      // instead of measuring it via intrinsics, so content must not wrap.
+      singleLine: draggable,
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -606,6 +642,17 @@ class _UnifiedCalendarSection extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final target = ref.watch(memberCalendarProvider(member.id)).valueOrNull;
     final accounts = ref.watch(accountsProvider).valueOrNull ?? const <ExternalAccount>[];
+    final overrides = ref.watch(memberOverridesProvider(member.id)).valueOrNull ?? const <Conflict>[];
+    final now = DateTime.now();
+    // In-progress or upcoming: the loser's original span hasn't ended yet.
+    // All-day events compare by day (a bare timestamp reads as "already past"
+    // for anything but the first instant of today).
+    final activeOverrides = overrides.where((o) {
+      final loser = o.loser;
+      final end = loser.end ?? loser.start;
+      if (loser.allDay) return !dayKey(end).isBefore(dayKey(now));
+      return end.isAfter(now);
+    }).toList();
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -671,6 +718,10 @@ class _UnifiedCalendarSection extends ConsumerWidget {
             enabled: canEdit,
             onTap: () => _pickTarget(context, ref, null),
           ),
+        if (activeOverrides.isNotEmpty) ...[
+          const SizedBox(height: 20),
+          _OverridesList(member: member, overrides: activeOverrides, canEdit: canEdit),
+        ],
       ],
     );
   }
@@ -686,6 +737,109 @@ class _UnifiedCalendarSection extends ConsumerWidget {
       isScrollControlled: true,
       builder: (sheetCtx) =>
           _TargetPickerSheet(member: member, accounts: accounts, current: current),
+    );
+  }
+}
+
+/// "Overrides in effect" — resolved conflicts (split/masked events) for this
+/// member's in-progress or upcoming events. Lets an admin review and undo a
+/// bad "split around it" call from Home: reverting unmasks the event and puts
+/// the overlap back up for a fresh decision.
+class _OverridesList extends ConsumerWidget {
+  const _OverridesList({required this.member, required this.overrides, required this.canEdit});
+  final Member member;
+  final List<Conflict> overrides;
+  final bool canEdit;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SectionEyebrow(
+          'Overrides in effect',
+          color: AppColors.green,
+          trailing: TintBadge('${overrides.length}', color: AppColors.green),
+        ),
+        const SizedBox(height: 8),
+        Text(
+          'Events split or trimmed by a conflict decision. Revert to undo the '
+          'split and put the overlap back up for a decision.',
+          style: AppText.subtitle,
+        ),
+        const SizedBox(height: 12),
+        for (final o in overrides) ...[
+          _OverrideCard(
+            conflict: o,
+            onRevert: canEdit ? () => _revert(context, ref, o) : null,
+          ),
+          const SizedBox(height: 10),
+        ],
+      ],
+    );
+  }
+
+  Future<void> _revert(BuildContext context, WidgetRef ref, Conflict o) async {
+    try {
+      final familyId = await ref.read(familyProvider.future);
+      await ref.read(apiClientProvider).revertConflict(familyId, o.id);
+      ref.invalidate(memberOverridesProvider(member.id));
+      ref.invalidate(conflictsProvider);
+      ref.invalidate(calendarEventsProvider);
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text("Couldn't revert: $e"),
+          margin: snackBarMarginAboveNav(context),
+        ));
+      }
+    }
+  }
+}
+
+/// One overridden event: what it was split around, and when — with an inline
+/// revert control.
+class _OverrideCard extends StatelessWidget {
+  const _OverrideCard({required this.conflict, required this.onRevert});
+  final Conflict conflict;
+  final VoidCallback? onRevert;
+
+  @override
+  Widget build(BuildContext context) {
+    final winner = conflict.winner;
+    final loser = conflict.loser;
+    final when = winner.allDay
+        ? homeDayHeader(dayKey(winner.start), DateTime.now())
+        : friendlyTime(winner.start);
+    return AppCard(
+      child: Row(
+        children: [
+          const IconTile(icon: Icons.content_cut_rounded, color: AppColors.green, size: 38),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  loser.summary ?? 'An event',
+                  style: AppText.sectionItemTitle,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  'Split around ${winner.summary ?? 'another event'} · $when',
+                  style: AppText.subtitle,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 10),
+          PillButton(label: 'Revert', dense: true, onPressed: onRevert),
+        ],
+      ),
     );
   }
 }

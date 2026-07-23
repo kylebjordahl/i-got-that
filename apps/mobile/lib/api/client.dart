@@ -595,9 +595,25 @@ class ApiClient {
 
   // --- Conflicts (agenda overlaps) ------------------------------------------
 
-  Future<List<dynamic>> listConflicts(String familyId) async => _list(
-      await _dio.get('/families/$familyId/conflicts', options: _auth),
-      'conflicts');
+  /// Agenda conflicts. Defaults to the open ('pending') decision queue; pass
+  /// `status: 'resolved'` to list overrides currently in effect, optionally
+  /// scoped to one member.
+  Future<List<dynamic>> listConflicts(
+    String familyId, {
+    String? status,
+    String? memberId,
+  }) async =>
+      _list(
+        await _dio.get(
+          '/families/$familyId/conflicts',
+          queryParameters: {
+            if (status != null) 'status': status,
+            if (memberId != null) 'memberId': memberId,
+          },
+          options: _auth,
+        ),
+        'conflicts',
+      );
 
   /// Resolve a conflict: split/trim the lower-priority event around the
   /// higher-priority one (task-gen then spawns the drop-off/pickup at the split).
@@ -609,6 +625,13 @@ class ApiClient {
   /// Dismiss a conflict: acknowledge the double-book and leave both events as-is.
   Future<void> dismissConflict(String familyId, String conflictId) async {
     await _dio.post('/families/$familyId/conflicts/$conflictId/dismiss',
+        data: <String, dynamic>{}, options: _auth);
+  }
+
+  /// Revert a resolved conflict: undo a prior "split around it" decision,
+  /// unmasking the event and putting the overlap back up for a fresh decision.
+  Future<void> revertConflict(String familyId, String conflictId) async {
+    await _dio.post('/families/$familyId/conflicts/$conflictId/revert',
         data: <String, dynamic>{}, options: _auth);
   }
 
