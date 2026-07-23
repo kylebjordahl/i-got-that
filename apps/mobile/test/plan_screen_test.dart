@@ -572,6 +572,69 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('"Only my kids" hides a plain calendar event for a child I don\'t cover',
+      (tester) async {
+    // Tall enough that the filter sheet's "Only my kids" switch and Apply
+    // button are on-screen without needing to scroll the sheet first.
+    tester.view.physicalSize = const Size(800, 1400);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+
+    final now = DateTime.now();
+    DateTime at(int h, int m) => DateTime(now.year, now.month, now.day, h, m);
+    final me = _m('dad', 'Dad', caretaker: true);
+    // Two plain (non-task) calendar-event blocks: one for a kid Dad covers
+    // (owns a task for), one for a kid he doesn't.
+    final events = [
+      CalendarEventItem(id: 'school', familyMemberId: 'theo', provenance: 'synthesized', start: at(8, 30), end: at(15, 0), allDay: false, summary: 'School day'),
+      CalendarEventItem(id: 'practice', familyMemberId: 'mia', provenance: 'synthesized', start: at(16, 0), end: at(18, 0), allDay: false, summary: 'Practice'),
+    ];
+    // Dad owns a task for Mia only, so she's the only kid he "covers".
+    final tasks = [
+      TaskItem(id: 'mia-att', familyMemberId: 'mia', type: 'attendance', start: at(16, 0), end: at(18, 0), status: 'owned', ownerMemberId: 'dad', createdVia: 'generated', calendarEventId: 'practice'),
+    ];
+    await tester.pumpWidget(ProviderScope(
+      overrides: [
+        membersProvider.overrideWith((ref) async => [
+              me,
+              _m('theo', 'Theo', child: true),
+              _m('mia', 'Mia', child: true),
+            ]),
+        currentMemberProvider.overrideWith((ref) async => me),
+        allTasksProvider.overrideWith((ref) async => tasks),
+        calendarEventsProvider.overrideWith((ref) async => events),
+        pendingDecisionsProvider.overrideWith((ref) async => const []),
+        threadingThresholdProvider.overrideWith((ref) async => 30),
+      ],
+      child: MaterialApp(
+        theme: buildAppTheme(),
+        themeMode: ThemeMode.dark,
+        home: const Scaffold(body: SafeArea(child: PlanScreen())),
+      ),
+    ));
+    await tester.pumpAndSettle();
+
+    // Both blocks show before filtering.
+    expect(find.textContaining('School day'), findsOneWidget);
+    expect(find.textContaining('Practice'), findsOneWidget);
+
+    await tester.tap(find.text('Filters'));
+    await tester.pumpAndSettle();
+    // Two SwitchRows in the sheet: "Show completed" then "Only my kids".
+    await tester.tap(find.byType(Switch).at(1));
+    await tester.pump();
+    await tester.tap(find.text('Apply · 1 filter'));
+    await tester.pumpAndSettle();
+
+    // Theo's event (a kid Dad doesn't cover) is hidden; Mia's remains.
+    expect(find.textContaining('School day'), findsNothing);
+    expect(find.textContaining('Practice'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('swiping the grid left/right steps the selected day', (tester) async {
     final today = DateTime.now();
     await tester.pumpWidget(ProviderScope(
