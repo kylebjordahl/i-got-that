@@ -504,6 +504,12 @@ export const conflicts = sqliteTable(
     ),
     resolvedAt: integer('resolved_at', { mode: 'timestamp_ms' }),
     dismissedAt: integer('dismissed_at', { mode: 'timestamp_ms' }),
+    // Snapshot of the loser/winner events' content_hash at the moment a decision
+    // (resolve or dismiss) was made. A later change to either event's content
+    // (time, summary, location, ...) invalidates the decision — the reconciler
+    // reopens the conflict back to 'pending' and clears these.
+    loserContentHash: text('loser_content_hash'),
+    winnerContentHash: text('winner_content_hash'),
     createdAt: createdAt(),
   },
   (t) => ({

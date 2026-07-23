@@ -154,6 +154,46 @@ export async function reconcileMemberConflicts(
     }
   }
 
+  // Reopen decided (resolved/dismissed) conflicts whose loser or winner event
+  // changed since the decision was made — a stale decision (e.g. made against
+  // a since-moved event) must be re-reviewed, not silently kept in force.
+  for (const c of existing) {
+    if (c.status === 'pending') continue;
+    if (!detectedSet.has(pairId(c.loserKey, c.winnerKey))) continue; // deleted above
+    const loser = byKey.get(c.loserKey);
+    const winner = byKey.get(c.winnerKey);
+    if (!loser || !winner) continue; // can't compare without both current rows
+    if (c.loserContentHash == null && c.winnerContentHash == null) {
+      // Decided before this snapshot existed (or resolver didn't capture one) —
+      // establish a baseline now rather than reopening on a hash that was
+      // simply never recorded.
+      await db
+        .update(conflicts)
+        .set({
+          loserContentHash: loser.contentHash,
+          winnerContentHash: winner.contentHash,
+        })
+        .where(eq(conflicts.id, c.id));
+      continue;
+    }
+    if (
+      loser.contentHash !== c.loserContentHash ||
+      winner.contentHash !== c.winnerContentHash
+    ) {
+      await db
+        .update(conflicts)
+        .set({
+          status: 'pending',
+          resolvedByMemberId: null,
+          resolvedAt: null,
+          dismissedAt: null,
+          loserContentHash: null,
+          winnerContentHash: null,
+        })
+        .where(eq(conflicts.id, c.id));
+    }
+  }
+
   // --- Materialise the splits for resolved conflicts. ------------------------
   const surviving = await db
     .select()

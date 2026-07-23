@@ -50,6 +50,13 @@
       "when": 1784687732722,
       "tag": "0006_lucky_riptide",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1784782796522,
+      "tag": "0007_stiff_speed",
+      "breakpoints": true
     }
   ]
 }
