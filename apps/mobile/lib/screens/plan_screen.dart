@@ -70,6 +70,14 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
   DateTime get _today => _dateOnly(DateTime.now());
   late DateTime _selected = _today;
 
+  // Which way the grid should slide on the next day change: +1 (new day
+  // enters from the right, as on a forward swipe) or -1 (enters from the
+  // left). Set right before `_selected` changes so the transition matches
+  // the swipe/tap direction that caused it.
+  int _slideDirection = 1;
+  int _dirTo(DateTime d) =>
+      d.isAfter(_selected) ? 1 : (d.isBefore(_selected) ? -1 : _slideDirection);
+
   // Filters are stored as *exclusions* (empty ⇒ show all): a chip is selected
   // when it's NOT in the set, so a category only constrains once you deselect
   // something. `_exOwners` uses caretaker ids + the sentinel `__unowned__`;
@@ -319,7 +327,31 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
                 SingleChildScrollView(
                   controller: _gridScroll,
                   padding: const EdgeInsets.fromLTRB(22, 0, 22, 130),
-                  child: _grid(placed, byId, tabsByEvent, ownersByEvent, orphanTabs, eventsById),
+                  child: AnimatedSwitcher(
+                    duration: const Duration(milliseconds: 260),
+                    switchInCurve: Curves.easeOutCubic,
+                    switchOutCurve: Curves.easeOutCubic,
+                    transitionBuilder: (child, animation) {
+                      final incoming = child.key == ValueKey(_selected);
+                      final dx = (incoming ? _slideDirection : -_slideDirection).toDouble();
+                      return SlideTransition(
+                        position: Tween<Offset>(begin: Offset(dx, 0), end: Offset.zero)
+                            .animate(animation),
+                        child: child,
+                      );
+                    },
+                    layoutBuilder: (currentChild, previousChildren) => Stack(
+                      alignment: Alignment.topCenter,
+                      children: [
+                        ...previousChildren,
+                        if (currentChild != null) currentChild,
+                      ],
+                    ),
+                    child: KeyedSubtree(
+                      key: ValueKey(_selected),
+                      child: _grid(placed, byId, tabsByEvent, ownersByEvent, orphanTabs, eventsById),
+                    ),
+                  ),
                 ),
                 _EdgeGlow(controller: _gridScroll, placed: placed, top: true),
                 _EdgeGlow(controller: _gridScroll, placed: placed, top: false),
@@ -333,6 +365,7 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
 
   void _goToToday() {
     setState(() {
+      _slideDirection = _dirTo(_today);
       _selected = _today;
       _scrolledKey = null; // re-default the grid scroll to 7 AM
     });
@@ -349,7 +382,10 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
   /// gesture. Mirrors tapping a day chip, then nudges the day strip into view
   /// if the swipe walked the selection off its visible range.
   void _shiftDay(int delta) {
-    setState(() => _selected = _selected.add(Duration(days: delta)));
+    setState(() {
+      _slideDirection = delta;
+      _selected = _selected.add(Duration(days: delta));
+    });
     _keepSelectedDayChipVisible();
   }
 
@@ -430,7 +466,10 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
               active: d == _selected,
               isToday: d == _today,
               dots: dots,
-              onTap: () => setState(() => _selected = d),
+              onTap: () => setState(() {
+                _slideDirection = _dirTo(d);
+                _selected = d;
+              }),
             ),
           );
         },
