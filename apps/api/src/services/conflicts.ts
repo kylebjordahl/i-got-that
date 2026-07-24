@@ -201,29 +201,79 @@ export async function reconcileMemberConflicts(
     .where(eq(conflicts.familyMemberId, familyMemberId));
   result.conflictsOpen = surviving.filter((c) => c.status === 'pending').length;
 
-  // Resolved winners grouped by the loser they displace.
-  const resolvedWinners = new Map<string, string[]>();
+  // Resolved winners grouped by the loser they displace, each carrying its own
+  // resolution parameters (travel buffers + per-side "not needed").
+  interface ResolvedCut {
+    winnerKey: string;
+    travelBeforeMin: number;
+    travelAfterMin: number;
+    beforeNeeded: boolean;
+    afterNeeded: boolean;
+  }
+  const resolvedByLoser = new Map<string, ResolvedCut[]>();
   for (const c of surviving) {
     if (c.status !== 'resolved') continue;
-    const list = resolvedWinners.get(c.loserKey) ?? [];
-    list.push(c.winnerKey);
-    resolvedWinners.set(c.loserKey, list);
+    const list = resolvedByLoser.get(c.loserKey) ?? [];
+    list.push({
+      winnerKey: c.winnerKey,
+      travelBeforeMin: c.travelBeforeMin,
+      travelAfterMin: c.travelAfterMin,
+      beforeNeeded: c.beforeNeeded,
+      afterNeeded: c.afterNeeded,
+    });
+    resolvedByLoser.set(c.loserKey, list);
   }
 
+  const MIN = 60_000;
   const desiredCf = new Map<string, typeof calendarEvents.$inferInsert>();
   const maskedLoserKeys = new Set<string>();
-  for (const [loserKey, winnerKeys] of resolvedWinners) {
+  for (const [loserKey, cutsMeta] of resolvedByLoser) {
     const loser = byKey.get(loserKey);
     if (!loser || loser.dtend == null) continue; // loser gone this pass, or a point
-    const cuts = winnerKeys
-      .map((wk) => byKey.get(wk))
-      .filter((w): w is CalendarEventRow => !!w && w.dtend != null)
-      .map((w) => ({ dtstart: w.dtstart, dtend: w.dtend as Date }));
-    if (cuts.length === 0) continue; // every winner vanished — leave the loser whole
-    const segments = subtractIntervals(
-      { dtstart: loser.dtstart, dtend: loser.dtend },
+    const loserEnd = loser.dtend;
+    // Pair each still-present winner with its resolution params.
+    const resolved = cutsMeta
+      .map((meta) => ({ meta, w: byKey.get(meta.winnerKey) }))
+      .filter(
+        (x): x is { meta: ResolvedCut; w: CalendarEventRow } =>
+          !!x.w && x.w.dtend != null,
+      );
+    if (resolved.length === 0) continue; // every winner vanished — leave the loser whole
+    // Widen each cut by its travel buffers so the trimmed halves pull back,
+    // leaving a gap the pick-up / drop-off task lands in.
+    const cuts = resolved.map(({ meta, w }) => ({
+      dtstart: new Date(w.dtstart.getTime() - meta.travelBeforeMin * MIN),
+      dtend: new Date((w.dtend as Date).getTime() + meta.travelAfterMin * MIN),
+    }));
+    let segments = subtractIntervals(
+      { dtstart: loser.dtstart, dtend: loserEnd },
       cuts,
     );
+    // Per-side "not needed" drops the leading / trailing half of the loser (a
+    // cancel_day for that side). With multiple winners, "before" is governed by
+    // the earliest winner and "after" by the latest.
+    const earliest = resolved.reduce((a, b) =>
+      b.w.dtstart < a.w.dtstart ? b : a,
+    );
+    const latest = resolved.reduce((a, b) =>
+      (b.w.dtend as Date) > (a.w.dtend as Date) ? b : a,
+    );
+    const first = segments[0];
+    if (
+      !earliest.meta.beforeNeeded &&
+      first &&
+      first.dtstart.getTime() === loser.dtstart.getTime()
+    ) {
+      segments = segments.slice(1);
+    }
+    const last = segments[segments.length - 1];
+    if (
+      !latest.meta.afterNeeded &&
+      last &&
+      last.dtend.getTime() === loserEnd.getTime()
+    ) {
+      segments = segments.slice(0, -1);
+    }
     maskedLoserKeys.add(loserKey);
     result.masksApplied++;
     segments.forEach((seg, i) => {

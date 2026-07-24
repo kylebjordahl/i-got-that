@@ -137,6 +137,8 @@ paths in particular).
 ## Working agreement
 
 - **Branch + PR per change** (see `CONTRIBUTING.md`). Do not push to `main`.
+- **UI changes need screenshots in the PR description** (see `CONTRIBUTING.md`)
+  — not committed to the repo, just pasted into the description.
 - Match the surrounding code's style/idioms; keep changes focused.
 - Update `docs/` when you change deploy/auth/config behaviour.
 - Outstanding work is tracked as GitHub issues — check open issues before starting.
