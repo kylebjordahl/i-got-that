@@ -617,9 +617,30 @@ class ApiClient {
 
   /// Resolve a conflict: split/trim the lower-priority event around the
   /// higher-priority one (task-gen then spawns the drop-off/pickup at the split).
-  Future<void> resolveConflict(String familyId, String conflictId) async {
-    await _dio.post('/families/$familyId/conflicts/$conflictId/resolve',
-        data: <String, dynamic>{}, options: _auth);
+  ///
+  /// The optional parameters (design §8b) shape the split: [travelBeforeMin] /
+  /// [travelAfterMin] widen the cut around the winner so the trimmed halves pull
+  /// back, leaving a gap the pick-up / drop-off sits in; [beforeNeeded] /
+  /// [afterNeeded] drop the leading / trailing half entirely. Omitting them all
+  /// is the plain split.
+  Future<void> resolveConflict(
+    String familyId,
+    String conflictId, {
+    int travelBeforeMin = 0,
+    int travelAfterMin = 0,
+    bool beforeNeeded = true,
+    bool afterNeeded = true,
+  }) async {
+    await _dio.post(
+      '/families/$familyId/conflicts/$conflictId/resolve',
+      data: <String, dynamic>{
+        'travelBeforeMin': travelBeforeMin,
+        'travelAfterMin': travelAfterMin,
+        'beforeNeeded': beforeNeeded,
+        'afterNeeded': afterNeeded,
+      },
+      options: _auth,
+    );
   }
 
   /// Dismiss a conflict: acknowledge the double-book and leave both events as-is.
