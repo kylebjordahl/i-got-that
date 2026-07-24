@@ -118,13 +118,13 @@ void main() {
     // Loser (School day) split into two segments around the kept winner.
     expect(find.text('School day'), findsNWidgets(2));
     expect(find.text('Doctor appointment'), findsOneWidget);
-    expect(find.text('Kept'), findsOneWidget);
+    expect(find.text('Fixed'), findsOneWidget);
   });
 
-  testWidgets('marking the morning "not needed" + adding travel sends those params',
+  testWidgets('marking a half "not needed" sends that in the resolution',
       (tester) async {
-    // Wide + tall enough that the whole sheet (both halves + footer) is on-screen.
-    tester.view.physicalSize = const Size(700, 1600);
+    // Tall enough that the whole sheet (both halves + footer) is on-screen.
+    tester.view.physicalSize = const Size(600, 1600);
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
@@ -154,24 +154,20 @@ void main() {
     await tester.tap(find.text('Review & resolve'));
     await tester.pumpAndSettle();
 
-    // Mark the morning half not needed (the first "Not needed" toggle).
+    // Both halves start kept; mark the morning half "not needed" (its pill
+    // flips to "Undo") and confirm.
+    expect(find.text('Not needed'), findsNWidgets(2));
     await tester.tap(find.text('Not needed').first);
     await tester.pumpAndSettle();
-    // Add 10 min of drop-off travel on the still-kept afternoon half (two taps
-    // of its "+" — the only travel stepper left once the morning is dropped).
-    final plus = find.byIcon(Icons.add_rounded);
-    expect(plus, findsOneWidget);
-    await tester.tap(plus);
-    await tester.pumpAndSettle();
-    await tester.tap(plus);
-    await tester.pumpAndSettle();
+    expect(find.text('Undo'), findsOneWidget);
 
     await tester.tap(find.text('Confirm split'));
     await tester.pumpAndSettle();
 
+    // The morning is dropped (and its travel zeroed); the afternoon is kept.
     expect(api.lastResolve, {
       'travelBeforeMin': 0,
-      'travelAfterMin': 10,
+      'travelAfterMin': 0,
       'beforeNeeded': false,
       'afterNeeded': true,
     });

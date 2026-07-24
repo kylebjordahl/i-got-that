@@ -58,14 +58,19 @@ class _ConflictResolutionSheetState
     extends ConsumerState<_ConflictResolutionSheet> {
   bool _busy = false;
 
-  // Resolution parameters (design §8b), sent with "Confirm split".
+  // Resolution parameters (design §8b), sent with "Confirm split". Travel is set
+  // by dragging the pick-up / drop-off handles, so it's held as a continuous
+  // double and rounded when displayed / sent.
   bool _beforeNeeded = true;
   bool _afterNeeded = true;
-  int _travelBeforeMin = 0;
-  int _travelAfterMin = 0;
+  double _travelBefore = 0;
+  double _travelAfter = 0;
 
-  /// Travel is stepped in 5-minute increments, up to 2 hours.
-  static const _travelStep = 5;
+  /// Vertical drag sensitivity — logical px per minute (matches the design).
+  static const _pxPerMin = 1.4;
+
+  /// Travel is capped so the child never leaves school more than 2h early / late
+  /// (and never past the half's own length).
   static const _travelMax = 120;
 
   Conflict get _conflict => widget.conflict;
@@ -115,8 +120,8 @@ class _ConflictResolutionSheetState
       (familyId) => ref.read(apiClientProvider).resolveConflict(
             familyId,
             _conflict.id,
-            travelBeforeMin: _beforeNeeded ? _travelBeforeMin : 0,
-            travelAfterMin: _afterNeeded ? _travelAfterMin : 0,
+            travelBeforeMin: _beforeNeeded ? _travelBefore.round() : 0,
+            travelAfterMin: _afterNeeded ? _travelAfter.round() : 0,
             beforeNeeded: _beforeNeeded,
             afterNeeded: _afterNeeded,
           ),
@@ -162,12 +167,12 @@ class _ConflictResolutionSheetState
     // length), and the resulting live-adjusted half boundaries.
     final beforeAvail = hasBefore ? wStart.difference(lStart).inMinutes : 0;
     final afterAvail = hasAfter ? lEnd.difference(wEnd).inMinutes : 0;
-    final travelBefore =
-        _travelBeforeMin.clamp(0, math.min(_travelMax, beforeAvail)).toInt();
-    final travelAfter =
-        _travelAfterMin.clamp(0, math.min(_travelMax, afterAvail)).toInt();
-    final beforeEnd = wStart.subtract(Duration(minutes: travelBefore));
-    final afterStart = wEnd?.add(Duration(minutes: travelAfter));
+    final maxBefore = math.min(_travelMax, beforeAvail).toDouble();
+    final maxAfter = math.min(_travelMax, afterAvail).toDouble();
+    final travelBefore = _travelBefore.clamp(0.0, maxBefore);
+    final travelAfter = _travelAfter.clamp(0.0, maxAfter);
+    final beforeEnd = wStart.subtract(Duration(minutes: travelBefore.round()));
+    final afterStart = wEnd?.add(Duration(minutes: travelAfter.round()));
 
     return SingleChildScrollView(
       padding: EdgeInsets.fromLTRB(
@@ -210,82 +215,60 @@ class _ConflictResolutionSheetState
             ],
           ),
           const SizedBox(height: 18),
-          Row(
-            children: [
-              Text(splittable ? 'ADJUST THE SPLIT' : 'THE OVERLAP',
-                  style: AppText.eyebrow()),
-              if (splittable && (hasBefore || hasAfter)) ...[
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Text('mark a half not needed, or add travel time',
-                      textAlign: TextAlign.right,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: font(kBodyFont, 10.5, 500, color: AppColors.textMuted)),
-                ),
-              ],
-            ],
+          Align(
+            alignment: Alignment.centerLeft,
+            child: Text(
+                splittable && (hasBefore || hasAfter)
+                    ? 'DRAG TO ADJUST TIMING'
+                    : (splittable ? 'AFTER THE SPLIT' : 'THE OVERLAP'),
+                style: AppText.eyebrow()),
           ),
-          const SizedBox(height: 10),
+          const SizedBox(height: 12),
           if (splittable) ...[
             if (hasBefore) ...[
-              _SegmentBlock(
+              _EditableHalf(
                 title: _titleOf(loser),
-                timeLabel: _beforeNeeded
-                    ? friendlyRange(lStart, beforeEnd)
-                    : '$memberName skips this half',
+                timeLabel: friendlyRange(lStart, beforeEnd),
+                notNeededLabel: '$memberName skips the first half',
                 accent: _memberColor,
-                dimmed: !_beforeNeeded,
-              ),
-              const SizedBox(height: 6),
-              _HalfControls(
                 needed: _beforeNeeded,
-                travelLabel: 'Travel',
-                travelMin: travelBefore,
-                travelMax: math.min(_travelMax, beforeAvail),
-                step: _travelStep,
+                handleAtBottom: true,
+                handleLabel: 'Pick-up · ${clockShort(beforeEnd)}',
                 onToggle: () => setState(() => _beforeNeeded = !_beforeNeeded),
-                onTravel: (v) => setState(() => _travelBeforeMin = v),
+                onDragMinutes: (dy) => setState(() => _travelBefore =
+                    (_travelBefore - dy / _pxPerMin).clamp(0.0, maxBefore)),
               ),
-              if (_beforeNeeded && travelBefore > 0) ...[
-                const SizedBox(height: 6),
-                _TravelGap(minutes: travelBefore),
+              if (_beforeNeeded && travelBefore.round() > 0) ...[
+                const SizedBox(height: 7),
+                _TravelGapBlock(minutes: travelBefore.round()),
               ],
-              const SizedBox(height: 8),
+              const SizedBox(height: 7),
             ],
-            _SegmentBlock(
+            _FixedBlock(
               title: _titleOf(winner),
               timeLabel: _rangeLabel(winner),
-              accent: AppColors.indigo,
-              badge: 'Kept',
             ),
             if (hasAfter) ...[
-              if (_afterNeeded && travelAfter > 0) ...[
-                const SizedBox(height: 6),
-                _TravelGap(minutes: travelAfter),
+              if (_afterNeeded && travelAfter.round() > 0) ...[
+                const SizedBox(height: 7),
+                _TravelGapBlock(minutes: travelAfter.round()),
               ],
-              const SizedBox(height: 8),
-              _SegmentBlock(
+              const SizedBox(height: 7),
+              _EditableHalf(
                 title: _titleOf(loser),
-                timeLabel: _afterNeeded
-                    ? friendlyRange(afterStart!, lEnd)
-                    : '$memberName skips this half',
+                timeLabel: friendlyRange(afterStart!, lEnd),
+                notNeededLabel: '$memberName skips the second half',
                 accent: _memberColor,
-                dimmed: !_afterNeeded,
-              ),
-              const SizedBox(height: 6),
-              _HalfControls(
                 needed: _afterNeeded,
-                travelLabel: 'Travel',
-                travelMin: travelAfter,
-                travelMax: math.min(_travelMax, afterAvail),
-                step: _travelStep,
+                handleAtBottom: false,
+                handleLabel: 'Drop-off · ${clockShort(afterStart)}',
                 onToggle: () => setState(() => _afterNeeded = !_afterNeeded),
-                onTravel: (v) => setState(() => _travelAfterMin = v),
+                onDragMinutes: (dy) => setState(() => _travelAfter =
+                    (_travelAfter + dy / _pxPerMin).clamp(0.0, maxAfter)),
               ),
             ],
             if (!hasBefore && !hasAfter) ...[
-              const SizedBox(height: 7),
+              const SizedBox(height: 3),
               _NoteRow(
                 'The visit covers the whole event, so confirming removes '
                 '${_titleOf(loser)} for the day.',
@@ -294,11 +277,10 @@ class _ConflictResolutionSheetState
           ] else ...[
             // Can't cut cleanly on the timeline (all-day / open-ended): just name
             // the two colliding events.
-            _SegmentBlock(
+            _FixedBlock(
               title: _titleOf(winner),
               timeLabel: _rangeLabel(winner),
-              accent: AppColors.indigo,
-              badge: 'Kept',
+              fullWidth: true,
             ),
             const SizedBox(height: 7),
             _SegmentBlock(
@@ -393,6 +375,7 @@ class _SegmentBlock extends StatelessWidget {
     required this.accent,
     this.badge,
     this.dimmed = false,
+    this.compact = false,
   });
 
   final String title;
@@ -401,6 +384,9 @@ class _SegmentBlock extends StatelessWidget {
   final String? badge;
   final bool dimmed;
 
+  /// Tighter padding + a clip, for a fixed-height block inside [_EditableHalf].
+  final bool compact;
+
   @override
   Widget build(BuildContext context) {
     final borderColor = dimmed
@@ -408,7 +394,8 @@ class _SegmentBlock extends StatelessWidget {
         : accent.withValues(alpha: 0.55);
     final titleColor = dimmed ? AppColors.textSecondary : AppColors.textPrimary;
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 11),
+      clipBehavior: compact ? Clip.antiAlias : Clip.none,
+      padding: EdgeInsets.symmetric(horizontal: 13, vertical: compact ? 6 : 11),
       decoration: BoxDecoration(
         gradient: dimmed
             ? null
@@ -456,176 +443,274 @@ class _SegmentBlock extends StatelessWidget {
   }
 }
 
-/// The control rail for one splittable half: a "Not needed" / "Undo" toggle and,
-/// while the half is kept, a travel-time stepper (adds a buffer between the half
-/// and the appointment). Sits directly under the half's [_SegmentBlock].
-class _HalfControls extends StatelessWidget {
-  const _HalfControls({
+/// The rail reserved on the right of each editable half for its controls (the
+/// "Not needed" pill and the drag handle), matching the design's 108px rail.
+const double _railWidth = 108;
+const double _connectorWidth = 14;
+
+/// One editable half of the split (design §8b): a narrower event block on the
+/// left, with a right-hand rail holding a "Not needed" toggle (vertically
+/// centred) and a green drag handle pinned to the block's inner edge — the
+/// appointment-facing edge (bottom for the morning half, top for the afternoon).
+/// Dragging the handle vertically adds/removes travel time.
+class _EditableHalf extends StatelessWidget {
+  const _EditableHalf({
+    required this.title,
+    required this.timeLabel,
+    required this.notNeededLabel,
+    required this.accent,
     required this.needed,
-    required this.travelLabel,
-    required this.travelMin,
-    required this.travelMax,
-    required this.step,
+    required this.handleAtBottom,
+    required this.handleLabel,
     required this.onToggle,
-    required this.onTravel,
+    required this.onDragMinutes,
   });
 
+  final String title;
+  final String timeLabel;
+  final String notNeededLabel;
+  final Color accent;
   final bool needed;
-  final String travelLabel;
-  final int travelMin;
-  final int travelMax;
-  final int step;
+
+  /// Which edge the drag handle straddles — the one facing the appointment.
+  final bool handleAtBottom;
+  final String handleLabel;
   final VoidCallback onToggle;
-  final ValueChanged<int> onTravel;
+
+  /// Called with the vertical drag delta (logical px, down-positive).
+  final ValueChanged<double> onDragMinutes;
+
+  // The block is fixed-height with room reserved on the handle side so the
+  // straddling handle stays inside the widget's own bounds (no sibling overlap).
+  static const double _blockH = 58;
+  static const double _slack = 13; // half the handle height
+  static const double _totalH = _blockH + _slack;
 
   @override
   Widget build(BuildContext context) {
-    return Row(
-      children: [
-        _ToggleChip(
-          label: needed ? 'Not needed' : 'Undo — keep it',
-          active: !needed,
-          onTap: onToggle,
+    final blockTop = handleAtBottom ? 0.0 : _slack;
+    final blockCenter = blockTop + _blockH / 2;
+    final handleY = handleAtBottom ? blockTop + _blockH : blockTop;
+
+    return LayoutBuilder(builder: (context, c) {
+      final blockW = c.maxWidth - _railWidth;
+      final controlLeft = blockW + _connectorWidth;
+      return SizedBox(
+        height: _totalH,
+        child: Stack(
+          clipBehavior: Clip.none,
+          children: [
+            // The (narrower) event block.
+            Positioned(
+              left: 0,
+              top: blockTop,
+              width: blockW,
+              height: _blockH,
+              child: _SegmentBlock(
+                title: title,
+                timeLabel: needed ? timeLabel : notNeededLabel,
+                accent: accent,
+                dimmed: !needed,
+                compact: true,
+              ),
+            ),
+            // "Not needed" / "Undo" pill in the rail, vertically centred.
+            _connector(top: blockCenter, left: blockW, active: !needed),
+            Positioned(
+              left: controlLeft,
+              top: blockCenter - 12,
+              child: _NotNeededPill(needed: needed, onTap: onToggle),
+            ),
+            // The green drag handle, pinned to the appointment-facing edge.
+            if (needed) ...[
+              _connector(top: handleY, left: blockW, green: true),
+              Positioned(
+                left: controlLeft,
+                top: handleY - 13,
+                child: _DragHandle(
+                  label: handleLabel,
+                  onDragMinutes: onDragMinutes,
+                ),
+              ),
+            ],
+          ],
         ),
-        const Spacer(),
-        if (needed && travelMax > 0)
-          _Stepper(
-            label: travelLabel,
-            value: travelMin,
-            unit: 'min',
-            onDec: travelMin > 0
-                ? () => onTravel(math.max(0, travelMin - step))
-                : null,
-            onInc: travelMin < travelMax
-                ? () => onTravel(math.min(travelMax, travelMin + step))
-                : null,
-          ),
-      ],
+      );
+    });
+  }
+
+  /// A short horizontal tick joining the block's right edge to a rail control.
+  Widget _connector({
+    required double top,
+    required double left,
+    bool green = false,
+    bool active = false,
+  }) {
+    final color = green
+        ? AppColors.green.withValues(alpha: 0.6)
+        : active
+            ? AppColors.indigo.withValues(alpha: 0.4)
+            : Colors.white.withValues(alpha: 0.22);
+    return Positioned(
+      left: left,
+      top: top - 0.75,
+      child: Container(width: _connectorWidth, height: 1.5, color: color),
     );
   }
 }
 
-/// A small outlined toggle chip (the per-half "Not needed").
-class _ToggleChip extends StatelessWidget {
-  const _ToggleChip({required this.label, required this.active, required this.onTap});
-  final String label;
-  final bool active;
+/// The higher-priority winner ("Fixed") block — indigo, at the same reduced
+/// width as the editable halves so the split reads as one stack.
+class _FixedBlock extends StatelessWidget {
+  const _FixedBlock({
+    required this.title,
+    required this.timeLabel,
+    this.fullWidth = false,
+  });
+
+  final String title;
+  final String timeLabel;
+  final bool fullWidth;
+
+  @override
+  Widget build(BuildContext context) {
+    final block = _SegmentBlock(
+      title: title,
+      timeLabel: timeLabel,
+      accent: AppColors.indigo,
+      badge: 'Fixed',
+    );
+    if (fullWidth) return block;
+    return Padding(
+      padding: const EdgeInsets.only(right: _railWidth),
+      child: block,
+    );
+  }
+}
+
+/// The per-half "Not needed" → "Undo" toggle pill (dashed when kept, solid
+/// indigo when the half is dropped).
+class _NotNeededPill extends StatelessWidget {
+  const _NotNeededPill({required this.needed, required this.onTap});
+  final bool needed;
   final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
-    final color = active ? AppColors.indigo : AppColors.textSecondary;
-    return Material(
-      color: active ? AppColors.tint(AppColors.indigo, 0.12) : Colors.transparent,
-      borderRadius: BorderRadius.circular(999),
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(999),
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 6),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(999),
-            border: Border.all(
-              color: active ? AppColors.indigo.withValues(alpha: 0.6) : AppColors.border,
-            ),
+    final dropped = !needed;
+    final color = dropped ? AppColors.indigo : AppColors.textSecondary;
+    return GestureDetector(
+      onTap: onTap,
+      behavior: HitTestBehavior.opaque,
+      child: Container(
+        constraints: const BoxConstraints(minHeight: 24),
+        padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+        decoration: BoxDecoration(
+          color: dropped ? AppColors.tint(AppColors.indigo, 0.12) : AppColors.bg,
+          borderRadius: BorderRadius.circular(999),
+          border: Border.all(
+            color: dropped
+                ? AppColors.indigo.withValues(alpha: 0.6)
+                : Colors.white.withValues(alpha: 0.3),
           ),
-          child: Text(label, style: font(kBodyFont, 11.5, 600, color: color)),
+        ),
+        child: Text(dropped ? 'Undo' : 'Not needed',
+            style: font(kBodyFont, 10, 600, color: color)),
+      ),
+    );
+  }
+}
+
+/// The green, grip-dotted drag handle ("Pick-up · 10:30" / "Drop-off · 12:30").
+/// Dragging it vertically adds or removes travel time.
+class _DragHandle extends StatelessWidget {
+  const _DragHandle({required this.label, required this.onDragMinutes});
+  final String label;
+  final ValueChanged<double> onDragMinutes;
+
+  @override
+  Widget build(BuildContext context) {
+    // Raw pointer events (like the design's onPointerDown/Move/Up) so the drag
+    // isn't swallowed by the enclosing scroll view's gesture arena.
+    return Listener(
+      behavior: HitTestBehavior.opaque,
+      onPointerMove: (e) => onDragMinutes(e.delta.dy),
+      child: MouseRegion(
+        cursor: SystemMouseCursors.resizeUpDown,
+        child: Container(
+          height: 26,
+          padding: const EdgeInsets.symmetric(horizontal: 8),
+          decoration: BoxDecoration(
+            color: const Color(0xFF172B23),
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: AppColors.green.withValues(alpha: 0.65)),
+            boxShadow: const [
+              BoxShadow(color: Color(0x59000000), blurRadius: 6, offset: Offset(0, 2)),
+            ],
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const _GripDots(),
+              const SizedBox(width: 6),
+              Text(label, style: font(kBodyFont, 10, 700, color: const Color(0xFFEAFFF5))),
+            ],
+          ),
         ),
       ),
     );
   }
 }
 
-/// A compact "− value unit +" stepper (the travel-time buffer). A null callback
-/// disables that end (at the min/max bound).
-class _Stepper extends StatelessWidget {
-  const _Stepper({
-    required this.label,
-    required this.value,
-    required this.unit,
-    required this.onDec,
-    required this.onInc,
-  });
-  final String label;
-  final int value;
-  final String unit;
-  final VoidCallback? onDec;
-  final VoidCallback? onInc;
+/// The 2×3 grip-dot glyph on a drag handle.
+class _GripDots extends StatelessWidget {
+  const _GripDots();
 
   @override
   Widget build(BuildContext context) {
+    Widget dot() => Container(
+          width: 2.6,
+          height: 2.6,
+          decoration: const BoxDecoration(color: AppColors.green, shape: BoxShape.circle),
+        );
+    Widget col() => Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [dot(), const SizedBox(height: 2.5), dot(), const SizedBox(height: 2.5), dot()],
+        );
     return Row(
       mainAxisSize: MainAxisSize.min,
-      children: [
-        Text(label, style: font(kBodyFont, 10.5, 600, color: AppColors.textMuted)),
-        const SizedBox(width: 8),
-        _StepBtn(icon: Icons.remove_rounded, onTap: onDec),
-        SizedBox(
-          width: 44,
-          child: Text('$value $unit',
-              textAlign: TextAlign.center,
-              style: font(kBodyFont, 12, 700,
-                  color: value > 0 ? AppColors.amber : AppColors.textSecondary)),
-        ),
-        _StepBtn(icon: Icons.add_rounded, onTap: onInc),
-      ],
+      children: [col(), const SizedBox(width: 2.5), col()],
     );
   }
 }
 
-class _StepBtn extends StatelessWidget {
-  const _StepBtn({required this.icon, required this.onTap});
-  final IconData icon;
-  final VoidCallback? onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final enabled = onTap != null;
-    return Material(
-      color: AppColors.card,
-      shape: const CircleBorder(),
-      child: InkWell(
-        onTap: onTap,
-        customBorder: const CircleBorder(),
-        child: Container(
-          width: 28,
-          height: 28,
-          decoration: BoxDecoration(
-            shape: BoxShape.circle,
-            border: Border.all(color: AppColors.border),
-          ),
-          child: Icon(icon,
-              size: 16,
-              color: enabled ? AppColors.textPrimary : AppColors.textMuted),
-        ),
-      ),
-    );
-  }
-}
-
-/// The amber travel-time gap chip shown between a kept half and the appointment.
-class _TravelGap extends StatelessWidget {
-  const _TravelGap({required this.minutes});
+/// The amber, dashed-outline travel-time gap block shown between a kept half and
+/// the appointment, at the halves' reduced width.
+class _TravelGapBlock extends StatelessWidget {
+  const _TravelGapBlock({required this.minutes});
   final int minutes;
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
-      decoration: BoxDecoration(
-        color: AppColors.tint(AppColors.amber, 0.06),
-        borderRadius: BorderRadius.circular(9),
-        border: Border.all(color: AppColors.amber.withValues(alpha: 0.5)),
-      ),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          const Icon(Icons.directions_walk_rounded, size: 13, color: AppColors.amber),
-          const SizedBox(width: 6),
-          Text('Travel time · $minutes min',
-              style: font(kBodyFont, 10.5, 700, color: AppColors.amber)),
-        ],
+    return Padding(
+      padding: const EdgeInsets.only(right: _railWidth),
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        decoration: BoxDecoration(
+          color: AppColors.tint(AppColors.amber, 0.06),
+          borderRadius: BorderRadius.circular(9),
+          border: Border.all(color: AppColors.amber.withValues(alpha: 0.6)),
+        ),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(Icons.directions_walk_rounded, size: 13, color: AppColors.amber),
+            const SizedBox(width: 6),
+            Text('Travel time · $minutes min',
+                style: font(kBodyFont, 10, 700, color: AppColors.amber)),
+          ],
+        ),
       ),
     );
   }
