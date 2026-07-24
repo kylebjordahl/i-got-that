@@ -190,6 +190,110 @@ describe('conflict detection & masking', () => {
     expect(events.map((e) => e.id)).toContain(seg0.id);
   });
 
+  it('resolving with travel buffers pulls the split halves back, leaving a gap', async () => {
+    const f = await fixture('conflict-travel@example.com');
+    const { blKey } = await schoolAndDoctor(f.db, f);
+    await reconcileMemberConflicts(f.db, f.childId);
+    const conflict = (
+      await f.db.select().from(conflicts).where(eq(conflicts.familyMemberId, f.childId))
+    )[0]!;
+
+    // 30 min of travel before the appointment, 15 after — the school-day halves
+    // end/start away from the appointment, leaving the pick-up / drop-off gap.
+    const res = await call(
+      `/families/${f.familyId}/conflicts/${conflict.id}/resolve`,
+      authed(f.admin.token, { travelBeforeMin: 30, travelAfterMin: 15 }),
+    );
+    expect(res.status).toBe(200);
+
+    const seg0 = (
+      await f.db.select().from(calendarEvents).where(eq(calendarEvents.synthKey, `cf:${blKey}:0`))
+    )[0]!;
+    const seg1 = (
+      await f.db.select().from(calendarEvents).where(eq(calendarEvents.synthKey, `cf:${blKey}:1`))
+    )[0]!;
+    // Morning ends 30 min early (9:30), afternoon starts 15 min late (11:15).
+    expect(seg0.dtstart.toISOString()).toBe(futureAt(3, 8, 30).toISOString());
+    expect(seg0.dtend!.toISOString()).toBe(futureAt(3, 9, 30).toISOString());
+    expect(seg1.dtstart.toISOString()).toBe(futureAt(3, 11, 15).toISOString());
+    expect(seg1.dtend!.toISOString()).toBe(futureAt(3, 15, 0).toISOString());
+
+    // The persisted parameters round-trip on the conflict row.
+    const row = (
+      await f.db.select().from(conflicts).where(eq(conflicts.id, conflict.id))
+    )[0]!;
+    expect(row).toMatchObject({ travelBeforeMin: 30, travelAfterMin: 15 });
+  });
+
+  it('resolving with a half marked "not needed" drops that segment (cancel_day for the side)', async () => {
+    const f = await fixture('conflict-notneeded@example.com');
+    const { blKey, docKey } = await schoolAndDoctor(f.db, f);
+    await reconcileMemberConflicts(f.db, f.childId);
+    const conflict = (
+      await f.db.select().from(conflicts).where(eq(conflicts.familyMemberId, f.childId))
+    )[0]!;
+
+    // The child skips the morning entirely — only the afternoon half survives.
+    const res = await call(
+      `/families/${f.familyId}/conflicts/${conflict.id}/resolve`,
+      authed(f.admin.token, { beforeNeeded: false }),
+    );
+    expect(res.status).toBe(200);
+
+    // Only one segment (the afternoon), and it's the surviving half 11:00–15:00.
+    const keys = await eventKeys(f.db, f.childId);
+    expect(keys).toEqual([`cf:${blKey}:0`, docKey]);
+    const seg0 = (
+      await f.db.select().from(calendarEvents).where(eq(calendarEvents.synthKey, `cf:${blKey}:0`))
+    )[0]!;
+    expect(seg0.dtstart.toISOString()).toBe(futureAt(3, 11, 0).toISOString());
+    expect(seg0.dtend!.toISOString()).toBe(futureAt(3, 15, 0).toISOString());
+  });
+
+  it('resolving with both halves "not needed" cancels the loser entirely (masked, no segments)', async () => {
+    const f = await fixture('conflict-bothgone@example.com');
+    const { blKey, docKey } = await schoolAndDoctor(f.db, f);
+    await reconcileMemberConflicts(f.db, f.childId);
+    const conflict = (
+      await f.db.select().from(conflicts).where(eq(conflicts.familyMemberId, f.childId))
+    )[0]!;
+
+    const res = await call(
+      `/families/${f.familyId}/conflicts/${conflict.id}/resolve`,
+      authed(f.admin.token, { beforeNeeded: false, afterNeeded: false }),
+    );
+    expect(res.status).toBe(200);
+
+    // The baseline is masked and no split segments stand in — the whole day is
+    // gone, leaving just the appointment.
+    const bl = (
+      await f.db.select().from(calendarEvents).where(eq(calendarEvents.synthKey, blKey))
+    )[0]!;
+    expect(bl.maskedAt).not.toBeNull();
+    const keys = await eventKeys(f.db, f.childId);
+    expect(keys).toEqual([docKey]);
+  });
+
+  it('rejects out-of-range travel buffers', async () => {
+    const f = await fixture('conflict-badinput@example.com');
+    await schoolAndDoctor(f.db, f);
+    await reconcileMemberConflicts(f.db, f.childId);
+    const conflict = (
+      await f.db.select().from(conflicts).where(eq(conflicts.familyMemberId, f.childId))
+    )[0]!;
+
+    const res = await call(
+      `/families/${f.familyId}/conflicts/${conflict.id}/resolve`,
+      authed(f.admin.token, { travelBeforeMin: -5 }),
+    );
+    expect(res.status).toBe(400);
+    // Nothing was resolved.
+    const row = (
+      await f.db.select().from(conflicts).where(eq(conflicts.id, conflict.id))
+    )[0]!;
+    expect(row.status).toBe('pending');
+  });
+
   it('reverting undoes the split and re-surfaces the conflict as pending', async () => {
     const f = await fixture('conflict-revert@example.com');
     const { blKey, docKey } = await schoolAndDoctor(f.db, f);
@@ -200,7 +304,7 @@ describe('conflict detection & masking', () => {
 
     const resolveRes = await call(
       `/families/${f.familyId}/conflicts/${conflict.id}/resolve`,
-      authed(f.admin.token),
+      authed(f.admin.token, { travelBeforeMin: 20, beforeNeeded: false }),
     );
     expect(resolveRes.status).toBe(200);
     // A resolved conflict shows up as an override in effect for the member.
@@ -233,6 +337,8 @@ describe('conflict detection & masking', () => {
     )[0]!;
     expect(row.status).toBe('pending');
     expect(row.resolvedAt).toBeNull();
+    // The resolution parameters are discarded so a fresh decision starts clean.
+    expect(row).toMatchObject({ travelBeforeMin: 0, travelAfterMin: 0, beforeNeeded: true, afterNeeded: true });
     const api = await call(`/families/${f.familyId}/conflicts`, bearer(f.admin.token));
     const { conflicts: pending } = (await api.json()) as { conflicts: { id: string }[] };
     expect(pending.map((c) => c.id)).toEqual([conflict.id]);

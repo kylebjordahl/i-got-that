@@ -19,6 +19,7 @@ import {
   AssignTaskInput,
   ConflictStatus,
   ConvertTaskInput,
+  ResolveConflictInput,
   ResolvePendingDecisionInput,
   SetTaskDurationInput,
 } from '@igt/domain';
@@ -640,6 +641,15 @@ taskRoutes.post('/conflicts/:conflictId/resolve', async (c) => {
   const me = c.get('member');
   const conflict = await loadConflict(db, me.familyId, c.req.param('conflictId'));
   if (!conflict) return c.json({ error: 'not_found' }, 404);
+  // An empty body is the plain split; a body may carry travel buffers and/or
+  // per-side "not needed" (design §8b).
+  const parsed = ResolveConflictInput.safeParse(
+    await c.req.json().catch(() => ({})),
+  );
+  if (!parsed.success) {
+    return c.json({ error: 'invalid_input', issues: parsed.error.issues }, 400);
+  }
+  const res = parsed.data;
   const hashes = await decisionHashes(
     db,
     conflict.familyMemberId,
@@ -653,6 +663,10 @@ taskRoutes.post('/conflicts/:conflictId/resolve', async (c) => {
       resolvedByMemberId: me.id,
       resolvedAt: new Date(),
       dismissedAt: null,
+      travelBeforeMin: res.travelBeforeMin,
+      travelAfterMin: res.travelAfterMin,
+      beforeNeeded: res.beforeNeeded,
+      afterNeeded: res.afterNeeded,
       ...hashes,
     })
     .where(eq(conflicts.id, conflict.id));
@@ -713,6 +727,12 @@ taskRoutes.post('/conflicts/:conflictId/revert', async (c) => {
       dismissedAt: null,
       loserContentHash: null,
       winnerContentHash: null,
+      // Discard the prior resolution's parameters so a fresh decision starts
+      // from the plain split.
+      travelBeforeMin: 0,
+      travelAfterMin: 0,
+      beforeNeeded: true,
+      afterNeeded: true,
     })
     .where(eq(conflicts.id, conflict.id));
   await reconcileMemberConflicts(db, conflict.familyMemberId);

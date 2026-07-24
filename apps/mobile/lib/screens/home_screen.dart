@@ -12,6 +12,7 @@ import '../widgets/app_bottom_nav.dart';
 import '../widgets/primitives.dart';
 import '../widgets/settings.dart';
 import '../widgets/task_row.dart';
+import 'conflict_resolution_sheet.dart';
 import 'feed_baseline_screen.dart';
 import 'task_actions_sheet.dart';
 
@@ -61,36 +62,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     ref.invalidate(pendingDecisionsProvider);
     ref.invalidate(conflictsProvider);
     ref.invalidate(calendarEventsProvider);
-  }
-
-  Future<void> _resolveConflict(Conflict conflict) async {
-    try {
-      final familyId = await ref.read(familyProvider.future);
-      await ref.read(apiClientProvider).resolveConflict(familyId, conflict.id);
-      _refresh();
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text('Couldn\'t resolve: $e'),
-          margin: snackBarMarginAboveNav(context),
-        ));
-      }
-    }
-  }
-
-  Future<void> _dismissConflict(Conflict conflict) async {
-    try {
-      final familyId = await ref.read(familyProvider.future);
-      await ref.read(apiClientProvider).dismissConflict(familyId, conflict.id);
-      _refresh();
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text('Couldn\'t dismiss: $e'),
-          margin: snackBarMarginAboveNav(context),
-        ));
-      }
-    }
   }
 
   Future<void> _refreshFeeds() async {
@@ -199,8 +170,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                       _ConflictCard(
                         conflict: conflict,
                         member: byId[conflict.familyMemberId],
-                        onResolve: () => _resolveConflict(conflict),
-                        onDismiss: () => _dismissConflict(conflict),
+                        onOpen: () => showConflictResolution(
+                          context,
+                          ref,
+                          conflict,
+                          member: byId[conflict.familyMemberId],
+                        ),
                       ),
                       const SizedBox(height: 10),
                     ],
@@ -780,13 +755,13 @@ class _ConflictCard extends StatelessWidget {
   const _ConflictCard({
     required this.conflict,
     required this.member,
-    required this.onResolve,
-    required this.onDismiss,
+    required this.onOpen,
   });
   final Conflict conflict;
   final Member? member;
-  final VoidCallback onResolve;
-  final VoidCallback onDismiss;
+
+  /// Opens the shared conflict-resolution sheet (design §8b).
+  final VoidCallback onOpen;
 
   @override
   Widget build(BuildContext context) {
@@ -797,63 +772,66 @@ class _ConflictCard extends StatelessWidget {
     final when = winner.allDay
         ? homeDayHeader(dayKey(winner.start), DateTime.now())
         : friendlyTime(winner.start);
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: AppColors.tint(AppColors.coral, 0.07),
+    return Material(
+      color: AppColors.tint(AppColors.coral, 0.07),
+      borderRadius: BorderRadius.circular(18),
+      child: InkWell(
+        onTap: onOpen,
         borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: AppColors.coral.withValues(alpha: 0.45)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
+        child: Container(
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(18),
+            border: Border.all(color: AppColors.coral.withValues(alpha: 0.45)),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const IconTile(icon: Icons.event_busy_rounded, color: AppColors.coral, size: 38),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text.rich(
-                      TextSpan(children: [
-                        TextSpan(
-                            text: loser.summary ?? 'An event',
-                            style: AppText.sectionItemTitle),
-                        TextSpan(
-                            text: ' · ${member?.relationName ?? 'member'}',
-                            style: font(kBodyFont, 14, 700, color: memberColor)),
-                      ]),
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
+              Row(
+                children: [
+                  const IconTile(icon: Icons.event_busy_rounded, color: AppColors.coral, size: 38),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text.rich(
+                          TextSpan(children: [
+                            TextSpan(
+                                text: loser.summary ?? 'An event',
+                                style: AppText.sectionItemTitle),
+                            TextSpan(
+                                text: ' · ${member?.relationName ?? 'member'}',
+                                style: font(kBodyFont, 14, 700, color: memberColor)),
+                          ]),
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        const SizedBox(height: 3),
+                        Text(
+                          'Overlaps ${winner.summary ?? 'another event'} · $when — '
+                          "can't be in two places at once.",
+                          style: font(kBodyFont, 12, 500, color: AppColors.coral),
+                        ),
+                      ],
                     ),
-                    const SizedBox(height: 3),
-                    Text(
-                      'Overlaps ${winner.summary ?? 'another event'} · $when — '
-                      "can't be in two places at once.",
-                      style: font(kBodyFont, 12, 500, color: AppColors.coral),
-                    ),
-                  ],
-                ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  Expanded(
+                    child: PillButton(
+                        label: 'Review & resolve',
+                        variant: PillVariant.amber,
+                        onPressed: onOpen),
+                  ),
+                ],
               ),
             ],
           ),
-          const SizedBox(height: 12),
-          Row(
-            children: [
-              Expanded(
-                child: PillButton(
-                    label: 'Split around it',
-                    variant: PillVariant.amber,
-                    onPressed: onResolve),
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: PillButton(label: 'Dismiss', onPressed: onDismiss),
-              ),
-            ],
-          ),
-        ],
+        ),
       ),
     );
   }

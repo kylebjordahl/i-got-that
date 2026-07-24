@@ -696,6 +696,61 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('a double-booking flags a Conflict chip that opens the sheet (8a)',
+      (tester) async {
+    final now = DateTime.now();
+    DateTime at(int h, int m) => DateTime(now.year, now.month, now.day, h, m);
+    // Theo's school day and a manually-added orthodontist visit overlap
+    // 11:00–12:00 — a double-booking on one member's calendar.
+    final events = [
+      CalendarEventItem(id: 'school', familyMemberId: 'theo', provenance: 'synthesized', start: at(8, 30), end: at(15, 0), allDay: false, summary: 'School day'),
+      CalendarEventItem(id: 'ortho', familyMemberId: 'theo', provenance: 'human', start: at(11, 0), end: at(12, 0), allDay: false, summary: 'Orthodontist'),
+    ];
+    final conflict = Conflict(
+      id: 'c1',
+      familyMemberId: 'theo',
+      loser: ConflictEventRef(summary: 'School day', allDay: false, start: at(8, 30), end: at(15, 0)),
+      winner: ConflictEventRef(summary: 'Orthodontist', allDay: false, start: at(11, 0), end: at(12, 0)),
+    );
+    await tester.pumpWidget(ProviderScope(
+      overrides: [
+        membersProvider.overrideWith((ref) async => [
+              _m('dad', 'Dad', caretaker: true),
+              _m('theo', 'Theo', child: true),
+            ]),
+        currentMemberProvider.overrideWith((ref) async => _m('dad', 'Dad', caretaker: true)),
+        allTasksProvider.overrideWith((ref) async => const <TaskItem>[]),
+        calendarEventsProvider.overrideWith((ref) async => events),
+        conflictsProvider.overrideWith((ref) async => [conflict]),
+        pendingDecisionsProvider.overrideWith((ref) async => const []),
+        threadingThresholdProvider.overrideWith((ref) async => 30),
+      ],
+      child: MaterialApp(
+        theme: buildAppTheme(),
+        themeMode: ThemeMode.dark,
+        home: const Scaffold(body: SafeArea(child: PlanScreen())),
+      ),
+    ));
+    // The chip pulses forever, so drive frames manually rather than settling.
+    for (var i = 0; i < 6; i++) {
+      await tester.pump(const Duration(milliseconds: 50));
+    }
+
+    // The pulsing double-booked chip is on the timeline.
+    expect(find.text('Conflict'), findsOneWidget);
+
+    // Tapping it opens the shared resolution sheet.
+    await tester.tap(find.text('Conflict'));
+    for (var i = 0; i < 8; i++) {
+      await tester.pump(const Duration(milliseconds: 50));
+    }
+    expect(find.text('Two events, one Theo'), findsOneWidget);
+    expect(find.text('Confirm split'), findsOneWidget);
+
+    // Unmount so the chip's ticker is disposed before the test ends.
+    await tester.pumpWidget(const SizedBox());
+  });
+
   testWidgets('swiping the grid left/right steps the selected day', (tester) async {
     final today = DateTime.now();
     await tester.pumpWidget(ProviderScope(

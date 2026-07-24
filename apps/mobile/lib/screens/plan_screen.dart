@@ -11,6 +11,7 @@ import '../util/task_visuals.dart';
 import '../widgets/app_bottom_nav.dart';
 import '../widgets/primitives.dart';
 import '../widgets/settings.dart';
+import 'conflict_resolution_sheet.dart';
 import 'task_actions_sheet.dart';
 
 const _hourPx = 42.0;
@@ -286,6 +287,34 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
         for (final t in list) _PlanItem.task(t),
     ]);
     final placed = _layout(dayItems);
+
+    // Double-booked indicators (§8a): a coral collision seam + pulsing chip over
+    // each pending conflict whose overlap lands on the selected day. Hidden for a
+    // member the current filters have hidden — the seam must never float over an
+    // empty lane. All-day / open-ended overlaps have no timeline seam.
+    final conflicts = ref.watch(conflictsProvider).valueOrNull ?? const <Conflict>[];
+    final conflictOverlays = <_ConflictOverlay>[];
+    for (final cf in conflicts) {
+      final fmId = cf.familyMemberId;
+      if (_exChildren.contains(fmId) || _exOwners.contains(fmId)) continue;
+      if (_onlyMyKids && !myKids.contains(fmId)) continue;
+      final le = cf.loser.end;
+      final we = cf.winner.end;
+      if (cf.loser.allDay || cf.winner.allDay || le == null || we == null) continue;
+      final ls = cf.loser.start;
+      final ws = cf.winner.start;
+      final oStart = ls.isAfter(ws) ? ls : ws;
+      final oEnd = le.isBefore(we) ? le : we;
+      if (!oEnd.isAfter(oStart)) continue;
+      if (dayKey(oStart) != _selected) continue;
+      conflictOverlays.add(_ConflictOverlay(
+        conflict: cf,
+        member: byId[fmId],
+        start: oStart,
+        end: oEnd,
+      ));
+    }
+
     // Default the grid's scroll to the 7 AM–6 PM window (once per day change).
     _scheduleDefaultScroll();
 
@@ -319,7 +348,8 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
                 SingleChildScrollView(
                   controller: _gridScroll,
                   padding: const EdgeInsets.fromLTRB(22, 0, 22, 130),
-                  child: _grid(placed, byId, tabsByEvent, ownersByEvent, orphanTabs, eventsById),
+                  child: _grid(placed, byId, tabsByEvent, ownersByEvent,
+                      orphanTabs, eventsById, conflictOverlays),
                 ),
                 _EdgeGlow(controller: _gridScroll, placed: placed, top: true),
                 _EdgeGlow(controller: _gridScroll, placed: placed, top: false),
@@ -477,6 +507,7 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
     Map<String, List<Member>> ownersByEvent,
     List<TaskItem> orphanTabs,
     Map<String, CalendarEventItem> eventsById,
+    List<_ConflictOverlay> conflictOverlays,
   ) {
     final now = DateTime.now();
     final showNow = _selected == _dateOnly(now) &&
@@ -573,6 +604,45 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
             taskTop(t.start) - _tabHeight / 2));
       }
 
+      // Double-booked seams (over the blocks) + their pulsing tap chips (topmost).
+      final seams = <Widget>[];
+      final chips = <Widget>[];
+      for (final ov in conflictOverlays) {
+        final s = ov.start.toLocal();
+        final e = ov.end.toLocal();
+        final top = ((s.hour + s.minute / 60) - _gridStart) * _hourPx;
+        final height = (e.difference(s).inMinutes / 60 * _hourPx)
+            .clamp(_tabHeight, _gridHeight);
+        seams.add(Positioned(
+          top: top,
+          left: laneLeft - 4,
+          right: 0,
+          height: height,
+          child: const _ConflictSeam(),
+        ));
+        // Coral bracket in the hour-label gutter.
+        seams.add(Positioned(
+          top: top,
+          left: _labelWidth - 2,
+          width: 3,
+          height: height,
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              color: AppColors.coral,
+              borderRadius: BorderRadius.circular(3),
+            ),
+          ),
+        ));
+        chips.add(Positioned(
+          top: top - 13,
+          left: laneLeft + 6,
+          child: _ConflictChip(
+            onTap: () => showConflictResolution(context, ref, ov.conflict,
+                member: ov.member),
+          ),
+        ));
+      }
+
       return SizedBox(
         height: _gridHeight + 12,
         child: Stack(
@@ -587,6 +657,8 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
                 child: _HourLine(label: _hourLabel(h)),
               ),
             ...blocks,
+            // Double-booked collision seams sit above the overlapping blocks.
+            ...seams,
             // Now-line.
             if (showNow)
               Positioned(
@@ -602,6 +674,8 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
               ),
             // Transition tabs float above their blocks.
             ...tabs,
+            // Double-booked chips are the topmost tap target.
+            ...chips,
           ],
         ),
       );
@@ -853,6 +927,142 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
       i = j;
     }
     return placed;
+  }
+}
+
+/// A pending double-booking to flag on the timeline: the interval [start, end)
+/// where one member's [Conflict.loser] and [Conflict.winner] overlap.
+class _ConflictOverlay {
+  _ConflictOverlay({
+    required this.conflict,
+    required this.member,
+    required this.start,
+    required this.end,
+  });
+  final Conflict conflict;
+  final Member? member;
+  final DateTime start;
+  final DateTime end;
+}
+
+/// The coral collision seam bracketing a double-booked overlap on the grid —
+/// a diagonally-hatched fill inside an inset coral outline (§8a).
+class _ConflictSeam extends StatelessWidget {
+  const _ConflictSeam();
+
+  @override
+  Widget build(BuildContext context) {
+    return IgnorePointer(
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: AppColors.coral.withValues(alpha: 0.55), width: 1.5),
+        ),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(12),
+          child: CustomPaint(
+            painter: _HatchPainter(color: AppColors.coral.withValues(alpha: 0.16)),
+            child: const SizedBox.expand(),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Diagonal hatch fill (the collision seam's texture).
+class _HatchPainter extends CustomPainter {
+  _HatchPainter({required this.color});
+  final Color color;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = color
+      ..strokeWidth = 7
+      ..style = PaintingStyle.stroke;
+    const step = 14.0;
+    // 135° stripes: walk the diagonal offset across the box's full extent.
+    for (var x = -size.height; x < size.width; x += step) {
+      canvas.drawLine(
+        Offset(x, 0),
+        Offset(x + size.height, size.height),
+        paint,
+      );
+    }
+  }
+
+  @override
+  bool shouldRepaint(_HatchPainter old) => old.color != color;
+}
+
+/// The pulsing "Conflict" chip — the double-booking's only new tap target (§8a).
+/// Tapping opens the shared resolution sheet.
+class _ConflictChip extends StatefulWidget {
+  const _ConflictChip({required this.onTap});
+  final VoidCallback onTap;
+
+  @override
+  State<_ConflictChip> createState() => _ConflictChipState();
+}
+
+class _ConflictChipState extends State<_ConflictChip>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _c = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 1600),
+  )..repeat();
+
+  @override
+  void dispose() {
+    _c.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    const onCoral = Color(0xFF3A0F0A);
+    return GestureDetector(
+      onTap: widget.onTap,
+      child: AnimatedBuilder(
+        animation: _c,
+        builder: (context, child) {
+          // A coral ring that expands and fades out on each cycle.
+          final t = _c.value;
+          return Container(
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(999),
+              boxShadow: [
+                BoxShadow(
+                  color: AppColors.coral.withValues(alpha: (0.55 * (1 - t)).clamp(0.0, 1.0)),
+                  blurRadius: 0,
+                  spreadRadius: 7 * t,
+                ),
+              ],
+            ),
+            child: child,
+          );
+        },
+        child: Container(
+          padding: const EdgeInsets.fromLTRB(8, 5, 11, 5),
+          decoration: BoxDecoration(
+            color: AppColors.coral,
+            borderRadius: BorderRadius.circular(999),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.warning_amber_rounded, size: 13, color: onCoral),
+              const SizedBox(width: 5),
+              Text('Conflict',
+                  style: font(kBodyFont, 11, 700, color: onCoral, letterSpacing: 0.2)),
+              const SizedBox(width: 3),
+              const Icon(Icons.chevron_right_rounded, size: 14, color: onCoral),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 }
 
