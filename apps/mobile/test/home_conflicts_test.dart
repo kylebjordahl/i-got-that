@@ -121,7 +121,7 @@ void main() {
     expect(find.text('Fixed'), findsOneWidget);
   });
 
-  testWidgets('marking a half "not needed" sends that in the resolution',
+  testWidgets('trashing a half marks it not needed in the resolution',
       (tester) async {
     // Tall enough that the whole sheet (both halves + footer) is on-screen.
     tester.view.physicalSize = const Size(600, 1600);
@@ -154,12 +154,12 @@ void main() {
     await tester.tap(find.text('Review & resolve'));
     await tester.pumpAndSettle();
 
-    // Both halves start kept; mark the morning half "not needed" (its pill
-    // flips to "Undo") and confirm.
-    expect(find.text('Not needed'), findsNWidgets(2));
-    await tester.tap(find.text('Not needed').first);
+    // Both halves start kept, each with a trash button; trash the morning half
+    // (its control flips to a restore icon) and confirm.
+    expect(find.byIcon(Icons.delete_outline_rounded), findsNWidgets(2));
+    await tester.tap(find.byIcon(Icons.delete_outline_rounded).first);
     await tester.pumpAndSettle();
-    expect(find.text('Undo'), findsOneWidget);
+    expect(find.byIcon(Icons.undo_rounded), findsOneWidget);
 
     await tester.tap(find.text('Confirm split'));
     await tester.pumpAndSettle();

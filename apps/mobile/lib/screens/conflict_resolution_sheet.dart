@@ -374,6 +374,7 @@ class _SegmentBlock extends StatelessWidget {
     required this.timeLabel,
     required this.accent,
     this.badge,
+    this.trailing,
     this.dimmed = false,
     this.compact = false,
   });
@@ -382,6 +383,10 @@ class _SegmentBlock extends StatelessWidget {
   final String timeLabel;
   final Color accent;
   final String? badge;
+
+  /// An arbitrary top-right control (the editable half's trash / restore
+  /// button). Takes precedence over [badge].
+  final Widget? trailing;
   final bool dimmed;
 
   /// Tighter padding + a clip, for a fixed-height block inside [_EditableHalf].
@@ -409,6 +414,7 @@ class _SegmentBlock extends StatelessWidget {
         border: Border.all(color: borderColor),
       ),
       child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Expanded(
             child: Column(
@@ -425,7 +431,10 @@ class _SegmentBlock extends StatelessWidget {
               ],
             ),
           ),
-          if (badge != null) ...[
+          if (trailing != null) ...[
+            const SizedBox(width: 8),
+            trailing!,
+          ] else if (badge != null) ...[
             const SizedBox(width: 10),
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
@@ -443,14 +452,14 @@ class _SegmentBlock extends StatelessWidget {
   }
 }
 
-/// The rail reserved on the right of each editable half for its controls (the
-/// "Not needed" pill and the drag handle), matching the design's 108px rail.
+/// The rail reserved on the right of each editable half for its drag handle,
+/// matching the design's 108px rail.
 const double _railWidth = 108;
 const double _connectorWidth = 14;
 
 /// One editable half of the split (design §8b): a narrower event block on the
-/// left, with a right-hand rail holding a "Not needed" toggle (vertically
-/// centred) and a green drag handle pinned to the block's inner edge — the
+/// left — with a trash / restore button in its top-right to drop or keep the
+/// half — and a green drag handle in the right-hand rail, pinned to the block's
 /// appointment-facing edge (bottom for the morning half, top for the afternoon).
 /// Dragging the handle vertically adds/removes travel time.
 class _EditableHalf extends StatelessWidget {
@@ -480,30 +489,27 @@ class _EditableHalf extends StatelessWidget {
   /// Called with the vertical drag delta (logical px, down-positive).
   final ValueChanged<double> onDragMinutes;
 
-  // The block is fixed-height with room reserved on the handle side so the
-  // straddling handle stays inside the widget's own bounds (no sibling overlap).
   static const double _blockH = 58;
-  static const double _slack = 13; // half the handle height
-  static const double _totalH = _blockH + _slack;
 
   @override
   Widget build(BuildContext context) {
-    final blockTop = handleAtBottom ? 0.0 : _slack;
-    final blockCenter = blockTop + _blockH / 2;
-    final handleY = handleAtBottom ? blockTop + _blockH : blockTop;
+    // The block fills the row; the drag handle straddles the appointment-facing
+    // edge, painting into the rail beside the neighbouring segment (Stack clip is
+    // off), so the visible block-to-segment gaps stay tight and even.
+    final handleY = handleAtBottom ? _blockH : 0.0;
 
     return LayoutBuilder(builder: (context, c) {
       final blockW = c.maxWidth - _railWidth;
       final controlLeft = blockW + _connectorWidth;
       return SizedBox(
-        height: _totalH,
+        height: _blockH,
         child: Stack(
           clipBehavior: Clip.none,
           children: [
-            // The (narrower) event block.
+            // The (narrower) event block, with the trash / restore control.
             Positioned(
               left: 0,
-              top: blockTop,
+              top: 0,
               width: blockW,
               height: _blockH,
               child: _SegmentBlock(
@@ -512,18 +518,19 @@ class _EditableHalf extends StatelessWidget {
                 accent: accent,
                 dimmed: !needed,
                 compact: true,
+                trailing: _RemoveButton(needed: needed, onTap: onToggle),
               ),
-            ),
-            // "Not needed" / "Undo" pill in the rail, vertically centred.
-            _connector(top: blockCenter, left: blockW, active: !needed),
-            Positioned(
-              left: controlLeft,
-              top: blockCenter - 12,
-              child: _NotNeededPill(needed: needed, onTap: onToggle),
             ),
             // The green drag handle, pinned to the appointment-facing edge.
             if (needed) ...[
-              _connector(top: handleY, left: blockW, green: true),
+              Positioned(
+                left: blockW,
+                top: handleY - 0.75,
+                child: Container(
+                    width: _connectorWidth,
+                    height: 1.5,
+                    color: AppColors.green.withValues(alpha: 0.6)),
+              ),
               Positioned(
                 left: controlLeft,
                 top: handleY - 13,
@@ -538,23 +545,27 @@ class _EditableHalf extends StatelessWidget {
       );
     });
   }
+}
 
-  /// A short horizontal tick joining the block's right edge to a rail control.
-  Widget _connector({
-    required double top,
-    required double left,
-    bool green = false,
-    bool active = false,
-  }) {
-    final color = green
-        ? AppColors.green.withValues(alpha: 0.6)
-        : active
-            ? AppColors.indigo.withValues(alpha: 0.4)
-            : Colors.white.withValues(alpha: 0.22);
-    return Positioned(
-      left: left,
-      top: top - 0.75,
-      child: Container(width: _connectorWidth, height: 1.5, color: color),
+/// The trash (drop the half) / restore (keep it) button in a half's top-right.
+class _RemoveButton extends StatelessWidget {
+  const _RemoveButton({required this.needed, required this.onTap});
+  final bool needed;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      behavior: HitTestBehavior.opaque,
+      child: Padding(
+        padding: const EdgeInsets.only(left: 6),
+        child: Icon(
+          needed ? Icons.delete_outline_rounded : Icons.undo_rounded,
+          size: 18,
+          color: needed ? AppColors.textMuted : AppColors.indigo,
+        ),
+      ),
     );
   }
 }
@@ -584,39 +595,6 @@ class _FixedBlock extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.only(right: _railWidth),
       child: block,
-    );
-  }
-}
-
-/// The per-half "Not needed" → "Undo" toggle pill (dashed when kept, solid
-/// indigo when the half is dropped).
-class _NotNeededPill extends StatelessWidget {
-  const _NotNeededPill({required this.needed, required this.onTap});
-  final bool needed;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final dropped = !needed;
-    final color = dropped ? AppColors.indigo : AppColors.textSecondary;
-    return GestureDetector(
-      onTap: onTap,
-      behavior: HitTestBehavior.opaque,
-      child: Container(
-        constraints: const BoxConstraints(minHeight: 24),
-        padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
-        decoration: BoxDecoration(
-          color: dropped ? AppColors.tint(AppColors.indigo, 0.12) : AppColors.bg,
-          borderRadius: BorderRadius.circular(999),
-          border: Border.all(
-            color: dropped
-                ? AppColors.indigo.withValues(alpha: 0.6)
-                : Colors.white.withValues(alpha: 0.3),
-          ),
-        ),
-        child: Text(dropped ? 'Undo' : 'Not needed',
-            style: font(kBodyFont, 10, 600, color: color)),
-      ),
     );
   }
 }
