@@ -510,6 +510,19 @@ export const conflicts = sqliteTable(
     // reopens the conflict back to 'pending' and clears these.
     loserContentHash: text('loser_content_hash'),
     winnerContentHash: text('winner_content_hash'),
+    // Resolution parameters (design §8b), applied when a resolved conflict's
+    // split is materialised. Defaults reproduce the plain split: flush cut,
+    // both halves kept. `travel_*_min` widen the cut around the winner (the gap
+    // the spawned pick-up / drop-off sits in); `*_needed=false` drops the
+    // leading / trailing half of the loser (a cancel_day for that side).
+    travelBeforeMin: integer('travel_before_min').notNull().default(0),
+    travelAfterMin: integer('travel_after_min').notNull().default(0),
+    beforeNeeded: integer('before_needed', { mode: 'boolean' })
+      .notNull()
+      .default(true),
+    afterNeeded: integer('after_needed', { mode: 'boolean' })
+      .notNull()
+      .default(true),
     createdAt: createdAt(),
   },
   (t) => ({

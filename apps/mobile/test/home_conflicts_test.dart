@@ -1,10 +1,36 @@
+import 'package:caretaker_app/api/client.dart';
 import 'package:caretaker_app/models.dart';
 import 'package:caretaker_app/screens/home_screen.dart';
+import 'package:caretaker_app/state/auth.dart';
 import 'package:caretaker_app/state/family.dart';
 import 'package:caretaker_app/theme/app_theme.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+
+/// Records the resolution parameters passed to resolveConflict.
+class _RecordingApiClient extends ApiClient {
+  _RecordingApiClient() : super(baseUrl: 'http://test');
+
+  Map<String, Object?>? lastResolve;
+
+  @override
+  Future<void> resolveConflict(
+    String familyId,
+    String conflictId, {
+    int travelBeforeMin = 0,
+    int travelAfterMin = 0,
+    bool beforeNeeded = true,
+    bool afterNeeded = true,
+  }) async {
+    lastResolve = {
+      'travelBeforeMin': travelBeforeMin,
+      'travelAfterMin': travelAfterMin,
+      'beforeNeeded': beforeNeeded,
+      'afterNeeded': afterNeeded,
+    };
+  }
+}
 
 Member _m(String id, String name,
         {bool caretaker = false, bool admin = false, bool child = false}) =>
@@ -93,5 +119,61 @@ void main() {
     expect(find.text('School day'), findsNWidgets(2));
     expect(find.text('Doctor appointment'), findsOneWidget);
     expect(find.text('Kept'), findsOneWidget);
+  });
+
+  testWidgets('marking the morning "not needed" + adding travel sends those params',
+      (tester) async {
+    // Wide + tall enough that the whole sheet (both halves + footer) is on-screen.
+    tester.view.physicalSize = const Size(700, 1600);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final api = _RecordingApiClient();
+    await tester.pumpWidget(ProviderScope(
+      overrides: [
+        apiClientProvider.overrideWithValue(api),
+        familyProvider.overrideWith((ref) async => 'fam-1'),
+        membersProvider.overrideWith((ref) async => [me, theo]),
+        currentMemberProvider.overrideWith((ref) async => me),
+        unownedTasksProvider.overrideWith((ref) async => [task]),
+        allTasksProvider.overrideWith((ref) async => [task]),
+        pendingDecisionsProvider.overrideWith((ref) async => const []),
+        conflictsProvider.overrideWith((ref) async => [conflict]),
+        calendarEventsProvider.overrideWith((ref) async => const []),
+        threadingThresholdProvider.overrideWith((ref) async => 30),
+      ],
+      child: MaterialApp(
+        theme: buildAppTheme(),
+        themeMode: ThemeMode.dark,
+        home: const Scaffold(body: HomeScreen()),
+      ),
+    ));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Review & resolve'));
+    await tester.pumpAndSettle();
+
+    // Mark the morning half not needed (the first "Not needed" toggle).
+    await tester.tap(find.text('Not needed').first);
+    await tester.pumpAndSettle();
+    // Add 10 min of drop-off travel on the still-kept afternoon half (two taps
+    // of its "+" — the only travel stepper left once the morning is dropped).
+    final plus = find.byIcon(Icons.add_rounded);
+    expect(plus, findsOneWidget);
+    await tester.tap(plus);
+    await tester.pumpAndSettle();
+    await tester.tap(plus);
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Confirm split'));
+    await tester.pumpAndSettle();
+
+    expect(api.lastResolve, {
+      'travelBeforeMin': 0,
+      'travelAfterMin': 10,
+      'beforeNeeded': false,
+      'afterNeeded': true,
+    });
   });
 }

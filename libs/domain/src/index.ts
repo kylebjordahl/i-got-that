@@ -433,6 +433,26 @@ export const SetTaskDurationInput = z.object({
 });
 export type SetTaskDurationInput = z.infer<typeof SetTaskDurationInput>;
 
+/**
+ * How to resolve a conflict's split (design §8b). Every field is optional — an
+ * empty body is the plain split: the lower-priority loser trimmed flush around
+ * the higher-priority winner, both halves kept, no travel buffer.
+ *
+ *  - `travelBeforeMin` / `travelAfterMin`: widen the cut around the winner so the
+ *    trimmed halves pull back, leaving a gap the spawned pick-up / drop-off then
+ *    sits in (persisted as travel-time buffer). Minutes, 0–720 (12h).
+ *  - `beforeNeeded` / `afterNeeded`: drop the leading / trailing half of the
+ *    loser entirely — a `cancel_day` for that side ("skip the morning" /
+ *    "skip the afternoon").
+ */
+export const ResolveConflictInput = z.object({
+  travelBeforeMin: z.number().int().min(0).max(720).default(0),
+  travelAfterMin: z.number().int().min(0).max(720).default(0),
+  beforeNeeded: z.boolean().default(true),
+  afterNeeded: z.boolean().default(true),
+});
+export type ResolveConflictInput = z.infer<typeof ResolveConflictInput>;
+
 // --- Override rules (the feed's schedule pipeline) ------------------------
 
 /** `cancel_day` / `ignore`: no parameters. */
