@@ -246,13 +246,14 @@ class AuthController extends StateNotifier<AuthState> {
   }
 
   /// Dev flow: request a magic link and immediately verify with the returned
-  /// dev token. In production the token is emailed and this would instead deep-
-  /// link back into verify().
+  /// dev token. Only local dev hands the token back (the API gates it on
+  /// ALLOW_DEV_TOKENS); anywhere else the token is emailed and the link deep-
+  /// links back into verify().
   Future<void> loginWithEmail(String email) async {
     final devToken = await _api.requestMagicLink(email);
     if (devToken == null) {
       throw Exception(
-        'Magic link sent — check your email (no dev token in production).',
+        'Magic link sent — open the link in your email to finish signing in.',
       );
     }
     final res = await _api.verifyMagicLink(devToken);

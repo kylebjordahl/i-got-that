@@ -123,6 +123,13 @@ echo "<another>"    | pnpm wrangler secret put KEK --env production
 A `wrangler secret` takes precedence over the `vars` KEK at runtime. Use a
 **different** KEK per environment.
 
+> **Never set `ALLOW_DEV_TOKENS` on a deployed env.** It makes
+> `POST /auth/magic-link/request` return the raw magic-link token, which is an
+> unauthenticated "log in as any email address" primitive. It lives in the
+> **top-level** `vars` (local `wrangler dev` + tests) and named envs don't
+> inherit those, so staging/production are closed by default — keep it that way.
+> See `docs/AUTH.md`.
+
 ### 7. Single-subdomain layout (one Worker serves API + web + redirect)
 
 Staging is configured to host everything on **one** subdomain

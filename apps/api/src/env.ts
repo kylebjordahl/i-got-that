@@ -18,6 +18,15 @@ export interface Bindings {
     KEK?: string;
     /** ORGANIZER email used on outbound iMIP invites (must be on the sending domain). */
     ORGANIZER_EMAIL?: string;
+    /**
+     * Return the raw magic-link token in the `POST /auth/magic-link/request`
+     * response (`devToken`) so dev + tests can complete the login flow without a
+     * mailbox. **Local development and tests ONLY** — anyone who can reach the
+     * endpoint could then log in as any email address. Set to the string `'true'`
+     * in the top-level `vars` of `wrangler.jsonc`; named envs don't inherit
+     * top-level vars, so `staging`/`production` fail closed by construction.
+     */
+    ALLOW_DEV_TOKENS?: string;
     /** Cloudflare Email Service `send_email` binding (outbound iMIP). */
     EMAIL?: SendEmail;
     /**

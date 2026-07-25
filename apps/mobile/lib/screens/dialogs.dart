@@ -238,7 +238,8 @@ class _AddLoginMethodDialogState extends ConsumerState<_AddLoginMethodDialog> {
       final api = ref.read(apiClientProvider);
       final devToken = await api.requestMagicLink(email);
       if (devToken == null) {
-        // Production sends the link by email; there's no in-app token to attach.
+        // Only local dev hands the token back; elsewhere it arrives by email,
+        // so there's no in-app token to attach.
         throw Exception('Magic link sent — open it on this device to finish.');
       }
       await api.linkMagicLink(devToken);
