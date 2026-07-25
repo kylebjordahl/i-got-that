@@ -519,6 +519,12 @@ export interface CalDavConfig {
   serverUrl: string;
   username: string;
   password: string;
+  /**
+   * Transport for every request the client makes, discovery hops included.
+   * The API passes its SSRF-guarded fetch here — `serverUrl` is user-supplied,
+   * and so are the collection hrefs discovery walks to from it.
+   */
+  fetchImpl?: typeof fetch;
 }
 
 /**
@@ -535,6 +541,7 @@ export function createCalDavClient(config: CalDavConfig) {
     },
     authMethod: 'Basic',
     defaultAccountType: 'caldav',
+    ...(config.fetchImpl ? { fetch: config.fetchImpl } : {}),
   });
 }
 

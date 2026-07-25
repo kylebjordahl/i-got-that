@@ -1,6 +1,7 @@
 import { and, eq, families, feeds, getDb } from '@igt/db';
 import type { Bindings } from './env.js';
 import { googleRefresherFor } from './lib/google-oauth.js';
+import { createGuardedFetch } from './lib/outbound-url.js';
 import { reconcileClaimEvents } from './services/claim.js';
 import { reconcileFamilyConflicts } from './services/conflicts.js';
 import { getProductionRegistry, syncFamilyMirror } from './services/mirror.js';
@@ -33,7 +34,13 @@ export async function scheduled(
 ): Promise<void> {
   const db = getDb(env.DB);
   const registry = getProductionRegistry(env);
-  const secrets = { kek: env.KEK, googleRefresh: googleRefresherFor(env) };
+  const secrets = {
+    kek: env.KEK,
+    googleRefresh: googleRefresherFor(env),
+    // Every feed / read-back URL in here came from a user; the guard re-vets
+    // each one at request time (these rows may predate the policy).
+    fetchImpl: createGuardedFetch(env),
+  };
   const now = Date.now();
 
   const allFamilies = await db.select().from(families);

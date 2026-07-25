@@ -22,6 +22,7 @@ import {
 } from '@igt/delivery';
 import type { Bindings } from '../env.js';
 import { googleRefresherFor } from '../lib/google-oauth.js';
+import { createGuardedFetch } from '../lib/outbound-url.js';
 import { resolveAccountCredential } from '../lib/account-credentials.js';
 
 type CalendarEventRow = typeof calendarEvents.$inferSelect;
@@ -429,9 +430,11 @@ export function getProductionRegistry(env: Bindings): DeliveryProviderRegistry {
   // Google provider can refresh a stored refresh token into an access token
   // (the OAuth client secret lives here, not in libs/delivery).
   const googleRefresher = googleRefresherFor(env);
+  // Both providers get the SSRF-guarded fetch: the CalDAV one writes to a
+  // user-supplied collection URL (with the account credential attached), and
+  // it costs the Google one nothing to share the timeout/size bounds.
+  const guardedFetch = createGuardedFetch(env);
   return new DeliveryProviderRegistry()
-    .register(new CalDavProvider())
-    // Bind fetch to the global scope — a bare `fetch` reference throws "Illegal
-    // invocation" when the provider calls it as `this.fetchImpl(...)` on Workers.
-    .register(new GoogleCalendarProvider(fetch.bind(globalThis), googleRefresher));
+    .register(new CalDavProvider(guardedFetch))
+    .register(new GoogleCalendarProvider(guardedFetch, googleRefresher));
 }

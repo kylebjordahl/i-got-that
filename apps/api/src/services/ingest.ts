@@ -152,9 +152,11 @@ async function ingestIcsFeed(
   try {
     res = await fetchImpl(feed.url, { headers });
   } catch (err) {
-    // A connection-level failure (DNS, TLS, timeout) never reaches the
-    // status-code branches below, so it must mark the feed 'error' here too —
-    // otherwise callers gating on feed.status keep retrying it on every call.
+    // A connection-level failure (DNS, TLS, timeout) — or a rejection by the
+    // outbound-URL policy, for a row stored before that policy existed — never
+    // reaches the status-code branches below, so it must mark the feed 'error'
+    // here too; otherwise callers gating on feed.status keep retrying it on
+    // every call.
     await db.update(feeds).set({ status: 'error' }).where(eq(feeds.id, feed.id));
     throw err;
   }
@@ -171,7 +173,16 @@ async function ingestIcsFeed(
     throw new Error(`feed ${feed.id} fetch failed: ${res.status}`);
   }
 
-  const text = await res.text();
+  let text: string;
+  try {
+    // Bounded by the guarded fetch's body cap, which surfaces here (the read,
+    // not the request, is where an oversized "ICS" gets caught) — same
+    // treatment as a connection failure so the feed doesn't retry forever.
+    text = await res.text();
+  } catch (err) {
+    await db.update(feeds).set({ status: 'error' }).where(eq(feeds.id, feed.id));
+    throw err;
+  }
   const etag = res.headers.get('etag');
   const windowStart = opts.windowStart ?? new Date();
   const windowEnd = opts.windowEnd ?? new Date(windowStart.getTime() + DEFAULT_WINDOW_MS);

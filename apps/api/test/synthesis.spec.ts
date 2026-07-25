@@ -411,7 +411,7 @@ describe('link-rule (override) routes', () => {
     // One implicit ingest per feed (standard + exception), triggered by each
     // feed's first member-link creation below.
     fetchMock
-      .get('https://f')
+      .get('https://f.example.com')
       .intercept({ path: (p: string) => p === '/x.ics' || p === '/e.ics', method: 'GET' })
       .reply(200, EMPTY_ICS, { headers: { 'content-type': 'text/calendar' } })
       .times(2);
@@ -421,7 +421,7 @@ describe('link-rule (override) routes', () => {
     const standard = (
       await db
         .insert(feeds)
-        .values({ familyId: fam.familyId, mode: 'standard', url: 'https://f/x.ics' })
+        .values({ familyId: fam.familyId, mode: 'standard', url: 'https://f.example.com/x.ics' })
         .returning()
     )[0]!;
     const stdLink = await call(
@@ -441,7 +441,7 @@ describe('link-rule (override) routes', () => {
     const feed = (
       await db
         .insert(feeds)
-        .values({ familyId: fam.familyId, mode: 'exception', url: 'https://f/e.ics' })
+        .values({ familyId: fam.familyId, mode: 'exception', url: 'https://f.example.com/e.ics' })
         .returning()
     )[0]!;
     const linkRes = await call(
