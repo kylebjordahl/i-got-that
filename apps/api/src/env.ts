@@ -16,6 +16,14 @@ export interface Bindings {
     PUBLIC_ORIGIN?: string;
     /** base64 of 32 random bytes; the key-encryption key for envelope encryption. */
     KEK?: string;
+    /**
+     * Escape hatch for the outbound-URL (SSRF) policy in
+     * `lib/outbound-url.ts`: comma-separated `host` or `host:port` entries that
+     * user-supplied feed / CalDAV URLs may target even though the default
+     * policy would reject them (a self-hosted CalDAV server on an odd port, a
+     * local ICS fixture during development). Unset ⇒ public hosts on 80/443 only.
+     */
+    OUTBOUND_ALLOWED_HOSTS?: string;
     /** ORGANIZER email used on outbound iMIP invites (must be on the sending domain). */
     ORGANIZER_EMAIL?: string;
     /**

@@ -320,6 +320,20 @@ cd apps/api && pnpm wrangler tail --env staging        # live logs
   (drops all app tables + the `d1_migrations` ledger) then
   `wrangler d1 migrations apply DB --env staging --remote`. **Never** point it at
   production.
+- **Outbound URLs are policed (SSRF guard)** — feed URLs and CalDAV
+  server/collection URLs are fetched by the Worker on a user's behalf, so
+  `apps/api/src/lib/outbound-url.ts` vets them at write time *and* before every
+  request (redirects included). The default policy allows **https on port
+  80/443 to a public host**: `http:` is permitted only when
+  `ENVIRONMENT=development`, and loopback / RFC1918 / link-local / CGNAT /
+  multicast addresses, `localhost`, `*.local`, `*.internal`, `*.home.arpa`, and
+  dotless intranet names are rejected everywhere. A rejected URL fails feed or
+  account creation with `400 {"error":"unsafe_url"}`, and a stored row that no
+  longer passes marks its feed `error`. To reach a host the default policy
+  refuses (a self-hosted CalDAV server on an odd port, a LAN ICS fixture), set
+  the optional `OUTBOUND_ALLOWED_HOSTS` var to a comma-separated list of
+  `host` / `host:port` entries — that's the only escape hatch; there is no
+  "disable the guard" switch.
 - **Email is disconnected** (`send_email` commented in `wrangler.jsonc`). Until a
   paid plan + verified sending domain are set up, magic-link login can't email in
   a deployed env — use **Sign in with Apple** or the **invite link** flow for

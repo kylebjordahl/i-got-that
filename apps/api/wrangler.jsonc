@@ -30,6 +30,13 @@
         // DEV ONLY KEK (envelope-encryption key-encryption key). Production sets a
         // real secret via `wrangler secret put KEK` / Terraform — never commit prod keys.
         "KEK": "2OmcakKhoLtzTqOq5ZrXq/e/7mXa8Gmav+dtCe/2ThM=",
+        // Escape hatch for the outbound-URL (SSRF) policy in
+        // src/lib/outbound-url.ts: comma-separated `host` / `host:port` entries
+        // that user-supplied feed + CalDAV URLs may target even though the
+        // default policy (public hosts, https, ports 80/443) rejects them —
+        // e.g. "127.0.0.1:8080" for a local ICS fixture, or a self-hosted
+        // CalDAV server on an odd port. Empty ⇒ default policy only.
+        "OUTBOUND_ALLOWED_HOSTS": "",
         // Allowed Apple `aud` values for Sign in with Apple (comma-separated: the
         // iOS bundle id and/or web Services ID). Empty ⇒ Apple login disabled.
         // Set per env (or via secret). See docs/AUTH.md.
