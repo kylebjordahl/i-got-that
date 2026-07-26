@@ -11,6 +11,12 @@ import { SetMemberCalendarTargetInput } from '@igt/domain';
 import { Hono } from 'hono';
 import type { HonoEnv } from '../env.js';
 import { googleRefresherFor } from '../lib/google-oauth.js';
+import {
+  assertSafeOutboundUrl,
+  createGuardedFetch,
+  outboundPolicy,
+  UnsafeOutboundUrlError,
+} from '../lib/outbound-url.js';
 import { requireFamilyMember } from '../middleware/auth.js';
 import {
   deferSync,
@@ -107,6 +113,23 @@ memberCalendarRoutes.put('/members/:memberId/calendar-target', async (c) => {
   )[0];
   if (!account) return c.json({ error: 'account_not_found' }, 404);
   const targetMethod = account.kind === 'google' ? 'google' : 'caldav';
+  // For CalDAV the target calendar id IS the collection URL we PUT/DELETE
+  // events to (with the account's basic credential attached), so it goes
+  // through the same outbound policy as any other user-supplied URL. A Google
+  // target is a calendar id, not a URL.
+  if (targetMethod === 'caldav') {
+    try {
+      assertSafeOutboundUrl(parsed.data.targetCalendarId, outboundPolicy(c.env));
+    } catch (err) {
+      if (err instanceof UnsafeOutboundUrlError) {
+        return c.json(
+          { error: 'unsafe_url', reason: err.reason, path: 'targetCalendarId' },
+          400,
+        );
+      }
+      throw err;
+    }
+  }
 
   const prior = (
     await db
@@ -164,7 +187,11 @@ memberCalendarRoutes.put('/members/:memberId/calendar-target', async (c) => {
     // already-stored (wrong) floating-time human events get reinterpreted,
     // rather than waiting for the next cron tick.
     try {
-      await readBackMember(db, row, { kek: c.env.KEK, googleRefresh: googleRefresherFor(c.env) });
+      await readBackMember(db, row, {
+        kek: c.env.KEK,
+        googleRefresh: googleRefresherFor(c.env),
+        fetchImpl: createGuardedFetch(c.env),
+      });
     } catch {
       // Best-effort — a failed read-back here shouldn't block the target
       // change that already committed; the next cron tick retries it.

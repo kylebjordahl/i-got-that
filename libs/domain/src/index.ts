@@ -272,6 +272,12 @@ export const CreateFeedInput = z
       }
       if (!v.sourceCalendarId) {
         ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['sourceCalendarId'], message: 'sourceCalendarId is required for account feeds' });
+      } else if (v.kind === 'caldav' && !z.string().url().safeParse(v.sourceCalendarId).success) {
+        // A CalDAV sourceCalendarId is a collection URL the server dereferences
+        // (a Google one is an opaque calendar id, so it stays a plain string).
+        // Shape only — whether that URL is a *permitted* outbound target is the
+        // API's call, since the policy depends on the deployment environment.
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['sourceCalendarId'], message: 'sourceCalendarId must be a URL for caldav feeds' });
       }
     }
     // Free/busy reads go through the Google freebusy API; no other transport
@@ -693,6 +699,11 @@ export type AlertMinutes = z.infer<typeof AlertMinutes>;
  */
 export const SetMemberCalendarTargetInput = z.object({
   externalAccountId: Id,
+  /**
+   * The CalDAV collection URL, or the Google calendar id — which one depends on
+   * the account's kind, so the "must be a URL" check (and the outbound-URL
+   * policy behind it) lives in the route, where the account has been loaded.
+   */
   targetCalendarId: z.string().min(1),
   targetCalendarName: z.string().max(256).optional(),
   alertMinutes: AlertMinutes.optional(),

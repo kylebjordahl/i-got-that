@@ -44,6 +44,12 @@ import { Hono } from 'hono';
 import type { Bindings, HonoEnv } from '../env.js';
 import { resolveAccountCredential } from '../lib/account-credentials.js';
 import { googleRefresherFor } from '../lib/google-oauth.js';
+import {
+  assertSafeOutboundUrl,
+  createGuardedFetch,
+  outboundPolicy,
+  UnsafeOutboundUrlError,
+} from '../lib/outbound-url.js';
 import { requireAdmin, requireFamilyMember } from '../middleware/auth.js';
 import { reconcileClaimEvents } from '../services/claim.js';
 import {
@@ -56,9 +62,16 @@ import { readBackFamily } from '../services/readback.js';
 import { synthesizeFeed } from '../services/synthesis.js';
 import { buildFamilyTasks, buildMemberTasks } from '../services/task-gen.js';
 
-/** Ingest secrets (KEK + Google refresher) needed to read account-backed feeds. */
+/**
+ * Ingest secrets (KEK + Google refresher) needed to read account-backed feeds,
+ * plus the SSRF-guarded fetch every user-supplied URL must go through.
+ */
 function ingestSecrets(env: Bindings) {
-  return { kek: env.KEK, googleRefresh: googleRefresherFor(env) };
+  return {
+    kek: env.KEK,
+    googleRefresh: googleRefresherFor(env),
+    fetchImpl: createGuardedFetch(env),
+  };
 }
 
 /**
@@ -125,7 +138,21 @@ feedRoutes.post('/', requireAdmin, async (c) => {
     sourceCalendarName: null,
   };
 
+  // Both the ICS url and a CalDAV collection url are dereferenced server-side,
+  // so they have to clear the outbound policy before the row exists. (The
+  // guarded fetch re-checks at request time; this is what makes the failure a
+  // 400 at setup instead of a feed silently stuck in 'error'.) A Google
+  // `sourceCalendarId` is a calendar id, not a URL — nothing to vet.
+  const unsafe = (err: UnsafeOutboundUrlError, path: string) =>
+    c.json({ error: 'unsafe_url', reason: err.reason, path }, 400);
+
   if (d.kind === 'ics') {
+    try {
+      assertSafeOutboundUrl(d.url!, outboundPolicy(c.env));
+    } catch (err) {
+      if (err instanceof UnsafeOutboundUrlError) return unsafe(err, 'url');
+      throw err;
+    }
     values.url = d.url ?? null;
     // Optional display title; blank ⇒ backfilled from X-WR-CALNAME on first sync.
     values.sourceCalendarName = d.name ?? null;
@@ -146,6 +173,14 @@ feedRoutes.post('/', requireAdmin, async (c) => {
     if (!account) return c.json({ error: 'account_not_found' }, 404);
     const expectedKind = account.kind === 'google' ? 'google' : 'caldav';
     if (d.kind !== expectedKind) return c.json({ error: 'account_kind_mismatch' }, 400);
+    if (d.kind === 'caldav') {
+      try {
+        assertSafeOutboundUrl(d.sourceCalendarId!, outboundPolicy(c.env));
+      } catch (err) {
+        if (err instanceof UnsafeOutboundUrlError) return unsafe(err, 'sourceCalendarId');
+        throw err;
+      }
+    }
     // Busy feeds point at a calendar shared to this account as free/busy-only
     // (it won't appear in the account's own calendarList) — probe the grant now
     // so a mis-set share fails the creation with guidance, not the first sync.

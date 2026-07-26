@@ -17,7 +17,7 @@ async function linkedFeed(db: Db, familyId: string, childId: string) {
   const feed = (
     await db
       .insert(feeds)
-      .values({ familyId, mode: 'standard', url: 'https://f/c.ics', sourceCalendarName: 'Soccer' })
+      .values({ familyId, mode: 'standard', url: 'https://f.example.com/c.ics', sourceCalendarName: 'Soccer' })
       .returning()
   )[0]!;
   const link = (
