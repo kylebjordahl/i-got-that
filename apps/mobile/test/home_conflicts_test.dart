@@ -208,4 +208,94 @@ void main() {
       'afterNeeded': true,
     });
   });
+
+  testWidgets('dragging a travel handle steps in 5-minute increments without '
+      'dragging the sheet', (tester) async {
+    tester.view.physicalSize = const Size(600, 1600);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final api = _RecordingApiClient();
+    await tester.pumpWidget(ProviderScope(
+      overrides: [
+        apiClientProvider.overrideWithValue(api),
+        familyProvider.overrideWith((ref) async => 'fam-1'),
+        membersProvider.overrideWith((ref) async => [me, theo]),
+        currentMemberProvider.overrideWith((ref) async => me),
+        unownedTasksProvider.overrideWith((ref) async => [task]),
+        allTasksProvider.overrideWith((ref) async => [task]),
+        pendingDecisionsProvider.overrideWith((ref) async => const []),
+        conflictsProvider.overrideWith((ref) async => [conflict]),
+        calendarEventsProvider.overrideWith((ref) async => const []),
+        threadingThresholdProvider.overrideWith((ref) async => 30),
+      ],
+      child: MaterialApp(
+        theme: buildAppTheme(),
+        themeMode: ThemeMode.dark,
+        home: const Scaffold(body: HomeScreen()),
+      ),
+    ));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Review & resolve'));
+    await tester.pumpAndSettle();
+
+    final title = find.text('Two events, one Theo');
+    final sheetTop = tester.getTopLeft(title).dy;
+
+    // The label is the only hook on the handle, and the test font stretches the
+    // pill past the screen edge — so drag from just inside its label rather than
+    // from the (off-screen) centre.
+    Future<void> dragHandle(String label, double dy) async {
+      final grip = tester.getTopLeft(find.text(label)) + const Offset(2, 4);
+      await tester.dragFrom(grip, Offset(0, dy));
+      await tester.pumpAndSettle();
+    }
+
+    // A small movement is a small, round adjustment: 22px ≈ 7min, snapped to 5
+    // (at the old 1.4px/min it would already have been 16 minutes).
+    await dragHandle('Pick-up · 10:00', -22);
+    expect(find.text('Travel time · 5 min'), findsOneWidget);
+    expect(find.text('Pick-up · 9:55'), findsOneWidget);
+
+    // 60px further up is 20 more minutes, and picks up where the last drag left
+    // off rather than re-snapping from the displayed 5.
+    await dragHandle('Pick-up · 9:55', -60);
+    expect(find.text('Travel time · 25 min'), findsOneWidget);
+    expect(find.text('Pick-up · 9:35'), findsOneWidget);
+
+    // Dragging back below zero stops at zero — no negative travel, and no dead
+    // zone to unwind before the number moves again.
+    await dragHandle('Pick-up · 9:35', 200);
+    expect(find.textContaining('Travel time'), findsNothing);
+    expect(find.text('Pick-up · 10:00'), findsOneWidget);
+
+    // The handle owns the gesture: a long pull downwards (the direction that
+    // used to drag the sheet away instead) leaves the sheet exactly where it is,
+    // mid-drag and after release. Travel is already at zero, so the only thing
+    // that could move the title here is the sheet itself.
+    final grip = tester.getTopLeft(find.text('Pick-up · 10:00')) + const Offset(2, 4);
+    final gesture = await tester.startGesture(grip);
+    await gesture.moveBy(const Offset(0, 120));
+    await tester.pump();
+    expect(tester.getTopLeft(title).dy, sheetTop);
+    await gesture.up();
+    await tester.pumpAndSettle();
+    expect(tester.getTopLeft(title).dy, sheetTop);
+    expect(find.textContaining('Travel time'), findsNothing);
+
+    // What's sent is the number the preview was labelled with.
+    await dragHandle('Pick-up · 10:00', -33);
+    expect(find.text('Travel time · 10 min'), findsOneWidget);
+
+    await tester.tap(find.text('Confirm split'));
+    await tester.pumpAndSettle();
+    expect(api.lastResolve, {
+      'travelBeforeMin': 10,
+      'travelAfterMin': 0,
+      'beforeNeeded': true,
+      'afterNeeded': true,
+    });
+  });
 }
