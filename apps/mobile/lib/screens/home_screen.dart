@@ -747,10 +747,13 @@ class _DecisionCard extends StatelessWidget {
   }
 }
 
-/// An agenda overlap (6b, ranked above pending decisions): a coral card naming
-/// the two events that collide. "Split around it" accepts the default
-/// resolution — trim/split the lower-priority event around the higher one, which
-/// then generates its own drop-off/pickup; "Dismiss" accepts the double-book.
+/// An agenda overlap (6b, ranked above pending decisions): a coral card that
+/// does nothing but name the two colliding events. The header carries *when*
+/// on the left (beside the icon) and *who* on the right (avatar + name); the
+/// two events are then listed as peers — higher-priority first, identical
+/// treatment, because the point of the card is the collision, not the verdict.
+/// The verdict (split the lower-priority event around the higher one, or accept
+/// the double-book) belongs to the resolution sheet.
 class _ConflictCard extends StatelessWidget {
   const _ConflictCard({
     required this.conflict,
@@ -767,11 +770,10 @@ class _ConflictCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final memberColor =
         member != null ? personColor(member!) : AppColors.textSecondary;
-    final winner = conflict.winner;
-    final loser = conflict.loser;
-    final when = winner.allDay
-        ? homeDayHeader(dayKey(winner.start), DateTime.now())
-        : friendlyTime(winner.start);
+    final name = member?.relationName;
+    // The higher-priority event anchors the day ("Today" / "Wed, Jul 8" —
+    // never shouted in caps).
+    final day = dayHeading(dayKey(conflict.winner.start), DateTime.now());
     return Material(
       color: AppColors.tint(AppColors.coral, 0.07),
       borderRadius: BorderRadius.circular(18),
@@ -789,35 +791,35 @@ class _ConflictCard extends StatelessWidget {
             children: [
               Row(
                 children: [
-                  const IconTile(icon: Icons.event_busy_rounded, color: AppColors.coral, size: 38),
-                  const SizedBox(width: 12),
+                  const IconTile(
+                      icon: Icons.event_busy_rounded,
+                      color: AppColors.coral,
+                      size: 34),
+                  const SizedBox(width: 10),
+                  // The date takes the slack (rather than a Spacer) so the
+                  // member cluster stays flush right whatever its name is.
                   Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text.rich(
-                          TextSpan(children: [
-                            TextSpan(
-                                text: loser.summary ?? 'An event',
-                                style: AppText.sectionItemTitle),
-                            TextSpan(
-                                text: ' · ${member?.relationName ?? 'member'}',
-                                style: font(kBodyFont, 14, 700, color: memberColor)),
-                          ]),
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                        const SizedBox(height: 3),
-                        Text(
-                          'Overlaps ${winner.summary ?? 'another event'} · $when — '
-                          "can't be in two places at once.",
-                          style: font(kBodyFont, 12, 500, color: AppColors.coral),
-                        ),
-                      ],
-                    ),
+                    child: Text(day,
+                        style: font(kBodyFont, 13, 600,
+                            color: AppColors.textSecondary)),
                   ),
+                  const SizedBox(width: 10),
+                  PersonAvatar(
+                    initial: initialFor(name ?? '?'),
+                    color: memberColor,
+                    size: 30,
+                  ),
+                  const SizedBox(width: 8),
+                  Text(name ?? 'Member',
+                      style: font(kBodyFont, 13.5, 700, color: memberColor),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis),
                 ],
               ),
+              const SizedBox(height: 12),
+              _ConflictEventRow(event: conflict.winner),
+              const SizedBox(height: 7),
+              _ConflictEventRow(event: conflict.loser),
               const SizedBox(height: 12),
               Row(
                 children: [
@@ -835,6 +837,50 @@ class _ConflictCard extends StatelessWidget {
       ),
     );
   }
+}
+
+/// One of the two colliding events on a [_ConflictCard]: title on the left,
+/// time on the right. Both events get this exact treatment — only their order
+/// carries the priority.
+class _ConflictEventRow extends StatelessWidget {
+  const _ConflictEventRow({required this.event});
+  final ConflictEventRef event;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: AppColors.bg.withValues(alpha: 0.45),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppColors.coral.withValues(alpha: 0.22)),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              event.summary ?? 'An event',
+              style: AppText.listItemTitle,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          const SizedBox(width: 10),
+          Text(_conflictEventTime(event),
+              style: font(kBodyFont, 12.5, 600, color: AppColors.textSecondary)),
+        ],
+      ),
+    );
+  }
+}
+
+/// "All day" / "10:00 – 11:00 AM" / "10:00 AM" — a conflicting event's clock
+/// label, matching the resolution sheet's.
+String _conflictEventTime(ConflictEventRef e) {
+  if (e.allDay) return 'All day';
+  final end = e.end;
+  if (end != null && end.isAfter(e.start)) return friendlyRange(e.start, end);
+  return friendlyTime(e.start);
 }
 
 /// Threaded chain (6d, treatment 1 — "connector thread"): separate cards joined
