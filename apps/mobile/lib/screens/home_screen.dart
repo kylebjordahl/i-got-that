@@ -779,7 +779,7 @@ class _ConflictCard extends StatelessWidget {
         onTap: onOpen,
         borderRadius: BorderRadius.circular(18),
         child: Container(
-          padding: const EdgeInsets.all(14),
+          padding: const EdgeInsets.all(12),
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(18),
             border: Border.all(color: AppColors.coral.withValues(alpha: 0.45)),
@@ -792,17 +792,18 @@ class _ConflictCard extends StatelessWidget {
                 member: member,
                 icon: Icons.event_busy_rounded,
               ),
-              const SizedBox(height: 12),
+              const SizedBox(height: 10),
               ConflictEventRow(event: conflict.winner),
-              const SizedBox(height: 7),
+              const SizedBox(height: 6),
               ConflictEventRow(event: conflict.loser),
-              const SizedBox(height: 12),
+              const SizedBox(height: 10),
               Row(
                 children: [
                   Expanded(
                     child: PillButton(
                         label: 'Review & resolve',
                         variant: PillVariant.amber,
+                        dense: true,
                         onPressed: onOpen),
                   ),
                 ],
