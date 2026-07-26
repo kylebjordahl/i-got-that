@@ -5,6 +5,7 @@ import 'package:caretaker_app/state/auth.dart';
 import 'package:caretaker_app/state/family.dart';
 import 'package:caretaker_app/theme/app_theme.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -297,5 +298,141 @@ void main() {
       'beforeNeeded': true,
       'afterNeeded': true,
     });
+  });
+
+  /// Home with [c]'s conflict card — the resolution sheet opens from
+  /// "Review & resolve". Keyed on the conflict so pumping a different one builds
+  /// a fresh scope instead of reusing the previous conflict's providers.
+  Widget appWith(Conflict c) => ProviderScope(
+        key: ValueKey('${c.id}-${c.winner.end}'),
+        overrides: [
+          familyProvider.overrideWith((ref) async => 'fam-1'),
+          membersProvider.overrideWith((ref) async => [me, theo]),
+          currentMemberProvider.overrideWith((ref) async => me),
+          unownedTasksProvider.overrideWith((ref) async => [task]),
+          allTasksProvider.overrideWith((ref) async => [task]),
+          pendingDecisionsProvider.overrideWith((ref) async => const []),
+          conflictsProvider.overrideWith((ref) async => [c]),
+          calendarEventsProvider.overrideWith((ref) async => const []),
+          threadingThresholdProvider.overrideWith((ref) async => 30),
+        ],
+        child: MaterialApp(
+          theme: buildAppTheme(),
+          themeMode: ThemeMode.dark,
+          home: const Scaffold(body: HomeScreen()),
+        ),
+      );
+
+  /// The same conflict with the appointment stretched to [hours] — the preview's
+  /// zoom is derived from the appointment's length, so this changes the scale.
+  Conflict withWinnerHours(int hours) => Conflict(
+        id: conflict.id,
+        familyMemberId: conflict.familyMemberId,
+        loser: conflict.loser,
+        winner: ConflictEventRef(
+          summary: conflict.winner.summary,
+          allDay: false,
+          start: conflict.winner.start,
+          end: conflict.winner.start.add(Duration(hours: hours)),
+        ),
+      );
+
+  testWidgets('the appointment and the travel gap render to one scale, zoomed '
+      'to the conflict', (tester) async {
+    tester.view.physicalSize = const Size(600, 1600);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    Finder inSheet(String text) =>
+        find.descendant(of: find.byType(BottomSheet), matching: find.text(text));
+    // A segment's block is the nearest Container around its label.
+    double blockHeight(String text) => tester
+        .getSize(find
+            .ancestor(of: inSheet(text), matching: find.byType(Container))
+            .first)
+        .height;
+
+    /// Opens [c]'s sheet, drags the pick-up handle up [dragPx], and returns the
+    /// (appointment, travel gap) block heights — then closes the sheet again.
+    Future<(double, double)> heights(
+        Conflict c, double dragPx, String travelLabel) async {
+      await tester.pumpWidget(appWith(c));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Review & resolve'));
+      await tester.pumpAndSettle();
+
+      final grip =
+          tester.getTopLeft(find.text('Pick-up · 10:00')) + const Offset(2, 4);
+      await tester.dragFrom(grip, Offset(0, -dragPx));
+      await tester.pumpAndSettle();
+      expect(find.text(travelLabel), findsOneWidget);
+
+      final measured = (blockHeight('Doctor appointment'), blockHeight(travelLabel));
+      await tester.tapAt(const Offset(8, 8)); // dismiss the sheet
+      await tester.pumpAndSettle();
+      expect(find.byType(BottomSheet), findsNothing);
+      return measured;
+    }
+
+    // 90px of drag is 30 minutes of travel against a one-hour appointment, so
+    // the gap block comes out half the appointment's height.
+    final (hourH, halfHourH) = await heights(conflict, 90, 'Travel time · 30 min');
+    expect(halfHourH / hourH, closeTo(0.5, 0.05));
+    // Drawn to scale, the appointment is no longer the halves' fixed height.
+    expect(hourH, greaterThan(60));
+
+    // The zoom follows the conflict: a three-hour appointment draws taller than
+    // a one-hour one, with its own travel gap still in proportion.
+    final (threeHourH, hourGapH) =
+        await heights(withWinnerHours(3), 180, 'Travel time · 60 min');
+    expect(threeHourH, greaterThan(hourH));
+    expect(hourGapH / threeHourH, closeTo(1 / 3, 0.05));
+  });
+
+  testWidgets('each 5-minute snap ticks a selection haptic', (tester) async {
+    tester.view.physicalSize = const Size(600, 1600);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final haptics = <String?>[];
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      SystemChannels.platform,
+      (call) async {
+        if (call.method == 'HapticFeedback.vibrate') {
+          haptics.add(call.arguments as String?);
+        }
+        return null;
+      },
+    );
+    addTearDown(() => tester.binding.defaultBinaryMessenger
+        .setMockMethodCallHandler(SystemChannels.platform, null));
+
+    await tester.pumpWidget(appWith(conflict));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Review & resolve'));
+    await tester.pumpAndSettle();
+
+    // Pulling down at zero travel changes nothing, so it stays silent.
+    final grip = tester.getTopLeft(find.text('Pick-up · 10:00')) + const Offset(2, 4);
+    await tester.dragFrom(grip, const Offset(0, 60));
+    await tester.pumpAndSettle();
+    expect(haptics, isEmpty);
+
+    // Crossing into the first 5-minute step ticks.
+    await tester.dragFrom(grip, const Offset(0, -22));
+    await tester.pumpAndSettle();
+    expect(find.text('Travel time · 5 min'), findsOneWidget);
+    expect(haptics, isNotEmpty);
+    expect(haptics.every((a) => a == 'HapticFeedbackType.selectionClick'), isTrue);
+
+    // Moving within the step (a minute's worth of drag, still rounding to 5)
+    // doesn't tick again.
+    final ticks = haptics.length;
+    await tester.dragFrom(grip, const Offset(0, 3));
+    await tester.pumpAndSettle();
+    expect(find.text('Travel time · 5 min'), findsOneWidget);
+    expect(haptics.length, ticks);
   });
 }

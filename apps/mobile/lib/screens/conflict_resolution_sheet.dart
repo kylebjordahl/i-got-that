@@ -2,6 +2,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../models.dart';
@@ -81,6 +82,12 @@ class _ConflictResolutionSheetState
   /// (and never past the half's own length).
   static const _travelMax = 120;
 
+  /// The preview is a zoomed window on the conflict: the appointment and the
+  /// travel buffers are drawn to one scale, so 30 minutes of travel reads as half
+  /// of a one-hour appointment. This caps that scale, so a 10-minute conflict
+  /// doesn't balloon into a screenful.
+  static const _maxZoom = 2.2;
+
   /// The travel minutes a raw drag accumulator resolves to: snapped to
   /// [_travelStepMin] and held within the half's own slack. A [max] that isn't a
   /// multiple of the step is still reachable — it's what the very end of the
@@ -90,6 +97,38 @@ class _ConflictResolutionSheetState
     if (clamped >= max) return max;
     final stepped = (clamped / _travelStepMin).round() * _travelStepMin.toDouble();
     return math.min(stepped, max);
+  }
+
+  /// Logical px per minute for the to-scale part of the preview (the appointment
+  /// and the travel gaps). Derived from the conflict's own dimensions — the
+  /// appointment's length plus the most travel it could ever take — so even a
+  /// fully dragged-out split fits the sheet's timeline budget, and so the zoom
+  /// never shifts under the finger while a handle is being dragged.
+  double _zoom(int winnerMin, double maxTravel) {
+    final budget = (MediaQuery.of(context).size.height * 0.34).clamp(180.0, 320.0);
+    final span = winnerMin + maxTravel;
+    if (span <= 0) return _maxZoom;
+    return math.min(_maxZoom, budget / span);
+  }
+
+  /// Applies a drag delta to one half's travel buffer, ticking a selection haptic
+  /// each time the resolved 5-minute step changes — the same feedback a picker
+  /// gives, so the steps are felt rather than watched.
+  void _dragTravel({required bool before, required double dy, required double max}) {
+    final raw = before ? _travelBefore : _travelAfter;
+    // Up shortens the morning half (an earlier pick-up); down lengthens the
+    // afternoon's lead-in (a later drop-off).
+    final next = (before ? raw - dy / _pxPerMin : raw + dy / _pxPerMin)
+        .clamp(0.0, max);
+    final stepped = _resolveTravel(next, max) != _resolveTravel(raw, max);
+    setState(() {
+      if (before) {
+        _travelBefore = next;
+      } else {
+        _travelAfter = next;
+      }
+    });
+    if (stepped) HapticFeedback.selectionClick();
   }
 
   Conflict get _conflict => widget.conflict;
@@ -196,6 +235,16 @@ class _ConflictResolutionSheetState
     final beforeEnd = wStart.subtract(Duration(minutes: travelBefore.round()));
     final afterStart = wEnd?.add(Duration(minutes: travelAfter.round()));
 
+    // The to-scale part of the window: one zoom shared by the appointment and
+    // both travel gaps, so their heights read as their durations. The two halves
+    // stay a fixed height — they're the clipped context either side of the window
+    // (often hours of school day), not segments being measured. Heights are
+    // minimums: a segment the zoom would draw thinner than its own label keeps
+    // the label's height instead of clipping it.
+    final winnerMin = splittable ? wEnd!.difference(wStart).inMinutes : 0;
+    final zoom = _zoom(winnerMin, maxBefore + maxAfter);
+    final winnerH = winnerMin * zoom;
+
     return SingleChildScrollView(
       padding: EdgeInsets.fromLTRB(
           22, 4, 22, 24 + MediaQuery.of(context).viewInsets.bottom),
@@ -257,23 +306,30 @@ class _ConflictResolutionSheetState
                 handleAtBottom: true,
                 handleLabel: 'Pick-up · ${clockShort(beforeEnd)}',
                 onToggle: () => setState(() => _beforeNeeded = !_beforeNeeded),
-                onDragMinutes: (dy) => setState(() => _travelBefore =
-                    (_travelBefore - dy / _pxPerMin).clamp(0.0, maxBefore)),
+                onDragMinutes: (dy) =>
+                    _dragTravel(before: true, dy: dy, max: maxBefore),
               ),
               if (_beforeNeeded && travelBefore.round() > 0) ...[
                 const SizedBox(height: 7),
-                _TravelGapBlock(minutes: travelBefore.round()),
+                _TravelGapBlock(
+                  minutes: travelBefore.round(),
+                  height: travelBefore * zoom,
+                ),
               ],
               const SizedBox(height: 7),
             ],
             _FixedBlock(
               title: _titleOf(winner),
               timeLabel: _rangeLabel(winner),
+              height: winnerH,
             ),
             if (hasAfter) ...[
               if (_afterNeeded && travelAfter.round() > 0) ...[
                 const SizedBox(height: 7),
-                _TravelGapBlock(minutes: travelAfter.round()),
+                _TravelGapBlock(
+                  minutes: travelAfter.round(),
+                  height: travelAfter * zoom,
+                ),
               ],
               const SizedBox(height: 7),
               _EditableHalf(
@@ -285,8 +341,8 @@ class _ConflictResolutionSheetState
                 handleAtBottom: false,
                 handleLabel: 'Drop-off · ${clockShort(afterStart)}',
                 onToggle: () => setState(() => _afterNeeded = !_afterNeeded),
-                onDragMinutes: (dy) => setState(() => _travelAfter =
-                    (_travelAfter + dy / _pxPerMin).clamp(0.0, maxAfter)),
+                onDragMinutes: (dy) =>
+                    _dragTravel(before: false, dy: dy, max: maxAfter),
               ),
             ],
             if (!hasBefore && !hasAfter) ...[
@@ -600,26 +656,40 @@ class _RemoveButton extends StatelessWidget {
 }
 
 /// The higher-priority winner ("Fixed") block — indigo, at the same reduced
-/// width as the editable halves so the split reads as one stack.
+/// width as the editable halves so the split reads as one stack. Inside the
+/// timeline window it's drawn [height] tall, which is its duration at the
+/// preview's zoom.
 class _FixedBlock extends StatelessWidget {
   const _FixedBlock({
     required this.title,
     required this.timeLabel,
+    this.height,
     this.fullWidth = false,
   });
 
   final String title;
   final String timeLabel;
+
+  /// The block's to-scale height — a minimum, so a short appointment still shows
+  /// its title and time. Null outside the timeline window (the all-day /
+  /// open-ended case, where there's no duration to draw).
+  final double? height;
   final bool fullWidth;
 
   @override
   Widget build(BuildContext context) {
-    final block = _SegmentBlock(
+    Widget block = _SegmentBlock(
       title: title,
       timeLabel: timeLabel,
       accent: AppColors.indigo,
       badge: 'Fixed',
     );
+    if (height != null) {
+      block = ConstrainedBox(
+        constraints: BoxConstraints(minHeight: height!),
+        child: block,
+      );
+    }
     if (fullWidth) return block;
     return Padding(
       padding: const EdgeInsets.only(right: _railWidth),
@@ -745,10 +815,13 @@ class _GripDots extends StatelessWidget {
 }
 
 /// The amber, dashed-outline travel-time gap block shown between a kept half and
-/// the appointment, at the halves' reduced width.
+/// the appointment, at the halves' reduced width. [height] is the gap's own
+/// duration at the preview's zoom — a minimum, so a five-minute buffer still fits
+/// its label, and a longer one visibly takes longer.
 class _TravelGapBlock extends StatelessWidget {
-  const _TravelGapBlock({required this.minutes});
+  const _TravelGapBlock({required this.minutes, required this.height});
   final int minutes;
+  final double height;
 
   @override
   Widget build(BuildContext context) {
@@ -756,6 +829,7 @@ class _TravelGapBlock extends StatelessWidget {
       padding: const EdgeInsets.only(right: _railWidth),
       child: Container(
         width: double.infinity,
+        constraints: BoxConstraints(minHeight: height),
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
         decoration: BoxDecoration(
           color: AppColors.tint(AppColors.amber, 0.06),
