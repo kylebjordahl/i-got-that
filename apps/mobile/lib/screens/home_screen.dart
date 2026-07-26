@@ -9,6 +9,7 @@ import '../theme/person_colors.dart';
 import '../util/format.dart';
 import '../util/task_visuals.dart';
 import '../widgets/app_bottom_nav.dart';
+import '../widgets/conflict_card.dart';
 import '../widgets/primitives.dart';
 import '../widgets/settings.dart';
 import '../widgets/task_row.dart';
@@ -768,9 +769,6 @@ class _ConflictCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final memberColor =
-        member != null ? personColor(member!) : AppColors.textSecondary;
-    final name = member?.relationName;
     // The higher-priority event anchors the day ("Today" / "Wed, Jul 8" —
     // never shouted in caps).
     final day = dayHeading(dayKey(conflict.winner.start), DateTime.now());
@@ -789,37 +787,15 @@ class _ConflictCard extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Row(
-                children: [
-                  const IconTile(
-                      icon: Icons.event_busy_rounded,
-                      color: AppColors.coral,
-                      size: 34),
-                  const SizedBox(width: 10),
-                  // The date takes the slack (rather than a Spacer) so the
-                  // member cluster stays flush right whatever its name is.
-                  Expanded(
-                    child: Text(day,
-                        style: font(kBodyFont, 13, 600,
-                            color: AppColors.textSecondary)),
-                  ),
-                  const SizedBox(width: 10),
-                  PersonAvatar(
-                    initial: initialFor(name ?? '?'),
-                    color: memberColor,
-                    size: 30,
-                  ),
-                  const SizedBox(width: 8),
-                  Text(name ?? 'Member',
-                      style: font(kBodyFont, 13.5, 700, color: memberColor),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis),
-                ],
+              ConflictCardHeader(
+                day: day,
+                member: member,
+                icon: Icons.event_busy_rounded,
               ),
               const SizedBox(height: 12),
-              _ConflictEventRow(event: conflict.winner),
+              ConflictEventRow(event: conflict.winner),
               const SizedBox(height: 7),
-              _ConflictEventRow(event: conflict.loser),
+              ConflictEventRow(event: conflict.loser),
               const SizedBox(height: 12),
               Row(
                 children: [
@@ -837,50 +813,6 @@ class _ConflictCard extends StatelessWidget {
       ),
     );
   }
-}
-
-/// One of the two colliding events on a [_ConflictCard]: title on the left,
-/// time on the right. Both events get this exact treatment — only their order
-/// carries the priority.
-class _ConflictEventRow extends StatelessWidget {
-  const _ConflictEventRow({required this.event});
-  final ConflictEventRef event;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-      decoration: BoxDecoration(
-        color: AppColors.bg.withValues(alpha: 0.45),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: AppColors.coral.withValues(alpha: 0.22)),
-      ),
-      child: Row(
-        children: [
-          Expanded(
-            child: Text(
-              event.summary ?? 'An event',
-              style: AppText.listItemTitle,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-            ),
-          ),
-          const SizedBox(width: 10),
-          Text(_conflictEventTime(event),
-              style: font(kBodyFont, 12.5, 600, color: AppColors.textSecondary)),
-        ],
-      ),
-    );
-  }
-}
-
-/// "All day" / "10:00 – 11:00 AM" / "10:00 AM" — a conflicting event's clock
-/// label, matching the resolution sheet's.
-String _conflictEventTime(ConflictEventRef e) {
-  if (e.allDay) return 'All day';
-  final end = e.end;
-  if (end != null && end.isAfter(e.start)) return friendlyRange(e.start, end);
-  return friendlyTime(e.start);
 }
 
 /// Threaded chain (6d, treatment 1 — "connector thread"): separate cards joined
