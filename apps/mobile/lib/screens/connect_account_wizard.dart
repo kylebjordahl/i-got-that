@@ -1,6 +1,8 @@
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_web_auth_2/flutter_web_auth_2.dart';
+import '../env.dart';
 import '../state/auth.dart';
 import '../state/family.dart';
 import '../theme/app_colors.dart';
@@ -31,13 +33,11 @@ class _ConnectAccountWizardState extends ConsumerState<ConnectAccountWizard> {
   int _step = 1;
   String _provider = 'apple'; // apple | google | outlook | ics
 
-  // Step-2 credentials.
+  // Step-2 credentials (CalDAV providers only — Google uses a system-browser
+  // OAuth handoff on both web and native, with no fields of its own).
   final _username = TextEditingController();
   final _password = TextEditingController();
   final _serverUrl = TextEditingController();
-  final _redirectUri = TextEditingController();
-  final _authCode = TextEditingController();
-  String? _googleAuthUrl;
 
   // Step 3.
   String? _accountId;
@@ -68,25 +68,10 @@ class _ConnectAccountWizardState extends ConsumerState<ConnectAccountWizard> {
 
   @override
   void dispose() {
-    for (final c in [_username, _password, _serverUrl, _redirectUri, _authCode]) {
+    for (final c in [_username, _password, _serverUrl]) {
       c.dispose();
     }
     super.dispose();
-  }
-
-  Future<void> _getGoogleAuthUrl() async {
-    if (_redirectUri.text.trim().isEmpty) {
-      setState(() => _error = 'Enter your OAuth redirect URI first');
-      return;
-    }
-    setState(() => _error = null);
-    try {
-      final url =
-          await ref.read(apiClientProvider).accountGoogleAuthorizeUrl(_redirectUri.text.trim());
-      setState(() => _googleAuthUrl = url);
-    } catch (e) {
-      setState(() => _error = '$e');
-    }
   }
 
   Future<void> _connect() async {
@@ -95,13 +80,12 @@ class _ConnectAccountWizardState extends ConsumerState<ConnectAccountWizard> {
       _error = null;
     });
     try {
-      final isCalDav = !_isGoogle;
       final serverUrl = switch (_provider) {
         'apple' => 'https://caldav.icloud.com',
         'outlook' => _serverUrl.text.trim(),
         _ => _serverUrl.text.trim(),
       };
-      if (isCalDav && (_username.text.trim().isEmpty || _password.text.isEmpty)) {
+      if (_username.text.trim().isEmpty || _password.text.isEmpty) {
         setState(() => _error = 'Enter your username and password');
         return;
       }
@@ -109,36 +93,75 @@ class _ConnectAccountWizardState extends ConsumerState<ConnectAccountWizard> {
         setState(() => _error = 'Enter the CalDAV server URL');
         return;
       }
-      if (_isGoogle && _authCode.text.trim().isEmpty) {
-        setState(() => _error = 'Authorize with Google and paste the code');
-        return;
-      }
       final res = await ref.read(apiClientProvider).createExternalAccount(
             kind: _kind,
             name: _providerLabel,
-            serverUrl: isCalDav ? serverUrl : null,
-            username: isCalDav ? _username.text.trim() : null,
-            password: isCalDav ? _password.text : null,
-            authCode: _isGoogle ? _authCode.text.trim() : null,
-            redirectUri: _isGoogle ? _redirectUri.text.trim() : null,
+            serverUrl: serverUrl,
+            username: _username.text.trim(),
+            password: _password.text,
           );
-      ref.invalidate(accountsProvider);
-      _accountId = (res['account'] as Map<String, dynamic>?)?['id'] as String? ??
-          (res['id'] as String?);
-      // Reused from onboarding: skip the calendar-selection step and hand the
-      // new account id straight back to the caller.
-      if (widget.skipCalendarStep) {
-        if (_accountId != null) widget.onConnected?.call(_accountId!);
-        if (mounted) Navigator.of(context).maybePop();
-        return;
-      }
-      await _loadCalendars();
-      if (mounted) setState(() => _step = 3);
+      await _finishConnected(res);
     } catch (e) {
       setState(() => _error = '$e');
     } finally {
       if (mounted) setState(() => _busy = false);
     }
+  }
+
+  /// Native "connect a Google Calendar": opens Google's consent screen in the
+  /// system browser (`ASWebAuthenticationSession` via `flutter_web_auth_2`).
+  /// Google's Web-application client can't redirect straight to our custom
+  /// scheme, so we point it at the API's `/auth/google/native-callback`
+  /// instead, which immediately bounces to `googleOAuthCallbackScheme` — that
+  /// hop is what `flutter_web_auth_2` intercepts, handing the `code` straight
+  /// back here with no manual copy/paste. See docs/AUTH.md's Google section.
+  Future<void> _connectGoogleNative() async {
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      const redirectUri = '$apiBaseUrl/auth/google/native-callback';
+      final authorizeUrl =
+          await ref.read(apiClientProvider).accountGoogleAuthorizeUrl(redirectUri);
+      final callback = await FlutterWebAuth2.authenticate(
+        url: authorizeUrl,
+        callbackUrlScheme: googleOAuthCallbackScheme,
+      );
+      final code = Uri.parse(callback).queryParameters['code'];
+      if (code == null) {
+        setState(() => _error = 'Google did not return an authorization code.');
+        return;
+      }
+      final res = await ref.read(apiClientProvider).createExternalAccount(
+            kind: 'google',
+            name: _providerLabel,
+            authCode: code,
+            redirectUri: redirectUri,
+          );
+      await _finishConnected(res);
+    } catch (e) {
+      setState(() => _error = '$e');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  /// Shared post-connect step for both [_connect] (CalDAV) and
+  /// [_connectGoogleNative]: registers the new account, then either hands it
+  /// straight back to the caller (onboarding's skip-calendar-step reuse) or
+  /// advances to the calendar-picker step.
+  Future<void> _finishConnected(Map<String, dynamic> res) async {
+    ref.invalidate(accountsProvider);
+    _accountId = (res['account'] as Map<String, dynamic>?)?['id'] as String? ??
+        (res['id'] as String?);
+    if (widget.skipCalendarStep) {
+      if (_accountId != null) widget.onConnected?.call(_accountId!);
+      if (mounted) Navigator.of(context).maybePop();
+      return;
+    }
+    await _loadCalendars();
+    if (mounted) setState(() => _step = 3);
   }
 
   Future<void> _loadCalendars() async {
@@ -251,16 +274,29 @@ class _ConnectAccountWizardState extends ConsumerState<ConnectAccountWizard> {
         ),
       ];
     }
+    // Native Google: same one-tap shape as web, but via a system-browser OAuth
+    // handoff (see _connectGoogleNative) instead of a page redirect.
+    if (_isGoogle) {
+      return [
+        _hero(Icons.calendar_month_rounded, 'Sign in to $_providerLabel',
+            'Authorize I Got That to read your Google calendars and manage handoffs.'),
+        const SizedBox(height: 20),
+        const _PermissionsCard(),
+        const SizedBox(height: 20),
+        _PrimaryButton(
+          label: _busy ? 'Connecting…' : 'Continue with $_providerLabel',
+          busy: _busy,
+          onPressed: _busy ? null : _connectGoogleNative,
+        ),
+      ];
+    }
     return [
-      _hero(_isGoogle ? Icons.calendar_month_rounded : Icons.cloud_rounded,
-          'Sign in to $_providerLabel',
-          _isGoogle
-              ? 'Authorize Tasks to read your Google calendars.'
-              : 'Use an app-specific password — we never see your main password.'),
+      _hero(Icons.cloud_rounded, 'Sign in to $_providerLabel',
+          'Use an app-specific password — we never see your main password.'),
       const SizedBox(height: 20),
       const _PermissionsCard(),
       const SizedBox(height: 20),
-      if (_isGoogle) ..._googleFields() else ..._calDavFields(),
+      ..._calDavFields(),
       const SizedBox(height: 20),
       _PrimaryButton(
         label: _busy ? 'Connecting…' : 'Continue with $_providerLabel',
@@ -289,33 +325,6 @@ class _ConnectAccountWizardState extends ConsumerState<ConnectAccountWizard> {
           controller: _password,
           obscureText: true,
           decoration: const InputDecoration(labelText: 'App-specific password'),
-        ),
-      ];
-
-  List<Widget> _googleFields() => [
-        TextField(
-          controller: _redirectUri,
-          decoration: const InputDecoration(
-              labelText: 'OAuth redirect URI', hintText: 'https://…/oauth/callback'),
-        ),
-        const SizedBox(height: 10),
-        Align(
-          alignment: Alignment.centerLeft,
-          child: TextButton.icon(
-            onPressed: _getGoogleAuthUrl,
-            icon: const Icon(Icons.open_in_new_rounded, size: 18),
-            label: const Text('Get authorize link'),
-          ),
-        ),
-        if (_googleAuthUrl != null) ...[
-          const SizedBox(height: 4),
-          SelectableText(_googleAuthUrl!,
-              style: font(kBodyFont, 12, 500, color: AppColors.indigo)),
-          const SizedBox(height: 12),
-        ],
-        TextField(
-          controller: _authCode,
-          decoration: const InputDecoration(labelText: 'Paste the authorization code'),
         ),
       ];
 

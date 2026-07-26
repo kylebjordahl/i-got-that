@@ -60,6 +60,39 @@ function participation(
 
 const pairId = (loserKey: string, winnerKey: string) => `${loserKey}|${winnerKey}`;
 
+/** Prefix identifying the current `scheduleStamp` format. */
+const SCHEDULE_STAMP_V1 = 's1';
+
+/**
+ * The part of an event a conflict decision actually rests on: when it starts,
+ * when it ends, and whether it's all-day. Both outcomes — "split the loser
+ * around the winner" and "leave both as they are" — are statements about two
+ * commitments colliding in time, so a decision stays valid for exactly as long
+ * as neither event moves.
+ *
+ * Deliberately narrower than the event's `contentHash`, which also covers
+ * summary / location / geocode / description. For a `bl:` baseline day those
+ * fields are the link's and the feed's *config* (the feed's display name, the
+ * link's location and its geocode), not any feed event's content — so keying
+ * decisions off the content hash meant re-pinning a school's location, or a
+ * sync auto-detecting the feed's timezone, silently reopened every decided
+ * conflict on that member's calendar with nothing about the events changed.
+ * Versioned so a value stored in any older format is recognisable as stale
+ * bookkeeping rather than read as drift.
+ */
+export function scheduleStamp(e: {
+  dtstart: Date;
+  dtend: Date | null;
+  allDay: boolean;
+}): string {
+  return `${SCHEDULE_STAMP_V1}:${e.dtstart.getTime()}:${e.dtend?.getTime() ?? ''}:${e.allDay ? 1 : 0}`;
+}
+
+/** Whether a stored snapshot is a stamp this version knows how to compare. */
+function isCurrentStamp(stamp: string | null): boolean {
+  return stamp != null && stamp.startsWith(`${SCHEDULE_STAMP_V1}:`);
+}
+
 /**
  * Detect and reconcile overlaps on one member's unified calendar, then apply the
  * splits for any the admin has resolved. Runs after synthesis + read-back and
@@ -154,31 +187,34 @@ export async function reconcileMemberConflicts(
     }
   }
 
-  // Reopen decided (resolved/dismissed) conflicts whose loser or winner event
-  // changed since the decision was made — a stale decision (e.g. made against
-  // a since-moved event) must be re-reviewed, not silently kept in force.
+  // Reopen decided (resolved/dismissed) conflicts where one of the two events
+  // has since MOVED — a decision made against an event that has been
+  // rescheduled must be re-reviewed, not silently kept in force. An event that
+  // was merely retitled or relocated leaves the collision (and so the decision)
+  // exactly as the admin left it.
   for (const c of existing) {
     if (c.status === 'pending') continue;
     if (!detectedSet.has(pairId(c.loserKey, c.winnerKey))) continue; // deleted above
     const loser = byKey.get(c.loserKey);
     const winner = byKey.get(c.winnerKey);
     if (!loser || !winner) continue; // can't compare without both current rows
-    if (c.loserContentHash == null && c.winnerContentHash == null) {
-      // Decided before this snapshot existed (or resolver didn't capture one) —
-      // establish a baseline now rather than reopening on a hash that was
-      // simply never recorded.
-      await db
-        .update(conflicts)
-        .set({
-          loserContentHash: loser.contentHash,
-          winnerContentHash: winner.contentHash,
-        })
-        .where(eq(conflicts.id, c.id));
+    const stamps = {
+      loserScheduleStamp: scheduleStamp(loser),
+      winnerScheduleStamp: scheduleStamp(winner),
+    };
+    if (
+      !isCurrentStamp(c.loserScheduleStamp) ||
+      !isCurrentStamp(c.winnerScheduleStamp)
+    ) {
+      // Decided before this snapshot existed, or against an older stamp format
+      // — establish a baseline now rather than reopening on a value that was
+      // never a comparable schedule stamp.
+      await db.update(conflicts).set(stamps).where(eq(conflicts.id, c.id));
       continue;
     }
     if (
-      loser.contentHash !== c.loserContentHash ||
-      winner.contentHash !== c.winnerContentHash
+      stamps.loserScheduleStamp !== c.loserScheduleStamp ||
+      stamps.winnerScheduleStamp !== c.winnerScheduleStamp
     ) {
       await db
         .update(conflicts)
@@ -187,8 +223,8 @@ export async function reconcileMemberConflicts(
           resolvedByMemberId: null,
           resolvedAt: null,
           dismissedAt: null,
-          loserContentHash: null,
-          winnerContentHash: null,
+          loserScheduleStamp: null,
+          winnerScheduleStamp: null,
         })
         .where(eq(conflicts.id, c.id));
     }

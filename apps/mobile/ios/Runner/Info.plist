@@ -35,6 +35,18 @@
 				<string>$(GOOGLE_IOS_URL_SCHEME)</string>
 			</array>
 		</dict>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<!-- flutter_web_auth_2's callback scheme for the "connect a Google
+				     Calendar" wizard (distinct from Sign in with Google above) — set
+				     per flavor in ios/Flutter/{staging,prod}*.xcconfig, matching the
+				     API's GOOGLE_IOS_OAUTH_CALLBACK_SCHEME. See docs/AUTH.md. -->
+				<string>$(GOOGLE_OAUTH_CALLBACK_SCHEME)</string>
+			</array>
+		</dict>
 	</array>
 	<key>CFBundleVersion</key>
 	<string>$(FLUTTER_BUILD_NUMBER)</string>

@@ -72,6 +72,18 @@ export interface Bindings {
      */
     GOOGLE_IOS_CLIENT_IDS?: string;
     /**
+     * Custom URL scheme the native "connect a Google Calendar" wizard
+     * (`accounts.ts`'s `/google/authorize-url` + the plain OAuth code-exchange
+     * flow, distinct from Sign in with Google) registers in `Info.plist`.
+     * Google's Web-application client type can't redirect straight to a
+     * custom scheme, so `GET /auth/google/native-callback` is registered in
+     * the Cloud Console as an ordinary HTTPS redirect URI instead, and just
+     * 302s the `code`/`state` on to `<scheme>://google-oauth-callback`, which
+     * `flutter_web_auth_2`/`ASWebAuthenticationSession` intercepts on-device.
+     * Unset ⇒ that route 501s (the wizard still works via manual copy/paste).
+     */
+    GOOGLE_IOS_OAUTH_CALLBACK_SCHEME?: string;
+    /**
      * Comma-separated Apple App ID prefixes (`<TeamID>.<bundleId>`) for iOS
      * Universal Links, served in the apple-app-site-association file at
      * `/.well-known/apple-app-site-association`. List every bundle id that

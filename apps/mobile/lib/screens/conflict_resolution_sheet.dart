@@ -1,5 +1,6 @@
 import 'dart:math' as math;
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -60,18 +61,36 @@ class _ConflictResolutionSheetState
 
   // Resolution parameters (design §8b), sent with "Confirm split". Travel is set
   // by dragging the pick-up / drop-off handles, so it's held as a continuous
-  // double and rounded when displayed / sent.
+  // double (the raw drag accumulator) and resolved through [_resolveTravel] when
+  // displayed / sent.
   bool _beforeNeeded = true;
   bool _afterNeeded = true;
   double _travelBefore = 0;
   double _travelAfter = 0;
 
-  /// Vertical drag sensitivity — logical px per minute (matches the design).
-  static const _pxPerMin = 1.4;
+  /// Vertical drag sensitivity — logical px per minute. Deliberately coarse: at
+  /// the original 1.4px/min a thumb-sized twitch swung travel by 15+ minutes,
+  /// which made a specific number nearly unhittable.
+  static const _pxPerMin = 3.0;
+
+  /// Travel resolves to whole 5-minute steps, so a drag lands on a round number
+  /// (15px of movement per step) instead of an arbitrary minute.
+  static const _travelStepMin = 5;
 
   /// Travel is capped so the child never leaves school more than 2h early / late
   /// (and never past the half's own length).
   static const _travelMax = 120;
+
+  /// The travel minutes a raw drag accumulator resolves to: snapped to
+  /// [_travelStepMin] and held within the half's own slack. A [max] that isn't a
+  /// multiple of the step is still reachable — it's what the very end of the
+  /// drag range gives.
+  double _resolveTravel(double raw, double max) {
+    final clamped = raw.clamp(0.0, max);
+    if (clamped >= max) return max;
+    final stepped = (clamped / _travelStepMin).round() * _travelStepMin.toDouble();
+    return math.min(stepped, max);
+  }
 
   Conflict get _conflict => widget.conflict;
 
@@ -114,14 +133,17 @@ class _ConflictResolutionSheetState
     }
   }
 
-  void _confirmSplit() {
+  /// Sends the split. The travel minutes come from the build that drew the
+  /// preview, so what's sent is exactly the snapped, slack-clamped number the
+  /// halves were labelled with.
+  void _confirmSplit(int travelBeforeMin, int travelAfterMin) {
     final bothGone = !_beforeNeeded && !_afterNeeded;
     _act(
       (familyId) => ref.read(apiClientProvider).resolveConflict(
             familyId,
             _conflict.id,
-            travelBeforeMin: _beforeNeeded ? _travelBefore.round() : 0,
-            travelAfterMin: _afterNeeded ? _travelAfter.round() : 0,
+            travelBeforeMin: _beforeNeeded ? travelBeforeMin : 0,
+            travelAfterMin: _afterNeeded ? travelAfterMin : 0,
             beforeNeeded: _beforeNeeded,
             afterNeeded: _afterNeeded,
           ),
@@ -169,8 +191,8 @@ class _ConflictResolutionSheetState
     final afterAvail = hasAfter ? lEnd.difference(wEnd).inMinutes : 0;
     final maxBefore = math.min(_travelMax, beforeAvail).toDouble();
     final maxAfter = math.min(_travelMax, afterAvail).toDouble();
-    final travelBefore = _travelBefore.clamp(0.0, maxBefore);
-    final travelAfter = _travelAfter.clamp(0.0, maxAfter);
+    final travelBefore = _resolveTravel(_travelBefore, maxBefore);
+    final travelAfter = _resolveTravel(_travelAfter, maxAfter);
     final beforeEnd = wStart.subtract(Duration(minutes: travelBefore.round()));
     final afterStart = wEnd?.add(Duration(minutes: travelAfter.round()));
 
@@ -297,7 +319,9 @@ class _ConflictResolutionSheetState
             icon: Icons.check_rounded,
             variant: _WideVariant.amber,
             busy: _busy,
-            onTap: _busy ? null : _confirmSplit,
+            onTap: _busy
+                ? null
+                : () => _confirmSplit(travelBefore.round(), travelAfter.round()),
           ),
           const SizedBox(height: 9),
           _WideButton(
@@ -486,7 +510,8 @@ class _EditableHalf extends StatelessWidget {
   final String handleLabel;
   final VoidCallback onToggle;
 
-  /// Called with the vertical drag delta (logical px, down-positive).
+  /// Called with the vertical drag delta since the previous update (logical px,
+  /// down-positive).
   final ValueChanged<double> onDragMinutes;
 
   static const double _blockH = 58;
@@ -532,8 +557,12 @@ class _EditableHalf extends StatelessWidget {
                     color: AppColors.green.withValues(alpha: 0.6)),
               ),
               Positioned(
-                left: controlLeft,
-                top: handleY - 13,
+                // Centred on the edge: back off half the pill plus the
+                // transparent grab margin the handle pads itself with.
+                left: controlLeft - 4,
+                top: handleY -
+                    _DragHandle.height / 2 -
+                    _DragHandle.touchPadding,
                 child: _DragHandle(
                   label: handleLabel,
                   onDragMinutes: onDragMinutes,
@@ -601,42 +630,95 @@ class _FixedBlock extends StatelessWidget {
 
 /// The green, grip-dotted drag handle ("Pick-up · 10:30" / "Drop-off · 12:30").
 /// Dragging it vertically adds or removes travel time.
-class _DragHandle extends StatelessWidget {
+class _DragHandle extends StatefulWidget {
   const _DragHandle({required this.label, required this.onDragMinutes});
   final String label;
+
+  /// Called with the vertical pointer movement since the previous update
+  /// (logical px, down-positive).
   final ValueChanged<double> onDragMinutes;
+
+  /// The visible pill's height, and the transparent margin around it that's
+  /// still draggable — the pill alone is a small target, and a near-miss used to
+  /// land on the sheet and scroll it instead.
+  static const double height = 26;
+  static const double touchPadding = 10;
+
+  @override
+  State<_DragHandle> createState() => _DragHandleState();
+}
+
+class _DragHandleState extends State<_DragHandle> {
+  /// Where the pointer was at the last update, in *global* coordinates. The
+  /// handle moves around while you drag it (a travel-gap block appearing above
+  /// the afternoon half shifts the handle down, and the sheet itself grows), and
+  /// local deltas would fold that movement into the value.
+  double _lastGlobalY = 0;
+
+  void _onStart(DragStartDetails d) => _lastGlobalY = d.globalPosition.dy;
+
+  void _onUpdate(DragUpdateDetails d) {
+    final dy = d.globalPosition.dy - _lastGlobalY;
+    _lastGlobalY = d.globalPosition.dy;
+    widget.onDragMinutes(dy);
+  }
 
   @override
   Widget build(BuildContext context) {
-    // Raw pointer events (like the design's onPointerDown/Move/Up) so the drag
-    // isn't swallowed by the enclosing scroll view's gesture arena.
-    return Listener(
+    return RawGestureDetector(
       behavior: HitTestBehavior.opaque,
-      onPointerMove: (e) => onDragMinutes(e.delta.dy),
+      gestures: <Type, GestureRecognizerFactory>{
+        _HandleDragRecognizer:
+            GestureRecognizerFactoryWithHandlers<_HandleDragRecognizer>(
+          () => _HandleDragRecognizer(debugOwner: this),
+          (r) => r
+            ..onStart = _onStart
+            ..onUpdate = _onUpdate,
+        ),
+      },
       child: MouseRegion(
         cursor: SystemMouseCursors.resizeUpDown,
-        child: Container(
-          height: 26,
-          padding: const EdgeInsets.symmetric(horizontal: 8),
-          decoration: BoxDecoration(
-            color: const Color(0xFF172B23),
-            borderRadius: BorderRadius.circular(8),
-            border: Border.all(color: AppColors.green.withValues(alpha: 0.65)),
-            boxShadow: const [
-              BoxShadow(color: Color(0x59000000), blurRadius: 6, offset: Offset(0, 2)),
-            ],
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const _GripDots(),
-              const SizedBox(width: 6),
-              Text(label, style: font(kBodyFont, 10, 700, color: const Color(0xFFEAFFF5))),
-            ],
+        child: Padding(
+          padding: const EdgeInsets.symmetric(
+              vertical: _DragHandle.touchPadding, horizontal: 4),
+          child: Container(
+            height: _DragHandle.height,
+            padding: const EdgeInsets.symmetric(horizontal: 8),
+            decoration: BoxDecoration(
+              color: const Color(0xFF172B23),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: AppColors.green.withValues(alpha: 0.65)),
+              boxShadow: const [
+                BoxShadow(color: Color(0x59000000), blurRadius: 6, offset: Offset(0, 2)),
+              ],
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const _GripDots(),
+                const SizedBox(width: 6),
+                Text(widget.label,
+                    style: font(kBodyFont, 10, 700, color: const Color(0xFFEAFFF5))),
+              ],
+            ),
           ),
         ),
       ),
     );
+  }
+}
+
+/// The handle's vertical-drag recognizer. It claims the pointer the moment it
+/// lands on the handle instead of waiting out the drag slop, so the enclosing
+/// scroll view / bottom sheet never wins the gesture — that's what made the
+/// sheet slide under the finger and the minutes jump when it sprang back.
+class _HandleDragRecognizer extends VerticalDragGestureRecognizer {
+  _HandleDragRecognizer({super.debugOwner});
+
+  @override
+  void addAllowedPointer(PointerDownEvent event) {
+    super.addAllowedPointer(event);
+    resolve(GestureDisposition.accepted);
   }
 }
 

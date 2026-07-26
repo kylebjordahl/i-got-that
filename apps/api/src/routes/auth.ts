@@ -473,6 +473,27 @@ authRoutes.get('/google/callback', async (c) => {
 });
 
 /**
+ * Native OAuth bounce for the "connect a Google Calendar" wizard
+ * (`accounts.ts`'s plain `authCode`/`redirectUri` exchange — distinct from
+ * Sign in with Google above). Google's Web-application client type only
+ * accepts an HTTPS `redirect_uri`, so the native app can't point Google
+ * straight at a custom URL scheme the way `flutter_web_auth_2` needs; instead
+ * the app passes *this* HTTPS route as its `redirectUri`, and we immediately
+ * 302 the untouched `code`/`state`/`error` query string on to
+ * `<scheme>://google-oauth-callback`, which `ASWebAuthenticationSession`
+ * intercepts on-device and hands back to the app — no server-side state, no
+ * session, nothing sensitive touches this hop. Requires
+ * GOOGLE_IOS_OAUTH_CALLBACK_SCHEME; unset ⇒ 501 (the wizard's manual
+ * copy/paste path still works).
+ */
+authRoutes.get('/google/native-callback', (c) => {
+  const scheme = c.env.GOOGLE_IOS_OAUTH_CALLBACK_SCHEME;
+  if (!scheme) return c.json({ error: 'google_native_callback_not_configured' }, 501);
+  const qs = new URL(c.req.url).search;
+  return c.redirect(`${scheme}://google-oauth-callback${qs}`, 302);
+});
+
+/**
  * Apple **server-to-server notifications** (configured on the primary App ID).
  * Apple POSTs `{ payload: <JWS> }` out-of-band when a user disables their relay
  * email, revokes our app's access, or deletes their Apple ID. We verify the JWS

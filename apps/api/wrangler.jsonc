@@ -90,6 +90,8 @@
                 "APPLE_WEB_CLIENT_ID": "com.kylebjordahl.igt.web.staging",
                 "GOOGLE_OAUTH_CLIENT_ID": "503268168924-2tdfajihn62m5o051jjdjnkfjrg921o1.apps.googleusercontent.com",
                 "GOOGLE_IOS_CLIENT_IDS": "503268168924-honi8hhgikagd2gbu2tpb9qrf0n6eqcm.apps.googleusercontent.com",
+                // Matches ios/Flutter/staging*.xcconfig's GOOGLE_OAUTH_CALLBACK_SCHEME.
+                "GOOGLE_IOS_OAUTH_CALLBACK_SCHEME": "com.kylebjordahl.igt.staging.oauth",
                 // Fill in your 10-char Apple Team ID: "<TeamID>.com.kylebjordahl.igt.staging".
                 "APPLE_APP_ID_PREFIX": "WG5R9LUU9X.com.kylebjordahl.igt.staging",
             },
@@ -149,6 +151,8 @@
                 "APPLE_WEB_CLIENT_ID": "com.kylebjordahl.igt.web",
                 "GOOGLE_OAUTH_CLIENT_ID": "503268168924-5ogd6crcl1p1pfpoe3kdtqbo9nqhivpj.apps.googleusercontent.com",
                 "GOOGLE_IOS_CLIENT_IDS": "503268168924-gk8d4c4dfjtkmi2ol3t63usi089h1uvv.apps.googleusercontent.com",
+                // Matches ios/Flutter/prod*.xcconfig's GOOGLE_OAUTH_CALLBACK_SCHEME.
+                "GOOGLE_IOS_OAUTH_CALLBACK_SCHEME": "com.kylebjordahl.igt.oauth",
                 // Fill in your 10-char Apple Team ID: "<TeamID>.com.kylebjordahl.igt".
                 "APPLE_APP_ID_PREFIX": "WG5R9LUU9X.com.kylebjordahl.igt",
             },
