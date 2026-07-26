@@ -105,7 +105,7 @@ shape, different storage primitive per platform.
 | --- | --- | --- |
 | **Magic link** (email) | Fully implemented | Needs outbound email, which is **off** (no paid plan). In **dev/staging** the request endpoint returns the token directly (`devToken`) so you can log in without a mailbox; in **production** it does not. |
 | **Sign in with Apple** | Server + web redirect flow **implemented + tested**; native (iOS) client wiring + Apple config required | The primary login for deployed environments (works without email). |
-| **Sign in with Google** | Server + web redirect flow **implemented + tested**; native (iOS) route + client wired, needs an iOS OAuth client per flavor in the Cloud Console before it'll actually run | Also **auto-connects the user's Google Calendar** as part of logging in (the same consent grants calendar access). |
+| **Sign in with Google** | Server + web redirect flow **implemented + tested**; native (iOS) route + client wired (CI passes `GOOGLE_SERVER_CLIENT_ID` per flavor), needs an iOS OAuth client per flavor in the Cloud Console before it'll actually run | Also **auto-connects the user's Google Calendar** as part of logging in (the same consent grants calendar access). |
 
 ## Sign in with Google
 
@@ -200,7 +200,10 @@ pnpm wrangler secret put GOOGLE_OAUTH_CLIENT_SECRET --env staging
   `POST /auth/google` / `POST /auth/link/google`. Requires `GIDClientID` +
   the reversed-client-id URL scheme in `ios/Runner/Info.plist` (wired via
   per-flavor xcconfig — see the placeholders in `ios/Flutter/{staging,prod}*.xcconfig`,
-  fill in once the iOS OAuth clients above exist).
+  fill in once the iOS OAuth clients above exist). CI (`.github/workflows/deploy.yml`'s
+  `testflight` job) passes `GOOGLE_SERVER_CLIENT_ID` per environment automatically
+  — it's the same (non-secret) value as that env's `GOOGLE_OAUTH_CLIENT_ID`, so
+  there's no separate secret to provision.
 
 ## Sign in with Apple
 
@@ -369,14 +372,16 @@ The Google Calendar delivery provider needs an OAuth token. A pasted access
 token still works but expires in ~1h; the proper flow stores a **refresh token**
 and exchanges it for a fresh access token at delivery time. (Signing in with
 Google connects an account this same way automatically — see "Sign in with
-Google" above; this section covers connecting a calendar directly, e.g. the
-native manual paste-the-code path.)
+Google" above; this section covers connecting a calendar directly — the
+`ConnectAccountWizard`'s Google option, used to attach a calendar that isn't
+necessarily the one behind the user's login.)
 
 ### Configure
 1. In **Google Cloud Console** → APIs & Services → Credentials, create an
-   **OAuth client ID** (Web application). Add your **redirect URI(s)** (the same
-   value the client sends — e.g. a small page that displays the `code`, or a
-   custom scheme for native). Enable the **Google Calendar API**.
+   **OAuth client ID** (Web application) — this can be the same Web client
+   used by "Sign in with Google" above. Add your **redirect URI(s)**: the web
+   client's own callback page, plus (for native) `<PUBLIC_ORIGIN>/api/auth/google/native-callback`
+   — see "Native flow" below. Enable the **Google Calendar API**.
 2. Set the client on the API:
    ```bash
    cd apps/api
@@ -387,7 +392,7 @@ native manual paste-the-code path.)
    Unset ⇒ `POST /families/:id/google/authorize-url` returns 501 and the OAuth
    path is disabled (paste-token still works).
 
-### Flow
+### Flow (web)
 1. Client calls `POST /families/:id/google/authorize-url { redirectUri }` →
    consent URL (requests `access_type=offline` + `prompt=consent` so Google
    returns a refresh token).
@@ -399,6 +404,48 @@ native manual paste-the-code path.)
 
 > Note: `prompt=consent` is required to receive a refresh token; without it
 > Google may return only an access token (the API responds `google_no_refresh_token`).
+
+### Native flow (iOS)
+
+Google's **Web application** client type can only redirect to an `https://` URI
+— it can't be pointed straight at a custom URL scheme, which is what a native
+app needs to catch the result without a page to land on. So the native
+`ConnectAccountWizard` (`connect_account_wizard.dart`'s `_connectGoogleNative`)
+uses a small server-side bounce instead of a manual copy/paste:
+
+1. The client passes `<PUBLIC_ORIGIN>/api/auth/google/native-callback` — a
+   fixed, non-secret URL, no typing required — as `redirectUri` when calling
+   `POST /families/:id/google/authorize-url`, then opens the returned consent
+   URL via [`flutter_web_auth_2`](https://pub.dev/packages/flutter_web_auth_2)
+   (`ASWebAuthenticationSession` under the hood).
+2. The user approves; Google redirects to `GET /auth/google/native-callback`
+   (`apps/api/src/routes/auth.ts`), which 302s the untouched `code`/`state`
+   query string on to `<GOOGLE_IOS_OAUTH_CALLBACK_SCHEME>://google-oauth-callback`.
+   `ASWebAuthenticationSession` intercepts that custom-scheme redirect and hands
+   the URL back to `flutter_web_auth_2`'s caller — the system browser sheet
+   closes automatically, no app switch, no copy/paste.
+3. The client parses `code` from that callback URL and posts it (`{ authCode,
+   redirectUri }`, same `redirectUri` as step 1) to `POST /accounts` as normal —
+   from here on it's the same code-exchange-for-a-refresh-token flow as web.
+
+**What you need to configure:**
+- **Google Cloud Console**: add `<PUBLIC_ORIGIN>/api/auth/google/native-callback`
+  as an additional **Authorized redirect URI** on the Web client, for both
+  staging and production (alongside the Sign-in-with-Google callback already
+  registered there).
+- **This API**: set `GOOGLE_IOS_OAUTH_CALLBACK_SCHEME` per env (a plain var in
+  `wrangler.jsonc`) to the custom scheme registered in that flavor's
+  `Info.plist`/xcconfig (see below). Unset ⇒ `/auth/google/native-callback`
+  returns 501 and the wizard falls back to being unusable on native until it's
+  set — there's no manual-paste fallback UI anymore, since the whole point was
+  removing it.
+- **Flutter client**: `GOOGLE_OAUTH_CALLBACK_SCHEME` is set per flavor in
+  `ios/Flutter/{staging,prod}*.xcconfig` and registered as a second
+  `CFBundleURLTypes` entry in `ios/Runner/Info.plist` (alongside `google_sign_in`'s
+  own reversed-client-id scheme). The Dart side reads the matching value from
+  `lib/env.dart`'s `googleOAuthCallbackScheme` (keyed off `APP_ENV`, not a
+  separate dart-define) — keep all three (xcconfig, `wrangler.jsonc`, `env.dart`)
+  in sync per flavor.
 
 ## Onboarding a caretaker (no email)
 Until email is enabled, add caretakers with the **invite/share-link** flow (see
