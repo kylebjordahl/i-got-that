@@ -229,3 +229,41 @@ describe('Sign in with Google — redirect flow', () => {
     expect(res.headers.get('location')).toContain('auth_error=state_mismatch');
   });
 });
+
+describe('Native "connect a Google Calendar" — OAuth bounce', () => {
+  const nativeCallbackEnv = {
+    ...env,
+    GOOGLE_IOS_OAUTH_CALLBACK_SCHEME: 'com.kylebjordahl.igt.oauth',
+  };
+
+  it('reports 501 when no callback scheme is configured', async () => {
+    const res = await fetchWith('/auth/google/native-callback?code=abc&state=xyz', env, {
+      redirect: 'manual',
+    });
+    expect(res.status).toBe(501);
+  });
+
+  it('bounces the untouched code/state to the custom URL scheme', async () => {
+    const res = await fetchWith(
+      '/auth/google/native-callback?code=abc123&state=xyz789',
+      nativeCallbackEnv,
+      { redirect: 'manual' },
+    );
+    expect(res.status).toBe(302);
+    expect(res.headers.get('location')).toBe(
+      'com.kylebjordahl.igt.oauth://google-oauth-callback?code=abc123&state=xyz789',
+    );
+  });
+
+  it('bounces an error param the same way (user cancelled at Google)', async () => {
+    const res = await fetchWith(
+      '/auth/google/native-callback?error=access_denied',
+      nativeCallbackEnv,
+      { redirect: 'manual' },
+    );
+    expect(res.status).toBe(302);
+    expect(res.headers.get('location')).toBe(
+      'com.kylebjordahl.igt.oauth://google-oauth-callback?error=access_denied',
+    );
+  });
+});
