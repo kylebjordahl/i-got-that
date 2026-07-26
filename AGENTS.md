@@ -118,7 +118,9 @@ paths in particular).
   never returned by the API. Accounts are **user-owned** (reused across
   families); the OAuth client secret stays in `apps/api`; the Google provider
   gets an injected refresher, so `libs/delivery` never sees it.
-- **Auth**: magic-link (returns a `devToken` outside production), Sign in with
+- **Auth**: magic-link (returns a `devToken` only when the `ALLOW_DEV_TOKENS`
+  binding is `'true'` — top-level `vars` only, so local dev + tests; never a
+  deployed env, where it would be login-as-anyone), Sign in with
   Apple (server done; client wiring TODO), and member-claim invites
   (`/invites/:token/accept` links an existing user to a pre-created member).
 - **Deployed staging is single-origin**: one Worker on

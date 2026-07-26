@@ -6,6 +6,7 @@ declare module 'cloudflare:test' {
     ENVIRONMENT: string;
     KEK: string;
     ORGANIZER_EMAIL: string;
+    ALLOW_DEV_TOKENS?: string;
     TEST_MIGRATIONS: D1Migration[];
   }
 }

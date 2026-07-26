@@ -61,14 +61,16 @@ authRoutes.post('/magic-link/request', async (c) => {
   }
 
   const rawToken = await requestMagicLink(getDb(c.env.DB), parsed.data.email);
-  await getMailer(c.env.ENVIRONMENT).sendMagicLink({
+  await getMailer(c.env).sendMagicLink({
     to: parsed.data.email,
     token: rawToken,
   });
 
-  // Outside production, return the token so dev + tests can complete the flow
-  // without a live mailbox.
-  const devToken = c.env.ENVIRONMENT === 'production' ? undefined : rawToken;
+  // Explicit opt-in binding, defaulting to off: returning the raw token is
+  // unauthenticated login-as-anyone, so it's for local dev + tests only. Named
+  // wrangler envs don't inherit top-level vars, so deployed envs fail closed
+  // unless someone deliberately sets ALLOW_DEV_TOKENS there.
+  const devToken = c.env.ALLOW_DEV_TOKENS === 'true' ? rawToken : undefined;
   return c.json({ sent: true, ...(devToken ? { devToken } : {}) });
 });
 

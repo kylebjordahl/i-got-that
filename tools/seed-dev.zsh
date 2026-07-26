@@ -21,7 +21,7 @@ command -v jq >/dev/null || { print -u2 "error: jq is required"; exit 1; }
 print "→ requesting magic link for $EMAIL"
 dev_token=$(curl -fsS "$BASE/auth/magic-link/request" -H "$CT" \
   -d "{\"email\":\"$EMAIL\"}" | jq -r '.devToken // empty')
-[[ -n "$dev_token" ]] || { print -u2 "error: no devToken (is ENVIRONMENT=production, or API down?)"; exit 1; }
+[[ -n "$dev_token" ]] || { print -u2 "error: no devToken — this script only works against local dev (ALLOW_DEV_TOKENS=true in wrangler.jsonc's top-level vars). Deployed envs never return one; is BASE pointed at a deployment, or the API down?"; exit 1; }
 
 token=$(curl -fsS "$BASE/auth/magic-link/verify" -H "$CT" \
   -d "{\"token\":\"$dev_token\"}" | jq -r '.sessionToken')

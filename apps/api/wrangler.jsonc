@@ -20,6 +20,13 @@
         // locally — the Apple web redirect flow only runs on a deployed HTTPS host.
         "PUBLIC_ORIGIN": "",
         "ORGANIZER_EMAIL": "noreply@igt.local",
+        // LOCAL DEV + TESTS ONLY: return the magic-link token in the
+        // /auth/magic-link/request response (`devToken`) so you can log in
+        // without a mailbox (tools/seed-dev.zsh needs it). Anyone who can reach
+        // the endpoint could then log in as ANY email, so it must never be set
+        // in a deployed env — named envs below deliberately omit it, and they
+        // do not inherit these top-level vars.
+        "ALLOW_DEV_TOKENS": "true",
         // DEV ONLY KEK (envelope-encryption key-encryption key). Production sets a
         // real secret via `wrangler secret put KEK` / Terraform — never commit prod keys.
         "KEK": "2OmcakKhoLtzTqOq5ZrXq/e/7mXa8Gmav+dtCe/2ThM=",

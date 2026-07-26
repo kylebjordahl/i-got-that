@@ -103,9 +103,29 @@ shape, different storage primitive per platform.
 
 | Method | State | Notes |
 | --- | --- | --- |
-| **Magic link** (email) | Fully implemented | Needs outbound email, which is **off** (no paid plan). In **dev/staging** the request endpoint returns the token directly (`devToken`) so you can log in without a mailbox; in **production** it does not. |
+| **Magic link** (email) | Fully implemented | Needs outbound email, which is **off** (no paid plan). In **local dev** only — gated on the `ALLOW_DEV_TOKENS` binding, see below — the request endpoint returns the token directly (`devToken`) so you can log in without a mailbox. **No deployed environment does**, so magic-link login is effectively unusable on staging/production until email is enabled. |
 | **Sign in with Apple** | Server + web redirect flow **implemented + tested**; native (iOS) client wiring + Apple config required | The primary login for deployed environments (works without email). |
 | **Sign in with Google** | Server + web redirect flow **implemented + tested**; native (iOS) route + client wired (CI passes `GOOGLE_SERVER_CLIENT_ID` per flavor), needs an iOS OAuth client per flavor in the Cloud Console before it'll actually run | Also **auto-connects the user's Google Calendar** as part of logging in (the same consent grants calendar access). |
+
+### `ALLOW_DEV_TOKENS` (local dev only)
+
+`POST /auth/magic-link/request` returns the raw token as `devToken` **only** when
+the `ALLOW_DEV_TOKENS` binding is exactly `'true'`; the same flag is what lets
+`DevMailer` echo the token to the console. That response field is an
+unauthenticated *log in as any email address* primitive — request a token for
+someone else's address, post it to `/magic-link/verify`, and you have their
+session (and, since the first verify creates the user, their account) — so it
+must never be on in a deployed environment.
+
+It is set in the **top-level `vars`** of `apps/api/wrangler.jsonc`, which covers
+`wrangler dev` and the vitest workers pool (both read the top-level config).
+Wrangler's named envs do **not** inherit top-level vars, so `env.staging` and
+`env.production` fail closed by construction — leave the flag out of them.
+`tools/seed-dev.zsh` depends on `devToken` and therefore only works against
+local dev (its default `BASE` is already `http://localhost:8787`).
+
+Until outbound email is enabled (#9), deployed logins go through **Sign in with
+Apple / Google**, which are wired on staging and production.
 
 ## Sign in with Google
 
@@ -450,7 +470,7 @@ uses a small server-side bounce instead of a manual copy/paste:
 ## Onboarding a caretaker (no email)
 Until email is enabled, add caretakers with the **invite/share-link** flow (see
 the Family tab): an admin creates the member, then shares a link, and the
-invitee signs in (Apple, or magic-link `devToken` on staging) and is linked to
+invitee signs in (Apple or Google — magic link needs email, which is off) and is linked to
 that member — the second-caretaker join flow (`JoinFlow`) then walks them
 through connecting one calendar. See the `/invites` endpoints.
 
