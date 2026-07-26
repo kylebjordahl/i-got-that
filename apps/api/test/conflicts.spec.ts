@@ -11,6 +11,7 @@ import {
 } from '@igt/db';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { reconcileMemberConflicts } from '../src/services/conflicts.js';
+import { synthesizeFeed } from '../src/services/synthesis.js';
 import { authed, bearer, call, setupFamily } from './helpers.js';
 
 type Db = ReturnType<typeof getDb>;
@@ -367,8 +368,8 @@ describe('conflict detection & masking', () => {
 
     let row = (await f.db.select().from(conflicts).where(eq(conflicts.id, conflict.id)))[0]!;
     expect(row.status).toBe('resolved');
-    expect(row.loserContentHash).not.toBeNull();
-    expect(row.winnerContentHash).not.toBeNull();
+    expect(row.loserScheduleStamp).not.toBeNull();
+    expect(row.winnerScheduleStamp).not.toBeNull();
 
     // The doctor's appointment gets rescheduled by 15 minutes on its source
     // calendar, but still overlaps the school day the same way (same
@@ -391,8 +392,8 @@ describe('conflict detection & masking', () => {
     expect(row.status).toBe('pending');
     expect(row.resolvedByMemberId).toBeNull();
     expect(row.resolvedAt).toBeNull();
-    expect(row.loserContentHash).toBeNull();
-    expect(row.winnerContentHash).toBeNull();
+    expect(row.loserScheduleStamp).toBeNull();
+    expect(row.winnerScheduleStamp).toBeNull();
 
     // The mask is lifted and the split segments are gone — the baseline is
     // whole again, awaiting a fresh decision.
@@ -406,6 +407,111 @@ describe('conflict detection & masking', () => {
     // And it's surfaced again via the API.
     const api = await call(`/families/${f.familyId}/conflicts`, bearer(f.admin.token));
     expect(((await api.json()) as { conflicts: unknown[] }).conflicts).toHaveLength(1);
+  });
+
+  it('keeps a decision when an event is only retitled/relocated (it has not moved)', async () => {
+    const f = await fixture('conflict-retitle@example.com');
+    const { docKey } = await schoolAndDoctor(f.db, f);
+    await reconcileMemberConflicts(f.db, f.childId);
+    const conflict = (
+      await f.db.select().from(conflicts).where(eq(conflicts.familyMemberId, f.childId))
+    )[0]!;
+    expect(
+      (await call(`/families/${f.familyId}/conflicts/${conflict.id}/dismiss`, authed(f.admin.token)))
+        .status,
+    ).toBe(200);
+
+    // The appointment is renamed and moved to a different office, but stays at
+    // 10:00–11:00 — the same two commitments still collide in exactly the way
+    // the admin already ruled on, so the dismissal stands.
+    await f.db
+      .update(calendarEvents)
+      .set({
+        summary: 'Dentist appointment',
+        location: 'Cedar Dental',
+        contentHash: 'doc-hash-relocated',
+      })
+      .where(eq(calendarEvents.synthKey, docKey));
+
+    await reconcileMemberConflicts(f.db, f.childId);
+    const row = (await f.db.select().from(conflicts).where(eq(conflicts.id, conflict.id)))[0]!;
+    expect(row.status).toBe('dismissed');
+  });
+
+  it('keeps every ignored conflict when the school link is re-pinned (regression)', async () => {
+    // Regression: decisions used to be snapshotted against each event's
+    // `contentHash`, but a `bl:` baseline day's content is the *link's* config
+    // (feed name, link location + geocode, day hours in the feed's timezone) —
+    // no feed event of its own. So re-pinning the school's location, or a sync
+    // auto-detecting the feed's timezone, re-hashed every baseline day at once
+    // and reopened every ignored conflict on that member's calendar.
+    const f = await fixture('conflict-linkedit@example.com');
+    // Real synthesis, so the baseline days carry config-derived content.
+    await synthesizeFeed(f.db, f.feed);
+    await f.db.insert(calendarEvents).values({
+      familyId: f.familyId,
+      familyMemberId: f.childId,
+      provenance: 'human',
+      synthKey: 'ext:doctor:',
+      externalUid: 'doctor',
+      dtstart: futureAt(3, 10, 0),
+      dtend: futureAt(3, 11, 0),
+      summary: 'Doctor appointment',
+      contentHash: 'doc-hash',
+    });
+    await reconcileMemberConflicts(f.db, f.childId);
+    const open = await f.db
+      .select()
+      .from(conflicts)
+      .where(eq(conflicts.familyMemberId, f.childId));
+    expect(open.length).toBeGreaterThan(0);
+    for (const c of open) {
+      expect(
+        (await call(`/families/${f.familyId}/conflicts/${c.id}/dismiss`, authed(f.admin.token)))
+          .status,
+      ).toBe(200);
+    }
+
+    // The admin pins the school's address, and a sync detects the feed's
+    // timezone. Every baseline day is rewritten; not one event moved.
+    await f.db
+      .update(familyMemberFeeds)
+      .set({ location: '1 Lincoln Way, Springfield' })
+      .where(eq(familyMemberFeeds.id, f.linkId));
+    await synthesizeFeed(f.db, f.feed);
+    await reconcileMemberConflicts(f.db, f.childId);
+
+    const after = await f.db
+      .select()
+      .from(conflicts)
+      .where(eq(conflicts.familyMemberId, f.childId));
+    expect(after.filter((c) => c.status === 'pending')).toHaveLength(0);
+  });
+
+  it('re-baselines (never reopens) a decision carrying an older snapshot format', async () => {
+    const f = await fixture('conflict-legacystamp@example.com');
+    await schoolAndDoctor(f.db, f);
+    await reconcileMemberConflicts(f.db, f.childId);
+    const conflict = (
+      await f.db.select().from(conflicts).where(eq(conflicts.familyMemberId, f.childId))
+    )[0]!;
+    expect(
+      (await call(`/families/${f.familyId}/conflicts/${conflict.id}/dismiss`, authed(f.admin.token)))
+        .status,
+    ).toBe(200);
+
+    // A row decided against the old content-hash snapshot (or before snapshots
+    // existed at all) must establish a fresh baseline, not read as drift.
+    await f.db
+      .update(conflicts)
+      .set({ loserScheduleStamp: 'bc688a0b', winnerScheduleStamp: null })
+      .where(eq(conflicts.id, conflict.id));
+
+    await reconcileMemberConflicts(f.db, f.childId);
+    const row = (await f.db.select().from(conflicts).where(eq(conflicts.id, conflict.id)))[0]!;
+    expect(row.status).toBe('dismissed');
+    expect(row.loserScheduleStamp).toMatch(/^s1:/);
+    expect(row.winnerScheduleStamp).toMatch(/^s1:/);
   });
 
   it('dismissing leaves the double-book intact and applies no split', async () => {

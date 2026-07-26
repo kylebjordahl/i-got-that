@@ -504,12 +504,6 @@ export const conflicts = sqliteTable(
     ),
     resolvedAt: integer('resolved_at', { mode: 'timestamp_ms' }),
     dismissedAt: integer('dismissed_at', { mode: 'timestamp_ms' }),
-    // Snapshot of the loser/winner events' content_hash at the moment a decision
-    // (resolve or dismiss) was made. A later change to either event's content
-    // (time, summary, location, ...) invalidates the decision — the reconciler
-    // reopens the conflict back to 'pending' and clears these.
-    loserContentHash: text('loser_content_hash'),
-    winnerContentHash: text('winner_content_hash'),
     // Resolution parameters (design §8b), applied when a resolved conflict's
     // split is materialised. Defaults reproduce the plain split: flush cut,
     // both halves kept. `travel_*_min` widen the cut around the winner (the gap
@@ -523,6 +517,23 @@ export const conflicts = sqliteTable(
     afterNeeded: integer('after_needed', { mode: 'boolean' })
       .notNull()
       .default(true),
+    // Snapshot of the loser/winner events' SCHEDULE (start / end / all-day) at
+    // the moment a decision (resolve or dismiss) was made — the only thing the
+    // decision is a function of, since both outcomes are statements about two
+    // commitments colliding in time ("split the loser around it" / "leave both
+    // as they are"). When either event later MOVES the decision is stale, so
+    // the reconciler reopens the conflict back to 'pending' and clears these.
+    //
+    // Deliberately NOT the events' `content_hash`: that also folds in summary /
+    // location / geocode, which for a `bl:` baseline day are the link's and
+    // feed's *config*, not any feed event's content — so watching it reopened
+    // every decided conflict on a member's calendar whenever the school link
+    // was re-pinned or a sync auto-detected the feed's timezone.
+    //
+    // Written as a versioned `s1:` stamp (see `scheduleStamp`) so a value left
+    // by an older format re-baselines instead of reading as drift.
+    loserScheduleStamp: text('loser_schedule_stamp'),
+    winnerScheduleStamp: text('winner_schedule_stamp'),
     createdAt: createdAt(),
   },
   (t) => ({
