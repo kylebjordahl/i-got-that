@@ -8,6 +8,7 @@ import '../theme/app_colors.dart';
 import '../theme/app_text.dart';
 import '../util/format.dart';
 import '../widgets/app_bottom_nav.dart';
+import '../widgets/conflict_card.dart';
 import '../widgets/primitives.dart';
 
 /// The overrides worth reviewing: in-progress or upcoming, i.e. the loser's
@@ -94,6 +95,7 @@ class _MemberOverridesSheet extends ConsumerWidget {
               for (final o in overrides) ...[
                 _OverrideCard(
                   conflict: o,
+                  member: member,
                   onRevert: canEdit ? () => _revert(context, ref, o) : null,
                 ),
                 const SizedBox(height: 10),
@@ -122,47 +124,52 @@ class _MemberOverridesSheet extends ConsumerWidget {
   }
 }
 
-/// One overridden event: what it was split around, and when — with an inline
-/// revert control.
+/// One override, laid out like Home's "Double-booked" card — the same conflict
+/// one stage later. Day on the left of the top line, the member on the right,
+/// then both events in priority order: the one that was kept, then the one
+/// trimmed around it (marked with the scissors, since the order alone no longer
+/// says which was cut).
 class _OverrideCard extends StatelessWidget {
-  const _OverrideCard({required this.conflict, required this.onRevert});
+  const _OverrideCard({required this.conflict, required this.member, required this.onRevert});
   final Conflict conflict;
+  final Member member;
   final VoidCallback? onRevert;
 
   @override
   Widget build(BuildContext context) {
-    final winner = conflict.winner;
-    final loser = conflict.loser;
-    final when = winner.allDay
-        ? homeDayHeader(dayKey(winner.start), DateTime.now())
-        : friendlyTime(winner.start);
-    return AppCard(
-      child: Row(
+    // The higher-priority event anchors the day, as on Home.
+    final day = dayHeading(dayKey(conflict.winner.start), DateTime.now());
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: AppColors.tint(AppColors.green, 0.07),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: AppColors.green.withValues(alpha: 0.45)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const IconTile(icon: Icons.content_cut_rounded, color: AppColors.green, size: 38),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  loser.summary ?? 'An event',
-                  style: AppText.sectionItemTitle,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-                const SizedBox(height: 3),
-                Text(
-                  'Split around ${winner.summary ?? 'another event'} · $when',
-                  style: AppText.subtitle,
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ],
-            ),
+          ConflictCardHeader(day: day, member: member),
+          const SizedBox(height: 12),
+          ConflictEventRow(event: conflict.winner, accent: AppColors.green),
+          const SizedBox(height: 7),
+          ConflictEventRow(
+            event: conflict.loser,
+            accent: AppColors.green,
+            leadingIcon: Icons.content_cut_rounded,
           ),
-          const SizedBox(width: 10),
-          PillButton(label: 'Revert', dense: true, onPressed: onRevert),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              // Ghost, where Home's unresolved card is amber: this one is
+              // already settled, and reverting is the escape hatch rather than
+              // the thing the card is asking for.
+              Expanded(
+                child: PillButton(
+                    label: 'Revert', variant: PillVariant.ghost, onPressed: onRevert),
+              ),
+            ],
+          ),
         ],
       ),
     );

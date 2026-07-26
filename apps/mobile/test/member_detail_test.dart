@@ -4,6 +4,8 @@ import 'package:caretaker_app/screens/member_detail_screen.dart';
 import 'package:caretaker_app/state/auth.dart';
 import 'package:caretaker_app/state/family.dart';
 import 'package:caretaker_app/theme/app_theme.dart';
+import 'package:caretaker_app/widgets/conflict_card.dart';
+import 'package:caretaker_app/widgets/primitives.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -229,9 +231,31 @@ void main() {
 
       // Sheet title (the button's own title is still mounted behind it).
       expect(find.text('Overrides in effect'), findsNWidgets(2));
-      expect(find.text('Soccer'), findsOneWidget);
-      expect(find.textContaining('Split around Dentist'), findsOneWidget);
       expect(find.text('Revert'), findsOneWidget);
+    });
+
+    testWidgets(
+        'each card names both events in priority order, under the day and the '
+        "member's avatar", (tester) async {
+      await pumpTall(tester, appWith([conflict('c1', 'Soccer')]));
+      await tester.tap(find.text('Overrides in effect'));
+      await tester.pumpAndSettle();
+
+      // Both events, kept one first — order is what carries the priority.
+      final winner = tester.getTopLeft(find.text('Dentist'));
+      final loser = tester.getTopLeft(find.text('Soccer'));
+      expect(winner.dy, lessThan(loser.dy));
+
+      // Day on the left of the top line, the member (avatar + name) opposite it.
+      final header = find.byType(ConflictCardHeader);
+      final day = find.descendant(
+          of: header, matching: find.text(tester.widget<ConflictCardHeader>(header).day));
+      expect(day, findsOneWidget);
+      final avatar =
+          find.descendant(of: header, matching: find.byType(PersonAvatar));
+      expect(avatar, findsOneWidget);
+      expect(tester.getTopLeft(day).dy, lessThan(winner.dy));
+      expect(tester.getTopLeft(day).dx, lessThan(tester.getTopLeft(avatar).dx));
     });
   });
 
