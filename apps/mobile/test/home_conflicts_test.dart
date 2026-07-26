@@ -115,10 +115,46 @@ void main() {
     expect(find.text('Two events, one Theo'), findsOneWidget);
     expect(find.text('Confirm split'), findsOneWidget);
     expect(find.text('Ignore conflict — keep both as-is'), findsOneWidget);
-    // Loser (School day) split into two segments around the kept winner.
-    expect(find.text('School day'), findsNWidgets(2));
-    expect(find.text('Doctor appointment'), findsOneWidget);
+    // Loser (School day) split into two segments around the kept winner. Scoped
+    // to the sheet — the card underneath names both events too.
+    Finder inSheet(String text) =>
+        find.descendant(of: find.byType(BottomSheet), matching: find.text(text));
+    expect(inSheet('School day'), findsNWidgets(2));
+    expect(inSheet('Doctor appointment'), findsOneWidget);
     expect(find.text('Fixed'), findsOneWidget);
+  });
+
+  testWidgets('the card lists both events as peers, winner first, under a '
+      'date + member header', (tester) async {
+    await tester.pumpWidget(app());
+    await tester.pumpAndSettle();
+
+    // Both events are named outright, each with its own clock label — no prose
+    // explaining the overlap.
+    final winner = find.text('Doctor appointment');
+    final loser = find.text('School day');
+    expect(winner, findsOneWidget);
+    expect(loser, findsOneWidget);
+    expect(find.text('10:00 – 11:00 AM'), findsOneWidget);
+    expect(find.text('8:30 AM – 3:00 PM'), findsOneWidget);
+    expect(find.textContaining("can't be in two places"), findsNothing);
+    expect(find.textContaining('Overlaps'), findsNothing);
+
+    // Higher-priority event first.
+    final winnerY = tester.getTopLeft(winner).dy;
+    expect(winnerY, lessThan(tester.getTopLeft(loser).dy));
+
+    // Header: the date sits on the left (beside the icon), the member on the
+    // right as avatar + name. The date isn't shouted in caps.
+    final date = find.text('Tomorrow');
+    expect(date, findsOneWidget);
+    final name = find.text('Theo');
+    expect(name, findsOneWidget);
+    final dateBox = tester.getTopLeft(date);
+    final avatarX = tester.getTopLeft(find.text('T').first).dx;
+    expect(dateBox.dy, lessThan(winnerY));
+    expect(dateBox.dx, lessThan(avatarX));
+    expect(avatarX, lessThan(tester.getTopLeft(name).dx));
   });
 
   testWidgets('trashing a half marks it not needed in the resolution',
