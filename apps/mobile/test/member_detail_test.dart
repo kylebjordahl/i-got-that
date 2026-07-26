@@ -167,6 +167,74 @@ void main() {
     expect(find.byType(Overlay), findsNWidgets(2));
   });
 
+  group('overrides in effect', () {
+    Conflict conflict(String id, String loserSummary, {Duration? offset}) {
+      final start = DateTime.now().add(offset ?? const Duration(hours: 2));
+      return Conflict(
+        id: id,
+        familyMemberId: 'theo',
+        loser: ConflictEventRef(
+            start: start, end: start.add(const Duration(hours: 2)), allDay: false, summary: loserSummary),
+        winner: ConflictEventRef(
+            start: start, end: start.add(const Duration(hours: 1)), allDay: false, summary: 'Dentist'),
+      );
+    }
+
+    Widget appWith(List<Conflict> overrides) => ProviderScope(
+          overrides: [
+            apiClientProvider.overrideWithValue(_FakeApiClient()),
+            familyProvider.overrideWith((ref) async => 'fam-1'),
+            membersProvider.overrideWith((ref) async => [me, theo]),
+            currentMemberProvider.overrideWith((ref) async => me),
+            feedsProvider.overrideWith((ref) async => const <FeedItem>[]),
+            accountsProvider.overrideWith((ref) async => const <ExternalAccount>[]),
+            memberCalendarProvider.overrideWith((ref, id) async => null),
+            calendarEventsProvider.overrideWith((ref) async => const []),
+            memberOverridesProvider.overrideWith((ref, id) async => overrides),
+          ],
+          child: MaterialApp(
+            theme: buildAppTheme(),
+            themeMode: ThemeMode.dark,
+            home: const MemberDetailScreen(memberId: 'theo'),
+          ),
+        );
+
+    testWidgets('the list itself moved off the section — only a button remains',
+        (tester) async {
+      await pumpTall(tester, appWith([conflict('c1', 'Soccer'), conflict('c2', 'Piano')]));
+
+      expect(find.text('Overrides in effect'), findsOneWidget);
+      expect(find.text('2 events split by a conflict decision'), findsOneWidget);
+      // The cards (and their revert controls) live in the sheet now.
+      expect(find.text('Soccer'), findsNothing);
+      expect(find.text('Revert'), findsNothing);
+    });
+
+    testWidgets('no button at all when nothing is in effect', (tester) async {
+      // Only a past override: already ended, so it never counted as active.
+      await pumpTall(
+          tester, appWith([conflict('c1', 'Soccer', offset: const Duration(days: -3))]));
+
+      expect(find.text('Overrides in effect'), findsNothing);
+      expect(find.textContaining('split by a conflict decision'), findsNothing);
+    });
+
+    testWidgets('tapping the button opens the sheet with the revertable cards',
+        (tester) async {
+      await pumpTall(tester, appWith([conflict('c1', 'Soccer')]));
+
+      expect(find.text('1 event split by a conflict decision'), findsOneWidget);
+      await tester.tap(find.text('Overrides in effect'));
+      await tester.pumpAndSettle();
+
+      // Sheet title (the button's own title is still mounted behind it).
+      expect(find.text('Overrides in effect'), findsNWidgets(2));
+      expect(find.text('Soccer'), findsOneWidget);
+      expect(find.textContaining('Split around Dentist'), findsOneWidget);
+      expect(find.text('Revert'), findsOneWidget);
+    });
+  });
+
   testWidgets('generating an invite link shows the token to copy/share', (tester) async {
     await pumpTall(
       tester,
