@@ -354,6 +354,12 @@ jobs:
       # production -> "prod" flavor / com.kylebjordahl.igt
       FLAVOR: ${{ inputs.environment == 'production' && 'prod' || 'staging' }}
       API_BASE_URL: ${{ inputs.environment == 'production' && 'https://igt.kylebjordahl.com/api' || 'https://staging.igt.kylebjordahl.com/api' }}
+      # The Web OAuth client id (not secret — same value as GOOGLE_OAUTH_CLIENT_ID
+      # in apps/api/wrangler.jsonc for this env), passed to google_sign_in as
+      # serverClientId so native Sign in with Google also returns a
+      # serverAuthCode, auto-connecting the user's Google Calendar the same way
+      # the web redirect flow does (see docs/AUTH.md's Google section).
+      GOOGLE_SERVER_CLIENT_ID: ${{ inputs.environment == 'production' && '503268168924-5ogd6crcl1p1pfpoe3kdtqbo9nqhivpj.apps.googleusercontent.com' || '503268168924-2tdfajihn62m5o051jjdjnkfjrg921o1.apps.googleusercontent.com' }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -408,6 +414,7 @@ jobs:
             --export-options-plist "ios/ExportOptions-$FLAVOR.plist" \
             --dart-define=API_BASE_URL="$API_BASE_URL" \
             --dart-define=APP_ENV="${{ inputs.environment }}" \
+            --dart-define=GOOGLE_SERVER_CLIENT_ID="$GOOGLE_SERVER_CLIENT_ID" \
             --build-name=${{ needs.version.outputs.build_name }} \
             --build-number=${{ github.run_number }}
 

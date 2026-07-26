@@ -12,6 +12,11 @@ BUNDLE_DISPLAY_NAME=IGT Staging
 GOOGLE_IOS_CLIENT_ID=503268168924-honi8hhgikagd2gbu2tpb9qrf0n6eqcm.apps.googleusercontent.com
 GOOGLE_IOS_URL_SCHEME=com.googleusercontent.apps.503268168924-honi8hhgikagd2gbu2tpb9qrf0n6eqcm
 
+// flutter_web_auth_2's callback scheme for the native "connect a Google
+// Calendar" wizard (distinct from Sign in with Google above) — must match the
+// API's GOOGLE_IOS_OAUTH_CALLBACK_SCHEME for this env (wrangler.jsonc).
+GOOGLE_OAUTH_CALLBACK_SCHEME=com.kylebjordahl.igt.staging.oauth
+
 // Manual App Store distribution signing. Release config is only exercised by
 // `flutter build ipa` (archive/TestFlight), so this doesn't touch local
 // debug/run builds. The profile must be an App Store (not Ad Hoc/Development)

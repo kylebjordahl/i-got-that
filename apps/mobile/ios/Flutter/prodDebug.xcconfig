@@ -11,3 +11,8 @@ BUNDLE_DISPLAY_NAME=IGT
 // runtime with a clear "no client ID" error (web flow is unaffected).
 GOOGLE_IOS_CLIENT_ID=503268168924-gk8d4c4dfjtkmi2ol3t63usi089h1uvv.apps.googleusercontent.com
 GOOGLE_IOS_URL_SCHEME=com.googleusercontent.apps.503268168924-gk8d4c4dfjtkmi2ol3t63usi089h1uvv
+
+// flutter_web_auth_2's callback scheme for the native "connect a Google
+// Calendar" wizard (distinct from Sign in with Google above) — must match the
+// API's GOOGLE_IOS_OAUTH_CALLBACK_SCHEME for this env (wrangler.jsonc).
+GOOGLE_OAUTH_CALLBACK_SCHEME=com.kylebjordahl.igt.oauth
