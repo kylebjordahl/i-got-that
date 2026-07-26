@@ -748,12 +748,12 @@ class _DecisionCard extends StatelessWidget {
 }
 
 /// An agenda overlap (6b, ranked above pending decisions): a coral card that
-/// does nothing but name the two colliding events. Whose day it is (avatar) and
-/// which day it is sit in the top-right; the two events are then listed as
-/// peers — higher-priority first, identical treatment, because the point of the
-/// card is the collision, not the verdict. The verdict (split the lower-priority
-/// event around the higher one, or accept the double-book) belongs to the
-/// resolution sheet.
+/// does nothing but name the two colliding events. The header carries *when*
+/// on the left (beside the icon) and *who* on the right (avatar + name); the
+/// two events are then listed as peers — higher-priority first, identical
+/// treatment, because the point of the card is the collision, not the verdict.
+/// The verdict (split the lower-priority event around the higher one, or accept
+/// the double-book) belongs to the resolution sheet.
 class _ConflictCard extends StatelessWidget {
   const _ConflictCard({
     required this.conflict,
@@ -795,21 +795,25 @@ class _ConflictCard extends StatelessWidget {
                       icon: Icons.event_busy_rounded,
                       color: AppColors.coral,
                       size: 34),
-                  const Spacer(),
-                  Text(day,
-                      style: font(kBodyFont, 13, 600,
-                          color: AppColors.textSecondary)),
-                  const SizedBox(width: 8),
-                  // The avatar *is* the member label here — no name text.
-                  Semantics(
-                    label: name,
-                    excludeSemantics: name != null,
-                    child: PersonAvatar(
-                      initial: initialFor(name ?? '?'),
-                      color: memberColor,
-                      size: 30,
-                    ),
+                  const SizedBox(width: 10),
+                  // The date takes the slack (rather than a Spacer) so the
+                  // member cluster stays flush right whatever its name is.
+                  Expanded(
+                    child: Text(day,
+                        style: font(kBodyFont, 13, 600,
+                            color: AppColors.textSecondary)),
                   ),
+                  const SizedBox(width: 10),
+                  PersonAvatar(
+                    initial: initialFor(name ?? '?'),
+                    color: memberColor,
+                    size: 30,
+                  ),
+                  const SizedBox(width: 8),
+                  Text(name ?? 'Member',
+                      style: font(kBodyFont, 13.5, 700, color: memberColor),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis),
                 ],
               ),
               const SizedBox(height: 12),

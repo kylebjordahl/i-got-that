@@ -124,8 +124,8 @@ void main() {
     expect(find.text('Fixed'), findsOneWidget);
   });
 
-  testWidgets('the card lists both events as peers, winner first, under the '
-      'member avatar + a readable date', (tester) async {
+  testWidgets('the card lists both events as peers, winner first, under a '
+      'date + member header', (tester) async {
     await tester.pumpWidget(app());
     await tester.pumpAndSettle();
 
@@ -144,14 +144,17 @@ void main() {
     final winnerY = tester.getTopLeft(winner).dy;
     expect(winnerY, lessThan(tester.getTopLeft(loser).dy));
 
-    // Member = avatar only (Theo's initial), top-right, beside a date that
-    // isn't shouted in caps.
+    // Header: the date sits on the left (beside the icon), the member on the
+    // right as avatar + name. The date isn't shouted in caps.
     final date = find.text('Tomorrow');
     expect(date, findsOneWidget);
-    final avatar = tester.getTopLeft(find.text('T').first);
-    expect(avatar.dy, lessThan(winnerY));
-    expect(avatar.dx, greaterThan(tester.getTopLeft(date).dx));
-    expect(find.text('Theo'), findsNothing);
+    final name = find.text('Theo');
+    expect(name, findsOneWidget);
+    final dateBox = tester.getTopLeft(date);
+    final avatarX = tester.getTopLeft(find.text('T').first).dx;
+    expect(dateBox.dy, lessThan(winnerY));
+    expect(dateBox.dx, lessThan(avatarX));
+    expect(avatarX, lessThan(tester.getTopLeft(name).dx));
   });
 
   testWidgets('trashing a half marks it not needed in the resolution',
