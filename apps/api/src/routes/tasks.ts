@@ -28,7 +28,7 @@ import { Hono } from 'hono';
 import type { HonoEnv } from '../env.js';
 import { requireFamilyMember } from '../middleware/auth.js';
 import { removeClaimEvent, upsertClaimEvent } from '../services/claim.js';
-import { reconcileMemberConflicts } from '../services/conflicts.js';
+import { reconcileMemberConflicts, scheduleStamp } from '../services/conflicts.js';
 import { enqueueReconcile, getProductionRegistry, syncFamilyMirror } from '../services/mirror.js';
 import { hashCalendarEvent } from '../services/synthesis.js';
 import { buildMemberTasks } from '../services/task-gen.js';
@@ -606,18 +606,24 @@ async function loadConflict(
 }
 
 /**
- * The loser/winner events' current content_hash, to snapshot against a
- * resolve/dismiss decision — see loserContentHash/winnerContentHash on the
- * conflicts table.
+ * The loser/winner events' current schedule stamps, to snapshot against a
+ * resolve/dismiss decision — see loserScheduleStamp/winnerScheduleStamp on the
+ * conflicts table. A later reconcile pass reopens the conflict when either
+ * event has moved away from the stamp captured here.
  */
-async function decisionHashes(
+async function decisionStamps(
   db: ReturnType<typeof getDb>,
   familyMemberId: string,
   loserKey: string,
   winnerKey: string,
 ) {
   const rows = await db
-    .select({ synthKey: calendarEvents.synthKey, contentHash: calendarEvents.contentHash })
+    .select({
+      synthKey: calendarEvents.synthKey,
+      dtstart: calendarEvents.dtstart,
+      dtend: calendarEvents.dtend,
+      allDay: calendarEvents.allDay,
+    })
     .from(calendarEvents)
     .where(
       and(
@@ -625,10 +631,10 @@ async function decisionHashes(
         inArray(calendarEvents.synthKey, [loserKey, winnerKey]),
       ),
     );
-  const byKey = new Map(rows.map((r) => [r.synthKey, r.contentHash]));
+  const byKey = new Map(rows.map((r) => [r.synthKey, scheduleStamp(r)]));
   return {
-    loserContentHash: byKey.get(loserKey) ?? null,
-    winnerContentHash: byKey.get(winnerKey) ?? null,
+    loserScheduleStamp: byKey.get(loserKey) ?? null,
+    winnerScheduleStamp: byKey.get(winnerKey) ?? null,
   };
 }
 
@@ -651,7 +657,7 @@ taskRoutes.post('/conflicts/:conflictId/resolve', async (c) => {
     return c.json({ error: 'invalid_input', issues: parsed.error.issues }, 400);
   }
   const res = parsed.data;
-  const hashes = await decisionHashes(
+  const stamps = await decisionStamps(
     db,
     conflict.familyMemberId,
     conflict.loserKey,
@@ -668,7 +674,7 @@ taskRoutes.post('/conflicts/:conflictId/resolve', async (c) => {
       travelAfterMin: res.travelAfterMin,
       beforeNeeded: res.beforeNeeded,
       afterNeeded: res.afterNeeded,
-      ...hashes,
+      ...stamps,
     })
     .where(eq(conflicts.id, conflict.id));
   await reconcileMemberConflicts(db, conflict.familyMemberId);
@@ -686,7 +692,7 @@ taskRoutes.post('/conflicts/:conflictId/dismiss', async (c) => {
   const me = c.get('member');
   const conflict = await loadConflict(db, me.familyId, c.req.param('conflictId'));
   if (!conflict) return c.json({ error: 'not_found' }, 404);
-  const hashes = await decisionHashes(
+  const stamps = await decisionStamps(
     db,
     conflict.familyMemberId,
     conflict.loserKey,
@@ -699,7 +705,7 @@ taskRoutes.post('/conflicts/:conflictId/dismiss', async (c) => {
       dismissedAt: new Date(),
       resolvedByMemberId: null,
       resolvedAt: null,
-      ...hashes,
+      ...stamps,
     })
     .where(eq(conflicts.id, conflict.id));
   await reconcileMemberConflicts(db, conflict.familyMemberId);
@@ -726,8 +732,8 @@ taskRoutes.post('/conflicts/:conflictId/revert', async (c) => {
       resolvedByMemberId: null,
       resolvedAt: null,
       dismissedAt: null,
-      loserContentHash: null,
-      winnerContentHash: null,
+      loserScheduleStamp: null,
+      winnerScheduleStamp: null,
       // Discard the prior resolution's parameters so a fresh decision starts
       // from the plain split.
       travelBeforeMin: 0,
