@@ -26,7 +26,7 @@ import {
   type SourceOccurrence,
   type SynthesisResult as EngineResult,
 } from '@igt/classification';
-import type { GeoLocation } from '@igt/domain';
+import { geoKey, type GeoLocation } from '@igt/domain';
 
 type FeedRow = typeof feeds.$inferSelect;
 type LinkRow = typeof familyMemberFeeds.$inferSelect;
@@ -65,7 +65,6 @@ export function hashCalendarEvent(e: {
   locationGeo?: GeoLocation | null;
   description: string | null;
 }): string {
-  const g = e.locationGeo;
   const parts = [
     e.dtstart.toISOString(),
     e.dtend ? e.dtend.toISOString() : '',
@@ -74,7 +73,7 @@ export function hashCalendarEvent(e: {
     e.location ?? '',
     // Include the geocode so a location that gains/loses/changes coordinates
     // (but keeps the same text) still resynthesizes and re-mirrors.
-    g ? `${g.lat},${g.lon},${g.title ?? ''},${g.address ?? ''},${g.radius ?? ''}` : '',
+    geoKey(e.locationGeo),
     e.description ?? '',
   ].join('|');
   let h = 5381;
