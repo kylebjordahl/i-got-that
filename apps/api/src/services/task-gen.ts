@@ -21,6 +21,7 @@ import {
   type TaskIntent,
   type TaskRuleLike,
 } from '@igt/classification';
+import { geoKey, type GeoLocation } from '@igt/domain';
 
 type CalendarEventRow = typeof calendarEvents.$inferSelect;
 type TaskRow = typeof tasks.$inferSelect;
@@ -47,7 +48,9 @@ function toTaskRuleLike(r: typeof taskRules.$inferSelect): TaskRuleLike {
 }
 
 /**
- * Heal an existing task's anchor/window/location if the event moved. Callers
+ * Heal an existing task's anchor/window/location (text *and* geocode — a place
+ * re-pinned without a text change still has to reach the claimed event, which
+ * is what carries travel time out) if the event moved. Callers
  * pass the task's own current `dtend` to leave it untouched (manual tasks,
  * whose window is user-set) or a freshly recomputed one to keep it in step
  * with the anchor (generated tasks) — otherwise a healed dtstart would drift
@@ -59,15 +62,20 @@ async function healTask(
   dtstart: Date,
   dtend: Date | null,
   location: string | null,
+  locationGeo: GeoLocation | null,
 ): Promise<void> {
   if (
     task.dtstart.getTime() === dtstart.getTime() &&
     (task.dtend?.getTime() ?? null) === (dtend?.getTime() ?? null) &&
-    (task.location ?? null) === (location ?? null)
+    (task.location ?? null) === (location ?? null) &&
+    geoKey(task.locationGeo) === geoKey(locationGeo)
   ) {
     return;
   }
-  await db.update(tasks).set({ dtstart, dtend, location }).where(eq(tasks.id, task.id));
+  await db
+    .update(tasks)
+    .set({ dtstart, dtend, location, locationGeo })
+    .where(eq(tasks.id, task.id));
 }
 
 /** The start anchor a given task type takes on an event (for manual healing). */
@@ -203,9 +211,9 @@ export async function buildMemberTasks(
         const anchor = anchorStart(event, t.type);
         if (t.durationOverrideMin != null && t.type !== 'attendance') {
           const w = transitionWindow(anchor, t.durationOverrideMin);
-          await healTask(db, t, w.dtstart, w.dtend, event.location);
+          await healTask(db, t, w.dtstart, w.dtend, event.location, event.locationGeo);
         } else {
-          await healTask(db, t, anchor, t.dtend, event.location);
+          await healTask(db, t, anchor, t.dtend, event.location, event.locationGeo);
         }
       }
     } else {
@@ -220,7 +228,14 @@ export async function buildMemberTasks(
       for (const intent of intents) {
         const prior = existingByType.get(intent.type);
         if (prior) {
-          await healTask(db, prior, intent.dtstart, intent.dtend, intent.location);
+          await healTask(
+            db,
+            prior,
+            intent.dtstart,
+            intent.dtend,
+            intent.location,
+            intent.locationGeo,
+          );
         } else {
           await db.insert(tasks).values({
             familyId: event.familyId,
@@ -231,6 +246,7 @@ export async function buildMemberTasks(
             dtstart: intent.dtstart,
             dtend: intent.dtend,
             location: intent.location,
+            locationGeo: intent.locationGeo,
             status: 'unowned',
             createdVia: 'generated',
           });

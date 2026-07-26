@@ -273,6 +273,7 @@ taskRoutes.post('/tasks/:taskId/convert', async (c) => {
       dtstart: anchorStart,
       dtend: type === 'attendance' ? event.dtend : null,
       location: event.location,
+      locationGeo: event.locationGeo,
       status: 'unowned',
       createdVia: 'manual',
     });

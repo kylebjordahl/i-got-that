@@ -570,6 +570,11 @@ export const tasks = sqliteTable(
     // when set, task-gen re-anchors around it instead of recomputing the window.
     durationOverrideMin: integer('duration_override_min'),
     location: text('location'),
+    // Geocoded coordinates for `location`, carried from the event the task was
+    // generated from. Travels on to the claimed event so the caretaker's own
+    // calendar keeps GEO + X-APPLE-STRUCTURED-LOCATION (Apple travel time) —
+    // without it a claimed pickup/drop-off mirrors as free text only.
+    locationGeo: text('location_geo', { mode: 'json' }).$type<GeoLocation>(),
     status: text('status', { enum: TaskStatus.options })
       .notNull()
       .default('unowned'),

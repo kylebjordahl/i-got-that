@@ -49,6 +49,7 @@ async function insertEvent(
     allDay: values.allDay ?? false,
     summary: values.summary ?? 'School day',
     location: values.location ?? null,
+    locationGeo: values.locationGeo ?? null,
     description: null,
   };
   return (
@@ -242,6 +243,52 @@ describe('task generation (Module B)', () => {
     // The window should track the new anchor (15min later), not stay pinned
     // to the pre-move dtend.
     expect(dropoffAfter.dtend!.getTime()).toBe(movedStart.getTime() + 15 * 60_000);
+  });
+
+  it("carries the event's geocode onto its tasks, and heals a re-geocoded one", async () => {
+    const fam = await setupFamily('gen-geo@example.com');
+    const db = getDb(env.DB);
+    const { link } = await linkedFeed(db, fam.familyId, fam.childId, 'transition');
+    const geo = {
+      lat: 37.331686,
+      lon: -122.030656,
+      title: 'Lincoln Elementary',
+      address: '123 Main St, Springfield',
+    };
+    const event = await insertEvent(db, fam.familyId, fam.childId, {
+      synthKey: 'bl:l1:2026-07-06',
+      linkId: link.id,
+      location: 'Lincoln Elementary',
+      locationGeo: geo,
+    });
+
+    await buildMemberTasks(db, fam.childId);
+    const rows = await db.select().from(tasks).where(eq(tasks.calendarEventId, event.id));
+    expect(rows).toHaveLength(2);
+    // Both the drop-off and the pickup need the coords: they're what the
+    // claimed event mirrors out as GEO/X-APPLE-STRUCTURED-LOCATION.
+    for (const t of rows) expect(t.locationGeo).toEqual(geo);
+
+    // The link is re-geocoded to a more precise pin — same display text, new
+    // coords — so the tasks have to follow it.
+    const moved = { ...geo, lat: 37.4, lon: -122.1 };
+    const payload = {
+      dtstart: event.dtstart,
+      dtend: event.dtend,
+      allDay: false,
+      summary: event.summary,
+      location: event.location,
+      locationGeo: moved,
+      description: null,
+    };
+    await db
+      .update(calendarEvents)
+      .set({ ...payload, contentHash: hashCalendarEvent(payload) })
+      .where(eq(calendarEvents.id, event.id));
+    await buildMemberTasks(db, fam.childId);
+
+    const healed = await db.select().from(tasks).where(eq(tasks.calendarEventId, event.id));
+    for (const t of healed) expect(t.locationGeo).toEqual(moved);
   });
 
   it('preserves manual conversions and sweeps unowned orphans', async () => {

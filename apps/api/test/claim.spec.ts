@@ -1,12 +1,18 @@
 import { env } from 'cloudflare:test';
 import { and, calendarEvents, eq, getDb, tasks } from '@igt/db';
+import type { GeoLocation } from '@igt/domain';
 import { describe, expect, it } from 'vitest';
 import { hashCalendarEvent } from '../src/services/synthesis.js';
 import { authed, call, setupFamily } from './helpers.js';
 
 type Db = ReturnType<typeof getDb>;
 
-async function insertTask(db: Db, familyId: string, childId: string) {
+async function insertTask(
+  db: Db,
+  familyId: string,
+  childId: string,
+  locationGeo: GeoLocation | null = null,
+) {
   return (
     await db
       .insert(tasks)
@@ -17,6 +23,7 @@ async function insertTask(db: Db, familyId: string, childId: string) {
         dtstart: new Date('2026-07-06T21:45:00Z'),
         dtend: null,
         location: 'Lincoln Elementary',
+        locationGeo,
         status: 'unowned',
         createdVia: 'generated',
       })
@@ -32,6 +39,7 @@ async function insertAttendanceTaskWithEvent(db: Db, familyId: string, childId: 
     allDay: false,
     summary: 'Soccer practice',
     location: 'Elm Park Fields',
+    locationGeo: { lat: 37.4, lon: -122.1, title: 'Elm Park Fields' },
     description: 'Bring cleats and shin guards',
   };
   const event = (
@@ -59,6 +67,7 @@ async function insertAttendanceTaskWithEvent(db: Db, familyId: string, childId: 
         dtstart: payload.dtstart,
         dtend: payload.dtend,
         location: payload.location,
+        locationGeo: payload.locationGeo,
         status: 'unowned',
         createdVia: 'generated',
       })
@@ -141,9 +150,31 @@ describe('claiming (the recursion)', () => {
       familyMemberId: fam.adminMemberId,
       summary: event.summary,
       location: event.location,
+      locationGeo: event.locationGeo,
       description: event.description,
       allDay: event.allDay,
     });
+  });
+
+  it("a claimed transition keeps the task's geocode (Apple travel time)", async () => {
+    const fam = await setupFamily('claim-geo@example.com');
+    const db = getDb(env.DB);
+    const geo: GeoLocation = {
+      lat: 37.331686,
+      lon: -122.030656,
+      title: 'Lincoln Elementary',
+      address: '123 Main St, Springfield',
+    };
+    const task = await insertTask(db, fam.familyId, fam.childId, geo);
+
+    await call(`/families/${fam.familyId}/tasks/${task.id}/assign`, authed(fam.admin.token, {}));
+
+    const events = await claimEventsFor(db, task.id);
+    expect(events).toHaveLength(1);
+    // Location text alone leaves Apple guessing; the coords are what the
+    // mirror turns into GEO + X-APPLE-STRUCTURED-LOCATION.
+    expect(events[0]!.location).toBe('Lincoln Elementary');
+    expect(events[0]!.locationGeo).toEqual(geo);
   });
 
   it('dismiss removes the claimed event; deleting the task cascades it', async () => {

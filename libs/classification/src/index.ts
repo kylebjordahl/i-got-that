@@ -464,6 +464,12 @@ export interface TaskIntent {
   dtstart: Date;
   dtend: Date | null;
   location: string | null;
+  /**
+   * Geocoded coords for `location`, carried straight from the event. A task is
+   * always about being *at* the event's place, so the geocode travels with the
+   * text — it's what lets the claimed event drive Apple's travel time.
+   */
+  locationGeo: GeoLocation | null;
 }
 
 /** Pad an anchor instant into a claimable window of `windowMin` minutes. */
@@ -496,10 +502,16 @@ export function transitionWindow(
  * (padded from the event end); `attendance` yields one task spanning the event.
  */
 export function generateTaskIntents(
-  event: { dtstart: Date; dtend: Date | null; location?: string | null },
+  event: {
+    dtstart: Date;
+    dtend: Date | null;
+    location?: string | null;
+    locationGeo?: GeoLocation | null;
+  },
   resolution: TaskResolution,
 ): TaskIntent[] {
   const location = event.location ?? null;
+  const locationGeo = event.locationGeo ?? null;
   if (resolution.resultType === 'attendance') {
     return [
       {
@@ -508,6 +520,7 @@ export function generateTaskIntents(
         dtstart: event.dtstart,
         dtend: event.dtend,
         location,
+        locationGeo,
       },
     ];
   }
@@ -519,6 +532,7 @@ export function generateTaskIntents(
       dtstart: event.dtstart,
       dtend: windowEnd(event.dtstart, resolution.dropoffWindowMin),
       location,
+      locationGeo,
     },
     {
       type: 'pickup',
@@ -526,6 +540,7 @@ export function generateTaskIntents(
       dtstart: pickupAnchor,
       dtend: windowEnd(pickupAnchor, resolution.pickupWindowMin),
       location,
+      locationGeo,
     },
   ];
 }
