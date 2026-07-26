@@ -140,7 +140,7 @@ class _OverrideCard extends StatelessWidget {
     // The higher-priority event anchors the day, as on Home.
     final day = dayHeading(dayKey(conflict.winner.start), DateTime.now());
     return Container(
-      padding: const EdgeInsets.all(14),
+      padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
         color: AppColors.tint(AppColors.green, 0.07),
         borderRadius: BorderRadius.circular(18),
@@ -150,15 +150,15 @@ class _OverrideCard extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           ConflictCardHeader(day: day, member: member),
-          const SizedBox(height: 12),
+          const SizedBox(height: 10),
           ConflictEventRow(event: conflict.winner, accent: AppColors.green),
-          const SizedBox(height: 7),
+          const SizedBox(height: 6),
           ConflictEventRow(
             event: conflict.loser,
             accent: AppColors.green,
             leadingIcon: Icons.content_cut_rounded,
           ),
-          const SizedBox(height: 12),
+          const SizedBox(height: 10),
           Row(
             children: [
               // Ghost, where Home's unresolved card is amber: this one is
@@ -166,7 +166,10 @@ class _OverrideCard extends StatelessWidget {
               // the thing the card is asking for.
               Expanded(
                 child: PillButton(
-                    label: 'Revert', variant: PillVariant.ghost, onPressed: onRevert),
+                    label: 'Revert',
+                    variant: PillVariant.ghost,
+                    dense: true,
+                    onPressed: onRevert),
               ),
             ],
           ),

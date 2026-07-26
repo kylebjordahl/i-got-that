@@ -40,24 +40,24 @@ class ConflictCardHeader extends StatelessWidget {
     return Row(
       children: [
         if (icon != null) ...[
-          IconTile(icon: icon!, color: iconColor, size: 34),
-          const SizedBox(width: 10),
+          IconTile(icon: icon!, color: iconColor, size: 30),
+          const SizedBox(width: 9),
         ],
         // The date takes the slack (rather than a Spacer) so the member cluster
         // stays flush right whatever its name is.
         Expanded(
           child: Text(day,
-              style: font(kBodyFont, 13, 600, color: AppColors.textSecondary)),
+              style: font(kBodyFont, 12.5, 600, color: AppColors.textSecondary)),
         ),
-        const SizedBox(width: 10),
+        const SizedBox(width: 9),
         PersonAvatar(
           initial: initialFor(name ?? '?'),
           color: memberColor,
-          size: 30,
+          size: 26,
         ),
-        const SizedBox(width: 8),
+        const SizedBox(width: 7),
         Text(name ?? 'Member',
-            style: font(kBodyFont, 13.5, 700, color: memberColor),
+            style: font(kBodyFont, 13, 700, color: memberColor),
             maxLines: 1,
             overflow: TextOverflow.ellipsis),
       ],
@@ -84,29 +84,29 @@ class ConflictEventRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
       decoration: BoxDecoration(
         color: AppColors.bg.withValues(alpha: 0.45),
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(10),
         border: Border.all(color: accent.withValues(alpha: 0.22)),
       ),
       child: Row(
         children: [
           if (leadingIcon != null) ...[
-            Icon(leadingIcon, size: 15, color: accent),
-            const SizedBox(width: 8),
+            Icon(leadingIcon, size: 14, color: accent),
+            const SizedBox(width: 7),
           ],
           Expanded(
             child: Text(
               event.summary ?? 'An event',
-              style: AppText.listItemTitle,
+              style: font(kBodyFont, 13, 600),
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
             ),
           ),
-          const SizedBox(width: 10),
+          const SizedBox(width: 8),
           Text(conflictEventTime(event),
-              style: font(kBodyFont, 12.5, 600, color: AppColors.textSecondary)),
+              style: font(kBodyFont, 11.5, 600, color: AppColors.textSecondary)),
         ],
       ),
     );
