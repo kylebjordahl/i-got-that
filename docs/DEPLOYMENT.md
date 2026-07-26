@@ -39,6 +39,9 @@ Routing / KV later). Keep binding names in sync between the two.
    - **Account · Email Routing · Edit** *(only once you wire inbound RSVP email)*
    - **Zone · DNS · Edit** + **Zone · Workers Routes · Edit** *(only if you put
      the API on a custom domain — see §6)*
+   - **Account · Access: Apps and Policies · Edit** + **Account · Access:
+     Organizations, Identity Providers, and Groups · Read** *(only if you put
+     Cloudflare Access in front of the staging web client — see §9)*
    Scope it to your account (and the specific zone, if using a custom domain).
 
 ### 2. GitHub repository secrets
@@ -265,6 +268,108 @@ on a published release) where `mobile` is Nx-affected builds and uploads a
 TestFlight build automatically for that environment's flavor — no further
 action needed per-release. Add internal/external testers in App Store Connect
 → TestFlight the first time each app's build lands.
+
+### 9. Cloudflare Access on the staging web client (optional)
+
+Staging is a public internet host carrying real connected calendar accounts, so
+the web client can be put behind **Cloudflare Access** (Zero Trust) — an email
+allow-list in front of `https://staging.igt.kylebjordahl.com/app`. Terraform owns
+it (`infra/terraform/access.tf`), but three things must be done by hand first.
+
+> **Scoped to `/app` deliberately — don't widen it to the bare hostname.** The
+> same Worker serves `/api`, and several callers there can never complete an
+> Access login: Apple's cross-site **form-POST** to `/api/auth/apple/callback`
+> (Access would answer with a login redirect and drop the POST body, breaking
+> web Sign in with Apple), Google's `/api/auth/google/callback`, Apple's
+> server-to-server `/api/auth/apple/notifications`, the
+> `/.well-known/apple-app-site-association` file Apple's CDN fetches for
+> Universal Links, and the whole `/api` surface as used by the **native staging
+> app**, which has no browser and would need service-token headers compiled in.
+> Access on `/app` gates the UI, not the data — `/api` stays reachable, so this
+> is a speed bump against drive-by discovery, not an authorization boundary.
+
+**Manual step 1 — enable Zero Trust on the account (one-time).** Dashboard →
+**Zero Trust**. Pick a team name (this becomes your team domain,
+`<team>.cloudflareaccess.com`) and choose the **Free** plan — it covers up to 50
+users. Cloudflare asks for a payment method even on the $0 plan. There is no
+Terraform resource for this onboarding; the provider assumes the account is
+already a Zero Trust organization, and `apply` fails without it.
+
+**Manual step 2 — widen the API token.** The token from §1 doesn't carry Access
+rights. Edit it (My Profile → API Tokens) and add:
+
+- **Account · Access: Apps and Policies · Edit**
+- **Account · Access: Organizations, Identity Providers, and Groups · Read**
+
+Update `CLOUDFLARE_API_TOKEN` wherever it's stored (your shell for local
+`terraform apply`, and the GitHub secret from §2 if Terraform ever runs in CI).
+
+**Manual step 3 — confirm the login method.** Zero Trust → **Settings** →
+**Authentication** → *Login methods*. **One-time PIN** is on by default and is
+what the email allow-list uses; no identity provider needs configuring. (If it's
+been turned off, re-enable it, or add an IdP and reference it from the policy.)
+
+**Manual step 4 — set the allow-list as a repository variable.** GitHub →
+Settings → Secrets and variables → Actions → **Variables** → New variable, named
+`ACCESS_ALLOWED_EMAILS`, whose value is an **HCL list**:
+
+```
+["you@example.com","partner@example.com"]
+```
+
+The brackets and quotes are required — Terraform parses `TF_VAR_` values for
+list/map types as HCL, and a bare email address is a parse error that fails the
+deploy. Unset is fine: the workflow falls back to `[]`.
+
+> **This variable — not a local `staging.tfvars` — is the source of truth.**
+> Every staging deploy runs `terraform apply -auto-approve` with **no
+> `-var-file`** (see `.github/workflows/deploy.yml`). An allow-list that exists
+> only in your local `staging.tfvars` reads as empty in CI, so the next push to
+> `main` would quietly **destroy** the Access application and leave `/app`
+> public again. Set the repository variable and let CI apply it.
+
+The next staging deploy provisions both resources. To apply immediately instead
+of waiting for a deploy:
+
+```bash
+cd infra/terraform
+terraform init -backend-config=backend.staging.hcl
+terraform plan  -var-file=staging.tfvars   # expect exactly 2 resources to add
+terraform apply -var-file=staging.tfvars
+```
+
+— but only if `staging.tfvars` and the repository variable agree, or CI will
+revert whichever one it disagrees with on the next run.
+
+Leaving the allow-list empty provisions **nothing** — an empty list would
+otherwise create an application that locks everyone out. The resources are also
+guarded on `environment == "staging"`, so a production apply is a no-op for them.
+
+**Verify** — the protected path should bounce to the Access login, and the API
+should not:
+
+```bash
+curl -sI https://staging.igt.kylebjordahl.com/app/ | head -1
+# → HTTP/2 302, with a Location on <team>.cloudflareaccess.com
+
+curl -s -o /dev/null -w '%{http_code}\n' \
+  https://staging.igt.kylebjordahl.com/.well-known/apple-app-site-association
+# → 200 (Apple must keep reaching this)
+
+curl -s -o /dev/null -w '%{http_code}\n' https://staging.igt.kylebjordahl.com/health
+# → 200 (the API is not behind Access)
+```
+
+If `/app/` returns 200 instead of a redirect, Access is not actually in front of
+the Worker on this hostname — re-check that the app's domain matches the route
+in `wrangler.jsonc` and that the hostname is proxied. Then sign in through the
+browser once (Access emails a PIN) and confirm the Apple/Google login round-trip
+still completes, since that's the flow most at risk from a misscoped app.
+
+**To roll back**, clear the `ACCESS_ALLOWED_EMAILS` repository variable (or set
+it to `[]`) and let the next deploy run — both resources are destroyed and
+`/app` is public again. For an immediate rollback, `terraform apply` locally
+with an empty list, then clear the variable so CI doesn't re-create it.
 
 ---
 

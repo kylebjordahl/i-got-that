@@ -1,0 +1,11 @@
+# Copy to staging.tfvars (git-ignored) and fill in. See docs/DEPLOYMENT.md §4.
+# `cloudflare_api_token` is NOT set here — it comes from the environment
+# (`TF_VAR_cloudflare_api_token`) so the secret never lands in a file.
+
+environment           = "staging"
+cloudflare_account_id = "REPLACE_WITH_YOUR_ACCOUNT_ID"
+
+# Cloudflare Access on the staging web client (/app). Empty ⇒ not provisioned.
+# Requires the one-time Zero Trust setup + the widened API token in §9 before
+# `apply` will succeed.
+# access_allowed_emails = ["you@example.com"]

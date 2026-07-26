@@ -23,3 +23,19 @@ variable "name_prefix" {
   default     = "igt"
   description = "Resource name prefix."
 }
+
+variable "staging_hostname" {
+  type        = string
+  default     = "staging.igt.kylebjordahl.com"
+  description = "Staging hostname (must match the custom_domain route in apps/api/wrangler.jsonc)."
+}
+
+variable "access_allowed_emails" {
+  type        = list(string)
+  default     = []
+  description = <<-EOT
+    Emails allowed through Cloudflare Access on the staging web client (/app).
+    Empty (the default) ⇒ no Access resources are provisioned at all, so nothing
+    changes for anyone who hasn't opted in. Ignored outside staging.
+  EOT
+}
