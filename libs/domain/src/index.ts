@@ -180,6 +180,17 @@ export const GeoLocation = z.object({
 });
 export type GeoLocation = z.infer<typeof GeoLocation>;
 
+/**
+ * A geocode's comparable/hashable form — every content hash that covers a
+ * location has to fold this in, so a place that keeps its display text but
+ * gains, loses, or moves its coordinates still counts as changed (and
+ * resynthesizes / re-heals / re-mirrors instead of being skipped as a no-op).
+ */
+export function geoKey(geo: GeoLocation | null | undefined): string {
+  if (!geo) return '';
+  return `${geo.lat},${geo.lon},${geo.title ?? ''},${geo.address ?? ''},${geo.radius ?? ''}`;
+}
+
 // --- API input schemas (v1 subset) --------------------------------------
 
 export const MagicLinkRequestInput = z.object({

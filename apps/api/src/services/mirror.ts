@@ -20,6 +20,7 @@ import {
   type DeliveryTarget,
   GoogleCalendarProvider,
 } from '@igt/delivery';
+import { geoKey } from '@igt/domain';
 import type { Bindings } from '../env.js';
 import { googleRefresherFor } from '../lib/google-oauth.js';
 import { createGuardedFetch } from '../lib/outbound-url.js';
@@ -142,9 +143,7 @@ function hashMirrorPayload(
     event.allDay ? '1' : '0',
     event.location ?? '',
     // Re-mirror when only the geocode changes (same display text).
-    event.locationGeo
-      ? `${event.locationGeo.lat},${event.locationGeo.lon},${event.locationGeo.title ?? ''},${event.locationGeo.address ?? ''},${event.locationGeo.radius ?? ''}`
-      : '',
+    geoKey(event.locationGeo),
     event.description ?? '',
     alertMinutes.join(','),
     timezone ?? '',

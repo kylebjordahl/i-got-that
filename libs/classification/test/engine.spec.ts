@@ -287,8 +287,26 @@ describe('generateTaskIntents', () => {
   it('attendance → one task spanning the event', () => {
     const intents = generateTaskIntents(span, { resultType: 'attendance', dropoffWindowMin: 15, pickupWindowMin: 15 });
     expect(intents).toEqual([
-      { type: 'attendance', attendanceRequirement: 'any', dtstart: span.dtstart, dtend: span.dtend, location: span.location },
+      {
+        type: 'attendance',
+        attendanceRequirement: 'any',
+        dtstart: span.dtstart,
+        dtend: span.dtend,
+        location: span.location,
+        locationGeo: null,
+      },
     ]);
+  });
+
+  it("carries the event's geocode onto every task it spawns", () => {
+    const geo = { lat: 37.331686, lon: -122.030656, title: 'Lincoln Elementary' };
+    const intents = generateTaskIntents(
+      { ...span, locationGeo: geo },
+      { resultType: 'transition', dropoffWindowMin: 15, pickupWindowMin: 30 },
+    );
+    // Both halves of a transition are trips to the same place — the geocode is
+    // what lets the claimed event drive Apple's travel time.
+    expect(intents.map((i) => i.locationGeo)).toEqual([geo, geo]);
   });
 
   it('transition → drop-off (from start) + pickup (from end), padded by their windows', () => {
