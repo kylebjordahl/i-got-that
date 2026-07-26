@@ -288,8 +288,8 @@ class MeScreen extends ConsumerWidget {
       context: context,
       builder: (dialogContext) => AlertDialog(
         title: const Text('Disconnect account?'),
-        content: Text('Remove ${a.kindLabel} (${a.username ?? a.name})? Feeds and '
-            'delivery methods using it will stop working.'),
+        content: Text('Remove ${a.kindLabel} (${a.username ?? a.name})? This only '
+            'works if no feeds or delivery methods still use it.'),
         actions: [
           TextButton(
               onPressed: () => Navigator.of(dialogContext).pop(false),
@@ -307,9 +307,14 @@ class MeScreen extends ConsumerWidget {
       await ref.read(apiClientProvider).deleteAccount(a.id);
       ref.invalidate(accountsProvider);
     } catch (e) {
+      final data = e is DioException ? e.response?.data : null;
+      final code = (data as Map<String, dynamic>?)?['error'];
+      final message = code == 'in_use'
+          ? 'Still in use by a feed or delivery method — remove those first.'
+          : 'Failed: $e';
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text('Failed: $e'),
+          content: Text(message),
           margin: snackBarMarginAboveNav(context),
         ));
       }
