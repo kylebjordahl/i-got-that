@@ -588,7 +588,10 @@ feedRoutes.delete('/:feedId/member-links/:linkId', requireAdmin, async (c) => {
 
 // --- Override rules (the link's event pipeline) ------------------------------
 
-/** Override rules only shape an exception feed's baseline; standard feeds pass through. */
+/**
+ * Override rules only shape an exception feed's schedule (its baseline day, or
+ * an `add_event` alongside it); standard feeds pass through unchanged.
+ */
 function outcomeAllowed(feedMode: string, _outcome: string): boolean {
   return feedMode === 'exception';
 }

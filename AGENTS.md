@@ -20,7 +20,9 @@ calendar_events (synthesized|claimed) → MIRROR → the member's one target cal
 ```
 
 **Two rule pipelines** (round-6 review split): `link_rules` are the feed's
-SCHEDULE overrides (`cancel_day`/`modify_day`/`ignore` on exception feeds);
+SCHEDULE overrides (`cancel_day`/`modify_day`/`ignore` on the baseline day an
+exception event covers, or `add_event` to put the feed event on the calendar
+*beside* an untouched baseline day — a school's community dinner);
 `task_rules` are the per-member TYPING pipeline (`transition` vs `attendance`
 + drop-off/pickup windows, scoped `this_calendar`/`all_calendars`, with a
 terminal default per calendar on the link + member). Task type is resolved at

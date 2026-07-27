@@ -16,8 +16,8 @@ import {
  *
  *  Stage A — synthesis: feed occurrences + a link's OVERRIDE pipeline decide
  *  the SCHEDULE of events on the member's unified calendar (cancel / modify /
- *  ignore the covered baseline day). Unmatched exception events become pending
- *  decisions — the system never guesses.
+ *  ignore the covered baseline day, or add the event alongside it). Unmatched
+ *  exception events become pending decisions — the system never guesses.
  *
  *  Stage B — task generation: a member's TASK-RULE pipeline decides what
  *  claimable tasks each event spawns (a transition = drop-off + pickup, or an
@@ -251,11 +251,15 @@ interface ModifyDayParamsLike {
   dayEnd?: string;
 }
 
-function occurrenceEvent(linkId: string, occ: SourceOccurrence): EventIntent {
+function occurrenceEvent(
+  linkId: string,
+  occ: SourceOccurrence,
+  matchedRuleId: string | null = null,
+): EventIntent {
   return {
     synthKey: `ev:${linkId}:${occ.id}`,
     sourceEventId: occ.id,
-    matchedRuleId: null,
+    matchedRuleId,
     dtstart: occ.dtstart,
     dtend: occ.dtend,
     allDay: occ.allDay,
@@ -318,6 +322,17 @@ export function synthesizeBusy(
  * event, `modify_day` patches its hours, `ignore` keeps the baseline. An
  * occurrence matching NO rule becomes a pending decision — the baseline still
  * stands until a human resolves it.
+ *
+ * `add_event` is the one outcome that isn't about the baseline day: the
+ * occurrence lands on the calendar as its own event (an `ev:` key, exactly as a
+ * standard feed's events do), *in addition to* whatever the day's baseline
+ * does. A school feed's "Community Dinner" is the case — the family attends the
+ * dinner and the school day is untouched — so these occurrences sit out the
+ * per-day ruling entirely (they neither win a day nor block another
+ * occurrence's cancel/modify), and they're emitted whether or not the day is a
+ * baseline day at all (a Saturday event still shows up). What the added event
+ * generates — an attendance block, or a drop-off/pickup pair — is the task-rule
+ * pipeline's call, like any other event.
  */
 export function synthesizeException(
   link: LinkConfigLike,
@@ -338,6 +353,10 @@ export function synthesizeException(
     const rule = firstMatch(occ, rules);
     if (!rule) {
       pending.push({ sourceEventId: occ.id, contentHash: occ.contentHash });
+      continue;
+    }
+    if (rule.outcome === 'add_event') {
+      events.push(occurrenceEvent(link.id, occ, rule.id));
       continue;
     }
     for (const day of coveredUtcDays(occ)) {
