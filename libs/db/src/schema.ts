@@ -332,9 +332,11 @@ export const sourceEvents = sqliteTable(
 /**
  * One rule in a feed link's override pipeline. Rules run in `position` order
  * over each incoming exception-feed event; the first match wins and its
- * `outcome` shapes the covered baseline day's SCHEDULE only —
- * `cancel_day` / `modify_day` / `ignore`. Task typing lives in `taskRules`.
- * `params` (modify_day's new hours) is validated by the domain schemas.
+ * `outcome` shapes the SCHEDULE only — the covered baseline day
+ * (`cancel_day` / `modify_day` / `ignore`), or `add_event`, which puts the feed
+ * event on the calendar alongside an untouched baseline day. Task typing lives
+ * in `taskRules`. `params` (modify_day's new hours) is validated by the domain
+ * schemas.
  */
 export const linkRules = sqliteTable(
   'link_rules',

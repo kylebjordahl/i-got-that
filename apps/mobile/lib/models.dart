@@ -361,12 +361,13 @@ class OverrideRule {
   final String matchField; // summary|location|description|any_text|all_day|duration
   final String matchOp; // contains|starts_with|equals|regex|is_true|is_false|gte|lte
   final String? matchValue;
-  final String outcome; // cancel_day|modify_day|ignore
+  final String outcome; // cancel_day|modify_day|ignore|add_event
   final Map<String, dynamic>? params;
 
   String get outcomeLabel => switch (outcome) {
         'cancel_day' => 'Cancel day',
         'modify_day' => 'Modify day',
+        'add_event' => 'Add event',
         _ => 'Ignore',
       };
 
