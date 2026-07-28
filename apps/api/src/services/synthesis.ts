@@ -337,6 +337,19 @@ export async function synthesizeFeed(
     const existingByKey = new Map(linkOwnedExisting.map((e) => [e.synthKey, e]));
     const desiredKeys = new Set(engineResult.events.map((e) => e.synthKey));
 
+    // Occurrences a human already accepted onto the calendar (a `pd:` event from
+    // a resolved decision, possibly with adjusted times). If a rule written
+    // *afterwards* now matches one — an `add_event` rule for the same community
+    // dinner someone resolved by hand last week — the human's event stands and
+    // the engine's `ev:` copy is skipped, so the day doesn't show it twice. Only
+    // `ev:` intents are skipped: a `bl:` baseline day carries the matched
+    // occurrence's id too, and the day itself must still be synthesized.
+    const humanAccepted = new Set(
+      existing
+        .filter((e) => e.synthKey.startsWith('pd:') && e.sourceEventId)
+        .map((e) => e.sourceEventId!),
+    );
+
     for (const stale of linkOwnedExisting) {
       if (!desiredKeys.has(stale.synthKey)) {
         await db.delete(calendarEvents).where(eq(calendarEvents.id, stale.id));
@@ -344,6 +357,13 @@ export async function synthesizeFeed(
       }
     }
     for (const intent of engineResult.events) {
+      if (
+        intent.synthKey.startsWith('ev:') &&
+        intent.sourceEventId &&
+        humanAccepted.has(intent.sourceEventId)
+      ) {
+        continue;
+      }
       if (await upsertIntent(db, feed, link, intent, existingByKey)) {
         result.eventsUpserted++;
       }

@@ -113,6 +113,24 @@ describe('domain schemas', () => {
         params: { dayEnd: '12:00' },
       }).success,
     ).toBe(false);
+    // add_event takes no params either — it adds the event as the feed states it.
+    expect(
+      CreateLinkRuleInput.safeParse({
+        matchField: 'summary',
+        matchOp: 'contains',
+        matchValue: 'Community Dinner',
+        outcome: 'add_event',
+      }).success,
+    ).toBe(true);
+    expect(
+      CreateLinkRuleInput.safeParse({
+        matchField: 'summary',
+        matchOp: 'contains',
+        matchValue: 'Community Dinner',
+        outcome: 'add_event',
+        params: { dayEnd: '12:00' },
+      }).success,
+    ).toBe(false);
     // Bad regex is rejected up front.
     expect(
       CreateLinkRuleInput.safeParse({

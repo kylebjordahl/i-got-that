@@ -230,6 +230,74 @@ describe('synthesizeException', () => {
     expect(tue?.dtend?.toISOString()).toBe('2026-07-07T14:45:00.000Z');
   });
 
+  it('add_event puts the event on the calendar and leaves the baseline day alone', () => {
+    const dinnerRule = override({ position: 0, matchValue: 'Community Dinner', outcome: 'add_event' });
+    const dinner = occ({
+      summary: 'Community Dinner',
+      location: 'Lincoln Cafeteria',
+      dtstart: new Date('2026-07-07T22:00:00Z'),
+      dtend: new Date('2026-07-08T00:00:00Z'),
+    });
+    const { events, pending } = synthesizeException(schoolLink, [dinner], [dinnerRule, noSchool], week, 'UTC');
+    expect(pending).toEqual([]);
+
+    // The event itself, with its own times/summary/location — not a baseline day.
+    const added = events.find((e) => e.synthKey === `ev:link-1:${dinner.id}`)!;
+    expect(added).toMatchObject({
+      sourceEventId: dinner.id,
+      matchedRuleId: dinnerRule.id,
+      summary: 'Community Dinner',
+      location: 'Lincoln Cafeteria',
+    });
+    expect(added.dtstart.toISOString()).toBe('2026-07-07T22:00:00.000Z');
+    // Tuesday's school day is untouched (full hours), and every weekday stands.
+    const tue = events.find((e) => e.synthKey === 'bl:link-1:2026-07-07')!;
+    expect(tue.dtend?.toISOString()).toBe('2026-07-07T14:45:00.000Z');
+    expect(tue.matchedRuleId).toBeNull();
+    expect(events.filter((e) => e.synthKey.startsWith('bl:'))).toHaveLength(5);
+  });
+
+  it("an add_event occurrence sits out the day's ruling — another event can still cancel it", () => {
+    const dinnerRule = override({ position: 0, matchValue: 'Community Dinner', outcome: 'add_event' });
+    const dinner = occ({
+      summary: 'Community Dinner',
+      dtstart: new Date('2026-07-07T22:00:00Z'),
+      dtend: new Date('2026-07-08T00:00:00Z'),
+    });
+    const closure = occ({
+      summary: 'No School - Teacher Day',
+      allDay: true,
+      dtstart: new Date('2026-07-07T00:00:00Z'),
+      dtend: new Date('2026-07-08T00:00:00Z'),
+    });
+    // The lower-positioned add_event rule must not shield Tuesday from the
+    // (higher-positioned) cancel_day the closure matches.
+    const { events } = synthesizeException(schoolLink, [dinner, closure], [dinnerRule, noSchool], week, 'UTC');
+    expect(events.some((e) => e.synthKey === 'bl:link-1:2026-07-07')).toBe(false);
+    expect(events.some((e) => e.synthKey === `ev:link-1:${dinner.id}`)).toBe(true);
+  });
+
+  it('add_event lands on non-baseline days and on links with no baseline at all', () => {
+    const dinnerRule = override({ position: 0, matchValue: 'Community Dinner', outcome: 'add_event' });
+    const saturday = occ({
+      summary: 'Community Dinner',
+      dtstart: new Date('2026-07-11T22:00:00Z'),
+      dtend: new Date('2026-07-12T00:00:00Z'),
+    });
+    const weekend = { start: new Date('2026-07-06T00:00:00Z'), end: new Date('2026-07-13T00:00:00Z') };
+    const withBaseline = synthesizeException(schoolLink, [saturday], [dinnerRule], weekend, 'UTC');
+    expect(withBaseline.events.some((e) => e.synthKey === `ev:link-1:${saturday.id}`)).toBe(true);
+
+    const noBaseline = synthesizeException(
+      { ...schoolLink, weekdayMask: null },
+      [saturday],
+      [dinnerRule],
+      weekend,
+      'UTC',
+    );
+    expect(noBaseline.events.map((e) => e.synthKey)).toEqual([`ev:link-1:${saturday.id}`]);
+  });
+
   it('unmatched occurrences become pending decisions; the baseline still stands', () => {
     const bookFair = occ({ summary: 'Book Fair', contentHash: 'bf-1', dtstart: new Date('2026-07-07T17:00:00Z') });
     const { events, pending } = synthesizeException(schoolLink, [bookFair], [noSchool], week, 'UTC');

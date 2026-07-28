@@ -388,6 +388,7 @@ class _RuleCard extends StatelessWidget {
   Color get _outcomeColor => switch (rule.outcome) {
         'cancel_day' => AppColors.coral,
         'modify_day' => AppColors.amber,
+        'add_event' => AppColors.green,
         _ => AppColors.textMuted,
       };
 
@@ -467,7 +468,7 @@ class _OverrideRuleSheet extends ConsumerStatefulWidget {
 
 class _OverrideRuleSheetState extends ConsumerState<_OverrideRuleSheet> {
   late String _matchOp; // contains | regex
-  late String _outcome; // cancel_day | modify_day | ignore
+  late String _outcome; // cancel_day | modify_day | add_event | ignore
   final _value = TextEditingController();
   final _newStart = TextEditingController();
   final _newEnd = TextEditingController();
@@ -607,7 +608,12 @@ class _OverrideRuleSheetState extends ConsumerState<_OverrideRuleSheet> {
             Text('THEN', style: AppText.eyebrow()),
             const SizedBox(height: 8),
             _Segmented(
-              options: const [('cancel_day', 'Cancel day'), ('modify_day', 'Modify day'), ('ignore', 'Ignore')],
+              options: const [
+                ('cancel_day', 'Cancel day'),
+                ('modify_day', 'Modify day'),
+                ('add_event', 'Add event'),
+                ('ignore', 'Ignore'),
+              ],
               value: _outcome,
               activeColor: AppColors.purple,
               onChanged: (v) => setState(() => _outcome = v),
@@ -615,6 +621,13 @@ class _OverrideRuleSheetState extends ConsumerState<_OverrideRuleSheet> {
             if (_outcome == 'cancel_day') ...[
               const SizedBox(height: 12),
               Text('A matched day is dropped from the baseline entirely — nothing generates.',
+                  style: AppText.subtitle),
+            ] else if (_outcome == 'add_event') ...[
+              const SizedBox(height: 12),
+              Text(
+                  'The event itself joins the calendar (e.g. a community dinner), with its own '
+                  'times — the baseline day is untouched. What it generates is up to this '
+                  'calendar’s task rules.',
                   style: AppText.subtitle),
             ] else if (_outcome == 'modify_day') ...[
               const SizedBox(height: 12),

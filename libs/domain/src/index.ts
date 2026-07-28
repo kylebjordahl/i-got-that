@@ -55,8 +55,8 @@ export type EventProvenance = z.infer<typeof EventProvenance>;
  * The rules that shape a member's calendar split into two pipelines:
  *
  *   Override rules  (feed → schedule): how an exception feed's events change the
- *     baseline day. Outcomes are cancel_day / modify_day / ignore — purely the
- *     schedule; they never decide task types.
+ *     baseline day (cancel_day / modify_day / ignore) or join it (add_event) —
+ *     purely the schedule; they never decide task types.
  *   Task rules  (per member+calendar → task typing): whether an event generates
  *     a transition (drop-off + pickup) or an attendance task, plus its window.
  *
@@ -91,12 +91,20 @@ export const OverrideMatchOp = z.enum([
 export type OverrideMatchOp = z.infer<typeof OverrideMatchOp>;
 
 /**
- * What a matched override rule does to the covered baseline day (exception
- * feeds only). `cancel_day` drops the day; `modify_day` patches its hours;
- * `ignore` passes through (the baseline stands). Task typing is NOT decided
- * here — that's the task-rule pipeline.
+ * What a matched override rule does on an exception feed. Three outcomes shape
+ * the covered baseline day — `cancel_day` drops it, `modify_day` patches its
+ * hours, `ignore` passes through (the baseline stands) — and `add_event` puts
+ * the feed event itself on the calendar *in addition to* the baseline day,
+ * leaving that day untouched (a school feed's "Community Dinner": the family
+ * attends, the school day is unaffected). Task typing is NOT decided here —
+ * that's the task-rule pipeline.
  */
-export const OverrideOutcome = z.enum(['cancel_day', 'modify_day', 'ignore']);
+export const OverrideOutcome = z.enum([
+  'cancel_day',
+  'modify_day',
+  'ignore',
+  'add_event',
+]);
 export type OverrideOutcome = z.infer<typeof OverrideOutcome>;
 
 /** A task rule's scope: this one calendar, or every calendar of the member. */
@@ -472,7 +480,7 @@ export type ResolveConflictInput = z.infer<typeof ResolveConflictInput>;
 
 // --- Override rules (the feed's schedule pipeline) ------------------------
 
-/** `cancel_day` / `ignore`: no parameters. */
+/** `cancel_day` / `ignore` / `add_event`: no parameters. */
 export const EmptyOutcomeParams = z.object({}).strict();
 export type EmptyOutcomeParams = z.infer<typeof EmptyOutcomeParams>;
 
@@ -492,6 +500,7 @@ const paramsSchemaFor: Record<OverrideOutcome, z.ZodTypeAny> = {
   cancel_day: EmptyOutcomeParams,
   modify_day: ModifyDayParams,
   ignore: EmptyOutcomeParams,
+  add_event: EmptyOutcomeParams,
 };
 
 /**
@@ -569,9 +578,11 @@ function refineOverrideRule(
 
 /**
  * Create an override rule on a feed↔member link. Rules run in `position` order,
- * first match wins, and only shape the schedule of the baseline day an
- * exception event covers — `cancel_day`/`modify_day`/`ignore`. Valid only on
- * exception-feed links (enforced server-side where the feed mode is known).
+ * first match wins, and only shape the SCHEDULE: either the baseline day an
+ * exception event covers (`cancel_day`/`modify_day`/`ignore`) or, with
+ * `add_event`, the event itself joining the calendar alongside that day. Valid
+ * only on exception-feed links (enforced server-side where the feed mode is
+ * known).
  */
 export const CreateLinkRuleInput = z
   .object({
