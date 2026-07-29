@@ -55,7 +55,8 @@ class _PlanItem {
 /// Plan — an iOS-Calendar-style day view of every member's unified calendar.
 /// Kids and caretakers each have a calendar chip; a claimed task shows up as an
 /// event on the claimer's calendar (the recursion, visible), and unclaimed
-/// tasks render hatched. Tapping any block or tab opens its management sheet.
+/// tasks render hatched. Tapping any block or tab opens its management sheet —
+/// or, when the event has no tasks to manage, its own details sheet.
 class PlanScreen extends ConsumerStatefulWidget {
   const PlanScreen({super.key});
 
@@ -534,6 +535,15 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
     return group;
   }
 
+  /// The event's tasks that were marked not needed — what the details sheet
+  /// offers to restore when an event has nothing live left to claim.
+  List<TaskItem> _dismissedTasksFor(_PlanItem it) {
+    final eid = _eventIdOf(it);
+    if (eid == null) return const [];
+    final all = ref.read(allTasksProvider).valueOrNull ?? const <TaskItem>[];
+    return all.where((t) => t.calendarEventId == eid && t.isDismissed).toList();
+  }
+
   /// The task that best represents a group in the actions sheet header —
   /// the attendance one if present, else the first transition.
   TaskItem _repTask(List<TaskItem> group) =>
@@ -593,6 +603,20 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
       double colLeft(_Placed p) => laneLeft + p.colIndex * (laneWidth / p.colCount);
       double colWidth(_Placed p) => laneWidth / p.colCount - 6;
 
+      /// Whether a block other than [self] occupies the vertical band
+      /// [y0, y1) anywhere across [self]'s own column strip — the test behind
+      /// "would my edge tab straddle onto somebody else's block?".
+      bool bandTaken(_Placed self, double y0, double y1) {
+        final left = colLeft(self);
+        final right = left + colWidth(self);
+        return placed.any((q) =>
+            !identical(q, self) &&
+            q.top < y1 &&
+            q.top + q.height > y0 &&
+            colLeft(q) < right &&
+            colLeft(q) + colWidth(q) > left);
+      }
+
       final blocks = <Widget>[];
       final tabs = <Widget>[];
       for (final p in placed) {
@@ -606,6 +630,24 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
         final sourceEvent = p.item.event ?? (eid == null ? null : eventsById[eid]);
         final left = colLeft(p);
         final width = colWidth(p);
+        // An edge tab normally straddles its block's edge by half its height.
+        // A resolved conflict leaves the winning appointment flush between the
+        // loser's two halves, so those halves' pick-up / drop-off tabs straddle
+        // straight onto it — and since tabs are drawn (and hit-tested) above
+        // every block, they swallowed every tap meant for the appointment,
+        // leaving it unclaimable. When the space a tab would straddle into
+        // already belongs to another block, the tab tucks fully inside its own
+        // block instead, and the block pads its content past the whole tab.
+        final tuckTop =
+            dropoffs.isNotEmpty && bandTaken(p, p.top - _tabHeight / 2, p.top);
+        final tuckBottom = pickups.isNotEmpty &&
+            bandTaken(p, p.top + p.height, p.top + p.height + _tabHeight / 2);
+        final topTabInset = dropoffs.isEmpty
+            ? 0.0
+            : (tuckTop ? _tabHeight : _tabHeight / 2) + 2;
+        final bottomTabInset = pickups.isEmpty
+            ? 0.0
+            : (tuckBottom ? _tabHeight : _tabHeight / 2) + 2;
         blocks.add(Positioned(
           top: p.top,
           left: left,
@@ -616,25 +658,44 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
             sourceEvent: sourceEvent,
             accent: personColor(_childOf(p.item, byId) ?? _fallbackMember),
             attendees: attendeesOf(p.item),
-            hasTopTab: dropoffs.isNotEmpty,
-            hasBottomTab: pickups.isNotEmpty,
+            topTabInset: topTabInset,
+            bottomTabInset: bottomTabInset,
             // Tapping the event block manages every task the event generates —
             // switch its type and (re)assign both the drop-off and pick-up.
+            // An event with no live tasks (a caretaker's calendar doesn't
+            // generate them; an event's tasks may all have been marked not
+            // needed) still opens — as its own details sheet — so every block
+            // on the grid answers a tap.
             onTapBlock: () {
               final group = _groupTasksFor(p.item);
-              if (group.isEmpty) return;
-              showTaskActions(context, ref, _repTask(group),
-                  scopeTasks: group, sourceEvent: sourceEvent);
+              if (group.isNotEmpty) {
+                showTaskActions(context, ref, _repTask(group),
+                    scopeTasks: group, sourceEvent: sourceEvent);
+              } else if (sourceEvent != null) {
+                showEventDetails(context, ref, sourceEvent,
+                    member: _childOf(p.item, byId),
+                    dismissedTasks: _dismissedTasksFor(p.item));
+              }
             },
           ),
         ));
         for (var i = 0; i < dropoffs.length; i++) {
-          tabs.add(tab(dropoffs[i], left + _tabLeftInset, width - _tabLeftInset,
-              p.top - _tabHeight / 2 - i * _tabHeight));
+          tabs.add(tab(
+              dropoffs[i],
+              left + _tabLeftInset,
+              width - _tabLeftInset,
+              tuckTop
+                  ? p.top + i * _tabHeight
+                  : p.top - _tabHeight / 2 - i * _tabHeight));
         }
         for (var i = 0; i < pickups.length; i++) {
-          tabs.add(tab(pickups[i], left + _tabLeftInset, width - _tabLeftInset,
-              p.top + p.height - _tabHeight / 2 + i * _tabHeight));
+          tabs.add(tab(
+              pickups[i],
+              left + _tabLeftInset,
+              width - _tabLeftInset,
+              tuckBottom
+                  ? p.top + p.height - _tabHeight - i * _tabHeight
+                  : p.top + p.height - _tabHeight / 2 + i * _tabHeight));
         }
       }
       // Transitions whose source event isn't on the grid: a standalone pill.
@@ -1319,8 +1380,8 @@ class _ItemBlock extends StatelessWidget {
     required this.placed,
     required this.accent,
     required this.attendees,
-    required this.hasTopTab,
-    required this.hasBottomTab,
+    required this.topTabInset,
+    required this.bottomTabInset,
     this.sourceEvent,
     this.onTapBlock,
   });
@@ -1331,8 +1392,12 @@ class _ItemBlock extends StatelessWidget {
   final CalendarEventItem? sourceEvent;
   final Color accent;
   final List<Member> attendees;
-  final bool hasTopTab;
-  final bool hasBottomTab;
+
+  /// How far the content has to clear each edge for the block's own edge tabs:
+  /// half a tab plus a hair for a tab that straddles the edge, a whole tab when
+  /// it tucked inside instead (see the tuck in `_grid`). 0 ⇒ no tab that side.
+  final double topTabInset;
+  final double bottomTabInset;
   final VoidCallback? onTapBlock;
 
   @override
@@ -1395,14 +1460,15 @@ class _ItemBlock extends StatelessWidget {
         // A block is only as tall as its duration now, so it fits its content to
         // the space: the title over the time when there's room, else just the
         // start–end time with the attendee avatars — the one thing a block must
-        // always show (issue 98). A straddling edge tag is cleared with extra
-        // padding derived from the tag height.
+        // always show (issue 98). An edge tag is cleared with the padding its
+        // side was given — half a tag for the usual straddle, a whole one when
+        // it had to tuck inside to keep off a neighbouring block.
         child: LayoutBuilder(builder: (context, constraints) {
           final h = constraints.maxHeight;
-          const hPad = 11.0, gap = 2.0, timeLineH = 16.0, tabClear = _tabHeight / 2 + 2;
+          const hPad = 11.0, gap = 2.0, timeLineH = 16.0;
           final rowH = attendees.isNotEmpty ? 20.0 : 16.0;
-          final topPad = hasTopTab ? tabClear : 9.0;
-          final botPad = hasBottomTab ? tabClear : 9.0;
+          final topPad = topTabInset > 0 ? topTabInset : 9.0;
+          final botPad = bottomTabInset > 0 ? bottomTabInset : 9.0;
 
           if (h >= topPad + botPad + rowH + gap + timeLineH) {
             return Padding(
