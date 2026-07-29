@@ -251,6 +251,111 @@ Future<void> showTaskActions(
   );
 }
 
+/// Details for a Plan event that has no live task to manage — a caretaker's own
+/// event (their calendar generates no family tasks by design), or an event
+/// whose tasks have all been marked not needed. Every block on the grid answers
+/// a tap; this is what the ones with nothing to claim open.
+///
+/// Shows the event exactly as the unified calendar holds it (title, whose
+/// calendar, time, location, notes), says why there's nothing to claim, and —
+/// when the event does have dismissed tasks behind it — offers to restore them,
+/// which puts it back in the claim queue.
+Future<void> showEventDetails(
+  BuildContext context,
+  WidgetRef ref,
+  CalendarEventItem event, {
+  Member? member,
+  List<TaskItem> dismissedTasks = const [],
+}) async {
+  final color = member != null ? personColor(member) : AppColors.textSecondary;
+  final end = event.end;
+  final timeText = event.allDay
+      ? 'All day'
+      : (end != null && end.isAfter(event.start)
+          ? friendlyRange(event.start, end)
+          : friendlyTime(event.start));
+
+  final location = event.location;
+  final description = event.description;
+  final hasLocation = location != null && location.isNotEmpty;
+  final hasDescription = description != null && description.isNotEmpty;
+
+  final name = member?.relationName ?? 'this member';
+  // Why there's nothing to claim — the paused-generation case is a setting, the
+  // rest is a dismissal the sheet can undo below.
+  final reason = member != null && !member.generatesFamilyTasks
+      ? "$name's events don't generate family tasks, so there's nothing to "
+          'claim here. An admin can turn that back on from $name in Family.'
+      : (dismissedTasks.isNotEmpty
+          ? 'Every task for this event is marked not needed. Restore them to '
+              'put it back in the claim queue.'
+          : 'This event has no claimable tasks.');
+
+  await showModalBottomSheet<void>(
+    context: context,
+    useRootNavigator: true,
+    showDragHandle: true,
+    isScrollControlled: true,
+    builder: (sheetCtx) => SingleChildScrollView(
+      padding: const EdgeInsets.fromLTRB(22, 4, 22, 28),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              IconTile(icon: Icons.event_rounded, color: color, size: 44),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                        member == null
+                            ? event.displaySummary
+                            : '${event.displaySummary} · ${member.relationName}',
+                        style: AppText.sectionItemTitle),
+                    const SizedBox(height: 2),
+                    Text('$timeText${event.isHuman ? ' · manual' : ''}',
+                        style: AppText.subtitle),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          if (hasLocation || hasDescription) ...[
+            const SizedBox(height: 14),
+            if (hasLocation) _DetailRow(icon: Icons.location_on_outlined, text: location),
+            if (hasLocation && hasDescription) const SizedBox(height: 8),
+            if (hasDescription) _DetailRow(icon: Icons.notes_rounded, text: description),
+          ],
+          const SizedBox(height: 18),
+          _DetailRow(icon: Icons.info_outline_rounded, text: reason),
+          if (dismissedTasks.isNotEmpty) ...[
+            const SizedBox(height: 18),
+            AppCard(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
+              child: _ActionRow(
+                icon: Icons.restore_rounded,
+                iconColor: AppColors.indigo,
+                label: dismissedTasks.length == 1
+                    ? 'Restore its task'
+                    : 'Restore its ${dismissedTasks.length} tasks',
+                onTap: () {
+                  Navigator.of(sheetCtx).pop();
+                  _runScope(context, ref, dismissedTasks,
+                      (api, fid, t) => api.restoreTask(fid, t.id),
+                      'Back in the claim queue');
+                },
+              ),
+            ),
+          ],
+        ],
+      ),
+    ),
+  );
+}
+
 /// Pick a caretaker to (re)assign the scope's tasks to. Hides a caretaker only
 /// when they already own every task in the scope (nothing to move to them).
 Future<void> _pickAndAssign(

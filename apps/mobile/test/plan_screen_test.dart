@@ -7,12 +7,15 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-Member _m(String id, String name, {bool caretaker = false, bool child = false}) => Member(
+Member _m(String id, String name,
+        {bool caretaker = false, bool child = false, bool generatesTasks = true}) =>
+    Member(
       id: id,
       relationName: name,
       isCaretaker: caretaker,
       requiresCaretaker: child,
       isAdmin: false,
+      generatesFamilyTasks: generatesTasks,
     );
 
 void main() {
@@ -463,6 +466,157 @@ void main() {
     expect(find.text('Lincoln Elementary'), findsOneWidget);
     expect(find.text('Bring the permission slip'), findsOneWidget);
     expect(find.textContaining('8:30 AM – 3:00 PM'), findsWidgets);
+  });
+
+  testWidgets(
+      'the winner of a resolved conflict is tappable between the split halves',
+      (tester) async {
+    tester.view.physicalSize = const Size(800, 1000);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+
+    final now = DateTime.now();
+    DateTime at(int h, int m) => DateTime(now.year, now.month, now.day, h, m);
+    final me = _m('dad', 'Dad', caretaker: true);
+    // What a resolved conflict leaves behind: the school day split into two
+    // halves with the winning appointment flush between them. The halves'
+    // pick-up (10:00) and drop-off (10:30) straddle exactly the appointment's
+    // two edges — and used to swallow every tap meant for it.
+    final events = [
+      CalendarEventItem(id: 'seg0', familyMemberId: 'theo', provenance: 'synthesized', start: at(8, 30), end: at(10, 0), allDay: false, summary: 'School day'),
+      CalendarEventItem(id: 'appt', familyMemberId: 'theo', provenance: 'human', start: at(10, 0), end: at(10, 30), allDay: false, summary: 'Orthodontist'),
+      CalendarEventItem(id: 'seg1', familyMemberId: 'theo', provenance: 'synthesized', start: at(10, 30), end: at(15, 0), allDay: false, summary: 'School day'),
+    ];
+    final tasks = [
+      TaskItem(id: 'd0', familyMemberId: 'theo', type: 'dropoff', start: at(8, 30), status: 'unowned', createdVia: 'generated', calendarEventId: 'seg0'),
+      TaskItem(id: 'p0', familyMemberId: 'theo', type: 'pickup', start: at(10, 0), status: 'unowned', createdVia: 'generated', calendarEventId: 'seg0'),
+      TaskItem(id: 'd1', familyMemberId: 'theo', type: 'dropoff', start: at(10, 30), status: 'unowned', createdVia: 'generated', calendarEventId: 'seg1'),
+      TaskItem(id: 'p1', familyMemberId: 'theo', type: 'pickup', start: at(15, 0), status: 'unowned', createdVia: 'generated', calendarEventId: 'seg1'),
+      TaskItem(id: 'att', familyMemberId: 'theo', type: 'attendance', start: at(10, 0), end: at(10, 30), status: 'unowned', createdVia: 'generated', calendarEventId: 'appt'),
+    ];
+    await tester.pumpWidget(ProviderScope(
+      overrides: [
+        membersProvider.overrideWith((ref) async => [me, _m('theo', 'Theo', child: true)]),
+        currentMemberProvider.overrideWith((ref) async => me),
+        allTasksProvider.overrideWith((ref) async => tasks),
+        calendarEventsProvider.overrideWith((ref) async => events),
+        pendingDecisionsProvider.overrideWith((ref) async => const []),
+        threadingThresholdProvider.overrideWith((ref) async => 30),
+      ],
+      child: MaterialApp(
+        theme: buildAppTheme(),
+        themeMode: ThemeMode.dark,
+        home: const Scaffold(body: SafeArea(child: PlanScreen())),
+      ),
+    ));
+    await tester.pumpAndSettle();
+
+    // The appointment is only half an hour, so its block shows the time alone —
+    // its title only ever appears once a sheet opens for it.
+    expect(find.textContaining('Orthodontist'), findsNothing);
+
+    // Tap just inside the appointment's top edge, in the horizontal band the
+    // half's pick-up tab occupies: the 10 AM gridline is that edge.
+    final top = tester.getRect(find.text('10 AM')).top;
+    final tabX = tester.getRect(find.text('Pick-up · 10:00')).center.dx;
+    await tester.tapAt(Offset(tabX, top + 6));
+    await tester.pumpAndSettle();
+
+    // The appointment's own sheet opened — not the neighbouring half's pick-up —
+    // and it's claimable.
+    expect(find.textContaining('Orthodontist'), findsWidgets);
+    expect(find.text('Claim for myself'), findsOneWidget);
+    // The half's pick-up would have brought its own DURATION field along; the
+    // appointment's attendance-only group has none.
+    expect(find.text('DURATION'), findsNothing);
+  });
+
+  testWidgets('an event with no tasks still opens its details sheet',
+      (tester) async {
+    final now = DateTime.now();
+    DateTime at(int h, int m) => DateTime(now.year, now.month, now.day, h, m);
+    final me = _m('mom', 'Mom', caretaker: true);
+    // A caretaker's own calendar generates no family tasks by design, so its
+    // events have nothing to claim — they must still answer a tap.
+    final dad = _m('dad', 'Dad', caretaker: true, generatesTasks: false);
+    final events = [
+      CalendarEventItem(
+        id: 'dentist',
+        familyMemberId: 'dad',
+        provenance: 'human',
+        start: at(9, 0),
+        end: at(11, 0),
+        allDay: false,
+        summary: 'Dentist',
+        location: 'Maple Dental',
+        description: 'Bring the insurance card',
+      ),
+    ];
+    await tester.pumpWidget(ProviderScope(
+      overrides: [
+        membersProvider.overrideWith((ref) async => [me, dad]),
+        currentMemberProvider.overrideWith((ref) async => me),
+        allTasksProvider.overrideWith((ref) async => const <TaskItem>[]),
+        calendarEventsProvider.overrideWith((ref) async => events),
+        pendingDecisionsProvider.overrideWith((ref) async => const []),
+        threadingThresholdProvider.overrideWith((ref) async => 30),
+      ],
+      child: MaterialApp(
+        theme: buildAppTheme(),
+        themeMode: ThemeMode.dark,
+        home: const Scaffold(body: SafeArea(child: PlanScreen())),
+      ),
+    ));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.textContaining('Dentist'));
+    await tester.pumpAndSettle();
+
+    // The details sheet carries the event as the calendar holds it, and says
+    // why there's nothing to claim on it.
+    expect(find.text('Maple Dental'), findsOneWidget);
+    expect(find.text('Bring the insurance card'), findsOneWidget);
+    expect(find.textContaining("don't generate family tasks"), findsOneWidget);
+  });
+
+  testWidgets('an event whose tasks were all dismissed offers to restore them',
+      (tester) async {
+    final now = DateTime.now();
+    DateTime at(int h, int m) => DateTime(now.year, now.month, now.day, h, m);
+    final me = _m('dad', 'Dad', caretaker: true);
+    final events = [
+      CalendarEventItem(id: 'practice', familyMemberId: 'theo', provenance: 'synthesized', start: at(16, 0), end: at(18, 0), allDay: false, summary: 'Fiddle practice'),
+    ];
+    // Both of the event's tasks were marked not needed, so the block has
+    // nothing live to manage — the details sheet is the way back.
+    final tasks = [
+      TaskItem(id: 'd', familyMemberId: 'theo', type: 'dropoff', start: at(16, 0), status: 'dismissed', createdVia: 'generated', calendarEventId: 'practice'),
+      TaskItem(id: 'p', familyMemberId: 'theo', type: 'pickup', start: at(18, 0), status: 'dismissed', createdVia: 'generated', calendarEventId: 'practice'),
+    ];
+    await tester.pumpWidget(ProviderScope(
+      overrides: [
+        membersProvider.overrideWith((ref) async => [me, _m('theo', 'Theo', child: true)]),
+        currentMemberProvider.overrideWith((ref) async => me),
+        allTasksProvider.overrideWith((ref) async => tasks),
+        calendarEventsProvider.overrideWith((ref) async => events),
+        pendingDecisionsProvider.overrideWith((ref) async => const []),
+        threadingThresholdProvider.overrideWith((ref) async => 30),
+      ],
+      child: MaterialApp(
+        theme: buildAppTheme(),
+        themeMode: ThemeMode.dark,
+        home: const Scaffold(body: SafeArea(child: PlanScreen())),
+      ),
+    ));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.textContaining('Fiddle practice'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Restore its 2 tasks'), findsOneWidget);
   });
 
   testWidgets('a wide manual block keeps the "· manual" tag beside its time',
