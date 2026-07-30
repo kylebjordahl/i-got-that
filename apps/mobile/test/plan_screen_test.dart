@@ -269,6 +269,137 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('an all-day event rides the pinned row, not a block down the grid',
+      (tester) async {
+    final now = DateTime.now();
+    DateTime at(int h, int m) => DateTime(now.year, now.month, now.day, h, m);
+    final today = DateTime(now.year, now.month, now.day);
+    // An all-day event spans midnight to midnight, so as a block it stretched
+    // the grid over the whole 24 hours and squeezed the real appointment into
+    // the lane beside it.
+    final events = [
+      CalendarEventItem(id: 'leave', familyMemberId: 'theo', provenance: 'synthesized', start: today, end: today.add(const Duration(days: 1)), allDay: true, summary: 'Initial parental leave'),
+      CalendarEventItem(id: 'dentist', familyMemberId: 'theo', provenance: 'human', start: at(10, 0), end: at(11, 0), allDay: false, summary: 'Dentist'),
+    ];
+    // ...and its own drop-off still belongs on the grid, at the time it happens.
+    final tasks = [
+      TaskItem(id: 'd', familyMemberId: 'theo', type: 'dropoff', start: at(8, 0), status: 'unowned', createdVia: 'generated', calendarEventId: 'leave'),
+    ];
+    await tester.pumpWidget(ProviderScope(
+      overrides: [
+        membersProvider.overrideWith((ref) async => [
+              _m('dad', 'Dad', caretaker: true),
+              _m('theo', 'Theo', child: true),
+            ]),
+        currentMemberProvider.overrideWith((ref) async => _m('dad', 'Dad', caretaker: true)),
+        allTasksProvider.overrideWith((ref) async => tasks),
+        calendarEventsProvider.overrideWith((ref) async => events),
+        pendingDecisionsProvider.overrideWith((ref) async => const []),
+        threadingThresholdProvider.overrideWith((ref) async => 30),
+      ],
+      child: MaterialApp(
+        theme: buildAppTheme(),
+        themeMode: ThemeMode.dark,
+        home: const Scaffold(body: SafeArea(child: PlanScreen())),
+      ),
+    ));
+    await tester.pumpAndSettle();
+
+    // It's in the pinned row above the grid's first hour...
+    expect(find.text('all-day'), findsOneWidget);
+    final pill = tester.getRect(find.textContaining('Initial parental leave'));
+    final firstHour = tester.getRect(find.text('7 AM'));
+    expect(pill.bottom, lessThanOrEqualTo(firstHour.top));
+    // ...so the grid never stretched back to midnight to fit it.
+    expect(find.text('12 AM'), findsNothing);
+    // The timed event keeps the whole lane to itself.
+    expect(find.textContaining('Dentist'), findsOneWidget);
+    // And the all-day event's transition still lands on the grid at 8:00.
+    final tag = tester.getRect(find.text('Drop-off · 8:00'));
+    expect(tag.top, greaterThan(firstHour.top));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('a multi-day all-day event shows on every day it covers',
+      (tester) async {
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    // Started yesterday, runs through tomorrow: today is in the middle of it,
+    // so it belongs on today's row even though it doesn't start today.
+    final events = [
+      CalendarEventItem(id: 'trip', familyMemberId: 'theo', provenance: 'synthesized', start: today.subtract(const Duration(days: 1)), end: today.add(const Duration(days: 2)), allDay: true, summary: 'Grandma visit'),
+    ];
+    await tester.pumpWidget(ProviderScope(
+      overrides: [
+        membersProvider.overrideWith((ref) async => [
+              _m('dad', 'Dad', caretaker: true),
+              _m('theo', 'Theo', child: true),
+            ]),
+        currentMemberProvider.overrideWith((ref) async => _m('dad', 'Dad', caretaker: true)),
+        allTasksProvider.overrideWith((ref) async => const <TaskItem>[]),
+        calendarEventsProvider.overrideWith((ref) async => events),
+        pendingDecisionsProvider.overrideWith((ref) async => const []),
+        threadingThresholdProvider.overrideWith((ref) async => 30),
+      ],
+      child: MaterialApp(
+        theme: buildAppTheme(),
+        themeMode: ThemeMode.dark,
+        home: const Scaffold(body: SafeArea(child: PlanScreen())),
+      ),
+    ));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('Grandma visit'), findsOneWidget);
+
+    // Swipe to tomorrow — the last day it covers — and it's still there.
+    await tester.fling(find.text('7 AM'), const Offset(-400, 0), 1000);
+    await tester.pumpAndSettle();
+    expect(find.textContaining('Grandma visit'), findsOneWidget);
+
+    // One more day and it's over, so the row goes away entirely.
+    await tester.fling(find.text('7 AM'), const Offset(-400, 0), 1000);
+    await tester.pumpAndSettle();
+    expect(find.textContaining('Grandma visit'), findsNothing);
+    expect(find.text('all-day'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('tapping an all-day pill opens what tapping its block would',
+      (tester) async {
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final events = [
+      CalendarEventItem(id: 'holiday', familyMemberId: 'theo', provenance: 'synthesized', start: today, end: today.add(const Duration(days: 1)), allDay: true, summary: 'MCH closed', location: 'Home', description: 'US holiday'),
+    ];
+    await tester.pumpWidget(ProviderScope(
+      overrides: [
+        membersProvider.overrideWith((ref) async => [
+              _m('dad', 'Dad', caretaker: true),
+              _m('theo', 'Theo', child: true),
+            ]),
+        currentMemberProvider.overrideWith((ref) async => _m('dad', 'Dad', caretaker: true)),
+        allTasksProvider.overrideWith((ref) async => const <TaskItem>[]),
+        calendarEventsProvider.overrideWith((ref) async => events),
+        pendingDecisionsProvider.overrideWith((ref) async => const []),
+        threadingThresholdProvider.overrideWith((ref) async => 30),
+      ],
+      child: MaterialApp(
+        theme: buildAppTheme(),
+        themeMode: ThemeMode.dark,
+        home: const Scaffold(body: SafeArea(child: PlanScreen())),
+      ),
+    ));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.textContaining('MCH closed'));
+    await tester.pumpAndSettle();
+
+    // The event's own details sheet, reading "All day" rather than a time.
+    expect(find.text('Home'), findsOneWidget);
+    expect(find.text('US holiday'), findsOneWidget);
+    expect(find.text('All day'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('a contained appointment cascades over its host, tags and all',
       (tester) async {
     tester.view.physicalSize = const Size(800, 1400);

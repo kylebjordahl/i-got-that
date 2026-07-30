@@ -54,6 +54,10 @@ const _minBlockHeight = 26.0;
 // the attendee avatars riding on the description's line, and the padding around
 // the lot. Kept here because the layout has to know how much a block can say
 // before it decides what to give it.
+// The pinned all-day row above the grid: its pills' avatars, and how tall the
+// row grows before it scrolls instead of eating the grid's height (~3 rows).
+const _allDayAvatarSize = 17.0;
+const _allDayRowMaxHeight = 104.0;
 const _titleLineH = 15.0;
 const _timeLineH = 13.0;
 const _avatarSize = 18.0;
@@ -290,19 +294,37 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
     // as an owner avatar on that block (attendance) or a solid edge tab
     // (transition) — so rendering the claimer's mirrored copy too would
     // duplicate it (two "Fiddle practice" blocks for one claimed practice).
-    final dayItems = <_PlanItem>[
-      for (final e in events)
-        if (dayKey(e.start) == _selected &&
-            !_exChildren.contains(e.familyMemberId) &&
-            !_exOwners.contains(e.familyMemberId) &&
-            (!_onlyMyKids || myKids.contains(e.familyMemberId)) &&
-            !e.isClaimedTask &&
-            !unownedAttendanceEventIds.contains(e.id))
-          _PlanItem.event(e),
-      for (final t in allTasks)
-        if (t.isUnowned && t.type == 'attendance' && taskVisible(t))
-          _PlanItem.task(t),
-    ];
+    //
+    // All-day events don't take a lane at all: a holiday or an "initial
+    // parental leave" spanning midnight to midnight isn't a thing that happens
+    // *at* a time, and drawing it as a 24-hour block stretched the grid over the
+    // whole day and pushed every real appointment into a sliver beside it. They
+    // ride in the pinned all-day row above the grid instead, on every day they
+    // cover. Any transitions they generate still land on the grid at their own
+    // time (as standalone tags, via `orphanTabs` below).
+    final dayItems = <_PlanItem>[];
+    final allDayItems = <_PlanItem>[];
+    bool eventVisible(CalendarEventItem e) =>
+        !_exChildren.contains(e.familyMemberId) &&
+        !_exOwners.contains(e.familyMemberId) &&
+        (!_onlyMyKids || myKids.contains(e.familyMemberId)) &&
+        !e.isClaimedTask &&
+        !unownedAttendanceEventIds.contains(e.id);
+    for (final e in events) {
+      if (!eventVisible(e)) continue;
+      if (e.allDay) {
+        if (e.coversDay(_selected)) allDayItems.add(_PlanItem.event(e));
+      } else if (dayKey(e.start) == _selected) {
+        dayItems.add(_PlanItem.event(e));
+      }
+    }
+    for (final t in allTasks) {
+      if (!t.isUnowned || t.type != 'attendance' || !taskVisible(t)) continue;
+      // An unowned attendance task stands in for its source event, so it goes
+      // wherever that event would have gone.
+      final src = t.calendarEventId == null ? null : eventsById[t.calendarEventId];
+      (src != null && src.allDay ? allDayItems : dayItems).add(_PlanItem.task(t));
+    }
     final blockEventIds = {
       for (final it in dayItems)
         if (it.isEvent) it.event!.id
@@ -367,6 +389,10 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
           child: _dayScroller(allTasks, byId),
         ),
         const SizedBox(height: 16),
+        // All-day events sit in their own pinned row above the grid, never as
+        // blocks down it.
+        if (allDayItems.isNotEmpty)
+          _allDayRow(allDayItems, byId, ownersByEvent, eventsById),
         // The time grid scrolls on its own; the day chips above stay fixed. The
         // amber edge glows flag events scrolled out of view above/below. A
         // horizontal swipe over the grid steps the selected day ± 1, alongside
@@ -549,6 +575,22 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
   String? _eventIdOf(_PlanItem it) =>
       it.isEvent ? it.event!.id : it.task!.calendarEventId;
 
+  /// Who's at an item: the child whose calendar it's on, plus any caretaker who
+  /// has claimed the *attendance* task generated from it.
+  List<Member> _attendeesOf(_PlanItem it, Map<String, Member> byId,
+      Map<String, List<Member>> ownersByEvent) {
+    final res = <Member>[];
+    final child = _childOf(it, byId);
+    if (child != null) res.add(child);
+    final eid = _eventIdOf(it);
+    if (eid != null) {
+      for (final o in ownersByEvent[eid] ?? const <Member>[]) {
+        if (!res.any((m) => m.id == o.id)) res.add(o);
+      }
+    }
+    return res;
+  }
+
   /// Every (non-dismissed) task an item's event generated — the drop-off,
   /// pick-up and/or attendance the block manages as one. Falls back to the
   /// item's own task when it isn't tied to a calendar event (a manual task).
@@ -576,6 +618,79 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
   TaskItem _repTask(List<TaskItem> group) =>
       group.firstWhere((t) => t.type == 'attendance', orElse: () => group.first);
 
+  /// What tapping an item — a grid block or an all-day pill — opens: the sheet
+  /// that manages every task its event generates (switch the type, (re)assign
+  /// the drop-off and pick-up as one). An item with no live tasks (a
+  /// caretaker's calendar doesn't generate them; an event's tasks may all have
+  /// been marked not needed) opens its own details sheet instead, so everything
+  /// on Plan answers a tap.
+  void _openItem(
+      _PlanItem it, CalendarEventItem? sourceEvent, Map<String, Member> byId) {
+    final group = _groupTasksFor(it);
+    if (group.isNotEmpty) {
+      showTaskActions(context, ref, _repTask(group),
+          scopeTasks: group, sourceEvent: sourceEvent);
+    } else if (sourceEvent != null) {
+      showEventDetails(context, ref, sourceEvent,
+          member: _childOf(it, byId), dismissedTasks: _dismissedTasksFor(it));
+    }
+  }
+
+  /// The pinned all-day row: everything that covers the whole selected day,
+  /// as pills above the grid rather than blocks down it (iOS Calendar's shape).
+  /// Nothing all-day ⇒ no row, so an ordinary day loses no height to it.
+  Widget _allDayRow(
+    List<_PlanItem> items,
+    Map<String, Member> byId,
+    Map<String, List<Member>> ownersByEvent,
+    Map<String, CalendarEventItem> eventsById,
+  ) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(22, 0, 22, 14),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: _labelWidth,
+            child: Padding(
+              padding: const EdgeInsets.only(top: 5),
+              child: Text('all-day',
+                  style: font(kBodyFont, 11, 600, color: AppColors.textMuted)),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            // A day with a pile of all-day events scrolls the pills rather than
+            // pushing the grid off the screen.
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: _allDayRowMaxHeight),
+              child: SingleChildScrollView(
+                child: Wrap(
+                  spacing: 6,
+                  runSpacing: 6,
+                  children: [
+                    for (final it in items)
+                      () {
+                        final eid = _eventIdOf(it);
+                        final source = it.event ?? (eid == null ? null : eventsById[eid]);
+                        return _AllDayPill(
+                          item: it,
+                          sourceEvent: source,
+                          accent: personColor(_childOf(it, byId) ?? _fallbackMember),
+                          attendees: _attendeesOf(it, byId, ownersByEvent),
+                          onTap: () => _openItem(it, source, byId),
+                        );
+                      }(),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _grid(
     List<_Placed> placed,
     Map<String, Member> byId,
@@ -590,19 +705,6 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
         now.hour >= _gridStart &&
         now.hour < _gridEnd;
     final nowY = ((now.hour + now.minute / 60) - _gridStart) * _hourPx;
-
-    List<Member> attendeesOf(_PlanItem it) {
-      final res = <Member>[];
-      final c = _childOf(it, byId);
-      if (c != null) res.add(c);
-      final eid = _eventIdOf(it);
-      if (eid != null) {
-        for (final o in ownersByEvent[eid] ?? const <Member>[]) {
-          if (!res.any((m) => m.id == o.id)) res.add(o);
-        }
-      }
-      return res;
-    }
 
     double taskTop(DateTime t) =>
         ((t.toLocal().hour + t.toLocal().minute / 60) - _gridStart) * _hourPx;
@@ -709,26 +811,10 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
             placed: p,
             sourceEvent: sourceEvent,
             accent: personColor(_childOf(p.item, byId) ?? _fallbackMember),
-            attendees: attendeesOf(p.item),
+            attendees: _attendeesOf(p.item, byId, ownersByEvent),
             topTabInset: topTabInset,
             bottomTabInset: bottomTabInset,
-            // Tapping the event block manages every task the event generates —
-            // switch its type and (re)assign both the drop-off and pick-up.
-            // An event with no live tasks (a caretaker's calendar doesn't
-            // generate them; an event's tasks may all have been marked not
-            // needed) still opens — as its own details sheet — so every block
-            // on the grid answers a tap.
-            onTapBlock: () {
-              final group = _groupTasksFor(p.item);
-              if (group.isNotEmpty) {
-                showTaskActions(context, ref, _repTask(group),
-                    scopeTasks: group, sourceEvent: sourceEvent);
-              } else if (sourceEvent != null) {
-                showEventDetails(context, ref, sourceEvent,
-                    member: _childOf(p.item, byId),
-                    dismissedTasks: _dismissedTasksFor(p.item));
-              }
-            },
+            onTapBlock: () => _openItem(p.item, sourceEvent, byId),
           ),
         ));
         for (var i = 0; i < dropoffs.length; i++) {
@@ -1739,6 +1825,84 @@ class _FittedLabel extends StatelessWidget {
           : Text.rich(span,
               maxLines: maxLines, overflow: TextOverflow.ellipsis);
     });
+  }
+}
+
+/// One all-day event (or the unowned attendance task standing in for it) in the
+/// pinned row above the grid: a compact pill in the source colour, carrying the
+/// description and its attendees. It has no time to show — being all day is the
+/// whole point — and tapping it opens exactly what tapping a block would.
+class _AllDayPill extends StatelessWidget {
+  const _AllDayPill({
+    required this.item,
+    required this.accent,
+    required this.attendees,
+    this.sourceEvent,
+    this.onTap,
+  });
+
+  final _PlanItem item;
+  final CalendarEventItem? sourceEvent;
+  final Color accent;
+  final List<Member> attendees;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final e = item.event;
+    final summary =
+        e != null ? e.displaySummary : taskTitle(item.task!, sourceEvent);
+    final person = attendees.isNotEmpty ? attendees.first.relationName : 'child';
+
+    return GestureDetector(
+      onTap: onTap,
+      behavior: HitTestBehavior.opaque,
+      child: Container(
+        // Wide enough for a real title, capped so one long summary can't take
+        // the whole row from the pills beside it.
+        constraints: const BoxConstraints(maxWidth: 230),
+        padding: const EdgeInsets.fromLTRB(8, 5, 10, 5),
+        decoration: BoxDecoration(
+          color: Color.alphaBlend(AppColors.tint(accent, 0.22), AppColors.bg),
+          borderRadius: BorderRadius.circular(999),
+          border: Border.all(color: accent.withValues(alpha: 0.55)),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (attendees.length == 1)
+              PersonAvatar(
+                  initial: initialFor(attendees.first.relationName),
+                  color: personColor(attendees.first),
+                  size: _allDayAvatarSize)
+            else if (attendees.length > 1)
+              AvatarCluster(
+                avatars: [
+                  for (final m in attendees)
+                    (initialFor(m.relationName), personColor(m)),
+                ],
+                size: _allDayAvatarSize,
+                overlap: 7,
+              )
+            else
+              Container(
+                width: 8,
+                height: 8,
+                decoration: BoxDecoration(color: accent, shape: BoxShape.circle),
+              ),
+            const SizedBox(width: 7),
+            Flexible(
+              child: _FittedLabel(
+                text: summary,
+                style: font(kBodyFont, 12.5, 600, color: AppColors.textPrimary),
+                tag: ' · $person',
+                tagStyle: font(kBodyFont, 12.5, 700, color: accent),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }
 

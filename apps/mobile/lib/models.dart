@@ -553,6 +553,25 @@ class CalendarEventItem {
 
   String get displaySummary => summary ?? 'Event';
 
+  /// The local midnight an all-day event runs *to*, exclusive — so a one-day
+  /// holiday covers `[start, start + 1 day)`. A missing or degenerate `dtend`
+  /// reads as the single start day.
+  DateTime get allDayEnd {
+    final startDay = DateTime(start.year, start.month, start.day);
+    // Not `add(Duration(days: 1))`: across a DST boundary that lands at 23:00
+    // or 01:00 rather than on the next midnight.
+    final nextDay = DateTime(startDay.year, startDay.month, startDay.day + 1);
+    final e = end;
+    if (e == null) return nextDay;
+    final endDay = DateTime(e.year, e.month, e.day);
+    return endDay.isAfter(nextDay) ? endDay : nextDay;
+  }
+
+  /// Whether this all-day event covers [day] (a local midnight).
+  bool coversDay(DateTime day) =>
+      !day.isBefore(DateTime(start.year, start.month, start.day)) &&
+      day.isBefore(allDayEnd);
+
   factory CalendarEventItem.fromJson(Map<String, dynamic> j) {
     final allDay = j['allDay'] as bool? ?? false;
     return CalendarEventItem(
@@ -561,7 +580,16 @@ class CalendarEventItem {
       provenance: j['provenance'] as String,
       allDay: allDay,
       start: allDay ? parseAllDayDate(j['dtstart']) : parseTimestamp(j['dtstart']),
-      end: j['dtend'] == null ? null : parseTimestamp(j['dtend']),
+      // `dtend` is exclusive. For an all-day event it's a UTC-midnight *date*
+      // like dtstart, so it has to be read the same way: as a timestamp it
+      // landed hours before its own start day was over (west of UTC) or on the
+      // day after (east of it) — which is what drew a one-day holiday as a
+      // 17-hour block down the Plan grid.
+      end: j['dtend'] == null
+          ? null
+          : (allDay
+              ? parseAllDayDate(j['dtend'])
+              : parseTimestamp(j['dtend'])),
       summary: j['summary'] as String?,
       description: j['description'] as String?,
       location: j['location'] as String?,
