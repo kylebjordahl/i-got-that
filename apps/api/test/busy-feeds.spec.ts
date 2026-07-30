@@ -10,6 +10,7 @@ import {
   sourceEvents,
   tasks,
 } from '@igt/db';
+import { startOfUtcDay } from '@igt/classification';
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { storeSecret } from '../src/lib/secrets.js';
 import { ingestFeed } from '../src/services/ingest.js';
@@ -33,22 +34,32 @@ function at(days: number, hour: number, minute = 0): Date {
   return d;
 }
 
-/** A fetchImpl answering freebusy.query with the given busy intervals. */
+/**
+ * A fetchImpl answering freebusy.query with the given busy intervals, **clipped
+ * to the requested `[timeMin, timeMax]`** exactly as Google's API does. The
+ * clipping is what makes an in-progress block report `start === timeMin`, and
+ * it's the whole reason the request window has to be anchored rather than taken
+ * from the clock — so the fake has to reproduce it.
+ */
 function freeBusyFetch(busy: { start: Date; end: Date }[]): typeof fetch {
   return (async (url: string, init: RequestInit) => {
     expect(String(url)).toContain('/calendar/v3/freeBusy');
     const body = JSON.parse(String(init.body));
     expect(body.items).toEqual([{ id: WORK_CAL }]);
+    const timeMin = new Date(body.timeMin).getTime();
+    const timeMax = new Date(body.timeMax).getTime();
     return {
       ok: true,
       status: 200,
       json: async () => ({
         calendars: {
           [WORK_CAL]: {
-            busy: busy.map((b) => ({
-              start: b.start.toISOString(),
-              end: b.end.toISOString(),
-            })),
+            busy: busy
+              .filter((b) => b.end.getTime() > timeMin && b.start.getTime() < timeMax)
+              .map((b) => ({
+                start: new Date(Math.max(b.start.getTime(), timeMin)).toISOString(),
+                end: new Date(Math.min(b.end.getTime(), timeMax)).toISOString(),
+              })),
           },
         },
       }),
@@ -184,6 +195,94 @@ describe('busy feeds: ingest', () => {
       .where(eq(calendarEvents.linkId, t.link.id));
     expect(after).toHaveLength(1);
     expect(after[0]!.dtstart.toISOString()).toBe(moved.start.toISOString());
+  });
+
+  /**
+   * The staging bug: an ongoing all-day "out of office" on the work calendar.
+   * Google clips it to `timeMin`, so with an unanchored window every sync
+   * reported a block starting at the moment the sync ran, under a brand-new
+   * interval key — one more stacked-up busy block per refresh, the old one
+   * sitting just outside the stale sweep's range.
+   */
+  it('anchors an in-progress block to the UTC day, not the moment the sync ran', async () => {
+    const t = await setupBusyFeed('busy-ongoing@example.com');
+    const ooo = { start: at(-2, 0), end: at(3, 0) };
+
+    await ingestFeed(t.db, t.feed, {
+      fetchImpl: freeBusyFetch([ooo]),
+      kek: env.KEK,
+    });
+
+    const rows = await t.db
+      .select()
+      .from(sourceEvents)
+      .where(eq(sourceEvents.feedId, t.feed.id));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.dtstart.toISOString()).toBe(startOfUtcDay(new Date()).toISOString());
+    expect(rows[0]!.dtend!.toISOString()).toBe(ooo.end.toISOString());
+  });
+
+  it('re-syncing an ongoing all-day block reuses its row instead of stacking copies', async () => {
+    const t = await setupBusyFeed('busy-ongoing-resync@example.com');
+    const ooo = [{ start: at(-2, 0), end: at(3, 0) }];
+
+    for (let i = 0; i < 3; i++) {
+      await ingestFeed(t.db, t.feed, { fetchImpl: freeBusyFetch(ooo), kek: env.KEK });
+      await synthesizeFeed(t.db, t.feed);
+    }
+
+    const rows = await t.db
+      .select()
+      .from(sourceEvents)
+      .where(eq(sourceEvents.feedId, t.feed.id));
+    expect(rows).toHaveLength(1);
+    const events = await t.db
+      .select()
+      .from(calendarEvents)
+      .where(eq(calendarEvents.linkId, t.link.id));
+    expect(events).toHaveLength(1);
+    expect(events[0]!.dtstart.toISOString()).toBe(startOfUtcDay(new Date()).toISOString());
+  });
+
+  it("sweeps the previous day's clipped row when the UTC day rolls over", async () => {
+    const t = await setupBusyFeed('busy-rollover@example.com');
+    const ooo = [{ start: at(-2, 0), end: at(3, 0) }];
+    const today = startOfUtcDay(new Date());
+    const yesterday = new Date(today.getTime() - 24 * 60 * 60 * 1000);
+    const win = (start: Date) => ({
+      windowStart: start,
+      windowEnd: new Date(start.getTime() + 35 * 24 * 60 * 60 * 1000),
+    });
+
+    await ingestFeed(t.db, t.feed, {
+      fetchImpl: freeBusyFetch(ooo),
+      kek: env.KEK,
+      ...win(yesterday),
+    });
+    await synthesizeFeed(t.db, t.feed);
+
+    // Next day's sync: the block is now clipped to today, a different key. The
+    // row starting *before* this window is the stale one — the old start-only
+    // sweep never looked at it, so the block doubled at every rollover.
+    await ingestFeed(t.db, t.feed, {
+      fetchImpl: freeBusyFetch(ooo),
+      kek: env.KEK,
+      ...win(today),
+    });
+    await synthesizeFeed(t.db, t.feed);
+
+    const rows = await t.db
+      .select()
+      .from(sourceEvents)
+      .where(eq(sourceEvents.feedId, t.feed.id));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.dtstart.toISOString()).toBe(today.toISOString());
+    const events = await t.db
+      .select()
+      .from(calendarEvents)
+      .where(eq(calendarEvents.linkId, t.link.id));
+    expect(events).toHaveLength(1);
+    expect(events[0]!.dtstart.toISOString()).toBe(today.toISOString());
   });
 
   it('treats an empty busy list as a valid sync that clears the window', async () => {
