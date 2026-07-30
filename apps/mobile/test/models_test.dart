@@ -46,6 +46,50 @@ void main() {
     });
   });
 
+  group('CalendarEventItem all-day span', () {
+    // 2026-07-03T00:00Z (Friday) through 2026-07-06T00:00Z (exclusive) — a
+    // three-day all-day event, the shape the backend sends for a long weekend.
+    const jul3 = 1783036800000;
+    const jul6 = 1783296000000;
+
+    CalendarEventItem event({Object? dtend}) => CalendarEventItem.fromJson({
+          'id': 'e1',
+          'familyMemberId': 'm1',
+          'provenance': 'synthesized',
+          'dtstart': jul3,
+          if (dtend != null) 'dtend': dtend,
+          'allDay': true,
+          'summary': 'Long weekend',
+        });
+
+    test('reads dtend as a date, not an instant', () {
+      final e = event(dtend: jul6);
+      // Both ends are local midnights of their own calendar date. Parsed as a
+      // timestamp instead, the end landed at 5 PM on July 5 in a -7 zone (or on
+      // July 6 at 02:00 east of UTC) — which is what drew a one-day all-day
+      // event as a 17-hour block down the grid.
+      expect(e.end, DateTime(2026, 7, 6));
+      expect(e.allDayEnd, DateTime(2026, 7, 6));
+    });
+
+    test('covers every day from its start up to (not including) its end', () {
+      final e = event(dtend: jul6);
+      expect(e.coversDay(DateTime(2026, 7, 2)), isFalse);
+      expect(e.coversDay(DateTime(2026, 7, 3)), isTrue);
+      expect(e.coversDay(DateTime(2026, 7, 5)), isTrue);
+      expect(e.coversDay(DateTime(2026, 7, 6)), isFalse);
+    });
+
+    test('a missing or degenerate end reads as the single start day', () {
+      expect(event().allDayEnd, DateTime(2026, 7, 4));
+      expect(event().coversDay(DateTime(2026, 7, 3)), isTrue);
+      expect(event().coversDay(DateTime(2026, 7, 4)), isFalse);
+      // Some feeds send an inclusive same-day end; it still covers July 3 only.
+      expect(event(dtend: jul3).allDayEnd, DateTime(2026, 7, 4));
+      expect(event(dtend: jul3).coversDay(DateTime(2026, 7, 3)), isTrue);
+    });
+  });
+
   group('parseTimestamp', () {
     test('normalises a UTC ISO string to a local instant', () {
       // The API serialises `dtstart` (a timestamp_ms column) as a UTC ISO string.
