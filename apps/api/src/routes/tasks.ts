@@ -791,11 +791,135 @@ taskRoutes.get('/calendar-events', async (c) => {
       summary: calendarEvents.summary,
       description: calendarEvents.description,
       location: calendarEvents.location,
+      synthKey: calendarEvents.synthKey,
+      generatesFamilyTasks: familyMembers.generatesFamilyTasks,
     })
     .from(calendarEvents)
+    .innerJoin(
+      familyMembers,
+      eq(familyMembers.id, calendarEvents.familyMemberId),
+    )
     .where(and(...conditions))
     .orderBy(asc(calendarEvents.dtstart));
-  return c.json({ events: rows });
+
+  // Why an event can't carry claimable tasks, so a client showing one with none
+  // can say which of these it is rather than just "nothing to claim". Null ⇒ it
+  // is eligible, and any absence of tasks is a dismissal or a stale build.
+  return c.json({
+    events: rows.map(({ synthKey, generatesFamilyTasks, ...e }) => ({
+      ...e,
+      taskIneligibleReason: taskIneligibleReason({
+        provenance: e.provenance,
+        synthKey,
+        generatesFamilyTasks,
+      }),
+    })),
+  });
+});
+
+/**
+ * Why an event is structurally incapable of carrying claimable tasks — the same
+ * three exclusions task-gen applies, named so a client can explain them:
+ *
+ *  - `paused`: the member's `generatesFamilyTasks` is off (rules kept, gen off).
+ *  - `busy_calendar`: an `fb:` free/busy firewall block — opaque availability
+ *    from a `busy`-mode feed, never family logistics.
+ *  - `claimed`: a `claimed_task` event, which *is* somebody's claim already
+ *    (generating from it would echo the recursion).
+ *
+ * Null means the event is eligible, so having no tasks is a dismissal or a
+ * stale build rather than a rule — `POST /calendar-events/:id/tasks` fixes that.
+ */
+function taskIneligibleReason(e: {
+  provenance: string;
+  synthKey: string;
+  generatesFamilyTasks: boolean;
+}): 'paused' | 'busy_calendar' | 'claimed' | null {
+  if (e.provenance === 'claimed_task') return 'claimed';
+  if (e.synthKey.startsWith('fb:')) return 'busy_calendar';
+  if (!e.generatesFamilyTasks) return 'paused';
+  return null;
+}
+
+/**
+ * Rebuild one event's claimable tasks — the way back for an event on the
+ * calendar with nothing to claim on it.
+ *
+ * Marking a task "not needed" is sticky by design: the dismissed row stays, and
+ * task-gen heals it without ever resurrecting it, so the event keeps showing up
+ * with no claimable task and no way back. (A `convert` can also leave the event
+ * holding only a dismissed row, and a `manual` one at that, which freezes the
+ * type set.) This restores every dismissed task on the event, then re-runs
+ * task-gen over it, so whatever the member's task-rule pipeline says the event
+ * should generate is what it ends up with.
+ *
+ * Rejects the three cases where having no tasks is the rule rather than a
+ * mishap — see `taskIneligibleReason`.
+ */
+taskRoutes.post('/calendar-events/:eventId/tasks', async (c) => {
+  const db = getDb(c.env.DB);
+  const me = c.get('member');
+
+  const event = (
+    await db
+      .select()
+      .from(calendarEvents)
+      .where(
+        and(
+          eq(calendarEvents.id, c.req.param('eventId')),
+          eq(calendarEvents.familyId, me.familyId),
+        ),
+      )
+      .limit(1)
+  )[0];
+  if (!event) return c.json({ error: 'not_found' }, 404);
+  // A masked loser is stood in for by its cf: split segments, which carry the
+  // tasks — rebuilding this row's would duplicate them.
+  if (event.maskedAt != null) return c.json({ error: 'event_masked' }, 409);
+
+  const member = (
+    await db
+      .select()
+      .from(familyMembers)
+      .where(eq(familyMembers.id, event.familyMemberId))
+      .limit(1)
+  )[0];
+  if (!member) return c.json({ error: 'not_found' }, 404);
+
+  const reason = taskIneligibleReason({
+    provenance: event.provenance,
+    synthKey: event.synthKey,
+    generatesFamilyTasks: member.generatesFamilyTasks,
+  });
+  if (reason) return c.json({ error: 'not_eligible', reason }, 409);
+
+  // Un-dismiss first: task-gen keeps a dismissed row for a type it still wants
+  // (it heals, never resurrects), so restoring has to happen before the rebuild
+  // or the event stays exactly as stuck as it was.
+  const restored = await db
+    .update(tasks)
+    .set({ status: 'unowned', ownerMemberId: null })
+    .where(
+      and(
+        eq(tasks.calendarEventId, event.id),
+        eq(tasks.status, 'dismissed'),
+      ),
+    )
+    .returning({ id: tasks.id });
+
+  // Clear the build stamp so task-gen reconsiders this event even though its
+  // content hasn't changed, then let the member's pipeline do the typing.
+  await db
+    .update(calendarEvents)
+    .set({ tasksBuiltHash: null })
+    .where(eq(calendarEvents.id, event.id));
+  await buildMemberTasks(db, event.familyMemberId);
+
+  const rows = await db
+    .select()
+    .from(tasks)
+    .where(eq(tasks.calendarEventId, event.id));
+  return c.json({ tasks: rows, restored: restored.length });
 });
 
 /**

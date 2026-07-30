@@ -251,15 +251,21 @@ Future<void> showTaskActions(
   );
 }
 
-/// Details for a Plan event that has no live task to manage — a caretaker's own
-/// event (their calendar generates no family tasks by design), or an event
-/// whose tasks have all been marked not needed. Every block on the grid answers
-/// a tap; this is what the ones with nothing to claim open.
+/// Details for a Plan event that has no live task to manage. Every block on the
+/// grid answers a tap; this is what the ones with nothing to claim open.
 ///
 /// Shows the event exactly as the unified calendar holds it (title, whose
-/// calendar, time, location, notes), says why there's nothing to claim, and —
-/// when the event does have dismissed tasks behind it — offers to restore them,
-/// which puts it back in the claim queue.
+/// calendar, time, location, notes) and says *why* it carries nothing to claim,
+/// which is one of two very different situations:
+///
+///  * A rule — the event can't have tasks at all. The member's generation is
+///    paused, it's a free/busy firewall block, or it already *is* a claim
+///    ([CalendarEventItem.taskIneligibleReason]). Nothing to offer here; the
+///    fix, where there is one, lives in that member's or feed's settings.
+///  * A mishap — the event is eligible, so its tasks were marked not needed
+///    (which is sticky: task-gen heals a dismissed row but never resurrects it)
+///    or never got built. Rebuilding is offered, which restores the dismissed
+///    ones and re-runs the member's task-rule pipeline over the event.
 Future<void> showEventDetails(
   BuildContext context,
   WidgetRef ref,
@@ -280,16 +286,26 @@ Future<void> showEventDetails(
   final hasLocation = location != null && location.isNotEmpty;
   final hasDescription = description != null && description.isNotEmpty;
 
-  final name = member?.relationName ?? 'this member';
-  // Why there's nothing to claim — the paused-generation case is a setting, the
-  // rest is a dismissal the sheet can undo below.
-  final reason = member != null && !member.generatesFamilyTasks
-      ? "$name's events don't generate family tasks, so there's nothing to "
-          'claim here. An admin can turn that back on from $name in Family.'
-      : (dismissedTasks.isNotEmpty
-          ? 'Every task for this event is marked not needed. Restore them to '
-              'put it back in the claim queue.'
-          : 'This event has no claimable tasks.');
+  final name = member?.relationName ?? 'This member';
+  final dismissed = dismissedTasks.length;
+  final reason = switch (event.taskIneligibleReason) {
+    'paused' =>
+      "$name's events don't generate family tasks, so there's nothing to claim "
+          'here. An admin can turn that back on from $name in Family.',
+    'busy_calendar' =>
+      "This came from a calendar linked as free/busy, so it's only blocking "
+          "$name's availability — those blocks never generate tasks. Switch "
+          'that feed off "busy" mode to have its events typed.',
+    'claimed' => 'This event is already a claimed task.',
+    // Eligible, so the tasks were dismissed or never built — both rebuildable.
+    _ => dismissed > 0
+        ? 'Its ${dismissed == 1 ? 'task is' : '$dismissed tasks are'} marked not '
+            'needed. Marking one not needed sticks, so rebuild to put this '
+            'event back in the claim queue.'
+        : 'This event has no tasks right now, though it should generate them. '
+            'Rebuild to run it back through '
+            '${member == null ? 'the' : "$name's"} task rules.',
+  };
 
   await showModalBottomSheet<void>(
     context: context,
@@ -331,21 +347,27 @@ Future<void> showEventDetails(
           ],
           const SizedBox(height: 18),
           _DetailRow(icon: Icons.info_outline_rounded, text: reason),
-          if (dismissedTasks.isNotEmpty) ...[
+          // Only an eligible event can be rebuilt — for the three rule cases
+          // there's nothing this sheet could do that wouldn't be a lie.
+          if (event.canHaveTasks) ...[
             const SizedBox(height: 18),
             AppCard(
               padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
               child: _ActionRow(
                 icon: Icons.restore_rounded,
                 iconColor: AppColors.indigo,
-                label: dismissedTasks.length == 1
-                    ? 'Restore its task'
-                    : 'Restore its ${dismissedTasks.length} tasks',
+                label: dismissed > 0
+                    ? 'Restore ${dismissed == 1 ? 'its task' : 'its $dismissed tasks'}'
+                    : "Rebuild this event's tasks",
                 onTap: () {
                   Navigator.of(sheetCtx).pop();
-                  _runScope(context, ref, dismissedTasks,
-                      (api, fid, t) => api.restoreTask(fid, t.id),
-                      'Back in the claim queue');
+                  _run(
+                      context,
+                      ref,
+                      (api, fid) => api.rebuildEventTasks(fid, event.id),
+                      dismissed > 0
+                          ? 'Back in the claim queue'
+                          : 'Tasks rebuilt');
                 },
               ),
             ),

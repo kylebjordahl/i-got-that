@@ -521,6 +521,7 @@ class CalendarEventItem {
     this.description,
     this.location,
     this.taskId,
+    this.taskIneligibleReason,
   });
 
   final String id;
@@ -538,8 +539,17 @@ class CalendarEventItem {
   /// For claimed_task events: the task this event reflects (the recursion).
   final String? taskId;
 
+  /// Why this event can't carry claimable tasks at all — 'paused' (the member's
+  /// task generation is off), 'busy_calendar' (a free/busy firewall block) or
+  /// 'claimed' (it *is* a claim). Null ⇒ eligible, so having no tasks is a
+  /// dismissal or a stale build, which [ApiClient.rebuildEventTasks] undoes.
+  final String? taskIneligibleReason;
+
   bool get isClaimedTask => provenance == 'claimed_task';
   bool get isHuman => provenance == 'human';
+
+  /// Whether this event is allowed to have claimable tasks at all.
+  bool get canHaveTasks => taskIneligibleReason == null;
 
   String get displaySummary => summary ?? 'Event';
 
@@ -556,6 +566,7 @@ class CalendarEventItem {
       description: j['description'] as String?,
       location: j['location'] as String?,
       taskId: j['taskId'] as String?,
+      taskIneligibleReason: j['taskIneligibleReason'] as String?,
     );
   }
 }

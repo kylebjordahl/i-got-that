@@ -523,6 +523,14 @@ class ApiClient {
         data: <String, dynamic>{}, options: _auth);
   }
 
+  /// Rebuild a calendar event's claimable tasks — restores any marked "not
+  /// needed" and re-runs task generation over the event, so an event sitting on
+  /// the calendar with nothing to claim becomes claimable again.
+  Future<void> rebuildEventTasks(String familyId, String eventId) async {
+    await _dio.post('/families/$familyId/calendar-events/$eventId/tasks',
+        data: <String, dynamic>{}, options: _auth);
+  }
+
   /// Convert a feed-generated task into a chosen set of types (attendance /
   /// pickup / dropoff). The event's tasks for that dependent become exactly
   /// these types.
