@@ -269,6 +269,122 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('a contained appointment cascades over its host, tags and all',
+      (tester) async {
+    tester.view.physicalSize = const Size(800, 1400);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+
+    final now = DateTime.now();
+    DateTime at(int h, int m) => DateTime(now.year, now.month, now.day, h, m);
+    // The shape the day view used to make a mess of: a midday appointment
+    // wholly inside the school day. Splitting the lane in half squeezed a
+    // 6-hour block into a sliver over an appointment that only needed an hour;
+    // now the appointment cascades on top of it, iOS-Calendar style.
+    final events = [
+      CalendarEventItem(id: 'school', familyMemberId: 'theo', provenance: 'synthesized', start: at(8, 30), end: at(15, 0), allDay: false, summary: 'School day'),
+      CalendarEventItem(id: 'ortho', familyMemberId: 'theo', provenance: 'human', start: at(10, 0), end: at(11, 0), allDay: false, summary: 'Orthodontist'),
+    ];
+    final tasks = [
+      TaskItem(id: 'sd', familyMemberId: 'theo', type: 'dropoff', start: at(8, 30), status: 'unowned', createdVia: 'generated', calendarEventId: 'school'),
+      TaskItem(id: 'sp', familyMemberId: 'theo', type: 'pickup', start: at(15, 0), status: 'unowned', createdVia: 'generated', calendarEventId: 'school'),
+      TaskItem(id: 'od', familyMemberId: 'theo', type: 'dropoff', start: at(10, 0), status: 'unowned', createdVia: 'generated', calendarEventId: 'ortho'),
+      TaskItem(id: 'op', familyMemberId: 'theo', type: 'pickup', start: at(11, 0), status: 'unowned', createdVia: 'generated', calendarEventId: 'ortho'),
+    ];
+    await tester.pumpWidget(ProviderScope(
+      overrides: [
+        membersProvider.overrideWith((ref) async => [
+              _m('dad', 'Dad', caretaker: true),
+              _m('theo', 'Theo', child: true),
+            ]),
+        currentMemberProvider.overrideWith((ref) async => _m('dad', 'Dad', caretaker: true)),
+        allTasksProvider.overrideWith((ref) async => tasks),
+        calendarEventsProvider.overrideWith((ref) async => events),
+        pendingDecisionsProvider.overrideWith((ref) async => const []),
+        threadingThresholdProvider.overrideWith((ref) async => 30),
+      ],
+      child: MaterialApp(
+        theme: buildAppTheme(),
+        themeMode: ThemeMode.dark,
+        home: const Scaffold(body: SafeArea(child: PlanScreen())),
+      ),
+    ));
+    await tester.pumpAndSettle();
+
+    final school = tester.getRect(find.textContaining('School day'));
+    final ortho = tester.getRect(find.textContaining('Orthodontist'));
+    // The appointment is inset from the school day's left edge and ends flush
+    // with it — on top of it, not beside it (side by side, it would start past
+    // the school day's right edge instead).
+    expect(ortho.left, greaterThan(school.left));
+    expect(ortho.right, closeTo(school.right, 1));
+    // ...and the host keeps its own label strip clear above the cascade.
+    expect(school.bottom, lessThanOrEqualTo(ortho.top));
+
+    // Most important of all: every transition tag survives the cascade — both
+    // the host's and the appointment's.
+    expect(find.text('Drop-off · 8:30'), findsOneWidget);
+    expect(find.text('Pick-up · 3:00'), findsOneWidget);
+    expect(find.text('Drop-off · 10:00'), findsOneWidget);
+    expect(find.text('Pick-up · 11:00'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('a block widens over the columns nothing collides with it in',
+      (tester) async {
+    tester.view.physicalSize = const Size(800, 1400);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+
+    final now = DateTime.now();
+    DateTime at(int h, int m) => DateTime(now.year, now.month, now.day, h, m);
+    // Three columns' worth of morning, but only for its first 45 minutes:
+    // 'Playdate' starts once the 9 o'clock pair is over, so it takes their two
+    // columns back instead of sitting in a third of a lane it has to itself.
+    final events = [
+      CalendarEventItem(id: 'swim', familyMemberId: 'theo', provenance: 'synthesized', start: at(9, 0), end: at(9, 45), allDay: false, summary: 'Swim'),
+      CalendarEventItem(id: 'camp', familyMemberId: 'mia', provenance: 'synthesized', start: at(9, 0), end: at(9, 45), allDay: false, summary: 'Camp'),
+      CalendarEventItem(id: 'recital', familyMemberId: 'theo', provenance: 'synthesized', start: at(9, 15), end: at(11, 0), allDay: false, summary: 'Recital'),
+      CalendarEventItem(id: 'play', familyMemberId: 'mia', provenance: 'synthesized', start: at(10, 0), end: at(11, 30), allDay: false, summary: 'Playdate'),
+    ];
+    await tester.pumpWidget(ProviderScope(
+      overrides: [
+        membersProvider.overrideWith((ref) async => [
+              _m('dad', 'Dad', caretaker: true),
+              _m('theo', 'Theo', child: true),
+              _m('mia', 'Mia', child: true),
+            ]),
+        currentMemberProvider.overrideWith((ref) async => _m('dad', 'Dad', caretaker: true)),
+        allTasksProvider.overrideWith((ref) async => const <TaskItem>[]),
+        calendarEventsProvider.overrideWith((ref) async => events),
+        pendingDecisionsProvider.overrideWith((ref) async => const []),
+        threadingThresholdProvider.overrideWith((ref) async => 30),
+      ],
+      child: MaterialApp(
+        theme: buildAppTheme(),
+        themeMode: ThemeMode.dark,
+        home: const Scaffold(body: SafeArea(child: PlanScreen())),
+      ),
+    ));
+    await tester.pumpAndSettle();
+
+    final swim = tester.getRect(find.textContaining('Swim'));
+    final play = tester.getRect(find.textContaining('Playdate'));
+    final recital = tester.getRect(find.textContaining('Recital'));
+    // Playdate spreads over the two columns the 9 o'clock pair vacated...
+    expect(play.left, closeTo(swim.left, 1));
+    expect(play.width, greaterThan(swim.width * 1.5));
+    // ...but stops at the recital, which is still going.
+    expect(play.right, lessThan(recital.left));
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets(
       'a claimed drop-off does not add the claimant as an attendee avatar on the block',
       (tester) async {
@@ -529,9 +645,10 @@ void main() {
     ));
     await tester.pumpAndSettle();
 
-    // The appointment is only half an hour, so its block shows the time alone —
-    // its title only ever appears once a sheet opens for it.
-    expect(find.textContaining('Orthodontist'), findsNothing);
+    // The appointment is only half an hour: too short for its time, but its
+    // description is the one line a block never gives up.
+    expect(find.textContaining('Orthodontist'), findsOneWidget);
+    expect(find.text('10:00 – 10:30 AM'), findsNothing);
 
     // Tap just inside the appointment's top edge, in the horizontal band the
     // half's pick-up tab occupies: the 10 AM gridline is that edge.
@@ -786,12 +903,12 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('a short event collapses to just its time, without overflow',
+  testWidgets('a short event keeps its description and drops its time',
       (tester) async {
     final now = DateTime.now();
     DateTime at(int h, int m) => DateTime(now.year, now.month, now.day, h, m);
     // A 20-minute segment (once inflated to a fixed 76px, now its true height)
-    // is too short for the title line — it shows the start–end time alone.
+    // only has room for one line — and that line is always the description.
     final events = [
       CalendarEventItem(id: 'q', familyMemberId: 'theo', provenance: 'synthesized', start: at(9, 0), end: at(9, 20), allDay: false, summary: 'Quick errand'),
     ];
@@ -818,9 +935,9 @@ void main() {
     ));
     await tester.pumpAndSettle();
 
-    // The time shows; the summary is dropped for the compact block.
-    expect(find.text('9:00 – 9:20 AM'), findsOneWidget);
-    expect(find.textContaining('Quick errand'), findsNothing);
+    // The description shows; the time is what a compact block drops.
+    expect(find.textContaining('Quick errand'), findsOneWidget);
+    expect(find.text('9:00 – 9:20 AM'), findsNothing);
     expect(tester.takeException(), isNull);
   });
 
