@@ -1,11 +1,26 @@
+import 'package:caretaker_app/api/client.dart';
 import 'package:caretaker_app/models.dart';
 import 'package:caretaker_app/screens/plan_screen.dart';
+import 'package:caretaker_app/state/auth.dart';
 import 'package:caretaker_app/state/family.dart';
 import 'package:caretaker_app/theme/app_theme.dart';
 import 'package:caretaker_app/util/format.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+
+/// Records the event ids a rebuild was requested for, so a sheet action can be
+/// asserted on without a real network call.
+class _RecordingApiClient extends ApiClient {
+  _RecordingApiClient() : super(baseUrl: 'http://test');
+
+  final List<String> rebuiltEventIds = [];
+
+  @override
+  Future<void> rebuildEventTasks(String familyId, String eventId) async {
+    rebuiltEventIds.add(eventId);
+  }
+}
 
 Member _m(String id, String name,
         {bool caretaker = false, bool child = false, bool generatesTasks = true}) =>
@@ -540,7 +555,8 @@ void main() {
     DateTime at(int h, int m) => DateTime(now.year, now.month, now.day, h, m);
     final me = _m('mom', 'Mom', caretaker: true);
     // A caretaker's own calendar generates no family tasks by design, so its
-    // events have nothing to claim — they must still answer a tap.
+    // events have nothing to claim — they must still answer a tap. The API
+    // stamps that as the event's ineligibility reason.
     final dad = _m('dad', 'Dad', caretaker: true, generatesTasks: false);
     final events = [
       CalendarEventItem(
@@ -553,6 +569,7 @@ void main() {
         summary: 'Dentist',
         location: 'Maple Dental',
         description: 'Bring the insurance card',
+        taskIneligibleReason: 'paused',
       ),
     ];
     await tester.pumpWidget(ProviderScope(
@@ -580,6 +597,75 @@ void main() {
     expect(find.text('Maple Dental'), findsOneWidget);
     expect(find.text('Bring the insurance card'), findsOneWidget);
     expect(find.textContaining("don't generate family tasks"), findsOneWidget);
+    // Nothing a rebuild could do here — the block is a member setting.
+    expect(find.textContaining('Rebuild'), findsNothing);
+  });
+
+  testWidgets('a free/busy block says why it can never carry a task',
+      (tester) async {
+    final now = DateTime.now();
+    DateTime at(int h, int m) => DateTime(now.year, now.month, now.day, h, m);
+    final me = _m('dad', 'Dad', caretaker: true);
+    // An `fb:` block from a busy-mode feed: opaque availability, never typed.
+    final events = [
+      CalendarEventItem(id: 'busy', familyMemberId: 'theo', provenance: 'synthesized', start: at(13, 0), end: at(15, 0), allDay: false, summary: 'Busy', taskIneligibleReason: 'busy_calendar'),
+    ];
+    await tester.pumpWidget(ProviderScope(
+      overrides: [
+        membersProvider.overrideWith((ref) async => [me, _m('theo', 'Theo', child: true)]),
+        currentMemberProvider.overrideWith((ref) async => me),
+        allTasksProvider.overrideWith((ref) async => const <TaskItem>[]),
+        calendarEventsProvider.overrideWith((ref) async => events),
+        pendingDecisionsProvider.overrideWith((ref) async => const []),
+        threadingThresholdProvider.overrideWith((ref) async => 30),
+      ],
+      child: MaterialApp(
+        theme: buildAppTheme(),
+        themeMode: ThemeMode.dark,
+        home: const Scaffold(body: SafeArea(child: PlanScreen())),
+      ),
+    ));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.textContaining('Busy'));
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('linked as free/busy'), findsOneWidget);
+    expect(find.textContaining('Rebuild'), findsNothing);
+  });
+
+  testWidgets('an eligible event with no tasks at all offers a rebuild',
+      (tester) async {
+    final now = DateTime.now();
+    DateTime at(int h, int m) => DateTime(now.year, now.month, now.day, h, m);
+    final me = _m('dad', 'Dad', caretaker: true);
+    // What the reporter hit: an event that should generate an attendance task,
+    // sitting on the calendar with no task row of any status behind it.
+    final events = [
+      CalendarEventItem(id: 'ortho', familyMemberId: 'theo', provenance: 'human', start: at(10, 0), end: at(11, 30), allDay: false, summary: 'Orthodontist'),
+    ];
+    await tester.pumpWidget(ProviderScope(
+      overrides: [
+        membersProvider.overrideWith((ref) async => [me, _m('theo', 'Theo', child: true)]),
+        currentMemberProvider.overrideWith((ref) async => me),
+        allTasksProvider.overrideWith((ref) async => const <TaskItem>[]),
+        calendarEventsProvider.overrideWith((ref) async => events),
+        pendingDecisionsProvider.overrideWith((ref) async => const []),
+        threadingThresholdProvider.overrideWith((ref) async => 30),
+      ],
+      child: MaterialApp(
+        theme: buildAppTheme(),
+        themeMode: ThemeMode.dark,
+        home: const Scaffold(body: SafeArea(child: PlanScreen())),
+      ),
+    ));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.textContaining('Orthodontist'));
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('should generate them'), findsOneWidget);
+    expect(find.text("Rebuild this event's tasks"), findsOneWidget);
   });
 
   testWidgets('an event whose tasks were all dismissed offers to restore them',
@@ -596,8 +682,11 @@ void main() {
       TaskItem(id: 'd', familyMemberId: 'theo', type: 'dropoff', start: at(16, 0), status: 'dismissed', createdVia: 'generated', calendarEventId: 'practice'),
       TaskItem(id: 'p', familyMemberId: 'theo', type: 'pickup', start: at(18, 0), status: 'dismissed', createdVia: 'generated', calendarEventId: 'practice'),
     ];
+    final api = _RecordingApiClient();
     await tester.pumpWidget(ProviderScope(
       overrides: [
+        apiClientProvider.overrideWithValue(api),
+        familyProvider.overrideWith((ref) async => 'fam-1'),
         membersProvider.overrideWith((ref) async => [me, _m('theo', 'Theo', child: true)]),
         currentMemberProvider.overrideWith((ref) async => me),
         allTasksProvider.overrideWith((ref) async => tasks),
@@ -616,7 +705,16 @@ void main() {
     await tester.tap(find.textContaining('Fiddle practice'));
     await tester.pumpAndSettle();
 
+    // The sheet names the sticky dismissal and offers the way back.
+    expect(find.textContaining('marked not needed'), findsOneWidget);
     expect(find.text('Restore its 2 tasks'), findsOneWidget);
+
+    await tester.tap(find.text('Restore its 2 tasks'));
+    await tester.pumpAndSettle();
+
+    // One rebuild call for the event — it restores the dismissed rows and
+    // re-runs task-gen server-side, rather than the client un-dismissing each.
+    expect(api.rebuiltEventIds, ['practice']);
   });
 
   testWidgets('a wide manual block keeps the "· manual" tag beside its time',

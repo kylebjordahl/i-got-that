@@ -114,6 +114,20 @@ paths in particular).
 - **Owned tasks are never deleted by reconciliation** (`services/task-gen.ts`):
   only unowned tasks are removed/swept, and user-converted (`createdVia:
   'manual'`) tasks are healed, never reclassified.
+- **`tasksBuiltHash` is a *skip* stamp, so anything that removes an event's
+  tasks behind task-gen's back has to clear it.** Task-gen's dirty query is
+  `maskedAt IS NULL AND tasksBuiltHash != contentHash`, so an event whose
+  content never changed is skipped forever. Conflict masking sweeps the loser's
+  unowned tasks (its `cf:` segments carry them); un-masking therefore clears the
+  stamp too (`services/conflicts.ts`) or the event returns to the calendar
+  permanently bare. Two more ways an event ends up with nothing claimable are
+  *by design* and stay that way: a dismissal is sticky (the row is kept and
+  healed, never resurrected), and a `convert` freezes the type set. `POST
+  /calendar-events/:id/tasks` is the operator escape hatch for all of them — it
+  restores dismissed rows, clears the stamp, and re-runs the member's pipeline.
+  It refuses the three cases where having no tasks is the *rule* (paused member,
+  `fb:` busy block, `claimed_task`), which `/calendar-events` also reports per
+  event as `taskIneligibleReason` so the client can say which it is.
 - **CalDAV** does a direct authenticated `PUT`/`DELETE` to the discovered
   collection URL (`libs/delivery/src/caldav.ts`), not tsdav's create-only helper.
 - **Credentials** are envelope-encrypted (KEK → DEK) into the `secret` table and
