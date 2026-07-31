@@ -1290,4 +1290,125 @@ void main() {
     // The grid's own vertical scroll still works — a swipe doesn't swallow it.
     expect(tester.takeException(), isNull);
   });
+
+  group('pinch to zoom the time axis', () {
+    /// A day with a 1-hour appointment plus something just after midnight and
+    /// something late at night, so the grid runs the whole 24 hours: tall
+    /// enough to pinch on, and longer than any viewport so it really scrolls.
+    Future<void> pumpDay(WidgetTester tester,
+        {Size size = const Size(800, 1400)}) async {
+      tester.view.physicalSize = size;
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(() {
+        tester.view.resetPhysicalSize();
+        tester.view.resetDevicePixelRatio();
+      });
+      final now = DateTime.now();
+      final events = [
+        CalendarEventItem(id: 'e', familyMemberId: 'theo', provenance: 'human', start: DateTime(now.year, now.month, now.day, 9), end: DateTime(now.year, now.month, now.day, 10), allDay: false, summary: 'Dentist'),
+        CalendarEventItem(id: 'late', familyMemberId: 'theo', provenance: 'human', start: DateTime(now.year, now.month, now.day, 22), end: DateTime(now.year, now.month, now.day, 23), allDay: false, summary: 'Late thing'),
+        CalendarEventItem(id: 'early', familyMemberId: 'theo', provenance: 'human', start: DateTime(now.year, now.month, now.day, 0, 30), end: DateTime(now.year, now.month, now.day, 1), allDay: false, summary: 'Early thing'),
+      ];
+      await tester.pumpWidget(ProviderScope(
+        overrides: [
+          membersProvider.overrideWith((ref) async => [
+                _m('dad', 'Dad', caretaker: true),
+                _m('theo', 'Theo', child: true),
+              ]),
+          currentMemberProvider.overrideWith((ref) async => _m('dad', 'Dad', caretaker: true)),
+          allTasksProvider.overrideWith((ref) async => const <TaskItem>[]),
+          calendarEventsProvider.overrideWith((ref) async => events),
+          pendingDecisionsProvider.overrideWith((ref) async => const []),
+          threadingThresholdProvider.overrideWith((ref) async => 30),
+        ],
+        child: MaterialApp(
+          theme: buildAppTheme(),
+          themeMode: ThemeMode.dark,
+          home: const Scaffold(body: SafeArea(child: PlanScreen())),
+        ),
+      ));
+      await tester.pumpAndSettle();
+    }
+
+    /// The rendered height of one hour: the gap between two hour gridlines.
+    double hourHeight(WidgetTester tester) =>
+        tester.getRect(find.text('10 AM')).top -
+        tester.getRect(find.text('8 AM')).top;
+
+    /// Pinch vertically on the grid, taking the two fingers from [from] apart
+    /// to [to] apart around the same centre. Centred on the grid's own viewport
+    /// so both fingers land inside it however far apart they start.
+    Future<void> pinch(WidgetTester tester, double from, double to) async {
+      final centre = tester.getRect(find.byType(SingleChildScrollView)).center;
+      final a = await tester.startGesture(centre.translate(0, -from / 2));
+      final b = await tester.startGesture(centre.translate(0, from / 2));
+      // In steps, so the recognizer sees a gesture rather than a teleport.
+      for (var i = 0; i < 5; i++) {
+        final step = (to - from) / 10;
+        await a.moveBy(Offset(0, -step));
+        await b.moveBy(Offset(0, step));
+        await tester.pump();
+      }
+      await a.up();
+      await b.up();
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('spreading two fingers stretches the hours apart',
+        (tester) async {
+      await pumpDay(tester);
+      final before = hourHeight(tester);
+      final block = tester.getRect(find.textContaining('Dentist'));
+
+      await pinch(tester, 100, 200);
+
+      // Two hours of grid take twice the room they did...
+      expect(hourHeight(tester), closeTo(before * 2, 2));
+      // ...the appointment's block stretched with them (it starts at 9 and ends
+      // at 10, so it spans exactly that gap)...
+      expect(tester.getRect(find.textContaining('Dentist')).left,
+          closeTo(block.left, 1));
+      // ...and it still says what it is and when.
+      expect(find.textContaining('9:00 – 10:00 AM'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('pinching in compresses the day and thins the hour labels',
+        (tester) async {
+      await pumpDay(tester);
+      final before = hourHeight(tester);
+
+      await pinch(tester, 300, 100);
+
+      // Clamped at the minimum zoom rather than collapsing to nothing.
+      final after = hourHeight(tester);
+      expect(after, lessThan(before));
+      expect(after, greaterThan(before * 0.5));
+      // Too tight for a label on every line, so the odd hours go quiet — the
+      // gridlines all stay, which is what the 10 AM/8 AM measurement rides on.
+      expect(find.text('9 AM'), findsNothing);
+      expect(find.text('8 AM'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('a one-finger drag still scrolls the grid, not zooms it',
+        (tester) async {
+      // A short viewport, so the day is longer than the grid can show and there
+      // is something to scroll in the first place.
+      await pumpDay(tester, size: const Size(800, 700));
+      final hour = hourHeight(tester);
+      final before = tester.getRect(find.text('9 AM')).top;
+
+      // (The scrollable eats the touch slop, so the grid moves a little less
+      // far than the finger does.)
+      await tester.drag(find.text('9 AM'), const Offset(0, -120));
+      await tester.pumpAndSettle();
+
+      // The grid scrolled under the finger, and the zoom is untouched — the
+      // pinch recognizer must never claim a single-pointer gesture.
+      expect(tester.getRect(find.text('9 AM')).top, lessThan(before - 80));
+      expect(hourHeight(tester), closeTo(hour, 0.01));
+      expect(tester.takeException(), isNull);
+    });
+  });
 }

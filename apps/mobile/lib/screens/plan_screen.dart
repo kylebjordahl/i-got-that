@@ -1,3 +1,4 @@
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models.dart';
@@ -14,7 +15,17 @@ import '../widgets/settings.dart';
 import 'conflict_resolution_sheet.dart';
 import 'task_actions_sheet.dart';
 
-const _hourPx = 42.0;
+// An hour's height on the grid at 1x. The user pinches to zoom from here —
+// see `_hourPx`, `_zoom` — so nothing that positions against the clock may use
+// this constant directly.
+const _baseHourPx = 42.0;
+// How far the pinch goes: a whole 24-hour day in one screen at the bottom end,
+// room for a 15-minute appointment to show its own label at the top.
+const _minZoom = 0.6;
+const _maxZoom = 3.0;
+// Below this hour height the hour labels would collide, so only every other one
+// is drawn (the gridlines all stay).
+const _sparseLabelsBelow = 34.0;
 const _labelWidth = 46.0;
 // Edge-tab (drop-off / pick-up) height — snug around the compact label + owner
 // avatar; tabs straddle their block's edge by half this and stack by the full.
@@ -126,6 +137,45 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
   int _gridStart = _defaultStartHour;
   int _gridEnd = _defaultEndHour;
   double get _gridHeight => (_gridEnd - _gridStart) * _hourPx;
+
+  // Pinch-to-zoom on the time axis. Kept in this State, which the shell's
+  // IndexedStack holds for the whole session, so the zoom you set survives
+  // switching tabs and changing days.
+  double _zoom = 1.0;
+  double get _hourPx => _baseHourPx * _zoom;
+
+  // Live pinch: the zoom it started from, plus the hour under the pinch's focal
+  // point and where that point was on screen — the grid is re-scrolled after
+  // each rebuild so that hour stays under the fingers.
+  double? _pinchStartZoom;
+  double _pinchAnchorHour = 0;
+  double _pinchAnchorY = 0;
+
+  void _onPinchStart(ScaleStartDetails d) {
+    if (d.pointerCount < 2) return;
+    _pinchStartZoom = _zoom;
+    _pinchAnchorY = d.localFocalPoint.dy;
+    final offset = _gridScroll.hasClients ? _gridScroll.offset : 0.0;
+    _pinchAnchorHour = _gridStart + (offset + _pinchAnchorY) / _hourPx;
+  }
+
+  void _onPinchUpdate(ScaleUpdateDetails d) {
+    final from = _pinchStartZoom;
+    if (from == null || d.pointerCount < 2) return;
+    final next = (from * d.verticalScale).clamp(_minZoom, _maxZoom);
+    if (next == _zoom) return;
+    setState(() => _zoom = next);
+    // The grid's extent only exists after this frame's layout, so the
+    // correcting scroll has to wait for it.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_gridScroll.hasClients) return;
+      final target = (_pinchAnchorHour - _gridStart) * _hourPx - _pinchAnchorY;
+      _gridScroll
+          .jumpTo(target.clamp(0.0, _gridScroll.position.maxScrollExtent));
+    });
+  }
+
+  void _onPinchEnd(ScaleEndDetails d) => _pinchStartZoom = null;
 
   // The time grid scrolls internally (the day chips stay put). It opens showing
   // the default 7 AM–6 PM window even when the grid has expanded to earlier hours.
@@ -396,7 +446,8 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
         // The time grid scrolls on its own; the day chips above stay fixed. The
         // amber edge glows flag events scrolled out of view above/below. A
         // horizontal swipe over the grid steps the selected day ± 1, alongside
-        // the vertical drag the ScrollView already claims for its own axis.
+        // the vertical drag the ScrollView already claims for its own axis, and
+        // a two-finger pinch zooms the time axis.
         Expanded(
           child: GestureDetector(
             behavior: HitTestBehavior.translucent,
@@ -405,7 +456,23 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
               if (v.abs() < _swipeVelocityThreshold) return;
               _shiftDay(v < 0 ? 1 : -1);
             },
-            child: Stack(
+            child: RawGestureDetector(
+              behavior: HitTestBehavior.translucent,
+              gestures: {
+                // A raw recognizer, not `GestureDetector.onScale*`: the stock
+                // scale recognizer claims the arena on a *one*-finger drag once
+                // it passes the pan slop, which would take every scroll and
+                // day-swipe away from the widgets that own them.
+                _PinchRecognizer:
+                    GestureRecognizerFactoryWithHandlers<_PinchRecognizer>(
+                  _PinchRecognizer.new,
+                  (r) => r
+                    ..onStart = _onPinchStart
+                    ..onUpdate = _onPinchUpdate
+                    ..onEnd = _onPinchEnd,
+                ),
+              },
+              child: Stack(
               children: [
                 SingleChildScrollView(
                   controller: _gridScroll,
@@ -440,6 +507,7 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
                 _EdgeGlow(controller: _gridScroll, placed: placed, top: true),
                 _EdgeGlow(controller: _gridScroll, placed: placed, top: false),
               ],
+              ),
             ),
           ),
         ),
@@ -887,13 +955,19 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
         child: Stack(
           clipBehavior: Clip.none,
           children: [
-            // Hour gridlines + labels.
+            // Hour gridlines, every hour at every zoom; their labels thin out
+            // to every second hour once zoomed out far enough that they'd
+            // otherwise collide.
             for (var h = _gridStart; h <= _gridEnd; h++)
               Positioned(
                 top: (h - _gridStart) * _hourPx,
                 left: 0,
                 right: 0,
-                child: _HourLine(label: _hourLabel(h)),
+                child: _HourLine(
+                  label: _hourPx >= _sparseLabelsBelow || h.isEven
+                      ? _hourLabel(h)
+                      : '',
+                ),
               ),
             ...blocks,
             // Double-booked collision seams sit above the overlapping blocks.
@@ -1101,15 +1175,16 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
       it.isEvent || it.task!.type == 'attendance';
 
   /// How long after its host a block has to start to cascade on top of it
-  /// rather than take a column beside it — [_nestHeaderPx] worth of grid.
-  static final _nestHeaderGap =
+  /// rather than take a column beside it — [_nestHeaderPx] worth of grid, so
+  /// zooming in lets shorter overlaps cascade rather than split the lane.
+  Duration get _nestHeaderGap =>
       Duration(minutes: (_nestHeaderPx / _hourPx * 60).round());
 
   /// Can [child] cascade *over* [parent] instead of halving the lane with it?
   /// Only when the parent wholly contains it and still keeps its own header
   /// strip exposed — that strip carries the parent's label and is the only part
   /// of it left to tap once the cascade is drawn on top.
-  static bool _cascades(_Ev parent, _Ev child, int childDepth) =>
+  bool _cascades(_Ev parent, _Ev child, int childDepth) =>
       childDepth < _maxNestDepth &&
       !child.start.isBefore(parent.start.add(_nestHeaderGap)) &&
       !child.end.isAfter(parent.end);
@@ -1381,6 +1456,23 @@ class _Ev {
   final _PlanItem item;
   final DateTime start;
   final DateTime end;
+}
+
+/// A scale recognizer that only ever claims a *two-finger* gesture.
+///
+/// [ScaleGestureRecognizer] accepts as soon as the focal point moves past the
+/// pan slop, one finger or two, so dropping a plain `GestureDetector(onScale…)`
+/// over the grid would win the arena against the scroll view's vertical drag
+/// and the day-swipe — one-finger scrolling would just stop working. Declining
+/// to resolve while a single pointer is down leaves those gestures to the
+/// widgets that own them, and a real pinch still wins the moment the second
+/// finger lands.
+class _PinchRecognizer extends ScaleGestureRecognizer {
+  @override
+  void resolve(GestureDisposition disposition) {
+    if (disposition == GestureDisposition.accepted && pointerCount < 2) return;
+    super.resolve(disposition);
+  }
 }
 
 /// Where a block's drop-off / pick-up tags sit relative to the edge they belong
