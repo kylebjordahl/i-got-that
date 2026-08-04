@@ -16,7 +16,9 @@ void main() {
     });
 
     test('reads the token from a fragment with a path + query', () {
-      final uri = Uri.parse('https://staging.igt.example/app/#/join?invite=frag42');
+      final uri = Uri.parse(
+        'https://staging.igt.example/app/#/join?invite=frag42',
+      );
       expect(inviteTokenFromUri(uri), 'frag42');
     });
 

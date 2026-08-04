@@ -11,7 +11,11 @@ import '../widgets/primitives.dart';
 /// The "Add another calendar" sheet (6i): link a feed that already exists, or
 /// set up a new one (ICS URL + optional name, or a calendar from a connected
 /// account) — without leaving the member-detail context.
-Future<void> showAddCalendarSheet(BuildContext context, WidgetRef ref, Member member) {
+Future<void> showAddCalendarSheet(
+  BuildContext context,
+  WidgetRef ref,
+  Member member,
+) {
   return showModalBottomSheet<void>(
     context: context,
     useRootNavigator: true,
@@ -58,8 +62,10 @@ class _AddCalendarSheetState extends ConsumerState<_AddCalendarSheet> {
   /// Busy mode rides freebusy.query, so it's only offered for google accounts.
   bool get _busyModeAvailable {
     if (_source != 'account') return false;
-    final accounts = ref.read(accountsProvider).valueOrNull ?? const <ExternalAccount>[];
-    return accounts.where((a) => a.id == _accountId).firstOrNull?.kind == 'google';
+    final accounts =
+        ref.read(accountsProvider).valueOrNull ?? const <ExternalAccount>[];
+    return accounts.where((a) => a.id == _accountId).firstOrNull?.kind ==
+        'google';
   }
 
   /// Feeds not yet linked to this member.
@@ -67,7 +73,8 @@ class _AddCalendarSheetState extends ConsumerState<_AddCalendarSheet> {
     final feeds = ref.read(feedsProvider).valueOrNull ?? const <FeedItem>[];
     final out = <FeedItem>[];
     for (final f in feeds) {
-      final links = ref.read(feedLinksProvider(f.id)).valueOrNull ?? const <FeedLink>[];
+      final links =
+          ref.read(feedLinksProvider(f.id)).valueOrNull ?? const <FeedLink>[];
       if (!links.any((l) => l.familyMemberId == widget.member.id)) out.add(f);
     }
     return out;
@@ -91,7 +98,11 @@ class _AddCalendarSheetState extends ConsumerState<_AddCalendarSheet> {
       final familyId = await ref.read(familyProvider.future);
       await ref
           .read(apiClientProvider)
-          .createMemberLink(familyId, feed.id, familyMemberId: widget.member.id);
+          .createMemberLink(
+            familyId,
+            feed.id,
+            familyMemberId: widget.member.id,
+          );
       _refresh(feed.id);
       if (mounted) Navigator.of(context).pop();
     } catch (e) {
@@ -113,7 +124,9 @@ class _AddCalendarSheetState extends ConsumerState<_AddCalendarSheet> {
       if (_mode == 'busy' && !_busyModeAvailable) _mode = 'exception';
     });
     try {
-      final cals = await ref.read(apiClientProvider).listAccountCalendars(accountId);
+      final cals = await ref
+          .read(apiClientProvider)
+          .listAccountCalendars(accountId);
       setState(() => _calendars = cals.cast<Map<String, dynamic>>());
     } catch (e) {
       setState(() => _error = '$e');
@@ -146,7 +159,8 @@ class _AddCalendarSheetState extends ConsumerState<_AddCalendarSheet> {
           name: _name.text.trim().isEmpty ? null : _name.text.trim(),
         );
       } else {
-        final accounts = ref.read(accountsProvider).valueOrNull ?? const <ExternalAccount>[];
+        final accounts =
+            ref.read(accountsProvider).valueOrNull ?? const <ExternalAccount>[];
         final account = accounts.where((a) => a.id == _accountId).firstOrNull;
         if (_mode == 'busy') {
           // Free/busy firewall: the calendar id is the typed work address, not a
@@ -165,8 +179,9 @@ class _AddCalendarSheetState extends ConsumerState<_AddCalendarSheet> {
             kind: 'google',
             externalAccountId: account.id,
             sourceCalendarId: workEmail,
-            sourceCalendarName:
-                _name.text.trim().isEmpty ? 'Busy (${widget.member.relationName})' : _name.text.trim(),
+            sourceCalendarName: _name.text.trim().isEmpty
+                ? 'Busy (${widget.member.relationName})'
+                : _name.text.trim(),
           );
         } else {
           if (account == null || _calId == null) {
@@ -188,7 +203,11 @@ class _AddCalendarSheetState extends ConsumerState<_AddCalendarSheet> {
         }
       }
       final feedId = (created['feed'] as Map<String, dynamic>)['id'] as String;
-      await api.createMemberLink(familyId, feedId, familyMemberId: widget.member.id);
+      await api.createMemberLink(
+        familyId,
+        feedId,
+        familyMemberId: widget.member.id,
+      );
       _refresh(feedId);
       if (mounted) Navigator.of(context).pop();
     } on DioException catch (e) {
@@ -197,8 +216,8 @@ class _AddCalendarSheetState extends ConsumerState<_AddCalendarSheet> {
         _busy = false;
         _error = data is Map && data['error'] == 'freebusy_unavailable'
             ? 'Google couldn\'t read free/busy for that address. In the work '
-                'calendar\'s sharing settings, share it with this Google account '
-                'as "See only free/busy (hide details)", then try again.'
+                  'calendar\'s sharing settings, share it with this Google account '
+                  'as "See only free/busy (hide details)", then try again.'
             : '$e';
       });
     } catch (e) {
@@ -213,7 +232,12 @@ class _AddCalendarSheetState extends ConsumerState<_AddCalendarSheet> {
   Widget build(BuildContext context) {
     return SafeArea(
       child: SingleChildScrollView(
-        padding: EdgeInsets.fromLTRB(22, 4, 22, 28 + MediaQuery.of(context).viewInsets.bottom),
+        padding: EdgeInsets.fromLTRB(
+          22,
+          4,
+          22,
+          28 + MediaQuery.of(context).viewInsets.bottom,
+        ),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -226,7 +250,10 @@ class _AddCalendarSheetState extends ConsumerState<_AddCalendarSheet> {
   List<Widget> _linkView() {
     final unlinked = _unlinked();
     return [
-      Text('Add a calendar to ${widget.member.relationName}', style: AppText.subPageTitle),
+      Text(
+        'Add a calendar to ${widget.member.relationName}',
+        style: AppText.subPageTitle,
+      ),
       const SizedBox(height: 6),
       Text(
         unlinked.isEmpty
@@ -245,7 +272,11 @@ class _AddCalendarSheetState extends ConsumerState<_AddCalendarSheet> {
           child: Center(
             child: Column(
               children: [
-                const Icon(Icons.rss_feed_rounded, color: AppColors.textMuted, size: 28),
+                const Icon(
+                  Icons.rss_feed_rounded,
+                  color: AppColors.textMuted,
+                  size: 28,
+                ),
                 const SizedBox(height: 8),
                 Text('No feeds yet', style: AppText.sectionItemTitle),
               ],
@@ -264,13 +295,13 @@ class _AddCalendarSheetState extends ConsumerState<_AddCalendarSheet> {
                     icon: f.isBusy
                         ? Icons.lock_clock_rounded
                         : f.kind == 'ics'
-                            ? Icons.rss_feed_rounded
-                            : Icons.calendar_month_rounded,
+                        ? Icons.rss_feed_rounded
+                        : Icons.calendar_month_rounded,
                     color: f.isException
                         ? AppColors.amber
                         : f.isBusy
-                            ? AppColors.purple
-                            : AppColors.feedBlue,
+                        ? AppColors.purple
+                        : AppColors.feedBlue,
                     size: 38,
                   ),
                   const SizedBox(width: 12),
@@ -278,20 +309,30 @@ class _AddCalendarSheetState extends ConsumerState<_AddCalendarSheet> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(f.displayName, maxLines: 1, overflow: TextOverflow.ellipsis, style: AppText.sectionItemTitle),
+                        Text(
+                          f.displayName,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: AppText.sectionItemTitle,
+                        ),
                         const SizedBox(height: 2),
                         Text(
-                            f.isException
-                                ? 'Exception-only'
-                                : f.isBusy
-                                    ? 'Busy-only · free/busy'
-                                    : 'Standard · ${f.sourceLabel}',
-                            style: AppText.subtitle),
+                          f.isException
+                              ? 'Exception-only'
+                              : f.isBusy
+                              ? 'Busy-only · free/busy'
+                              : 'Standard · ${f.sourceLabel}',
+                          style: AppText.subtitle,
+                        ),
                       ],
                     ),
                   ),
                   PillButton(
-                      label: 'Link', dense: true, variant: PillVariant.indigo, onPressed: _busy ? null : () => _link(f)),
+                    label: 'Link',
+                    dense: true,
+                    variant: PillVariant.indigo,
+                    onPressed: _busy ? null : () => _link(f),
+                  ),
                 ],
               ),
             ),
@@ -302,7 +343,11 @@ class _AddCalendarSheetState extends ConsumerState<_AddCalendarSheet> {
         child: OutlinedButton.icon(
           onPressed: () => setState(() => _newFeed = true),
           icon: const Icon(Icons.add_rounded, size: 18),
-          label: Text(unlinked.isEmpty ? 'Set up a new feed' : 'Set up a new feed instead'),
+          label: Text(
+            unlinked.isEmpty
+                ? 'Set up a new feed'
+                : 'Set up a new feed instead',
+          ),
         ),
       ),
       if (_error != null) ...[
@@ -313,13 +358,17 @@ class _AddCalendarSheetState extends ConsumerState<_AddCalendarSheet> {
   }
 
   List<Widget> _newFeedView() {
-    final accounts = ref.watch(accountsProvider).valueOrNull ?? const <ExternalAccount>[];
+    final accounts =
+        ref.watch(accountsProvider).valueOrNull ?? const <ExternalAccount>[];
     return [
       Row(
         children: [
           IconButton(
             onPressed: () => setState(() => _newFeed = false),
-            icon: const Icon(Icons.arrow_back_rounded, color: AppColors.textSecondary),
+            icon: const Icon(
+              Icons.arrow_back_rounded,
+              color: AppColors.textSecondary,
+            ),
           ),
           Text('Set up a new feed', style: AppText.subPageTitle),
         ],
@@ -335,7 +384,10 @@ class _AddCalendarSheetState extends ConsumerState<_AddCalendarSheet> {
         TextField(
           controller: _url,
           keyboardType: TextInputType.url,
-          decoration: const InputDecoration(labelText: 'Calendar URL', hintText: 'https://…/feed.ics'),
+          decoration: const InputDecoration(
+            labelText: 'Calendar URL',
+            hintText: 'https://…/feed.ics',
+          ),
         ),
         const SizedBox(height: 12),
         TextField(
@@ -343,23 +395,35 @@ class _AddCalendarSheetState extends ConsumerState<_AddCalendarSheet> {
           decoration: const InputDecoration(labelText: 'Name · optional'),
         ),
         const SizedBox(height: 6),
-        Text("Left blank, we'll use the feed's own calendar title once it's fetched.",
-            style: AppText.subtitle),
+        Text(
+          "Left blank, we'll use the feed's own calendar title once it's fetched.",
+          style: AppText.subtitle,
+        ),
       ] else if (accounts.isEmpty)
-        Text('Connect a calendar account on the Me tab first.', style: AppText.subtitle)
+        Text(
+          'Connect a calendar account on the Me tab first.',
+          style: AppText.subtitle,
+        )
       else ...[
         DropdownButtonFormField<String>(
           initialValue: _accountId,
           decoration: const InputDecoration(labelText: 'Account'),
           items: [
-            for (final a in accounts) DropdownMenuItem(value: a.id, child: Text('${a.name} (${a.kindLabel})')),
+            for (final a in accounts)
+              DropdownMenuItem(
+                value: a.id,
+                child: Text('${a.name} (${a.kindLabel})'),
+              ),
           ],
           onChanged: (v) {
             if (v != null) _loadCalendars(v);
           },
         ),
         if (_loadingCals)
-          const Padding(padding: EdgeInsets.only(top: 12), child: LinearProgressIndicator()),
+          const Padding(
+            padding: EdgeInsets.only(top: 12),
+            child: LinearProgressIndicator(),
+          ),
         if (_mode != 'busy' && _calendars.isNotEmpty) ...[
           const SizedBox(height: 12),
           DropdownButtonFormField<String>(
@@ -369,7 +433,11 @@ class _AddCalendarSheetState extends ConsumerState<_AddCalendarSheet> {
               for (final c in _calendars)
                 DropdownMenuItem(
                   value: c['id'] as String,
-                  child: Text(c['name'] as String, maxLines: 1, overflow: TextOverflow.ellipsis),
+                  child: Text(
+                    c['name'] as String,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
                 ),
             ],
             onChanged: (v) => setState(() => _calId = v),
@@ -387,16 +455,15 @@ class _AddCalendarSheetState extends ConsumerState<_AddCalendarSheet> {
         onChanged: (v) => setState(() => _mode = v),
       ),
       const SizedBox(height: 6),
-      Text(
-        switch (_mode) {
-          'exception' => 'Empty on normal days; carries only deviations from a baseline.',
-          'busy' => 'Opaque availability blocks via Google free/busy — event details '
+      Text(switch (_mode) {
+        'exception' =>
+          'Empty on normal days; carries only deviations from a baseline.',
+        'busy' =>
+          'Opaque availability blocks via Google free/busy — event details '
               'never leave the source calendar. For a work calendar shared to this '
               'account as "see only free/busy".',
-          _ => 'Events mean what they say.',
-        },
-        style: AppText.subtitle,
-      ),
+        _ => 'Events mean what they say.',
+      }, style: AppText.subtitle),
       if (_mode == 'busy') ...[
         const SizedBox(height: 14),
         TextField(
@@ -411,7 +478,10 @@ class _AddCalendarSheetState extends ConsumerState<_AddCalendarSheet> {
         const SizedBox(height: 12),
         TextField(
           controller: _name,
-          decoration: const InputDecoration(labelText: 'Block label · optional', hintText: 'Busy (work)'),
+          decoration: const InputDecoration(
+            labelText: 'Block label · optional',
+            hintText: 'Busy (work)',
+          ),
         ),
         const SizedBox(height: 6),
         Text(
@@ -438,7 +508,11 @@ class _AddCalendarSheetState extends ConsumerState<_AddCalendarSheet> {
 }
 
 class _Segmented extends StatelessWidget {
-  const _Segmented({required this.options, required this.value, required this.onChanged});
+  const _Segmented({
+    required this.options,
+    required this.value,
+    required this.onChanged,
+  });
   final List<(String, String)> options;
   final String value;
   final ValueChanged<String> onChanged;
@@ -465,11 +539,19 @@ class _Segmented extends StatelessWidget {
                     color: v == value ? AppColors.indigo : Colors.transparent,
                     borderRadius: BorderRadius.circular(10),
                   ),
-                  child: Text(label,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: font(kBodyFont, 12, 700,
-                          color: v == value ? const Color(0xFF17162B) : AppColors.textSecondary)),
+                  child: Text(
+                    label,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: font(
+                      kBodyFont,
+                      12,
+                      700,
+                      color: v == value
+                          ? const Color(0xFF17162B)
+                          : AppColors.textSecondary,
+                    ),
+                  ),
                 ),
               ),
             ),

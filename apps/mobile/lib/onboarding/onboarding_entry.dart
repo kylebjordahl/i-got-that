@@ -14,8 +14,9 @@ final onboardingActiveProvider = StateProvider<bool?>((ref) => null);
 
 /// The invite token driving the second-parent join flow, read once from the URL
 /// (web). While non-null, the app shows the join flow; the flow clears it on exit.
-final activeInviteTokenProvider =
-    StateProvider<String?>((ref) => inviteTokenFromUrl());
+final activeInviteTokenProvider = StateProvider<String?>(
+  (ref) => inviteTokenFromUrl(),
+);
 
 /// Pull an `invite` token from the web launch URL (`…/app/?invite=TOKEN` or
 /// `…/app/#invite=TOKEN`). Null on native (no meaningful [Uri.base]) — native
@@ -38,7 +39,9 @@ String? inviteTokenFromUri(Uri uri) {
   if (q != null && q.isNotEmpty) return q;
   final frag = uri.fragment;
   if (frag.contains('invite=')) {
-    final params = Uri.splitQueryString(frag.contains('?') ? frag.split('?').last : frag);
+    final params = Uri.splitQueryString(
+      frag.contains('?') ? frag.split('?').last : frag,
+    );
     final f = params['invite'];
     if (f != null && f.isNotEmpty) return f;
   }

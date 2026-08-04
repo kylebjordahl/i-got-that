@@ -31,8 +31,11 @@ class _TaskRulesScreenState extends ConsumerState<TaskRulesScreen> {
     final feeds = ref.read(feedsProvider).valueOrNull ?? const <FeedItem>[];
     final chips = <(String, String?)>[];
     for (final f in feeds) {
-      final links = ref.read(feedLinksProvider(f.id)).valueOrNull ?? const <FeedLink>[];
-      final link = links.where((l) => l.familyMemberId == widget.member.id).firstOrNull;
+      final links =
+          ref.read(feedLinksProvider(f.id)).valueOrNull ?? const <FeedLink>[];
+      final link = links
+          .where((l) => l.familyMemberId == widget.member.id)
+          .firstOrNull;
       if (link != null) chips.add((f.displayName, link.id));
     }
     chips.add(('Unified', null));
@@ -60,7 +63,10 @@ class _TaskRulesScreenState extends ConsumerState<TaskRulesScreen> {
           children: [
             Padding(
               padding: const EdgeInsets.fromLTRB(22, 12, 22, 18),
-              child: SubPageHeader(title: 'Task rules', subtitle: widget.member.relationName),
+              child: SubPageHeader(
+                title: 'Task rules',
+                subtitle: widget.member.relationName,
+              ),
             ),
             Expanded(
               child: ListView(
@@ -79,7 +85,8 @@ class _TaskRulesScreenState extends ConsumerState<TaskRulesScreen> {
                             child: _CalChip(
                               label: label,
                               selected: _activeLinkId == linkId,
-                              onTap: () => setState(() => _activeLinkId = linkId),
+                              onTap: () =>
+                                  setState(() => _activeLinkId = linkId),
                             ),
                           ),
                       ],
@@ -91,7 +98,10 @@ class _TaskRulesScreenState extends ConsumerState<TaskRulesScreen> {
                       padding: EdgeInsets.symmetric(vertical: 40),
                       child: Center(child: CircularProgressIndicator()),
                     ),
-                    error: (e, _) => Text('$e', style: font(kBodyFont, 13, 500, color: AppColors.coral)),
+                    error: (e, _) => Text(
+                      '$e',
+                      style: font(kBodyFont, 13, 500, color: AppColors.coral),
+                    ),
                     data: (ruleSet) => _pipeline(ruleSet),
                   ),
                 ],
@@ -107,8 +117,12 @@ class _TaskRulesScreenState extends ConsumerState<TaskRulesScreen> {
     final rules = ruleSet.forCalendar(_activeLinkId);
     final dfault = ruleSet.defaultFor(_activeLinkId);
     final unified = _activeLinkId == null;
-    final activeLabel =
-        _calendars().firstWhere((c) => c.$2 == _activeLinkId, orElse: () => ('Unified', null)).$1;
+    final activeLabel = _calendars()
+        .firstWhere(
+          (c) => c.$2 == _activeLinkId,
+          orElse: () => ('Unified', null),
+        )
+        .$1;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -120,7 +134,9 @@ class _TaskRulesScreenState extends ConsumerState<TaskRulesScreen> {
             decoration: BoxDecoration(
               color: AppColors.tint(AppColors.green, 0.07),
               borderRadius: BorderRadius.circular(14),
-              border: Border.all(color: AppColors.green.withValues(alpha: 0.35)),
+              border: Border.all(
+                color: AppColors.green.withValues(alpha: 0.35),
+              ),
             ),
             child: Text(
               'Only applies to events added directly to the unified calendar. '
@@ -128,9 +144,11 @@ class _TaskRulesScreenState extends ConsumerState<TaskRulesScreen> {
               style: font(kBodyFont, 12, 500, color: AppColors.green),
             ),
           ),
-        SectionEyebrow('$activeLabel’s pipeline',
-            color: AppColors.purple,
-            trailing: Text('First match applies', style: AppText.secondary)),
+        SectionEyebrow(
+          '$activeLabel’s pipeline',
+          color: AppColors.purple,
+          trailing: Text('First match applies', style: AppText.secondary),
+        ),
         const SizedBox(height: 12),
         AppCard(
           padding: EdgeInsets.zero,
@@ -153,8 +171,15 @@ class _TaskRulesScreenState extends ConsumerState<TaskRulesScreen> {
         Center(
           child: TextButton.icon(
             onPressed: () => _openSheet(),
-            icon: const Icon(Icons.add_rounded, size: 18, color: AppColors.purple),
-            label: Text('Add rule', style: font(kBodyFont, 13, 700, color: AppColors.purple)),
+            icon: const Icon(
+              Icons.add_rounded,
+              size: 18,
+              color: AppColors.purple,
+            ),
+            label: Text(
+              'Add rule',
+              style: font(kBodyFont, 13, 700, color: AppColors.purple),
+            ),
           ),
         ),
         const SizedBox(height: 6),
@@ -169,7 +194,10 @@ class _TaskRulesScreenState extends ConsumerState<TaskRulesScreen> {
             key: ValueKey(_activeLinkId),
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text('No matches → default', style: AppText.eyebrow(AppColors.amber)),
+              Text(
+                'No matches → default',
+                style: AppText.eyebrow(AppColors.amber),
+              ),
               const SizedBox(height: 10),
               _ResultSegmented(
                 value: dfault.resultType,
@@ -211,7 +239,9 @@ class _TaskRulesScreenState extends ConsumerState<TaskRulesScreen> {
     int? pickupWindowMin,
   }) async {
     final familyId = await ref.read(familyProvider.future);
-    await ref.read(apiClientProvider).setTaskDefault(
+    await ref
+        .read(apiClientProvider)
+        .setTaskDefault(
           familyId,
           widget.member.id,
           linkId: _activeLinkId,
@@ -224,7 +254,11 @@ class _TaskRulesScreenState extends ConsumerState<TaskRulesScreen> {
 }
 
 class _CalChip extends StatelessWidget {
-  const _CalChip({required this.label, required this.selected, required this.onTap});
+  const _CalChip({
+    required this.label,
+    required this.selected,
+    required this.onTap,
+  });
   final String label;
   final bool selected;
   final VoidCallback onTap;
@@ -238,11 +272,19 @@ class _CalChip extends StatelessWidget {
         decoration: BoxDecoration(
           color: selected ? AppColors.indigo : AppColors.card,
           borderRadius: BorderRadius.circular(999),
-          border: Border.all(color: selected ? AppColors.indigo : AppColors.border),
+          border: Border.all(
+            color: selected ? AppColors.indigo : AppColors.border,
+          ),
         ),
-        child: Text(label,
-            style: font(kBodyFont, 13, 600,
-                color: selected ? const Color(0xFF17162B) : AppColors.textSecondary)),
+        child: Text(
+          label,
+          style: font(
+            kBodyFont,
+            13,
+            600,
+            color: selected ? const Color(0xFF17162B) : AppColors.textSecondary,
+          ),
+        ),
       ),
     );
   }
@@ -263,15 +305,23 @@ class _RuleCard extends StatelessWidget {
         children: [
           Row(
             children: [
-              TintBadge(rule.scopeLabel,
-                  color: rule.scope == 'all_calendars' ? AppColors.blue : AppColors.feedBlue),
+              TintBadge(
+                rule.scopeLabel,
+                color: rule.scope == 'all_calendars'
+                    ? AppColors.blue
+                    : AppColors.feedBlue,
+              ),
               const Spacer(),
               TintBadge('→ ${rule.resultLabel}', color: resultColor),
             ],
           ),
           const SizedBox(height: 8),
-          Text(rule.matcher,
-              maxLines: 2, overflow: TextOverflow.ellipsis, style: AppText.sectionItemTitle),
+          Text(
+            rule.matcher,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: AppText.sectionItemTitle,
+          ),
         ],
       ),
     );
@@ -297,11 +347,19 @@ class _ResultSegmented extends StatelessWidget {
               color: selected ? AppColors.green : Colors.transparent,
               borderRadius: BorderRadius.circular(10),
             ),
-            child: Text(label,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: font(kBodyFont, 12, 700,
-                    color: selected ? const Color(0xFF14231A) : AppColors.textSecondary)),
+            child: Text(
+              label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: font(
+                kBodyFont,
+                12,
+                700,
+                color: selected
+                    ? const Color(0xFF14231A)
+                    : AppColors.textSecondary,
+              ),
+            ),
           ),
         ),
       );
@@ -314,7 +372,12 @@ class _ResultSegmented extends StatelessWidget {
         borderRadius: BorderRadius.circular(13),
         border: Border.all(color: AppColors.border),
       ),
-      child: Row(children: [seg('transition', 'Drop-off & pickup'), seg('attendance', 'Attendance')]),
+      child: Row(
+        children: [
+          seg('transition', 'Drop-off & pickup'),
+          seg('attendance', 'Attendance'),
+        ],
+      ),
     );
   }
 }
@@ -337,7 +400,9 @@ class _DefaultWindowFields extends StatefulWidget {
 }
 
 class _DefaultWindowFieldsState extends State<_DefaultWindowFields> {
-  late final _dropoff = TextEditingController(text: '${widget.dropoffWindowMin}');
+  late final _dropoff = TextEditingController(
+    text: '${widget.dropoffWindowMin}',
+  );
   late final _pickup = TextEditingController(text: '${widget.pickupWindowMin}');
   bool _dirty = false;
 
@@ -357,19 +422,22 @@ class _DefaultWindowFieldsState extends State<_DefaultWindowFields> {
   }
 
   Widget _numField(TextEditingController c, String label) => TextField(
-        controller: c,
-        keyboardType: TextInputType.number,
-        onChanged: (_) => setState(() => _dirty = true),
-        onSubmitted: (_) => _commit(),
-        decoration: InputDecoration(labelText: label),
-      );
+    controller: c,
+    keyboardType: TextInputType.number,
+    onChanged: (_) => setState(() => _dirty = true),
+    onSubmitted: (_) => _commit(),
+    decoration: InputDecoration(labelText: label),
+  );
 
   @override
   Widget build(BuildContext context) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text('The time window allowed for each task (in minutes).', style: AppText.subtitle),
+        Text(
+          'The time window allowed for each task (in minutes).',
+          style: AppText.subtitle,
+        ),
         const SizedBox(height: 10),
         Row(
           children: [
@@ -383,7 +451,11 @@ class _DefaultWindowFieldsState extends State<_DefaultWindowFields> {
           Align(
             alignment: Alignment.centerRight,
             child: PillButton(
-                label: 'Save', variant: PillVariant.amber, compact: true, onPressed: _commit),
+              label: 'Save',
+              variant: PillVariant.amber,
+              compact: true,
+              onPressed: _commit,
+            ),
           ),
         ],
       ],
@@ -404,12 +476,20 @@ Future<bool?> showTaskRuleSheet(
     useRootNavigator: true,
     showDragHandle: true,
     isScrollControlled: true,
-    builder: (_) => _TaskRuleSheet(member: member, activeLinkId: activeLinkId, existing: existing),
+    builder: (_) => _TaskRuleSheet(
+      member: member,
+      activeLinkId: activeLinkId,
+      existing: existing,
+    ),
   );
 }
 
 class _TaskRuleSheet extends ConsumerStatefulWidget {
-  const _TaskRuleSheet({required this.member, required this.activeLinkId, this.existing});
+  const _TaskRuleSheet({
+    required this.member,
+    required this.activeLinkId,
+    this.existing,
+  });
   final Member member;
   final String? activeLinkId;
   final TaskRule? existing;
@@ -458,8 +538,12 @@ class _TaskRuleSheetState extends ConsumerState<_TaskRuleSheet> {
       final api = ref.read(apiClientProvider);
       final scope = _allCalendars ? 'all_calendars' : 'this_calendar';
       final matchValue = _match.text.trim().isEmpty ? null : _match.text.trim();
-      final drop = _result == 'transition' ? int.tryParse(_dropoff.text.trim()) : null;
-      final pick = _result == 'transition' ? int.tryParse(_pickup.text.trim()) : null;
+      final drop = _result == 'transition'
+          ? int.tryParse(_dropoff.text.trim())
+          : null;
+      final pick = _result == 'transition'
+          ? int.tryParse(_pickup.text.trim())
+          : null;
       if (_editing) {
         await api.updateTaskRule(
           familyId,
@@ -496,7 +580,9 @@ class _TaskRuleSheetState extends ConsumerState<_TaskRuleSheet> {
     setState(() => _busy = true);
     try {
       final familyId = await ref.read(familyProvider.future);
-      await ref.read(apiClientProvider).deleteTaskRule(familyId, widget.member.id, widget.existing!.id);
+      await ref
+          .read(apiClientProvider)
+          .deleteTaskRule(familyId, widget.member.id, widget.existing!.id);
       if (mounted) Navigator.of(context).pop(true);
     } catch (e) {
       setState(() {
@@ -510,19 +596,30 @@ class _TaskRuleSheetState extends ConsumerState<_TaskRuleSheet> {
   Widget build(BuildContext context) {
     return SafeArea(
       child: SingleChildScrollView(
-        padding: EdgeInsets.fromLTRB(22, 4, 22, 28 + MediaQuery.of(context).viewInsets.bottom),
+        padding: EdgeInsets.fromLTRB(
+          22,
+          4,
+          22,
+          28 + MediaQuery.of(context).viewInsets.bottom,
+        ),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Row(
               children: [
-                Text(_editing ? 'Edit task rule' : 'New task rule', style: AppText.subPageTitle),
+                Text(
+                  _editing ? 'Edit task rule' : 'New task rule',
+                  style: AppText.subPageTitle,
+                ),
                 const Spacer(),
                 if (_editing)
                   IconButton(
                     onPressed: _busy ? null : _delete,
-                    icon: const Icon(Icons.delete_outline_rounded, color: AppColors.coral),
+                    icon: const Icon(
+                      Icons.delete_outline_rounded,
+                      color: AppColors.coral,
+                    ),
                   ),
               ],
             ),
@@ -550,12 +647,17 @@ class _TaskRuleSheetState extends ConsumerState<_TaskRuleSheet> {
             TextField(
               controller: _match,
               decoration: const InputDecoration(
-                  labelText: 'Title matches (regex)', hintText: '/field trip/i'),
+                labelText: 'Title matches (regex)',
+                hintText: '/field trip/i',
+              ),
             ),
             const SizedBox(height: 18),
             Text('THEN', style: AppText.eyebrow()),
             const SizedBox(height: 8),
-            _ResultSegmented(value: _result, onChanged: (v) => setState(() => _result = v)),
+            _ResultSegmented(
+              value: _result,
+              onChanged: (v) => setState(() => _result = v),
+            ),
             if (_result == 'transition') ...[
               const SizedBox(height: 14),
               Container(
@@ -563,15 +665,22 @@ class _TaskRuleSheetState extends ConsumerState<_TaskRuleSheet> {
                 decoration: BoxDecoration(
                   color: AppColors.tint(AppColors.green, 0.07),
                   borderRadius: BorderRadius.circular(14),
-                  border: Border.all(color: AppColors.green.withValues(alpha: 0.3)),
+                  border: Border.all(
+                    color: AppColors.green.withValues(alpha: 0.3),
+                  ),
                 ),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text('Task window', style: AppText.eyebrow(AppColors.green)),
+                    Text(
+                      'Task window',
+                      style: AppText.eyebrow(AppColors.green),
+                    ),
                     const SizedBox(height: 6),
-                    Text('The time window allowed for each task (in minutes).',
-                        style: AppText.subtitle),
+                    Text(
+                      'The time window allowed for each task (in minutes).',
+                      style: AppText.subtitle,
+                    ),
                     const SizedBox(height: 12),
                     Row(
                       children: [
@@ -585,18 +694,26 @@ class _TaskRuleSheetState extends ConsumerState<_TaskRuleSheet> {
               ),
             ] else ...[
               const SizedBox(height: 10),
-              Text('Attendance tasks span the matched event itself — no window to configure.',
-                  style: AppText.subtitle),
+              Text(
+                'Attendance tasks span the matched event itself — no window to configure.',
+                style: AppText.subtitle,
+              ),
             ],
             if (_error != null) ...[
               const SizedBox(height: 12),
-              Text(_error!, style: font(kBodyFont, 13, 500, color: AppColors.coral)),
+              Text(
+                _error!,
+                style: font(kBodyFont, 13, 500, color: AppColors.coral),
+              ),
             ],
             const SizedBox(height: 20),
             SizedBox(
               width: double.infinity,
               child: PillButton(
-                  label: 'Save rule', variant: PillVariant.indigo, onPressed: _busy ? null : _save),
+                label: 'Save rule',
+                variant: PillVariant.indigo,
+                onPressed: _busy ? null : _save,
+              ),
             ),
           ],
         ),
@@ -605,14 +722,18 @@ class _TaskRuleSheetState extends ConsumerState<_TaskRuleSheet> {
   }
 
   Widget _numField(TextEditingController c, String label) => TextField(
-        controller: c,
-        keyboardType: TextInputType.number,
-        decoration: InputDecoration(labelText: label),
-      );
+    controller: c,
+    keyboardType: TextInputType.number,
+    decoration: InputDecoration(labelText: label),
+  );
 }
 
 class _PillToggle extends StatelessWidget {
-  const _PillToggle({required this.label, required this.selected, required this.onTap});
+  const _PillToggle({
+    required this.label,
+    required this.selected,
+    required this.onTap,
+  });
   final String label;
   final bool selected;
   final VoidCallback onTap;
@@ -626,11 +747,19 @@ class _PillToggle extends StatelessWidget {
         decoration: BoxDecoration(
           color: selected ? AppColors.indigo : AppColors.card,
           borderRadius: BorderRadius.circular(999),
-          border: Border.all(color: selected ? AppColors.indigo : AppColors.border),
+          border: Border.all(
+            color: selected ? AppColors.indigo : AppColors.border,
+          ),
         ),
-        child: Text(label,
-            style: font(kBodyFont, 12.5, 700,
-                color: selected ? const Color(0xFF17162B) : AppColors.textSecondary)),
+        child: Text(
+          label,
+          style: font(
+            kBodyFont,
+            12.5,
+            700,
+            color: selected ? const Color(0xFF17162B) : AppColors.textSecondary,
+          ),
+        ),
       ),
     );
   }

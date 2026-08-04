@@ -69,10 +69,7 @@ class TaskRow extends StatelessWidget {
                 _iconTile(),
                 const SizedBox(width: 12),
                 Expanded(child: _titleBlock()),
-                if (trailing != null) ...[
-                  const SizedBox(width: 10),
-                  trailing!,
-                ],
+                if (trailing != null) ...[const SizedBox(width: 10), trailing!],
               ],
             ),
           ),
@@ -107,7 +104,12 @@ class TaskRow extends StatelessWidget {
               ),
               child: Text(
                 sourceInitial!,
-                style: font(kBodyFont, 8.5, 800, color: const Color(0xFF17162B)),
+                style: font(
+                  kBodyFont,
+                  8.5,
+                  800,
+                  color: const Color(0xFF17162B),
+                ),
               ),
             ),
           ),
@@ -136,10 +138,12 @@ class TaskRow extends StatelessWidget {
           overflow: TextOverflow.ellipsis,
         ),
         const SizedBox(height: 2),
-        Text(subtitle,
-            style: font(kBodyFont, 11.5, 500, color: AppColors.textTertiary),
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis),
+        Text(
+          subtitle,
+          style: font(kBodyFont, 11.5, 500, color: AppColors.textTertiary),
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+        ),
       ],
     );
   }
@@ -158,7 +162,10 @@ class YouChip extends StatelessWidget {
       children: [
         PersonAvatar(initial: initial, color: color, size: 24),
         const SizedBox(width: 6),
-        Text('You', style: font(kBodyFont, 12.5, 600, color: AppColors.textSecondary)),
+        Text(
+          'You',
+          style: font(kBodyFont, 12.5, 600, color: AppColors.textSecondary),
+        ),
       ],
     );
   }

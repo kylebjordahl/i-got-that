@@ -5,8 +5,8 @@ import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   Widget host({required bool show}) => MaterialApp(
-        home: EnvRibbon(show: show, child: const Text('app body')),
-      );
+    home: EnvRibbon(show: show, child: const Text('app body')),
+  );
 
   testWidgets('staging builds show the beta ribbon over the app', (t) async {
     await t.pumpWidget(host(show: true));

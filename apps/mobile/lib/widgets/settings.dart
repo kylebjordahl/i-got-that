@@ -23,6 +23,7 @@ class SettingRow extends StatelessWidget {
   final String? subtitle;
   final Widget? trailing;
   final VoidCallback? onTap;
+
   /// Caps title/subtitle to one line (ellipsized) instead of wrapping.
   /// Needed by callers that give this row a fixed height (e.g. a drag list
   /// sized without intrinsics), where a wrapped second line would overflow.
@@ -30,9 +31,13 @@ class SettingRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final trailer = trailing ??
+    final trailer =
+        trailing ??
         (onTap != null
-            ? const Icon(Icons.chevron_right_rounded, color: AppColors.textMuted)
+            ? const Icon(
+                Icons.chevron_right_rounded,
+                color: AppColors.textMuted,
+              )
             : null);
     return InkWell(
       onTap: onTap,
@@ -174,7 +179,8 @@ class RoundIconButton extends StatelessWidget {
   final VoidCallback onTap;
 
   @override
-  Widget build(BuildContext context) => _RoundIconButton(icon: icon, onTap: onTap);
+  Widget build(BuildContext context) =>
+      _RoundIconButton(icon: icon, onTap: onTap);
 }
 
 class _RoundIconButton extends StatelessWidget {
@@ -207,7 +213,12 @@ class _RoundIconButton extends StatelessWidget {
 
 /// A sub-page header: back button + title (used by the detail screens).
 class SubPageHeader extends StatelessWidget {
-  const SubPageHeader({super.key, required this.title, this.subtitle, this.onBack});
+  const SubPageHeader({
+    super.key,
+    required this.title,
+    this.subtitle,
+    this.onBack,
+  });
   final String title;
   final String? subtitle;
   final VoidCallback? onBack;
@@ -227,7 +238,12 @@ class SubPageHeader extends StatelessWidget {
             children: [
               Text(title, style: AppText.subPageTitle),
               if (subtitle != null)
-                Text(subtitle!, style: AppText.subtitle, maxLines: 1, overflow: TextOverflow.ellipsis),
+                Text(
+                  subtitle!,
+                  style: AppText.subtitle,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
             ],
           ),
         ),

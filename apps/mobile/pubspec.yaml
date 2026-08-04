@@ -4,8 +4,11 @@ publish_to: "none"
 version: 0.1.0+1
 
 environment:
-  sdk: ">=3.5.0 <4.0.0"
-  flutter: ">=3.24.0"
+  # Tracks the `stable` channel that `.fvmrc` and CI both install. The Dart floor
+  # is also the language version the formatter and analyzer target, so raising it
+  # is what moves the codebase onto the current `dart format` style.
+  sdk: ">=3.12.0 <4.0.0"
+  flutter: ">=3.44.0"
 
 dependencies:
   flutter:

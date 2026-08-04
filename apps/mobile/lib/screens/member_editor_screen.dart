@@ -15,7 +15,11 @@ import '../widgets/settings.dart';
 /// Family-member editor (6h) — name, color, family-view role label, and the
 /// admin permission. Opened by the ✎ on the 6e profile card. Identity editing
 /// lives entirely here; the detail screen has none.
-Future<void> showMemberEditor(BuildContext context, WidgetRef ref, Member member) {
+Future<void> showMemberEditor(
+  BuildContext context,
+  WidgetRef ref,
+  Member member,
+) {
   return showDialog<void>(
     context: context,
     builder: (_) => Dialog(
@@ -36,10 +40,12 @@ class _MemberEditor extends ConsumerStatefulWidget {
 }
 
 class _MemberEditorState extends ConsumerState<_MemberEditor> {
-  late final TextEditingController _name =
-      TextEditingController(text: widget.member.relationName);
-  late final TextEditingController _home =
-      TextEditingController(text: widget.member.homeLocation ?? '');
+  late final TextEditingController _name = TextEditingController(
+    text: widget.member.relationName,
+  );
+  late final TextEditingController _home = TextEditingController(
+    text: widget.member.homeLocation ?? '',
+  );
   late GeoLocation? _homeGeo = widget.member.homeLocationGeo;
   late Color _color = personColor(widget.member);
   late bool _isChild = widget.member.requiresCaretaker;
@@ -55,7 +61,8 @@ class _MemberEditorState extends ConsumerState<_MemberEditor> {
   }
 
   Future<void> _save() async {
-    final canAdmin = ref.read(currentMemberProvider).valueOrNull?.isAdmin ?? false;
+    final canAdmin =
+        ref.read(currentMemberProvider).valueOrNull?.isAdmin ?? false;
     setState(() {
       _busy = true;
       _error = null;
@@ -63,7 +70,9 @@ class _MemberEditorState extends ConsumerState<_MemberEditor> {
     try {
       final familyId = await ref.read(familyProvider.future);
       final home = _home.text.trim();
-      await ref.read(apiClientProvider).updateMember(
+      await ref
+          .read(apiClientProvider)
+          .updateMember(
             familyId,
             widget.member.id,
             relationName: _name.text.trim().isEmpty ? null : _name.text.trim(),
@@ -91,7 +100,8 @@ class _MemberEditorState extends ConsumerState<_MemberEditor> {
   @override
   Widget build(BuildContext context) {
     final members = ref.watch(membersProvider).valueOrNull ?? const <Member>[];
-    final isAdmin = ref.watch(currentMemberProvider).valueOrNull?.isAdmin ?? false;
+    final isAdmin =
+        ref.watch(currentMemberProvider).valueOrNull?.isAdmin ?? false;
     final taken = <String>{
       for (final m in members)
         if (m.id != widget.member.id && m.color != null && m.color!.isNotEmpty)
@@ -110,16 +120,20 @@ class _MemberEditorState extends ConsumerState<_MemberEditor> {
               const Spacer(),
               IconButton(
                 onPressed: () => Navigator.of(context).pop(),
-                icon: const Icon(Icons.close_rounded, color: AppColors.textMuted),
+                icon: const Icon(
+                  Icons.close_rounded,
+                  color: AppColors.textMuted,
+                ),
               ),
             ],
           ),
           const SizedBox(height: 8),
           Center(
             child: PersonAvatar(
-                initial: initialFor(_name.text.isEmpty ? '?' : _name.text),
-                color: _color,
-                size: 72),
+              initial: initialFor(_name.text.isEmpty ? '?' : _name.text),
+              color: _color,
+              size: 72,
+            ),
           ),
           const SizedBox(height: 20),
           Text('NAME', style: AppText.eyebrow()),
@@ -164,8 +178,10 @@ class _MemberEditorState extends ConsumerState<_MemberEditor> {
               onChanged: (v) => setState(() => _isChild = v),
             ),
             const SizedBox(height: 6),
-            Text("Only groups them in the family list — it doesn't change what they can do.",
-                style: AppText.subtitle),
+            Text(
+              "Only groups them in the family list — it doesn't change what they can do.",
+              style: AppText.subtitle,
+            ),
             const SizedBox(height: 20),
             Text('PERMISSIONS', style: AppText.eyebrow()),
             const SizedBox(height: 8),
@@ -182,7 +198,10 @@ class _MemberEditorState extends ConsumerState<_MemberEditor> {
           ],
           if (_error != null) ...[
             const SizedBox(height: 12),
-            Text(_error!, style: font(kBodyFont, 13, 500, color: AppColors.coral)),
+            Text(
+              _error!,
+              style: font(kBodyFont, 13, 500, color: AppColors.coral),
+            ),
           ],
           const SizedBox(height: 20),
           SizedBox(
@@ -218,9 +237,17 @@ class _RoleSegmented extends StatelessWidget {
               color: selected ? AppColors.indigo : Colors.transparent,
               borderRadius: BorderRadius.circular(11),
             ),
-            child: Text(label,
-                style: font(kBodyFont, 13, 700,
-                    color: selected ? const Color(0xFF17162B) : AppColors.textSecondary)),
+            child: Text(
+              label,
+              style: font(
+                kBodyFont,
+                13,
+                700,
+                color: selected
+                    ? const Color(0xFF17162B)
+                    : AppColors.textSecondary,
+              ),
+            ),
           ),
         ),
       );

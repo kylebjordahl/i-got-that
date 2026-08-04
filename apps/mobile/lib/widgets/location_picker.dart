@@ -68,8 +68,8 @@ class LocationPickerField extends StatelessWidget {
         helperText: geocoded
             ? 'Validated — travel time enabled'
             : geocoder.isAvailable
-                ? 'Search to validate for travel time'
-                : null,
+            ? 'Search to validate for travel time'
+            : null,
         helperStyle: geocoded
             ? font(kBodyFont, 12, 600, color: AppColors.green)
             : null,
@@ -92,7 +92,10 @@ class LocationPickerField extends StatelessWidget {
 }
 
 class _LocationSearchSheet extends StatefulWidget {
-  const _LocationSearchSheet({required this.geocoder, required this.initialQuery});
+  const _LocationSearchSheet({
+    required this.geocoder,
+    required this.initialQuery,
+  });
 
   final GeocodingProvider geocoder;
   final String initialQuery;
@@ -102,8 +105,9 @@ class _LocationSearchSheet extends StatefulWidget {
 }
 
 class _LocationSearchSheetState extends State<_LocationSearchSheet> {
-  late final TextEditingController _query =
-      TextEditingController(text: widget.initialQuery);
+  late final TextEditingController _query = TextEditingController(
+    text: widget.initialQuery,
+  );
   Timer? _debounce;
   List<GeoPlace> _results = const [];
   bool _busy = false;
@@ -198,8 +202,10 @@ class _LocationSearchSheetState extends State<_LocationSearchSheet> {
               else if (_error != null)
                 Padding(
                   padding: const EdgeInsets.symmetric(vertical: 16),
-                  child: Text(_error!,
-                      style: font(kBodyFont, 13, 500, color: AppColors.coral)),
+                  child: Text(
+                    _error!,
+                    style: font(kBodyFont, 13, 500, color: AppColors.coral),
+                  ),
                 )
               else
                 Flexible(
@@ -212,16 +218,31 @@ class _LocationSearchSheetState extends State<_LocationSearchSheet> {
                       final p = _results[i];
                       return ListTile(
                         contentPadding: EdgeInsets.zero,
-                        leading: const Icon(Icons.place_outlined,
-                            size: 20, color: AppColors.textMuted),
-                        title: Text(p.title,
-                            style: font(kBodyFont, 14, 600,
-                                color: AppColors.textPrimary)),
+                        leading: const Icon(
+                          Icons.place_outlined,
+                          size: 20,
+                          color: AppColors.textMuted,
+                        ),
+                        title: Text(
+                          p.title,
+                          style: font(
+                            kBodyFont,
+                            14,
+                            600,
+                            color: AppColors.textPrimary,
+                          ),
+                        ),
                         subtitle: p.address == null
                             ? null
-                            : Text(p.address!,
-                                style: font(kBodyFont, 12, 500,
-                                    color: AppColors.textSecondary)),
+                            : Text(
+                                p.address!,
+                                style: font(
+                                  kBodyFont,
+                                  12,
+                                  500,
+                                  color: AppColors.textSecondary,
+                                ),
+                              ),
                         onTap: () => Navigator.of(context).pop(p),
                       );
                     },
