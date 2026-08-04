@@ -6,15 +6,19 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-Member _m(String id, String name,
-        {bool caretaker = false, bool admin = false, bool child = false}) =>
-    Member(
-      id: id,
-      relationName: name,
-      isCaretaker: caretaker,
-      isAdmin: admin,
-      requiresCaretaker: child,
-    );
+Member _m(
+  String id,
+  String name, {
+  bool caretaker = false,
+  bool admin = false,
+  bool child = false,
+}) => Member(
+  id: id,
+  relationName: name,
+  isCaretaker: caretaker,
+  isAdmin: admin,
+  requiresCaretaker: child,
+);
 
 void main() {
   final me = _m('dad', 'Dad', caretaker: true, admin: true);
@@ -49,26 +53,28 @@ void main() {
   );
 
   Widget app() => ProviderScope(
-        overrides: [
-          membersProvider.overrideWith((ref) async => [me, mom, theo]),
-          currentMemberProvider.overrideWith((ref) async => me),
-          unownedTasksProvider.overrideWith((ref) async => [unowned]),
-          allTasksProvider
-              .overrideWith((ref) async => [unowned, claimedByMe, claimedByMom]),
-          pendingDecisionsProvider.overrideWith((ref) async => const []),
-          conflictsProvider.overrideWith((ref) async => const []),
-          calendarEventsProvider.overrideWith((ref) async => const []),
-          threadingThresholdProvider.overrideWith((ref) async => 30),
-        ],
-        child: MaterialApp(
-          theme: buildAppTheme(),
-          themeMode: ThemeMode.dark,
-          home: const Scaffold(body: HomeScreen()),
-        ),
-      );
+    overrides: [
+      membersProvider.overrideWith((ref) async => [me, mom, theo]),
+      currentMemberProvider.overrideWith((ref) async => me),
+      unownedTasksProvider.overrideWith((ref) async => [unowned]),
+      allTasksProvider.overrideWith(
+        (ref) async => [unowned, claimedByMe, claimedByMom],
+      ),
+      pendingDecisionsProvider.overrideWith((ref) async => const []),
+      conflictsProvider.overrideWith((ref) async => const []),
+      calendarEventsProvider.overrideWith((ref) async => const []),
+      threadingThresholdProvider.overrideWith((ref) async => 30),
+    ],
+    child: MaterialApp(
+      theme: buildAppTheme(),
+      themeMode: ThemeMode.dark,
+      home: const Scaffold(body: HomeScreen()),
+    ),
+  );
 
-  testWidgets('Home splits unclaimed work from what I am covering (6b)',
-      (tester) async {
+  testWidgets('Home splits unclaimed work from what I am covering (6b)', (
+    tester,
+  ) async {
     await tester.pumpWidget(app());
     await tester.pumpAndSettle();
 
@@ -82,31 +88,36 @@ void main() {
     expect(find.text('Mom'), findsNothing);
   });
 
-  testWidgets("Filters opts another caretaker's claimed tasks into You're covering",
-      (tester) async {
-    await tester.pumpWidget(app());
-    await tester.pumpAndSettle();
+  testWidgets(
+    "Filters opts another caretaker's claimed tasks into You're covering",
+    (tester) async {
+      await tester.pumpWidget(app());
+      await tester.pumpAndSettle();
 
-    await tester.tap(find.text('Filters'));
-    await tester.pumpAndSettle();
-    expect(find.text('Also show claimed by'), findsOneWidget);
+      await tester.tap(find.text('Filters'));
+      await tester.pumpAndSettle();
+      expect(find.text('Also show claimed by'), findsOneWidget);
 
-    // Opt into Mom's claimed tasks (my own are always shown, so the opt-in list
-    // only contains other caretakers).
-    await tester.tap(find.text('Mom'));
-    await tester.pumpAndSettle();
+      // Opt into Mom's claimed tasks (my own are always shown, so the opt-in list
+      // only contains other caretakers).
+      await tester.tap(find.text('Mom'));
+      await tester.pumpAndSettle();
 
-    final applyFinder = find.textContaining('Apply');
-    await tester.scrollUntilVisible(applyFinder, 300,
-        scrollable: find.byType(Scrollable).last);
-    await tester.pumpAndSettle();
-    expect(applyFinder, findsOneWidget);
-    await tester.tap(applyFinder);
-    await tester.pumpAndSettle();
+      final applyFinder = find.textContaining('Apply');
+      await tester.scrollUntilVisible(
+        applyFinder,
+        300,
+        scrollable: find.byType(Scrollable).last,
+      );
+      await tester.pumpAndSettle();
+      expect(applyFinder, findsOneWidget);
+      await tester.tap(applyFinder);
+      await tester.pumpAndSettle();
 
-    // Mom's claimed task now shows as a covering row; mine still shows as "You".
-    expect(find.text('Mom'), findsOneWidget);
-    expect(find.text('You'), findsOneWidget);
-    expect(find.text('Claim'), findsOneWidget); // still just the unowned row
-  });
+      // Mom's claimed task now shows as a covering row; mine still shows as "You".
+      expect(find.text('Mom'), findsOneWidget);
+      expect(find.text('You'), findsOneWidget);
+      expect(find.text('Claim'), findsOneWidget); // still just the unowned row
+    },
+  );
 }

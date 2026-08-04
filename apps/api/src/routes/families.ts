@@ -264,6 +264,10 @@ familyRoutes.patch('/:familyId/members/:memberId', requireFamilyMember, async (c
   if (d.relationName !== undefined) set.relationName = d.relationName;
   // Accent color isn't a role flag — the member (or an admin) may set their own.
   if (d.color !== undefined) set.color = d.color;
+  // Neither is home: it's personal detail, editable by the member themselves
+  // (or an admin, who is the one filling in a child's slot anyway).
+  if (d.homeLocation !== undefined) set.homeLocation = d.homeLocation;
+  if (d.homeLocationGeo !== undefined) set.homeLocationGeo = d.homeLocationGeo;
   if (me.isAdmin) {
     if (d.isCaretaker !== undefined) set.isCaretaker = d.isCaretaker;
     if (d.isAdmin !== undefined) set.isAdmin = d.isAdmin;

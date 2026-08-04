@@ -10,7 +10,11 @@ import '../unified_calendar_picker.dart';
 /// 2c — which calendar is yours: the designation step from 1g, scoped to just
 /// the joining parent. Auto-selected when only one account is connected.
 class PickUnifiedStep extends ConsumerStatefulWidget {
-  const PickUnifiedStep({super.key, required this.onNext, required this.onBack});
+  const PickUnifiedStep({
+    super.key,
+    required this.onNext,
+    required this.onBack,
+  });
 
   /// Reports whether a calendar was actually committed — "Finish" is reachable
   /// without a pick, and 2d receipts what happened.
@@ -46,8 +50,11 @@ class _PickUnifiedStepState extends ConsumerState<PickUnifiedStep> {
   @override
   Widget build(BuildContext context) {
     final self = ref.watch(currentMemberProvider).valueOrNull;
-    final accounts = ref.watch(accountsProvider).valueOrNull ?? const <ExternalAccount>[];
-    final connectedAs = accounts.isNotEmpty ? (accounts.first.username ?? accounts.first.name) : null;
+    final accounts =
+        ref.watch(accountsProvider).valueOrNull ?? const <ExternalAccount>[];
+    final connectedAs = accounts.isNotEmpty
+        ? (accounts.first.username ?? accounts.first.name)
+        : null;
 
     return OnboardingScaffold(
       progress: 1.0,
@@ -55,7 +62,8 @@ class _PickUnifiedStepState extends ConsumerState<PickUnifiedStep> {
       onBack: widget.onBack,
       trailingLabel: 'Step 2 of 2',
       title: 'Which calendar is yours?',
-      subtitle: "Pick where your claimed tasks land. That's it — you're done "
+      subtitle:
+          "Pick where your claimed tasks land. That's it — you're done "
           'right after this.',
       body: [
         if (connectedAs != null) ...[
@@ -73,18 +81,34 @@ class _PickUnifiedStepState extends ConsumerState<PickUnifiedStep> {
                   height: 26,
                   alignment: Alignment.center,
                   decoration: BoxDecoration(
-                      color: AppColors.tint(AppColors.green, 0.2), shape: BoxShape.circle),
-                  child: const Icon(Icons.check_rounded, size: 14, color: AppColors.green),
+                    color: AppColors.tint(AppColors.green, 0.2),
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(
+                    Icons.check_rounded,
+                    size: 14,
+                    color: AppColors.green,
+                  ),
                 ),
                 const SizedBox(width: 11),
                 Expanded(
-                  child: Text.rich(TextSpan(
-                    text: 'Connected as ',
-                    style: font(kBodyFont, 13, 600, color: const Color(0xFFBFE0FF)),
-                    children: [
-                      TextSpan(text: connectedAs, style: font(kBodyFont, 13, 700)),
-                    ],
-                  )),
+                  child: Text.rich(
+                    TextSpan(
+                      text: 'Connected as ',
+                      style: font(
+                        kBodyFont,
+                        13,
+                        600,
+                        color: const Color(0xFFBFE0FF),
+                      ),
+                      children: [
+                        TextSpan(
+                          text: connectedAs,
+                          style: font(kBodyFont, 13, 700),
+                        ),
+                      ],
+                    ),
+                  ),
                 ),
               ],
             ),
@@ -112,20 +136,34 @@ class _PickUnifiedStepState extends ConsumerState<PickUnifiedStep> {
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Icon(Icons.info_outline_rounded, size: 15, color: AppColors.blue),
+              const Icon(
+                Icons.info_outline_rounded,
+                size: 15,
+                color: AppColors.blue,
+              ),
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
-                    'With just one account connected, we pre-select it — tap Finish '
-                    "and you're set. Reminders, tasks & email can wait until first use.",
-                    style: font(kBodyFont, 12, 500, color: const Color(0xFF9FC4EE), height: 1.5)),
+                  'With just one account connected, we pre-select it — tap Finish '
+                  "and you're set. Reminders, tasks & email can wait until first use.",
+                  style: font(
+                    kBodyFont,
+                    12,
+                    500,
+                    color: const Color(0xFF9FC4EE),
+                    height: 1.5,
+                  ),
+                ),
               ),
             ],
           ),
         ),
         if (_error != null) ...[
           const SizedBox(height: 14),
-          Text(_error!, style: font(kBodyFont, 13, 500, color: AppColors.coral)),
+          Text(
+            _error!,
+            style: font(kBodyFont, 13, 500, color: AppColors.coral),
+          ),
         ],
       ],
       bottom: OnboardingButton(

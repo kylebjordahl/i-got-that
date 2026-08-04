@@ -1,19 +1,25 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models.dart';
+import '../services/geocoding.dart';
 import '../state/auth.dart';
 import '../state/family.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_text.dart';
 import '../theme/person_colors.dart';
 import '../widgets/color_swatch_picker.dart';
+import '../widgets/location_picker.dart';
 import '../widgets/primitives.dart';
 import '../widgets/settings.dart';
 
 /// Family-member editor (6h) — name, color, family-view role label, and the
 /// admin permission. Opened by the ✎ on the 6e profile card. Identity editing
 /// lives entirely here; the detail screen has none.
-Future<void> showMemberEditor(BuildContext context, WidgetRef ref, Member member) {
+Future<void> showMemberEditor(
+  BuildContext context,
+  WidgetRef ref,
+  Member member,
+) {
   return showDialog<void>(
     context: context,
     builder: (_) => Dialog(
@@ -34,8 +40,13 @@ class _MemberEditor extends ConsumerStatefulWidget {
 }
 
 class _MemberEditorState extends ConsumerState<_MemberEditor> {
-  late final TextEditingController _name =
-      TextEditingController(text: widget.member.relationName);
+  late final TextEditingController _name = TextEditingController(
+    text: widget.member.relationName,
+  );
+  late final TextEditingController _home = TextEditingController(
+    text: widget.member.homeLocation ?? '',
+  );
+  late GeoLocation? _homeGeo = widget.member.homeLocationGeo;
   late Color _color = personColor(widget.member);
   late bool _isChild = widget.member.requiresCaretaker;
   late bool _isAdmin = widget.member.isAdmin;
@@ -45,18 +56,23 @@ class _MemberEditorState extends ConsumerState<_MemberEditor> {
   @override
   void dispose() {
     _name.dispose();
+    _home.dispose();
     super.dispose();
   }
 
   Future<void> _save() async {
-    final canAdmin = ref.read(currentMemberProvider).valueOrNull?.isAdmin ?? false;
+    final canAdmin =
+        ref.read(currentMemberProvider).valueOrNull?.isAdmin ?? false;
     setState(() {
       _busy = true;
       _error = null;
     });
     try {
       final familyId = await ref.read(familyProvider.future);
-      await ref.read(apiClientProvider).updateMember(
+      final home = _home.text.trim();
+      await ref
+          .read(apiClientProvider)
+          .updateMember(
             familyId,
             widget.member.id,
             relationName: _name.text.trim().isEmpty ? null : _name.text.trim(),
@@ -65,6 +81,10 @@ class _MemberEditorState extends ConsumerState<_MemberEditor> {
             requiresCaretaker: canAdmin ? _isChild : null,
             isCaretaker: canAdmin ? !_isChild : null,
             isAdmin: canAdmin ? _isAdmin : null,
+            homeLocation: home.isEmpty ? null : home,
+            // Keep the geocode only while the text still matches the picked
+            // place; an empty field clears both. `null` is a real value (clear).
+            homeLocationGeo: home.isEmpty ? null : _homeGeo,
           );
       ref.invalidate(membersProvider);
       ref.invalidate(currentMemberProvider);
@@ -80,7 +100,8 @@ class _MemberEditorState extends ConsumerState<_MemberEditor> {
   @override
   Widget build(BuildContext context) {
     final members = ref.watch(membersProvider).valueOrNull ?? const <Member>[];
-    final isAdmin = ref.watch(currentMemberProvider).valueOrNull?.isAdmin ?? false;
+    final isAdmin =
+        ref.watch(currentMemberProvider).valueOrNull?.isAdmin ?? false;
     final taken = <String>{
       for (final m in members)
         if (m.id != widget.member.id && m.color != null && m.color!.isNotEmpty)
@@ -99,16 +120,20 @@ class _MemberEditorState extends ConsumerState<_MemberEditor> {
               const Spacer(),
               IconButton(
                 onPressed: () => Navigator.of(context).pop(),
-                icon: const Icon(Icons.close_rounded, color: AppColors.textMuted),
+                icon: const Icon(
+                  Icons.close_rounded,
+                  color: AppColors.textMuted,
+                ),
               ),
             ],
           ),
           const SizedBox(height: 8),
           Center(
             child: PersonAvatar(
-                initial: initialFor(_name.text.isEmpty ? '?' : _name.text),
-                color: _color,
-                size: 72),
+              initial: initialFor(_name.text.isEmpty ? '?' : _name.text),
+              color: _color,
+              size: 72,
+            ),
           ),
           const SizedBox(height: 20),
           Text('NAME', style: AppText.eyebrow()),
@@ -117,6 +142,24 @@ class _MemberEditorState extends ConsumerState<_MemberEditor> {
             controller: _name,
             onChanged: (_) => setState(() {}),
             decoration: const InputDecoration(hintText: 'Name / relation'),
+          ),
+          const SizedBox(height: 20),
+          Text('HOME', style: AppText.eyebrow()),
+          const SizedBox(height: 8),
+          LocationPickerField(
+            controller: _home,
+            geo: _homeGeo,
+            geocoder: ref.watch(geocoderProvider),
+            onChanged: (_, geo) => setState(() => _homeGeo = geo),
+            label: 'Home address',
+            hint: 'Where the day starts and ends',
+          ),
+          const SizedBox(height: 6),
+          Text(
+            'Pick a place (not just text) and drop-offs and pickups mirror out '
+            'with travel time measured from here — used whenever nothing earlier '
+            'on the calendar says where they are.',
+            style: AppText.subtitle,
           ),
           const SizedBox(height: 20),
           Text('COLOR', style: AppText.eyebrow()),
@@ -135,8 +178,10 @@ class _MemberEditorState extends ConsumerState<_MemberEditor> {
               onChanged: (v) => setState(() => _isChild = v),
             ),
             const SizedBox(height: 6),
-            Text("Only groups them in the family list — it doesn't change what they can do.",
-                style: AppText.subtitle),
+            Text(
+              "Only groups them in the family list — it doesn't change what they can do.",
+              style: AppText.subtitle,
+            ),
             const SizedBox(height: 20),
             Text('PERMISSIONS', style: AppText.eyebrow()),
             const SizedBox(height: 8),
@@ -153,7 +198,10 @@ class _MemberEditorState extends ConsumerState<_MemberEditor> {
           ],
           if (_error != null) ...[
             const SizedBox(height: 12),
-            Text(_error!, style: font(kBodyFont, 13, 500, color: AppColors.coral)),
+            Text(
+              _error!,
+              style: font(kBodyFont, 13, 500, color: AppColors.coral),
+            ),
           ],
           const SizedBox(height: 20),
           SizedBox(
@@ -189,9 +237,17 @@ class _RoleSegmented extends StatelessWidget {
               color: selected ? AppColors.indigo : Colors.transparent,
               borderRadius: BorderRadius.circular(11),
             ),
-            child: Text(label,
-                style: font(kBodyFont, 13, 700,
-                    color: selected ? const Color(0xFF17162B) : AppColors.textSecondary)),
+            child: Text(
+              label,
+              style: font(
+                kBodyFont,
+                13,
+                700,
+                color: selected
+                    ? const Color(0xFF17162B)
+                    : AppColors.textSecondary,
+              ),
+            ),
           ),
         ),
       );

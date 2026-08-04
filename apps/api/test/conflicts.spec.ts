@@ -9,6 +9,7 @@ import {
   getDb,
   tasks,
 } from '@igt/db';
+import { estimateTravelMinutes } from '@igt/classification';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { reconcileMemberConflicts } from '../src/services/conflicts.js';
 import { synthesizeFeed } from '../src/services/synthesis.js';
@@ -124,6 +125,63 @@ describe('conflict detection & masking', () => {
     expect(list).toHaveLength(1);
     expect(list[0]!.loser.summary).toBe('School day');
     expect(list[0]!.winner.summary).toBe('Doctor appointment');
+  });
+
+  it('suggests a travel buffer from the distance between the two places', async () => {
+    const f = await fixture('conflict-suggest@example.com');
+    await schoolAndDoctor(f.db, f);
+    // Both ends pinned: school and a clinic ~5 km away.
+    const school = { lat: 37.7955, lon: -122.3937, title: 'Lincoln Elementary' };
+    const clinic = { lat: 37.7596, lon: -122.4269, title: 'Clinic' };
+    await f.db
+      .update(calendarEvents)
+      .set({ locationGeo: school })
+      .where(
+        and(
+          eq(calendarEvents.familyMemberId, f.childId),
+          eq(calendarEvents.provenance, 'synthesized'),
+        ),
+      );
+    await f.db
+      .update(calendarEvents)
+      .set({ location: 'Clinic', locationGeo: clinic })
+      .where(
+        and(
+          eq(calendarEvents.familyMemberId, f.childId),
+          eq(calendarEvents.provenance, 'human'),
+        ),
+      );
+    await reconcileMemberConflicts(f.db, f.childId);
+
+    const api = await call(`/families/${f.familyId}/conflicts`, bearer(f.admin.token));
+    const { conflicts: list } = (await api.json()) as {
+      conflicts: { suggestedTravelMin: number | null }[];
+    };
+    // Leaving the school for the clinic and coming back is the same trip both
+    // ways, so the sheet gets one number to seed both handles with.
+    expect(list[0]!.suggestedTravelMin).toBe(estimateTravelMinutes(school, clinic));
+  });
+
+  it('suggests nothing when either end has no coordinates', async () => {
+    const f = await fixture('conflict-suggest-none@example.com');
+    await schoolAndDoctor(f.db, f);
+    // Only the school is pinned; the appointment is free text.
+    await f.db
+      .update(calendarEvents)
+      .set({ locationGeo: { lat: 37.7955, lon: -122.3937 } })
+      .where(
+        and(
+          eq(calendarEvents.familyMemberId, f.childId),
+          eq(calendarEvents.provenance, 'synthesized'),
+        ),
+      );
+    await reconcileMemberConflicts(f.db, f.childId);
+
+    const api = await call(`/families/${f.familyId}/conflicts`, bearer(f.admin.token));
+    const { conflicts: list } = (await api.json()) as {
+      conflicts: { suggestedTravelMin: number | null }[];
+    };
+    expect(list[0]!.suggestedTravelMin).toBeNull();
   });
 
   it('resolving splits the baseline around the appointment and generates the drop-off/pickup', async () => {

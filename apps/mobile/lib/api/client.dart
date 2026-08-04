@@ -9,7 +9,8 @@ const Object _unset = Object();
 /// Thin typed wrapper over the backend HTTP API. Replaced by an OpenAPI-
 /// generated client once the spec is emitted from libs/domain (see /tools).
 class ApiClient {
-  ApiClient({required this.baseUrl}) : _dio = Dio(BaseOptions(baseUrl: baseUrl)) {
+  ApiClient({required this.baseUrl})
+    : _dio = Dio(BaseOptions(baseUrl: baseUrl)) {
     enableSessionCookie(_dio);
   }
 
@@ -20,10 +21,10 @@ class ApiClient {
   void setSession(String? token) => _sessionToken = token;
 
   Options get _auth => Options(
-        headers: _sessionToken != null
-            ? {'Authorization': 'Bearer $_sessionToken'}
-            : null,
-      );
+    headers: _sessionToken != null
+        ? {'Authorization': 'Bearer $_sessionToken'}
+        : null,
+  );
 
   Map<String, dynamic> _obj(Response res) => res.data as Map<String, dynamic>;
   List<dynamic> _list(Response res, String key) =>
@@ -32,12 +33,18 @@ class ApiClient {
   // --- Auth --------------------------------------------------------------
 
   Future<String?> requestMagicLink(String email) async {
-    final res = await _dio.post('/auth/magic-link/request', data: {'email': email});
+    final res = await _dio.post(
+      '/auth/magic-link/request',
+      data: {'email': email},
+    );
     return _obj(res)['devToken'] as String?;
   }
 
   Future<Map<String, dynamic>> verifyMagicLink(String token) async {
-    final res = await _dio.post('/auth/magic-link/verify', data: {'token': token});
+    final res = await _dio.post(
+      '/auth/magic-link/verify',
+      data: {'token': token},
+    );
     final data = _obj(res);
     _sessionToken = data['sessionToken'] as String;
     return data;
@@ -46,7 +53,10 @@ class ApiClient {
   /// Native Sign in with Apple: exchange the identity token from
   /// `SignInWithApple.getAppleIDCredential` for a session.
   Future<Map<String, dynamic>> signInWithApple(String identityToken) async {
-    final res = await _dio.post('/auth/apple', data: {'identityToken': identityToken});
+    final res = await _dio.post(
+      '/auth/apple',
+      data: {'identityToken': identityToken},
+    );
     final data = _obj(res);
     _sessionToken = data['sessionToken'] as String;
     return data;
@@ -55,17 +65,24 @@ class ApiClient {
   /// Native Sign in with Google: exchange the ID token (+ an optional
   /// `serverAuthCode`, which auto-connects the user's Google Calendar the
   /// same way the web redirect flow does) for a session.
-  Future<Map<String, dynamic>> signInWithGoogle(String idToken, {String? serverAuthCode}) async {
-    final res = await _dio.post('/auth/google', data: {
-      'idToken': idToken,
-      if (serverAuthCode != null) 'serverAuthCode': serverAuthCode,
-    });
+  Future<Map<String, dynamic>> signInWithGoogle(
+    String idToken, {
+    String? serverAuthCode,
+  }) async {
+    final res = await _dio.post(
+      '/auth/google',
+      data: {
+        'idToken': idToken,
+        if (serverAuthCode != null) 'serverAuthCode': serverAuthCode,
+      },
+    );
     final data = _obj(res);
     _sessionToken = data['sessionToken'] as String;
     return data;
   }
 
-  Future<Map<String, dynamic>> me() async => _obj(await _dio.get('/me', options: _auth));
+  Future<Map<String, dynamic>> me() async =>
+      _obj(await _dio.get('/me', options: _auth));
 
   /// Invalidate the session server-side and clear the web session cookie.
   /// Safe to call even without a known token (web restores auth from the
@@ -101,22 +118,33 @@ class ApiClient {
   /// Thread a magic-link email onto the current user: request a token for the
   /// new email, then link it (rather than starting a new account).
   Future<void> linkMagicLink(String token) async {
-    await _dio.post('/auth/link/magic-link', data: {'token': token}, options: _auth);
+    await _dio.post(
+      '/auth/link/magic-link',
+      data: {'token': token},
+      options: _auth,
+    );
   }
 
   /// Thread a native Sign in with Apple identity onto the current user.
   Future<void> linkApple(String identityToken) async {
-    await _dio.post('/auth/link/apple',
-        data: {'identityToken': identityToken}, options: _auth);
+    await _dio.post(
+      '/auth/link/apple',
+      data: {'identityToken': identityToken},
+      options: _auth,
+    );
   }
 
   /// Thread a native Sign in with Google identity onto the current user (an
   /// optional `serverAuthCode` still auto-connects the calendar).
   Future<void> linkGoogle(String idToken, {String? serverAuthCode}) async {
-    await _dio.post('/auth/link/google', data: {
-      'idToken': idToken,
-      if (serverAuthCode != null) 'serverAuthCode': serverAuthCode,
-    }, options: _auth);
+    await _dio.post(
+      '/auth/link/google',
+      data: {
+        'idToken': idToken,
+        if (serverAuthCode != null) 'serverAuthCode': serverAuthCode,
+      },
+      options: _auth,
+    );
   }
 
   /// Detach a login method (the server blocks removing the last one).
@@ -127,13 +155,19 @@ class ApiClient {
   /// Create a family. An optional [relationName] names the creator's own
   /// (admin) member in the same call — the first-run wizard's "create family +
   /// name yourself" step (the route creates that member either way).
-  Future<Map<String, dynamic>> createFamily(String name, {String? relationName}) async =>
-      _obj(await _dio.post('/families',
-          data: {
-            'name': name,
-            if (relationName != null) 'relationName': relationName,
-          },
-          options: _auth));
+  Future<Map<String, dynamic>> createFamily(
+    String name, {
+    String? relationName,
+  }) async => _obj(
+    await _dio.post(
+      '/families',
+      data: {
+        'name': name,
+        if (relationName != null) 'relationName': relationName,
+      },
+      options: _auth,
+    ),
+  );
 
   /// The family row (carries `threadingThresholdMinutes`).
   Future<Map<String, dynamic>> getFamily(String familyId) async =>
@@ -166,13 +200,19 @@ class ApiClient {
   /// while keeping it (and its history) intact. 204 on success; the server
   /// blocks (409 `last_admin`) if this would leave the family adminless.
   Future<void> leaveFamily(String familyId) async {
-    await _dio.post('/families/$familyId/leave', data: <String, dynamic>{}, options: _auth);
+    await _dio.post(
+      '/families/$familyId/leave',
+      data: <String, dynamic>{},
+      options: _auth,
+    );
   }
 
   // --- Family members ----------------------------------------------------
 
-  Future<List<dynamic>> listMembers(String familyId) async =>
-      _list(await _dio.get('/families/$familyId/members', options: _auth), 'members');
+  Future<List<dynamic>> listMembers(String familyId) async => _list(
+    await _dio.get('/families/$familyId/members', options: _auth),
+    'members',
+  );
 
   Future<Map<String, dynamic>> createMember(
     String familyId, {
@@ -203,6 +243,9 @@ class ApiClient {
     bool? requiresCaretaker,
     bool? generatesFamilyTasks,
     String? color,
+    // Pass a value to set, or `null` to clear; omit to leave unchanged.
+    Object? homeLocation = _unset,
+    Object? homeLocationGeo = _unset,
   }) async {
     await _dio.patch(
       '/families/$familyId/members/$memberId',
@@ -211,8 +254,13 @@ class ApiClient {
         if (isCaretaker != null) 'isCaretaker': isCaretaker,
         if (isAdmin != null) 'isAdmin': isAdmin,
         if (requiresCaretaker != null) 'requiresCaretaker': requiresCaretaker,
-        if (generatesFamilyTasks != null) 'generatesFamilyTasks': generatesFamilyTasks,
+        if (generatesFamilyTasks != null)
+          'generatesFamilyTasks': generatesFamilyTasks,
         if (color != null) 'color': color,
+        if (!identical(homeLocation, _unset))
+          'homeLocation': homeLocation as String?,
+        if (!identical(homeLocationGeo, _unset))
+          'homeLocationGeo': (homeLocationGeo as GeoLocation?)?.toJson(),
       },
       options: _auth,
     );
@@ -225,9 +273,16 @@ class ApiClient {
 
   /// Issue a member-claim invite (admin). Returns `{ token, expiresAt, url }`
   /// where `url` is the shareable deep link (null in local dev with no origin).
-  Future<Map<String, dynamic>> issueMemberInvite(String familyId, String memberId) async =>
-      _obj(await _dio.post('/families/$familyId/members/$memberId/invite',
-          data: <String, dynamic>{}, options: _auth));
+  Future<Map<String, dynamic>> issueMemberInvite(
+    String familyId,
+    String memberId,
+  ) async => _obj(
+    await _dio.post(
+      '/families/$familyId/members/$memberId/invite',
+      data: <String, dynamic>{},
+      options: _auth,
+    ),
+  );
 
   /// Public preview of an invite token: `{ familyName, relationName, status }`.
   Future<Map<String, dynamic>> previewInvite(String token) async {
@@ -236,8 +291,13 @@ class ApiClient {
   }
 
   /// Accept an invite (must be logged in) — links the current user to the member.
-  Future<Map<String, dynamic>> acceptInvite(String token) async =>
-      _obj(await _dio.post('/invites/$token/accept', data: <String, dynamic>{}, options: _auth));
+  Future<Map<String, dynamic>> acceptInvite(String token) async => _obj(
+    await _dio.post(
+      '/invites/$token/accept',
+      data: <String, dynamic>{},
+      options: _auth,
+    ),
+  );
 
   // --- External accounts (user-owned, reusable across families) ----------
 
@@ -279,29 +339,44 @@ class ApiClient {
 
   /// The calendars available in a connected account: a list of `{ id, name }`.
   Future<List<dynamic>> listAccountCalendars(String accountId) async => _list(
-      await _dio.post('/accounts/$accountId/calendars',
-          data: <String, dynamic>{}, options: _auth),
-      'calendars');
+    await _dio.post(
+      '/accounts/$accountId/calendars',
+      data: <String, dynamic>{},
+      options: _auth,
+    ),
+    'calendars',
+  );
 
   /// Google OAuth consent URL for connecting a new account.
   Future<String> accountGoogleAuthorizeUrl(String redirectUri) async {
-    final res = await _dio.post('/accounts/google/authorize-url',
-        data: {'redirectUri': redirectUri}, options: _auth);
+    final res = await _dio.post(
+      '/accounts/google/authorize-url',
+      data: {'redirectUri': redirectUri},
+      options: _auth,
+    );
     return (res.data as Map<String, dynamic>)['url'] as String;
   }
 
   // --- Feeds -------------------------------------------------------------
 
-  Future<List<dynamic>> listFeeds(String familyId) async =>
-      _list(await _dio.get('/families/$familyId/feeds', options: _auth), 'feeds');
+  Future<List<dynamic>> listFeeds(String familyId) async => _list(
+    await _dio.get('/families/$familyId/feeds', options: _auth),
+    'feeds',
+  );
 
   /// Reorder one member's feed links by priority: every link id of that member
   /// exactly once, new order (index 0 = highest priority). Breaks conflict ties
   /// on that member's unified calendar; manual events always outrank feeds.
   Future<void> reorderMemberFeedLinks(
-      String familyId, String memberId, List<String> linkIds) async {
-    await _dio.put('/families/$familyId/feeds/member-links/order',
-        data: {'familyMemberId': memberId, 'linkIds': linkIds}, options: _auth);
+    String familyId,
+    String memberId,
+    List<String> linkIds,
+  ) async {
+    await _dio.put(
+      '/families/$familyId/feeds/member-links/order',
+      data: {'familyMemberId': memberId, 'linkIds': linkIds},
+      options: _auth,
+    );
   }
 
   /// Create an input feed: a public ICS URL (`kind: 'ics'`, pass `url`, with an
@@ -329,7 +404,8 @@ class ApiClient {
         if (name != null) 'name': name,
         if (externalAccountId != null) 'externalAccountId': externalAccountId,
         if (sourceCalendarId != null) 'sourceCalendarId': sourceCalendarId,
-        if (sourceCalendarName != null) 'sourceCalendarName': sourceCalendarName,
+        if (sourceCalendarName != null)
+          'sourceCalendarName': sourceCalendarName,
       },
       options: _auth,
     );
@@ -361,9 +437,14 @@ class ApiClient {
     return _obj(res);
   }
 
-  Future<List<dynamic>> listMemberLinks(String familyId, String feedId) async => _list(
-      await _dio.get('/families/$familyId/feeds/$feedId/member-links', options: _auth),
-      'links');
+  Future<List<dynamic>> listMemberLinks(String familyId, String feedId) async =>
+      _list(
+        await _dio.get(
+          '/families/$familyId/feeds/$feedId/member-links',
+          options: _auth,
+        ),
+        'links',
+      );
 
   Future<void> updateMemberLink(
     String familyId,
@@ -392,15 +473,31 @@ class ApiClient {
     );
   }
 
-  Future<void> deleteMemberLink(String familyId, String feedId, String linkId) async {
-    await _dio.delete('/families/$familyId/feeds/$feedId/member-links/$linkId', options: _auth);
+  Future<void> deleteMemberLink(
+    String familyId,
+    String feedId,
+    String linkId,
+  ) async {
+    await _dio.delete(
+      '/families/$familyId/feeds/$feedId/member-links/$linkId',
+      options: _auth,
+    );
   }
 
-  /// Update a feed's mode ('standard' | 'exception'); a change resynthesizes.
-  Future<void> updateFeed(String familyId, String feedId, {String? mode}) async {
+  /// Update a feed's mode ('standard' | 'exception') or its routing (shared
+  /// family calendar, standard feeds only). Either change resynthesizes.
+  Future<void> updateFeed(
+    String familyId,
+    String feedId, {
+    String? mode,
+    bool? routed,
+  }) async {
     await _dio.patch(
       '/families/$familyId/feeds/$feedId',
-      data: {if (mode != null) 'mode': mode},
+      data: {
+        if (mode != null) 'mode': mode,
+        if (routed != null) 'routed': routed,
+      },
       options: _auth,
     );
   }
@@ -411,9 +508,13 @@ class ApiClient {
       '/families/$familyId/feeds/$feedId/member-links/$linkId/rules';
 
   Future<List<dynamic>> listLinkRules(
-          String familyId, String feedId, String linkId) async =>
-      _list(await _dio.get(_rulesBase(familyId, feedId, linkId), options: _auth),
-          'rules');
+    String familyId,
+    String feedId,
+    String linkId,
+  ) async => _list(
+    await _dio.get(_rulesBase(familyId, feedId, linkId), options: _auth),
+    'rules',
+  );
 
   /// Insert an override rule into the pipeline; omitted [position] appends.
   Future<Map<String, dynamic>> createLinkRule(
@@ -469,25 +570,49 @@ class ApiClient {
   }
 
   Future<void> deleteLinkRule(
-      String familyId, String feedId, String linkId, String ruleId) async {
-    await _dio.delete('${_rulesBase(familyId, feedId, linkId)}/$ruleId',
-        options: _auth);
+    String familyId,
+    String feedId,
+    String linkId,
+    String ruleId,
+  ) async {
+    await _dio.delete(
+      '${_rulesBase(familyId, feedId, linkId)}/$ruleId',
+      options: _auth,
+    );
   }
 
   /// Reorder the whole pipeline: every rule id exactly once, new order.
   Future<void> reorderLinkRules(
-      String familyId, String feedId, String linkId, List<String> ruleIds) async {
-    await _dio.put('${_rulesBase(familyId, feedId, linkId)}/order',
-        data: {'ruleIds': ruleIds}, options: _auth);
+    String familyId,
+    String feedId,
+    String linkId,
+    List<String> ruleIds,
+  ) async {
+    await _dio.put(
+      '${_rulesBase(familyId, feedId, linkId)}/order',
+      data: {'ruleIds': ruleIds},
+      options: _auth,
+    );
   }
 
-  Future<Map<String, dynamic>> refreshFeed(String familyId, String feedId) async =>
-      _obj(await _dio.post('/families/$familyId/feeds/$feedId/refresh',
-          data: <String, dynamic>{}, options: _auth));
+  Future<Map<String, dynamic>> refreshFeed(
+    String familyId,
+    String feedId,
+  ) async => _obj(
+    await _dio.post(
+      '/families/$familyId/feeds/$feedId/refresh',
+      data: <String, dynamic>{},
+      options: _auth,
+    ),
+  );
 
-  Future<Map<String, dynamic>> refreshAllFeeds(String familyId) async =>
-      _obj(await _dio.post('/families/$familyId/feeds/refresh-all',
-          data: <String, dynamic>{}, options: _auth));
+  Future<Map<String, dynamic>> refreshAllFeeds(String familyId) async => _obj(
+    await _dio.post(
+      '/families/$familyId/feeds/refresh-all',
+      data: <String, dynamic>{},
+      options: _auth,
+    ),
+  );
 
   // --- Tasks -------------------------------------------------------------
 
@@ -500,7 +625,11 @@ class ApiClient {
     return _list(res, 'tasks');
   }
 
-  Future<void> assignTask(String familyId, String taskId, {String? memberId}) async {
+  Future<void> assignTask(
+    String familyId,
+    String taskId, {
+    String? memberId,
+  }) async {
     await _dio.post(
       '/families/$familyId/tasks/$taskId/assign',
       data: memberId != null ? {'memberId': memberId} : <String, dynamic>{},
@@ -509,36 +638,71 @@ class ApiClient {
   }
 
   Future<void> unassignTask(String familyId, String taskId) async {
-    await _dio.post('/families/$familyId/tasks/$taskId/unassign',
-        data: <String, dynamic>{}, options: _auth);
+    await _dio.post(
+      '/families/$familyId/tasks/$taskId/unassign',
+      data: <String, dynamic>{},
+      options: _auth,
+    );
   }
 
   /// Mark a task unneeded (drops it from the queue + the owner's calendar).
   Future<void> dismissTask(String familyId, String taskId) async {
-    await _dio.post('/families/$familyId/tasks/$taskId/dismiss',
-        data: <String, dynamic>{}, options: _auth);
+    await _dio.post(
+      '/families/$familyId/tasks/$taskId/dismiss',
+      data: <String, dynamic>{},
+      options: _auth,
+    );
   }
 
   /// Restore a dismissed task back to the unowned pool.
   Future<void> restoreTask(String familyId, String taskId) async {
-    await _dio.post('/families/$familyId/tasks/$taskId/restore',
-        data: <String, dynamic>{}, options: _auth);
+    await _dio.post(
+      '/families/$familyId/tasks/$taskId/restore',
+      data: <String, dynamic>{},
+      options: _auth,
+    );
   }
 
   /// Rebuild a calendar event's claimable tasks — restores any marked "not
   /// needed" and re-runs task generation over the event, so an event sitting on
   /// the calendar with nothing to claim becomes claimable again.
   Future<void> rebuildEventTasks(String familyId, String eventId) async {
-    await _dio.post('/families/$familyId/calendar-events/$eventId/tasks',
-        data: <String, dynamic>{}, options: _auth);
+    await _dio.post(
+      '/families/$familyId/calendar-events/$eventId/tasks',
+      data: <String, dynamic>{},
+      options: _auth,
+    );
+  }
+
+  /// Set how much travel time an event carries out to the target calendar
+  /// (Apple's travel block). An explicit value beats the backend's estimate,
+  /// `0` means no travel time on this one, and `null` hands it back to the
+  /// estimate.
+  Future<void> setEventTravelTime(
+    String familyId,
+    String eventId,
+    int? travelMinutes,
+  ) async {
+    await _dio.post(
+      '/families/$familyId/calendar-events/$eventId/travel-time',
+      data: {'travelMinutes': travelMinutes},
+      options: _auth,
+    );
   }
 
   /// Convert a feed-generated task into a chosen set of types (attendance /
   /// pickup / dropoff). The event's tasks for that dependent become exactly
   /// these types.
-  Future<void> convertTask(String familyId, String taskId, List<String> types) async {
-    await _dio.post('/families/$familyId/tasks/$taskId/convert',
-        data: {'types': types}, options: _auth);
+  Future<void> convertTask(
+    String familyId,
+    String taskId,
+    List<String> types,
+  ) async {
+    await _dio.post(
+      '/families/$familyId/tasks/$taskId/convert',
+      data: {'types': types},
+      options: _auth,
+    );
   }
 
   /// Set a transition task's (pickup / drop-off) window length in minutes,
@@ -546,61 +710,110 @@ class ApiClient {
   /// for a pickup). Positive extends the window forward from the anchor;
   /// negative reverses it to sit before the anchor; 0 collapses it to a point.
   Future<void> setTaskDuration(
-      String familyId, String taskId, int durationMinutes) async {
-    await _dio.post('/families/$familyId/tasks/$taskId/duration',
-        data: {'durationMinutes': durationMinutes}, options: _auth);
+    String familyId,
+    String taskId,
+    int durationMinutes,
+  ) async {
+    await _dio.post(
+      '/families/$familyId/tasks/$taskId/duration',
+      data: {'durationMinutes': durationMinutes},
+      options: _auth,
+    );
   }
 
   /// The raw feed events behind the tasks (for the oversight view).
-  Future<List<dynamic>> listSourceEvents(String familyId) async =>
-      _list(await _dio.get('/families/$familyId/source-events', options: _auth), 'events');
+  Future<List<dynamic>> listSourceEvents(String familyId) async => _list(
+    await _dio.get('/families/$familyId/source-events', options: _auth),
+    'events',
+  );
 
   /// Mark a feed event unneeded (admin) — e.g. an erroneous closure.
-  Future<void> dismissEvent(String familyId, String feedId, String eventId) async {
-    await _dio.post('/families/$familyId/feeds/$feedId/events/$eventId/dismiss',
-        data: <String, dynamic>{}, options: _auth);
+  Future<void> dismissEvent(
+    String familyId,
+    String feedId,
+    String eventId,
+  ) async {
+    await _dio.post(
+      '/families/$familyId/feeds/$feedId/events/$eventId/dismiss',
+      data: <String, dynamic>{},
+      options: _auth,
+    );
   }
 
   /// Restore a previously-dismissed feed event (admin).
-  Future<void> restoreEvent(String familyId, String feedId, String eventId) async {
-    await _dio.post('/families/$familyId/feeds/$feedId/events/$eventId/restore',
-        data: <String, dynamic>{}, options: _auth);
+  Future<void> restoreEvent(
+    String familyId,
+    String feedId,
+    String eventId,
+  ) async {
+    await _dio.post(
+      '/families/$familyId/feeds/$feedId/events/$eventId/restore',
+      data: <String, dynamic>{},
+      options: _auth,
+    );
   }
 
   /// Re-mirror every member's unified calendar to their target. Returns
   /// `{ targets, created, updated, removed, errors }`.
   Future<Map<String, dynamic>> resyncMirror(String familyId) async => _obj(
-      await _dio.post('/families/$familyId/mirror/resync',
-          data: <String, dynamic>{}, options: _auth));
+    await _dio.post(
+      '/families/$familyId/mirror/resync',
+      data: <String, dynamic>{},
+      options: _auth,
+    ),
+  );
 
   // --- Pending decisions ----------------------------------------------------
 
   Future<List<dynamic>> listPendingDecisions(String familyId) async => _list(
-      await _dio.get('/families/$familyId/pending-decisions', options: _auth),
-      'decisions');
+    await _dio.get('/families/$familyId/pending-decisions', options: _auth),
+    'decisions',
+  );
 
   /// Resolve a pending decision: accept the unmatched event onto the calendar
   /// as a normal day (task typing then flows through the member's task rules).
   /// Optional start/end override the source event's own times.
+  ///
+  /// For a routing decision (a shared family calendar), [routeToLinkIds] says
+  /// whose the event is — the sibling questions asked of the other members are
+  /// answered by the same call. Pass [ruleMatchOp] + [ruleMatchValue] to also
+  /// leave a `keep` rule behind, so events like it route themselves from now on
+  /// (admin only, and the rule has to match this event).
   Future<void> resolvePendingDecision(
     String familyId,
     String decisionId, {
     String? startTime,
     String? endTime,
+    List<String>? routeToLinkIds,
+    String? ruleMatchOp,
+    String? ruleMatchValue,
   }) async {
     await _dio.post(
       '/families/$familyId/pending-decisions/$decisionId/resolve',
       data: {
         if (startTime != null) 'startTime': startTime,
         if (endTime != null) 'endTime': endTime,
+        if (routeToLinkIds != null) 'routeToLinkIds': routeToLinkIds,
+        if (ruleMatchOp != null && ruleMatchValue != null)
+          'rule': {
+            'matchField': 'summary',
+            'matchOp': ruleMatchOp,
+            'matchValue': ruleMatchValue,
+          },
       },
       options: _auth,
     );
   }
 
-  Future<void> dismissPendingDecision(String familyId, String decisionId) async {
-    await _dio.post('/families/$familyId/pending-decisions/$decisionId/dismiss',
-        data: <String, dynamic>{}, options: _auth);
+  Future<void> dismissPendingDecision(
+    String familyId,
+    String decisionId,
+  ) async {
+    await _dio.post(
+      '/families/$familyId/pending-decisions/$decisionId/dismiss',
+      data: <String, dynamic>{},
+      options: _auth,
+    );
   }
 
   // --- Conflicts (agenda overlaps) ------------------------------------------
@@ -612,18 +825,17 @@ class ApiClient {
     String familyId, {
     String? status,
     String? memberId,
-  }) async =>
-      _list(
-        await _dio.get(
-          '/families/$familyId/conflicts',
-          queryParameters: {
-            if (status != null) 'status': status,
-            if (memberId != null) 'memberId': memberId,
-          },
-          options: _auth,
-        ),
-        'conflicts',
-      );
+  }) async => _list(
+    await _dio.get(
+      '/families/$familyId/conflicts',
+      queryParameters: {
+        if (status != null) 'status': status,
+        if (memberId != null) 'memberId': memberId,
+      },
+      options: _auth,
+    ),
+    'conflicts',
+  );
 
   /// Resolve a conflict: split/trim the lower-priority event around the
   /// higher-priority one (task-gen then spawns the drop-off/pickup at the split).
@@ -655,15 +867,21 @@ class ApiClient {
 
   /// Dismiss a conflict: acknowledge the double-book and leave both events as-is.
   Future<void> dismissConflict(String familyId, String conflictId) async {
-    await _dio.post('/families/$familyId/conflicts/$conflictId/dismiss',
-        data: <String, dynamic>{}, options: _auth);
+    await _dio.post(
+      '/families/$familyId/conflicts/$conflictId/dismiss',
+      data: <String, dynamic>{},
+      options: _auth,
+    );
   }
 
   /// Revert a resolved conflict: undo a prior "split around it" decision,
   /// unmasking the event and putting the overlap back up for a fresh decision.
   Future<void> revertConflict(String familyId, String conflictId) async {
-    await _dio.post('/families/$familyId/conflicts/$conflictId/revert',
-        data: <String, dynamic>{}, options: _auth);
+    await _dio.post(
+      '/families/$familyId/conflicts/$conflictId/revert',
+      data: <String, dynamic>{},
+      options: _auth,
+    );
   }
 
   // --- Unified-calendar events -----------------------------------------------
@@ -692,10 +910,13 @@ class ApiClient {
 
   /// The member's target config, or null when none is designated.
   Future<Map<String, dynamic>?> getMemberCalendarTarget(
-      String familyId, String memberId) async {
+    String familyId,
+    String memberId,
+  ) async {
     final res = await _dio.get(
-        '/families/$familyId/members/$memberId/calendar-target',
-        options: _auth);
+      '/families/$familyId/members/$memberId/calendar-target',
+      options: _auth,
+    );
     return _obj(res)['target'] as Map<String, dynamic>?;
   }
 
@@ -714,7 +935,8 @@ class ApiClient {
       data: {
         'externalAccountId': externalAccountId,
         'targetCalendarId': targetCalendarId,
-        if (targetCalendarName != null) 'targetCalendarName': targetCalendarName,
+        if (targetCalendarName != null)
+          'targetCalendarName': targetCalendarName,
         if (alertMinutes != null) 'alertMinutes': alertMinutes,
       },
       options: _auth,
@@ -722,9 +944,14 @@ class ApiClient {
     return _obj(res);
   }
 
-  Future<void> clearMemberCalendarTarget(String familyId, String memberId) async {
-    await _dio.delete('/families/$familyId/members/$memberId/calendar-target',
-        options: _auth);
+  Future<void> clearMemberCalendarTarget(
+    String familyId,
+    String memberId,
+  ) async {
+    await _dio.delete(
+      '/families/$familyId/members/$memberId/calendar-target',
+      options: _auth,
+    );
   }
 
   // --- Task rules (per member; 6k/6n) ----------------------------------------
@@ -734,7 +961,10 @@ class ApiClient {
 
   /// The member's whole task-rule pipeline + every calendar's default:
   /// `{ rules: [...], defaults: { unified, links } }`.
-  Future<Map<String, dynamic>> getTaskRules(String familyId, String memberId) async =>
+  Future<Map<String, dynamic>> getTaskRules(
+    String familyId,
+    String memberId,
+  ) async =>
       _obj(await _dio.get(_taskRulesBase(familyId, memberId), options: _auth));
 
   Future<Map<String, dynamic>> createTaskRule(
@@ -795,15 +1025,28 @@ class ApiClient {
     );
   }
 
-  Future<void> deleteTaskRule(String familyId, String memberId, String ruleId) async {
-    await _dio.delete('${_taskRulesBase(familyId, memberId)}/$ruleId', options: _auth);
+  Future<void> deleteTaskRule(
+    String familyId,
+    String memberId,
+    String ruleId,
+  ) async {
+    await _dio.delete(
+      '${_taskRulesBase(familyId, memberId)}/$ruleId',
+      options: _auth,
+    );
   }
 
   /// Reorder the rules visible in one calendar's pipeline (new order of visible ids).
   Future<void> reorderTaskRules(
-      String familyId, String memberId, List<String> ruleIds) async {
-    await _dio.put('${_taskRulesBase(familyId, memberId)}/order',
-        data: {'ruleIds': ruleIds}, options: _auth);
+    String familyId,
+    String memberId,
+    List<String> ruleIds,
+  ) async {
+    await _dio.put(
+      '${_taskRulesBase(familyId, memberId)}/order',
+      data: {'ruleIds': ruleIds},
+      options: _auth,
+    );
   }
 
   /// Set a calendar's terminal default; `linkId` null = the unified calendar.

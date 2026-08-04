@@ -195,6 +195,89 @@ END:VCALENDAR`;
     expect(hashOccurrence(a!)).not.toBe(hashOccurrence({ ...a!, allDay: true }));
   });
 
+  it('reads a source event’s geocode (Apple structured location, else bare GEO)', () => {
+    const ics = `BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//test//test//EN
+BEGIN:VEVENT
+UID:pinned-1
+DTSTART:20260105T150000Z
+DTEND:20260105T153000Z
+SUMMARY:Swim lesson
+LOCATION:Springfield Rec Center
+GEO:37.331686;-122.030656
+X-APPLE-STRUCTURED-LOCATION;VALUE=URI;X-ADDRESS=123 Main St\\, Springfield;X-AP
+ PLE-RADIUS=72.5;X-TITLE=Springfield Rec Center:geo:37.331686,-122.030656
+END:VEVENT
+BEGIN:VEVENT
+UID:geo-only-1
+DTSTART:20260106T150000Z
+DTEND:20260106T153000Z
+SUMMARY:Dentist
+LOCATION:Dr. Nick
+GEO:40.7128;-74.006
+END:VEVENT
+BEGIN:VEVENT
+UID:text-only-1
+DTSTART:20260107T150000Z
+DTEND:20260107T153000Z
+SUMMARY:Playdate
+LOCATION:The park
+END:VEVENT
+END:VCALENDAR`;
+    const byUid = new Map(
+      parseAndExpand(ics, {
+        windowStart: new Date('2026-01-01T00:00:00Z'),
+        windowEnd: new Date('2026-02-01T00:00:00Z'),
+      }).map((o) => [o.uid, o]),
+    );
+    // The structured location wins: it carries the place's name and address
+    // alongside the coordinates, which is what we re-emit on the way out.
+    expect(byUid.get('pinned-1')?.locationGeo).toEqual({
+      lat: 37.331686,
+      lon: -122.030656,
+      title: 'Springfield Rec Center',
+      address: '123 Main St, Springfield',
+      radius: 72.5,
+    });
+    expect(byUid.get('geo-only-1')?.locationGeo).toEqual({ lat: 40.7128, lon: -74.006 });
+    // Free text alone stays free text — nothing to route to.
+    expect(byUid.get('text-only-1')?.locationGeo).toBeNull();
+  });
+
+  it('carries a recurring series’ geocode onto every expanded occurrence', () => {
+    const ics = `BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//test//test//EN
+BEGIN:VEVENT
+UID:weekly-geo
+DTSTART:20260105T150000Z
+DTEND:20260105T153000Z
+RRULE:FREQ=WEEKLY;COUNT=3
+SUMMARY:Piano
+LOCATION:Music School
+GEO:41.5;-72.5
+END:VEVENT
+END:VCALENDAR`;
+    const occ = parseAndExpand(ics, {
+      windowStart: new Date('2026-01-01T00:00:00Z'),
+      windowEnd: new Date('2026-03-01T00:00:00Z'),
+    });
+    expect(occ).toHaveLength(3);
+    expect(occ.every((o) => o.locationGeo?.lat === 41.5)).toBe(true);
+  });
+
+  it('folds the geocode into the content hash (a re-pinned place is a change)', () => {
+    const [a] = parseAndExpand(SAMPLE_ICS, {
+      windowStart: new Date('2026-01-10T00:00:00Z'),
+      windowEnd: new Date('2026-01-11T00:00:00Z'),
+    });
+    expect(a).toBeDefined();
+    expect(hashOccurrence(a!)).not.toBe(
+      hashOccurrence({ ...a!, locationGeo: { lat: 1, lon: 2 } }),
+    );
+  });
+
   it('produces stable, change-sensitive content hashes', () => {
     const [a] = parseAndExpand(SAMPLE_ICS, {
       windowStart: new Date('2026-01-01T00:00:00Z'),
@@ -332,6 +415,49 @@ END:VCALENDAR`;
     );
     expect(ics).toContain('GEO:40.7128;-74.006');
     expect(ics).toContain("X-TITLE=Children's House");
+  });
+
+  it('reserves the travel block so Apple shows travel time without being asked', () => {
+    const geocoded = {
+      uid: 'task-travel',
+      sequence: 0,
+      start: new Date('2026-07-02T22:30:00Z'),
+      end: new Date('2026-07-02T22:45:00Z'),
+      summary: 'Pickup — Poppy',
+      location: 'Springfield Elementary',
+      locationGeo: { lat: 37.331686, lon: -122.030656 },
+    };
+    const ics = unfold(buildStoredEventICalendar({ ...geocoded, travelTimeMinutes: 15 }));
+    expect(ics).toContain('X-APPLE-TRAVEL-DURATION;VALUE=DURATION:PT15M');
+    expect(ics).toContain('X-APPLE-TRAVEL-ADVISORY-BEHAVIOR:AUTOMATIC');
+
+    // No minutes ⇒ the advisory flag only, i.e. the pre-existing behaviour.
+    const noTravel = unfold(buildStoredEventICalendar(geocoded));
+    expect(noTravel).toContain('X-APPLE-TRAVEL-ADVISORY-BEHAVIOR:AUTOMATIC');
+    expect(noTravel).not.toContain('X-APPLE-TRAVEL-DURATION');
+
+    // Minutes on a free-text location still reserve the block — the caller
+    // decides what deserves one (a human's own override does, an estimate
+    // can't be made without coordinates); this layer just emits it.
+    const textOnly = unfold(
+      buildStoredEventICalendar({
+        ...geocoded,
+        locationGeo: null,
+        travelTimeMinutes: 25,
+      }),
+    );
+    expect(textOnly).toContain('X-APPLE-TRAVEL-DURATION;VALUE=DURATION:PT25M');
+
+    // Nowhere to go at all ⇒ nothing travel-related, block or flag.
+    const noLocation = unfold(
+      buildStoredEventICalendar({
+        ...geocoded,
+        location: undefined,
+        locationGeo: null,
+        travelTimeMinutes: 25,
+      }),
+    );
+    expect(noLocation).not.toContain('X-APPLE-TRAVEL');
   });
 
   it('reads the calendar timezone from X-WR-TIMEZONE when present', () => {

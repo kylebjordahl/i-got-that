@@ -91,19 +91,26 @@ export const OverrideMatchOp = z.enum([
 export type OverrideMatchOp = z.infer<typeof OverrideMatchOp>;
 
 /**
- * What a matched override rule does on an exception feed. Three outcomes shape
- * the covered baseline day — `cancel_day` drops it, `modify_day` patches its
- * hours, `ignore` passes through (the baseline stands) — and `add_event` puts
- * the feed event itself on the calendar *in addition to* the baseline day,
- * leaving that day untouched (a school feed's "Community Dinner": the family
- * attends, the school day is unaffected). Task typing is NOT decided here —
- * that's the task-rule pipeline.
+ * What a matched link rule does. Four outcomes belong to an *exception* feed:
+ * three shape the covered baseline day — `cancel_day` drops it, `modify_day`
+ * patches its hours, `ignore` passes through (the baseline stands) — and
+ * `add_event` puts the feed event itself on the calendar *in addition to* the
+ * baseline day, leaving that day untouched (a school feed's "Community Dinner":
+ * the family attends, the school day is unaffected).
+ *
+ * `keep` is the one outcome of a *routed* standard feed (a shared family
+ * calendar): the matched event is routed onto this link's member calendar. On a
+ * routed feed a link's rules are a filter, not a schedule override — an event
+ * no link keeps is routed nowhere and raises a routing decision.
+ *
+ * Task typing is NOT decided here — that's the task-rule pipeline.
  */
 export const OverrideOutcome = z.enum([
   'cancel_day',
   'modify_day',
   'ignore',
   'add_event',
+  'keep',
 ]);
 export type OverrideOutcome = z.infer<typeof OverrideOutcome>;
 
@@ -118,6 +125,16 @@ export type TaskResultType = z.infer<typeof TaskResultType>;
 /** An unmatched exception-feed event awaiting a human decision — never guessed. */
 export const PendingDecisionStatus = z.enum(['pending', 'resolved', 'dismissed']);
 export type PendingDecisionStatus = z.infer<typeof PendingDecisionStatus>;
+
+/**
+ * What a pending decision is asking. `exception` — an exception-feed event that
+ * matched no override rule: does this change the baseline day, and how?
+ * (scoped to one feed↔member link). `routing` — an event on a routed shared
+ * family calendar that no link's `keep` rules claimed: *whose* is it? (scoped to
+ * the feed, since the answer is a set of that feed's member links).
+ */
+export const PendingDecisionKind = z.enum(['exception', 'routing']);
+export type PendingDecisionKind = z.infer<typeof PendingDecisionKind>;
 
 /**
  * An overlap on one member's unified calendar (they can't be in two places at
@@ -270,6 +287,8 @@ export const CreateFeedInput = z
   .object({
     kind: FeedKind.default('ics'),
     mode: FeedMode,
+    /** Shared family calendar: route events per member via the links' `keep` rules. */
+    routed: z.boolean().default(false),
     refreshMinutes: RefreshMinutes,
     // ics
     url: z.string().url().optional(),
@@ -304,6 +323,11 @@ export const CreateFeedInput = z
     if (v.mode === 'busy' && v.kind !== 'google') {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['mode'], message: "mode 'busy' requires kind 'google'" });
     }
+    // Routing filters a feed whose events mean what they say; an exception
+    // feed's events are already schedule overrides and a busy feed's are opaque.
+    if (v.routed && v.mode !== 'standard') {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['routed'], message: "routing requires mode 'standard'" });
+    }
   });
 export type CreateFeedInput = z.infer<typeof CreateFeedInput>;
 
@@ -313,6 +337,14 @@ export type CreateFeedInput = z.infer<typeof CreateFeedInput>;
  */
 export const UpdateFeedInput = z.object({
   mode: FeedMode.optional(),
+  /**
+   * Turn this feed into a **shared family calendar** (or back). Routing is a
+   * property of the feed, not of one member's link: flip it once, from any
+   * member's copy of the calendar, and every member linked to the feed routes
+   * through their link's `keep` rules. Only valid on `standard` feeds; changing
+   * the mode away from `standard` clears it.
+   */
+  routed: z.boolean().optional(),
   refreshMinutes: z.number().int().min(15).max(10080).optional(),
   status: FeedStatus.optional(),
   /** See `IanaTimezone`. `null` clears an existing manual override. */
@@ -384,6 +416,15 @@ export const UpdateFamilyMemberInput = z.object({
   requiresCaretaker: z.boolean().optional(),
   generatesFamilyTasks: z.boolean().optional(),
   color: HexColor.optional(),
+  /** Where this person's day starts and ends. Pass `null` to clear it. */
+  homeLocation: z.string().max(256).nullable().optional(),
+  /**
+   * Home's coordinates, geocoded client-side like a feed's location. This is
+   * the origin travel time is measured from when a trip has no earlier event to
+   * leave from — without it we can only fall back to a nominal allowance.
+   * Pass `null` to clear (e.g. the address was edited back to free text).
+   */
+  homeLocationGeo: GeoLocation.nullable().optional(),
 });
 export type UpdateFamilyMemberInput = z.infer<typeof UpdateFamilyMemberInput>;
 
@@ -459,6 +500,17 @@ export const SetTaskDurationInput = z.object({
 export type SetTaskDurationInput = z.infer<typeof SetTaskDurationInput>;
 
 /**
+ * Set (or clear) how much travel time a calendar event carries out to the
+ * member's target calendar — Apple's travel block. An explicit value wins over
+ * everything the mirror would work out on its own, `0` says this trip needs no
+ * travel time at all, and `null` hands it back to the estimate. Capped at 4h.
+ */
+export const SetEventTravelTimeInput = z.object({
+  travelMinutes: z.number().int().min(0).max(240).nullable(),
+});
+export type SetEventTravelTimeInput = z.infer<typeof SetEventTravelTimeInput>;
+
+/**
  * How to resolve a conflict's split (design §8b). Every field is optional — an
  * empty body is the plain split: the lower-priority loser trimmed flush around
  * the higher-priority winner, both halves kept, no travel buffer.
@@ -480,7 +532,7 @@ export type ResolveConflictInput = z.infer<typeof ResolveConflictInput>;
 
 // --- Override rules (the feed's schedule pipeline) ------------------------
 
-/** `cancel_day` / `ignore` / `add_event`: no parameters. */
+/** `cancel_day` / `ignore` / `add_event` / `keep`: no parameters. */
 export const EmptyOutcomeParams = z.object({}).strict();
 export type EmptyOutcomeParams = z.infer<typeof EmptyOutcomeParams>;
 
@@ -501,6 +553,7 @@ const paramsSchemaFor: Record<OverrideOutcome, z.ZodTypeAny> = {
   modify_day: ModifyDayParams,
   ignore: EmptyOutcomeParams,
   add_event: EmptyOutcomeParams,
+  keep: EmptyOutcomeParams,
 };
 
 /**
@@ -577,12 +630,13 @@ function refineOverrideRule(
 }
 
 /**
- * Create an override rule on a feed↔member link. Rules run in `position` order,
- * first match wins, and only shape the SCHEDULE: either the baseline day an
- * exception event covers (`cancel_day`/`modify_day`/`ignore`) or, with
- * `add_event`, the event itself joining the calendar alongside that day. Valid
- * only on exception-feed links (enforced server-side where the feed mode is
- * known).
+ * Create a rule on a feed↔member link. Rules run in `position` order, first
+ * match wins, and only shape the SCHEDULE. On an *exception* feed that means
+ * the baseline day the event covers (`cancel_day`/`modify_day`/`ignore`), or —
+ * with `add_event` — the event itself joining the calendar alongside that day.
+ * On a *routed* standard feed the one outcome is `keep`: the matched event is
+ * routed onto this link's member calendar. Which outcomes a feed accepts is
+ * enforced server-side, where the feed's mode + routing flag are known.
  */
 export const CreateLinkRuleInput = z
   .object({
@@ -679,15 +733,51 @@ export type SetTaskDefaultInput = z.infer<typeof SetTaskDefaultInput>;
 // --- Pending decisions -----------------------------------------------------
 
 /**
- * Resolve a pending decision: accept the unmatched exception event onto the
- * calendar as a normal scheduled day. Task typing then flows through the
- * member's task rules like any other event. Optional time adjustments override
- * the source event's own times.
+ * The `keep` rule a routing decision may leave behind ("do this every time"):
+ * the matcher only — the outcome is always `keep`, and the rule is written onto
+ * every link the event was routed to. Server-side it must match the event being
+ * resolved, so "make it recurring" can't silently route nothing.
  */
-export const ResolvePendingDecisionInput = z.object({
-  startTime: TimeOfDay.optional(),
-  endTime: TimeOfDay.optional(),
-});
+export const RoutingRuleInput = z
+  .object({
+    matchField: OverrideMatchField.default('summary'),
+    matchOp: OverrideMatchOp.default('contains'),
+    matchValue: z.string().min(1).optional(),
+  })
+  .superRefine(refineMatcher);
+export type RoutingRuleInput = z.infer<typeof RoutingRuleInput>;
+
+/**
+ * Resolve a pending decision.
+ *
+ * `exception` decisions: accept the unmatched exception event onto the member's
+ * calendar as a normal scheduled day; task typing then flows through their task
+ * rules like any other event. Optional time adjustments override the source
+ * event's own times.
+ *
+ * `routing` decisions (a shared family calendar): `routeToLinkIds` names which
+ * of the feed's member links the event belongs to — one or many. Without `rule`
+ * that's a one-off routing of this event only; with `rule` a `keep` rule is
+ * written onto each chosen link as well, so events like it route themselves
+ * from now on. A rule routes future events at their own times, so the time
+ * adjustments are one-off-only.
+ */
+export const ResolvePendingDecisionInput = z
+  .object({
+    startTime: TimeOfDay.optional(),
+    endTime: TimeOfDay.optional(),
+    routeToLinkIds: z.array(Id).min(1).optional(),
+    rule: RoutingRuleInput.optional(),
+  })
+  .superRefine((v, ctx) => {
+    if (v.rule && (v.startTime || v.endTime)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['rule'],
+        message: 'time adjustments are one-off only; a routing rule keeps each event’s own times',
+      });
+    }
+  });
 export type ResolvePendingDecisionInput = z.infer<typeof ResolvePendingDecisionInput>;
 
 // --- Family settings -------------------------------------------------------

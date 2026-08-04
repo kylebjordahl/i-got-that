@@ -15,9 +15,10 @@ const _weekdayLabels = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
 /// Feed setup (6g): how one source calendar shapes a member's SCHEDULE. Feed
 /// type (standard / exception-only), the baseline for normal days on exception
-/// feeds, and the override pipeline — cancel/modify/ignore, first match wins,
-/// unmatched exception events become pending decisions. Task typing lives
-/// separately in Task rules (6k).
+/// feeds, and the rule pipeline — cancel/modify/ignore on an exception feed,
+/// or `keep` on a routed shared family calendar (one calendar for the whole
+/// family, split per person). First match wins; anything unmatched becomes a
+/// pending decision. Task typing lives separately in Task rules (6k).
 class FeedBaselineScreen extends ConsumerStatefulWidget {
   const FeedBaselineScreen({
     super.key,
@@ -53,7 +54,10 @@ class _FeedBaselineScreenState extends ConsumerState<FeedBaselineScreen> {
     final mask = ex.weekdayMask ?? 31;
     _weekdays
       ..clear()
-      ..addAll([for (var i = 0; i < 7; i++) if ((mask & (1 << i)) != 0) i]);
+      ..addAll([
+        for (var i = 0; i < 7; i++)
+          if ((mask & (1 << i)) != 0) i,
+      ]);
     _location.text = ex.location ?? '';
     _locationGeo = ex.locationGeo;
     _dayStart.text = ex.dayStart ?? '08:30';
@@ -84,17 +88,38 @@ class _FeedBaselineScreenState extends ConsumerState<FeedBaselineScreen> {
     setState(() => _busy = true);
     try {
       final familyId = await ref.read(familyProvider.future);
-      await ref.read(apiClientProvider).updateFeed(familyId, _feed.id, mode: mode);
-      setState(() => _feed = FeedItem(
-            id: _feed.id,
-            kind: _feed.kind,
-            mode: mode,
-            url: _feed.url,
-            sourceCalendarName: _feed.sourceCalendarName,
-            timezone: _feed.timezone,
-            status: _feed.status,
-            accountKind: _feed.accountKind,
-          ));
+      await ref
+          .read(apiClientProvider)
+          .updateFeed(familyId, _feed.id, mode: mode);
+      // The server clears routing when a feed stops being a standard one.
+      setState(
+        () => _feed = _feed.copyWith(
+          mode: mode,
+          routed: mode == 'standard' && _feed.routed,
+        ),
+      );
+      _refresh();
+    } catch (e) {
+      setState(() => _error = '$e');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  /// Turn the feed into a shared family calendar (or back). Routing belongs to
+  /// the FEED, so this is the same switch every member linked to the calendar
+  /// sees — the copy says so, because flipping it here changes their setup too.
+  Future<void> _setRouted(bool routed) async {
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      final familyId = await ref.read(familyProvider.future);
+      await ref
+          .read(apiClientProvider)
+          .updateFeed(familyId, _feed.id, routed: routed);
+      setState(() => _feed = _feed.copyWith(routed: routed));
       _refresh();
     } catch (e) {
       setState(() => _error = '$e');
@@ -110,14 +135,18 @@ class _FeedBaselineScreenState extends ConsumerState<FeedBaselineScreen> {
     });
     try {
       final familyId = await ref.read(familyProvider.future);
-      await ref.read(apiClientProvider).updateMemberLink(
+      await ref
+          .read(apiClientProvider)
+          .updateMemberLink(
             familyId,
             _feed.id,
             widget.existingLink.id,
             weekdayMask: _isException ? _weekdayMask : null,
             dayStart: _isException ? _dayStart.text.trim() : null,
             dayEnd: _isException ? _dayEnd.text.trim() : null,
-            location: _location.text.trim().isEmpty ? null : _location.text.trim(),
+            location: _location.text.trim().isEmpty
+                ? null
+                : _location.text.trim(),
             // Only keep the geocode when the text still matches the picked place;
             // an empty field clears both. `null` is a real value here (clear).
             locationGeo: _location.text.trim().isEmpty ? null : _locationGeo,
@@ -134,28 +163,47 @@ class _FeedBaselineScreenState extends ConsumerState<FeedBaselineScreen> {
   Future<void> _unlink() async {
     final ok = await showDialog<bool>(
       context: context,
-      builder: (_) => AlertDialog(
+      // `dialogContext`, not this screen's `context`: the dialog is raised on
+      // MaterialApp's outer Navigator (showDialog's default), while `context`
+      // resolves to the inner content Navigator this screen was pushed onto
+      // (see `_AuthedRoot` in main.dart). Popping through it would pop *this
+      // screen* — back to the member detail — while the dialog stayed stuck on
+      // top and the awaited future never completed, so the unlink never ran.
+      builder: (dialogContext) => AlertDialog(
         title: const Text('Unlink feed?'),
-        content: Text('Stop synthesizing ${widget.member.relationName}\'s events '
-            'from this feed? Its events, rules, and generated tasks are removed.'),
+        content: Text(
+          'Stop synthesizing ${widget.member.relationName}\'s events '
+          'from this feed? Its events, rules, and generated tasks are removed.',
+        ),
         actions: [
-          TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Cancel')),
-          PillButton(label: 'Unlink', variant: PillVariant.white, onPressed: () => Navigator.of(context).pop(true)),
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('Cancel'),
+          ),
+          PillButton(
+            label: 'Unlink',
+            variant: PillVariant.white,
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+          ),
         ],
       ),
     );
     if (ok != true) return;
     try {
       final familyId = await ref.read(familyProvider.future);
-      await ref.read(apiClientProvider).deleteMemberLink(familyId, _feed.id, widget.existingLink.id);
+      await ref
+          .read(apiClientProvider)
+          .deleteMemberLink(familyId, _feed.id, widget.existingLink.id);
       _refresh();
       if (mounted) Navigator.of(context).pop(true);
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text('Unlink failed: $e'),
-          margin: snackBarMarginAboveNav(context),
-        ));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Unlink failed: $e'),
+            margin: snackBarMarginAboveNav(context),
+          ),
+        );
       }
     }
   }
@@ -178,7 +226,9 @@ class _FeedBaselineScreenState extends ConsumerState<FeedBaselineScreen> {
                   const SizedBox(height: 12),
                   AppCard(
                     child: SettingRow(
-                      icon: _feed.kind == 'ics' ? Icons.rss_feed_rounded : Icons.calendar_month_rounded,
+                      icon: _feed.kind == 'ics'
+                          ? Icons.rss_feed_rounded
+                          : Icons.calendar_month_rounded,
                       iconColor: AppColors.feedBlue,
                       title: _feed.displayName,
                       subtitle: _feed.sourceLabel,
@@ -198,6 +248,31 @@ class _FeedBaselineScreenState extends ConsumerState<FeedBaselineScreen> {
                       'feed and set up a new one.',
                       style: AppText.subtitle,
                     ),
+                    const SizedBox(height: 24),
+                    const SectionEyebrow(
+                      'Where this time is spent',
+                      color: AppColors.purple,
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      'Optional, and yours to state — nothing about place ever '
+                      'comes out of the source calendar. Pick a place and these '
+                      'blocks show it, and a drop-off or pickup that follows one '
+                      'gets its travel time measured from here.',
+                      style: AppText.subtitle,
+                    ),
+                    const SizedBox(height: 12),
+                    AppCard(
+                      child: LocationPickerField(
+                        controller: _location,
+                        geo: _locationGeo,
+                        geocoder: ref.watch(geocoderProvider),
+                        onChanged: (_, geo) =>
+                            setState(() => _locationGeo = geo),
+                        label: 'Location',
+                        hint: 'e.g. the office',
+                      ),
+                    ),
                   ] else ...[
                     Text(
                       'Exception-only feeds are empty on normal days and carry only '
@@ -206,15 +281,23 @@ class _FeedBaselineScreenState extends ConsumerState<FeedBaselineScreen> {
                     ),
                     const SizedBox(height: 12),
                     _Segmented(
-                      options: const [('standard', 'Standard'), ('exception', 'Exception-only')],
+                      options: const [
+                        ('standard', 'Standard'),
+                        ('exception', 'Exception-only'),
+                      ],
                       value: _feed.mode,
-                      activeColor: _isException ? AppColors.amber : AppColors.indigo,
+                      activeColor: _isException
+                          ? AppColors.amber
+                          : AppColors.indigo,
                       onChanged: _busy ? null : _setMode,
                     ),
                   ],
                   if (_isException) ...[
                     const SizedBox(height: 24),
-                    const SectionEyebrow('Baseline — the normal school day', color: AppColors.amber),
+                    const SectionEyebrow(
+                      'Baseline — the normal school day',
+                      color: AppColors.amber,
+                    ),
                     const SizedBox(height: 12),
                     AppCard(
                       child: Column(
@@ -228,17 +311,24 @@ class _FeedBaselineScreenState extends ConsumerState<FeedBaselineScreen> {
                                 _DayChip(
                                   label: _weekdayLabels[i],
                                   selected: _weekdays.contains(i),
-                                  onTap: () => setState(() =>
-                                      _weekdays.contains(i) ? _weekdays.remove(i) : _weekdays.add(i)),
+                                  onTap: () => setState(
+                                    () => _weekdays.contains(i)
+                                        ? _weekdays.remove(i)
+                                        : _weekdays.add(i),
+                                  ),
                                 ),
                             ],
                           ),
                           const SizedBox(height: 16),
                           Row(
                             children: [
-                              Expanded(child: _field(_dayStart, 'Day starts', 'HH:MM')),
+                              Expanded(
+                                child: _field(_dayStart, 'Day starts', 'HH:MM'),
+                              ),
                               const SizedBox(width: 12),
-                              Expanded(child: _field(_dayEnd, 'Day ends', 'HH:MM')),
+                              Expanded(
+                                child: _field(_dayEnd, 'Day ends', 'HH:MM'),
+                              ),
                             ],
                           ),
                           const SizedBox(height: 14),
@@ -246,27 +336,68 @@ class _FeedBaselineScreenState extends ConsumerState<FeedBaselineScreen> {
                             controller: _location,
                             geo: _locationGeo,
                             geocoder: ref.watch(geocoderProvider),
-                            onChanged: (_, geo) => setState(() => _locationGeo = geo),
+                            onChanged: (_, geo) =>
+                                setState(() => _locationGeo = geo),
                           ),
                         ],
                       ),
                     ),
                     const SizedBox(height: 24),
-                    _OverridePipeline(feed: _feed, link: widget.existingLink),
-                  ] else ...[
-                    const SizedBox(height: 16),
-                    Text(
-                      'Standard feeds pass events through as-is. What tasks they '
-                      'generate is set in Task rules (Family logistics).',
-                      style: AppText.subtitle,
+                    _OverridePipeline(
+                      feed: _feed,
+                      link: widget.existingLink,
+                      member: widget.member,
                     ),
+                  ] else if (!_feed.isBusy) ...[
+                    const SizedBox(height: 24),
+                    const SectionEyebrow(
+                      'Shared family calendar',
+                      color: AppColors.green,
+                    ),
+                    const SizedBox(height: 12),
+                    AppCard(
+                      child: SwitchRow(
+                        icon: Icons.call_split_rounded,
+                        iconColor: AppColors.green,
+                        title: 'Route events per person',
+                        subtitle:
+                            'One calendar for the whole family — each person keeps '
+                            'only the events that are theirs. It’s a setting on the '
+                            'calendar itself, so it applies to everyone linked to it.',
+                        value: _feed.isRouted,
+                        onChanged: _busy ? null : _setRouted,
+                      ),
+                    ),
+                    if (_feed.isRouted) ...[
+                      const SizedBox(height: 24),
+                      _OverridePipeline(
+                        feed: _feed,
+                        link: widget.existingLink,
+                        member: widget.member,
+                      ),
+                    ] else ...[
+                      const SizedBox(height: 16),
+                      Text(
+                        'Off, this feed passes every event through to '
+                        '${widget.member.relationName} as-is. What tasks they generate '
+                        'is set in Task rules (Family logistics).',
+                        style: AppText.subtitle,
+                      ),
+                    ],
                   ],
                   if (_error != null) ...[
                     const SizedBox(height: 16),
-                    Text(_error!, style: font(kBodyFont, 13, 500, color: AppColors.coral)),
+                    Text(
+                      _error!,
+                      style: font(kBodyFont, 13, 500, color: AppColors.coral),
+                    ),
                   ],
                   const SizedBox(height: 28),
-                  _PrimaryButton(label: 'Save linked feed', busy: _busy, onPressed: _busy ? null : _save),
+                  _PrimaryButton(
+                    label: 'Save linked feed',
+                    busy: _busy,
+                    onPressed: _busy ? null : _save,
+                  ),
                   const SizedBox(height: 12),
                   _RemoveButton(label: 'Unlink feed', onTap: _unlink),
                 ],
@@ -278,44 +409,66 @@ class _FeedBaselineScreenState extends ConsumerState<FeedBaselineScreen> {
     );
   }
 
-  Widget _field(TextEditingController c, String label, String hint) => TextField(
+  Widget _field(TextEditingController c, String label, String hint) =>
+      TextField(
         controller: c,
         decoration: InputDecoration(labelText: label, hintText: hint),
       );
 }
 
-/// The override pipeline (schedule only; first match wins): incoming event →
-/// rules in order → the unmatched terminal (pending decision). Rules edit via
-/// the 6m bottom sheet.
+/// The link's rule pipeline (schedule only; first match wins): incoming event →
+/// rules in order → the unmatched terminal (a pending decision). On an
+/// exception feed the rules override the baseline day; on a routed shared
+/// family calendar they pick out the events that are this member's. Rules edit
+/// via the 6m bottom sheet.
 class _OverridePipeline extends ConsumerWidget {
-  const _OverridePipeline({required this.feed, required this.link});
+  const _OverridePipeline({
+    required this.feed,
+    required this.link,
+    required this.member,
+  });
   final FeedItem feed;
   final FeedLink link;
+  final Member member;
 
-  ({String feedId, String linkId}) get _key => (feedId: feed.id, linkId: link.id);
+  ({String feedId, String linkId}) get _key =>
+      (feedId: feed.id, linkId: link.id);
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final rules = ref.watch(linkRulesProvider(_key)).valueOrNull ?? const <OverrideRule>[];
+    final rules =
+        ref.watch(linkRulesProvider(_key)).valueOrNull ??
+        const <OverrideRule>[];
 
     Future<void> reorder(int oldIndex, int newIndex) async {
       final ids = rules.map((r) => r.id).toList();
       final moved = ids.removeAt(oldIndex);
       ids.insert(newIndex, moved);
       final familyId = await ref.read(familyProvider.future);
-      await ref.read(apiClientProvider).reorderLinkRules(familyId, feed.id, link.id, ids);
+      await ref
+          .read(apiClientProvider)
+          .reorderLinkRules(familyId, feed.id, link.id, ids);
       ref.invalidate(linkRulesProvider(_key));
       ref.invalidate(calendarEventsProvider);
       ref.invalidate(pendingDecisionsProvider);
     }
 
+    final routed = feed.isRouted;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const SectionEyebrow('Override pipeline', color: AppColors.purple),
+        SectionEyebrow(
+          routed ? 'Routing rules' : 'Override pipeline',
+          color: AppColors.purple,
+        ),
         const SizedBox(height: 8),
-        Text('How feed exceptions change the baseline. Drag to reorder · first match wins.',
-            style: AppText.subtitle),
+        Text(
+          routed
+              ? 'Which of this calendar’s events are ${member.relationName}’s. '
+                    'Drag to reorder · first match wins.'
+              : 'How feed exceptions change the baseline. Drag to reorder · first match wins.',
+          style: AppText.subtitle,
+        ),
         const SizedBox(height: 12),
         AppCard(
           child: SettingRow(
@@ -340,16 +493,36 @@ class _OverridePipeline extends ConsumerWidget {
                   child: _RuleCard(
                     index: i,
                     rule: rules[i],
-                    onTap: () => showOverrideRuleSheet(context, ref, feed: feed, link: link, existing: rules[i]),
+                    onTap: () => showOverrideRuleSheet(
+                      context,
+                      ref,
+                      feed: feed,
+                      link: link,
+                      memberLabel: member.relationName,
+                      existing: rules[i],
+                    ),
                   ),
                 ),
             ],
           ),
         Center(
           child: TextButton.icon(
-            onPressed: () => showOverrideRuleSheet(context, ref, feed: feed, link: link),
-            icon: const Icon(Icons.add_rounded, size: 18, color: AppColors.purple),
-            label: Text('Add rule', style: font(kBodyFont, 13, 700, color: AppColors.purple)),
+            onPressed: () => showOverrideRuleSheet(
+              context,
+              ref,
+              feed: feed,
+              link: link,
+              memberLabel: member.relationName,
+            ),
+            icon: const Icon(
+              Icons.add_rounded,
+              size: 18,
+              color: AppColors.purple,
+            ),
+            label: Text(
+              'Add rule',
+              style: font(kBodyFont, 13, 700, color: AppColors.purple),
+            ),
           ),
         ),
         const SizedBox(height: 4),
@@ -362,12 +535,20 @@ class _OverridePipeline extends ConsumerWidget {
           ),
           child: Row(
             children: [
-              const Icon(Icons.help_outline_rounded, color: AppColors.amber, size: 18),
+              const Icon(
+                Icons.help_outline_rounded,
+                color: AppColors.amber,
+                size: 18,
+              ),
               const SizedBox(width: 10),
               Expanded(
                 child: Text(
-                  'Everything else — unmatched: not on the baseline and no rule '
-                  'matched → pending decision. The system won’t guess.',
+                  routed
+                      ? 'Everything else — no rule here matched: the event stays off '
+                            '${member.relationName}’s calendar. If nobody’s rules match '
+                            'it, it becomes a decision: whose is this?'
+                      : 'Everything else — unmatched: not on the baseline and no rule '
+                            'matched → pending decision. The system won’t guess.',
                   style: font(kBodyFont, 12, 500, color: AppColors.amber),
                 ),
               ),
@@ -380,17 +561,22 @@ class _OverridePipeline extends ConsumerWidget {
 }
 
 class _RuleCard extends StatelessWidget {
-  const _RuleCard({required this.index, required this.rule, required this.onTap});
+  const _RuleCard({
+    required this.index,
+    required this.rule,
+    required this.onTap,
+  });
   final int index;
   final OverrideRule rule;
   final VoidCallback onTap;
 
   Color get _outcomeColor => switch (rule.outcome) {
-        'cancel_day' => AppColors.coral,
-        'modify_day' => AppColors.amber,
-        'add_event' => AppColors.green,
-        _ => AppColors.textMuted,
-      };
+    'cancel_day' => AppColors.coral,
+    'modify_day' => AppColors.amber,
+    'add_event' => AppColors.green,
+    'keep' => AppColors.green,
+    _ => AppColors.textMuted,
+  };
 
   @override
   Widget build(BuildContext context) {
@@ -407,13 +593,21 @@ class _RuleCard extends StatelessWidget {
                 index: index,
                 child: const Padding(
                   padding: EdgeInsets.all(6),
-                  child: Icon(Icons.drag_indicator_rounded, color: AppColors.textMuted, size: 20),
+                  child: Icon(
+                    Icons.drag_indicator_rounded,
+                    color: AppColors.textMuted,
+                    size: 20,
+                  ),
                 ),
               ),
               const SizedBox(width: 4),
               Expanded(
-                child: Text(rule.matcher,
-                    maxLines: 2, overflow: TextOverflow.ellipsis, style: AppText.sectionItemTitle),
+                child: Text(
+                  rule.matcher,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: AppText.sectionItemTitle,
+                ),
               ),
               const SizedBox(width: 8),
               TintBadge(rule.outcomeLabel, color: _outcomeColor),
@@ -425,7 +619,9 @@ class _RuleCard extends StatelessWidget {
   }
 }
 
-/// Override-rule editor bottom sheet (6m): match + Then (cancel/modify/ignore).
+/// Rule editor bottom sheet (6m): match + Then (cancel/modify/ignore) on an
+/// exception feed. On a routed shared family calendar there is only one Then —
+/// keep the event here — so the sheet states it instead of offering a choice.
 /// [prefillMatchValue] seeds a new rule's match value (e.g. from an unmatched
 /// event's title) — ignored when editing an [existing] rule.
 Future<void> showOverrideRuleSheet(
@@ -435,6 +631,7 @@ Future<void> showOverrideRuleSheet(
   required FeedLink link,
   OverrideRule? existing,
   String? prefillMatchValue,
+  String? memberLabel,
 }) {
   return showModalBottomSheet<void>(
     context: context,
@@ -446,6 +643,7 @@ Future<void> showOverrideRuleSheet(
       link: link,
       existing: existing,
       prefillMatchValue: prefillMatchValue,
+      memberLabel: memberLabel,
     ),
   );
 }
@@ -456,11 +654,15 @@ class _OverrideRuleSheet extends ConsumerStatefulWidget {
     required this.link,
     this.existing,
     this.prefillMatchValue,
+    this.memberLabel,
   });
   final FeedItem feed;
   final FeedLink link;
   final OverrideRule? existing;
   final String? prefillMatchValue;
+
+  /// Whose calendar this link feeds — names the one outcome a routing rule has.
+  final String? memberLabel;
 
   @override
   ConsumerState<_OverrideRuleSheet> createState() => _OverrideRuleSheetState();
@@ -476,13 +678,14 @@ class _OverrideRuleSheetState extends ConsumerState<_OverrideRuleSheet> {
   String? _error;
 
   bool get _editing => widget.existing != null;
+  bool get _routing => widget.feed.isRouted;
 
   @override
   void initState() {
     super.initState();
     final ex = widget.existing;
     _matchOp = ex?.matchOp == 'regex' ? 'regex' : 'contains';
-    _outcome = ex?.outcome ?? 'cancel_day';
+    _outcome = ex?.outcome ?? (_routing ? 'keep' : 'cancel_day');
     _value.text = ex?.matchValue ?? widget.prefillMatchValue ?? '';
     _newStart.text = (ex?.params?['dayStart'] as String?) ?? '';
     _newEnd.text = (ex?.params?['dayEnd'] as String?) ?? '';
@@ -505,7 +708,9 @@ class _OverrideRuleSheetState extends ConsumerState<_OverrideRuleSheet> {
   }
 
   void _invalidate() {
-    ref.invalidate(linkRulesProvider((feedId: widget.feed.id, linkId: widget.link.id)));
+    ref.invalidate(
+      linkRulesProvider((feedId: widget.feed.id, linkId: widget.link.id)),
+    );
     ref.invalidate(calendarEventsProvider);
     ref.invalidate(pendingDecisionsProvider);
     ref.invalidate(unownedTasksProvider);
@@ -523,7 +728,10 @@ class _OverrideRuleSheetState extends ConsumerState<_OverrideRuleSheet> {
       final matchValue = _value.text.trim().isEmpty ? null : _value.text.trim();
       if (_editing) {
         await api.updateLinkRule(
-          familyId, widget.feed.id, widget.link.id, widget.existing!.id,
+          familyId,
+          widget.feed.id,
+          widget.link.id,
+          widget.existing!.id,
           matchField: 'summary',
           matchOp: _matchOp,
           outcome: _outcome,
@@ -532,7 +740,9 @@ class _OverrideRuleSheetState extends ConsumerState<_OverrideRuleSheet> {
         );
       } else {
         await api.createLinkRule(
-          familyId, widget.feed.id, widget.link.id,
+          familyId,
+          widget.feed.id,
+          widget.link.id,
           matchField: 'summary',
           matchOp: _matchOp,
           outcome: _outcome,
@@ -554,7 +764,14 @@ class _OverrideRuleSheetState extends ConsumerState<_OverrideRuleSheet> {
     setState(() => _busy = true);
     try {
       final familyId = await ref.read(familyProvider.future);
-      await ref.read(apiClientProvider).deleteLinkRule(familyId, widget.feed.id, widget.link.id, widget.existing!.id);
+      await ref
+          .read(apiClientProvider)
+          .deleteLinkRule(
+            familyId,
+            widget.feed.id,
+            widget.link.id,
+            widget.existing!.id,
+          );
       _invalidate();
       if (mounted) Navigator.of(context).pop();
     } catch (e) {
@@ -569,24 +786,41 @@ class _OverrideRuleSheetState extends ConsumerState<_OverrideRuleSheet> {
   Widget build(BuildContext context) {
     return SafeArea(
       child: SingleChildScrollView(
-        padding: EdgeInsets.fromLTRB(22, 4, 22, 28 + MediaQuery.of(context).viewInsets.bottom),
+        padding: EdgeInsets.fromLTRB(
+          22,
+          4,
+          22,
+          28 + MediaQuery.of(context).viewInsets.bottom,
+        ),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Row(
               children: [
-                Text(_editing ? 'Edit override rule' : 'New override rule', style: AppText.subPageTitle),
+                Text(
+                  _routing
+                      ? (_editing ? 'Edit routing rule' : 'New routing rule')
+                      : (_editing ? 'Edit override rule' : 'New override rule'),
+                  style: AppText.subPageTitle,
+                ),
                 const Spacer(),
                 if (_editing)
                   IconButton(
                     onPressed: _busy ? null : _delete,
-                    icon: const Icon(Icons.delete_outline_rounded, color: AppColors.coral),
+                    icon: const Icon(
+                      Icons.delete_outline_rounded,
+                      color: AppColors.coral,
+                    ),
                   ),
               ],
             ),
             const SizedBox(height: 4),
-            Text('${widget.feed.displayName} · exception feed', style: AppText.subtitle),
+            Text(
+              '${widget.feed.displayName} · '
+              '${_routing ? 'shared family calendar' : 'exception feed'}',
+              style: AppText.subtitle,
+            ),
             const SizedBox(height: 16),
             Text('MATCH', style: AppText.eyebrow()),
             const SizedBox(height: 8),
@@ -601,51 +835,95 @@ class _OverrideRuleSheetState extends ConsumerState<_OverrideRuleSheet> {
               controller: _value,
               decoration: InputDecoration(
                 labelText: 'Title ${_matchOp == 'regex' ? 'pattern' : 'value'}',
-                hintText: _matchOp == 'regex' ? '/no school|closed/i' : 'No School',
+                hintText: _matchOp == 'regex'
+                    ? '/no school|closed/i'
+                    : 'No School',
               ),
             ),
             const SizedBox(height: 20),
             Text('THEN', style: AppText.eyebrow()),
             const SizedBox(height: 8),
-            _Segmented(
-              options: const [
-                ('cancel_day', 'Cancel day'),
-                ('modify_day', 'Modify day'),
-                ('add_event', 'Add event'),
-                ('ignore', 'Ignore'),
-              ],
-              value: _outcome,
-              activeColor: AppColors.purple,
-              onChanged: (v) => setState(() => _outcome = v),
-            ),
+            if (_routing) ...[
+              // One outcome only — a routing rule's whole job is "this one's
+              // theirs" — so this states it rather than pretending to choose.
+              Row(
+                children: [
+                  const Icon(
+                    Icons.call_split_rounded,
+                    color: AppColors.green,
+                    size: 18,
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      widget.memberLabel == null
+                          ? 'Keep it on this calendar'
+                          : 'Keep it on ${widget.memberLabel}’s calendar',
+                      style: font(kBodyFont, 13, 700, color: AppColors.green),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 10),
+              Text(
+                'Everyone else on this shared calendar decides for themselves; an '
+                'event nobody keeps becomes a “whose is this?” decision.',
+                style: AppText.subtitle,
+              ),
+            ] else
+              _Segmented(
+                options: const [
+                  ('cancel_day', 'Cancel day'),
+                  ('modify_day', 'Modify day'),
+                  ('add_event', 'Add event'),
+                  ('ignore', 'Ignore'),
+                ],
+                value: _outcome,
+                activeColor: AppColors.purple,
+                onChanged: (v) => setState(() => _outcome = v),
+              ),
+            // The per-outcome extras below are exception-feed only — a routing
+            // rule's outcome is always `keep`, so none of them match.
             if (_outcome == 'cancel_day') ...[
               const SizedBox(height: 12),
-              Text('A matched day is dropped from the baseline entirely — nothing generates.',
-                  style: AppText.subtitle),
+              Text(
+                'A matched day is dropped from the baseline entirely — nothing generates.',
+                style: AppText.subtitle,
+              ),
             ] else if (_outcome == 'add_event') ...[
               const SizedBox(height: 12),
               Text(
-                  'The event itself joins the calendar (e.g. a community dinner), with its own '
-                  'times — the baseline day is untouched. What it generates is up to this '
-                  'calendar’s task rules.',
-                  style: AppText.subtitle),
+                'The event itself joins the calendar (e.g. a community dinner), with its own '
+                'times — the baseline day is untouched. What it generates is up to this '
+                'calendar’s task rules.',
+                style: AppText.subtitle,
+              ),
             ] else if (_outcome == 'modify_day') ...[
               const SizedBox(height: 12),
-              Text('Overrides the baseline’s hours for matched days.', style: AppText.subtitle),
+              Text(
+                'Overrides the baseline’s hours for matched days.',
+                style: AppText.subtitle,
+              ),
               const SizedBox(height: 10),
               Row(
                 children: [
                   Expanded(
                     child: TextField(
                       controller: _newStart,
-                      decoration: const InputDecoration(labelText: 'New day starts', hintText: 'HH:MM'),
+                      decoration: const InputDecoration(
+                        labelText: 'New day starts',
+                        hintText: 'HH:MM',
+                      ),
                     ),
                   ),
                   const SizedBox(width: 12),
                   Expanded(
                     child: TextField(
                       controller: _newEnd,
-                      decoration: const InputDecoration(labelText: 'New day ends', hintText: 'HH:MM'),
+                      decoration: const InputDecoration(
+                        labelText: 'New day ends',
+                        hintText: 'HH:MM',
+                      ),
                     ),
                   ),
                 ],
@@ -653,12 +931,19 @@ class _OverrideRuleSheetState extends ConsumerState<_OverrideRuleSheet> {
             ],
             if (_error != null) ...[
               const SizedBox(height: 12),
-              Text(_error!, style: font(kBodyFont, 13, 500, color: AppColors.coral)),
+              Text(
+                _error!,
+                style: font(kBodyFont, 13, 500, color: AppColors.coral),
+              ),
             ],
             const SizedBox(height: 20),
             SizedBox(
               width: double.infinity,
-              child: PillButton(label: 'Save rule', variant: PillVariant.indigo, onPressed: _busy ? null : _save),
+              child: PillButton(
+                label: 'Save rule',
+                variant: PillVariant.indigo,
+                onPressed: _busy ? null : _save,
+              ),
             ),
           ],
         ),
@@ -701,11 +986,19 @@ class _Segmented extends StatelessWidget {
                     color: v == value ? activeColor : Colors.transparent,
                     borderRadius: BorderRadius.circular(10),
                   ),
-                  child: Text(label,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: font(kBodyFont, 12, 700,
-                          color: v == value ? const Color(0xFF17162B) : AppColors.textSecondary)),
+                  child: Text(
+                    label,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: font(
+                      kBodyFont,
+                      12,
+                      700,
+                      color: v == value
+                          ? const Color(0xFF17162B)
+                          : AppColors.textSecondary,
+                    ),
+                  ),
                 ),
               ),
             ),
@@ -716,7 +1009,11 @@ class _Segmented extends StatelessWidget {
 }
 
 class _DayChip extends StatelessWidget {
-  const _DayChip({required this.label, required this.selected, required this.onTap});
+  const _DayChip({
+    required this.label,
+    required this.selected,
+    required this.onTap,
+  });
   final String label;
   final bool selected;
   final VoidCallback onTap;
@@ -730,18 +1027,30 @@ class _DayChip extends StatelessWidget {
         decoration: BoxDecoration(
           color: selected ? AppColors.amber : AppColors.bg,
           borderRadius: BorderRadius.circular(999),
-          border: Border.all(color: selected ? AppColors.amber : AppColors.border),
+          border: Border.all(
+            color: selected ? AppColors.amber : AppColors.border,
+          ),
         ),
-        child: Text(label,
-            style: font(kBodyFont, 13, 600,
-                color: selected ? const Color(0xFF2A1E05) : AppColors.textSecondary)),
+        child: Text(
+          label,
+          style: font(
+            kBodyFont,
+            13,
+            600,
+            color: selected ? const Color(0xFF2A1E05) : AppColors.textSecondary,
+          ),
+        ),
       ),
     );
   }
 }
 
 class _PrimaryButton extends StatelessWidget {
-  const _PrimaryButton({required this.label, required this.busy, required this.onPressed});
+  const _PrimaryButton({
+    required this.label,
+    required this.busy,
+    required this.onPressed,
+  });
   final String label;
   final bool busy;
   final VoidCallback? onPressed;
@@ -761,9 +1070,20 @@ class _PrimaryButton extends StatelessWidget {
               ? const SizedBox(
                   height: 20,
                   width: 20,
-                  child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF17162B)),
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: Color(0xFF17162B),
+                  ),
                 )
-              : Text(label, style: font(kBodyFont, 14.5, 700, color: const Color(0xFF17162B))),
+              : Text(
+                  label,
+                  style: font(
+                    kBodyFont,
+                    14.5,
+                    700,
+                    color: const Color(0xFF17162B),
+                  ),
+                ),
         ),
       ),
     );
@@ -793,9 +1113,16 @@ class _RemoveButton extends StatelessWidget {
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Icon(Icons.link_off_rounded, color: AppColors.coral, size: 19),
+              const Icon(
+                Icons.link_off_rounded,
+                color: AppColors.coral,
+                size: 19,
+              ),
               const SizedBox(width: 8),
-              Text(label, style: font(kBodyFont, 14, 700, color: AppColors.coral)),
+              Text(
+                label,
+                style: font(kBodyFont, 14, 700, color: AppColors.coral),
+              ),
             ],
           ),
         ),

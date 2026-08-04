@@ -29,6 +29,8 @@ class Member {
     this.generatesFamilyTasks = true,
     this.userId,
     this.color,
+    this.homeLocation,
+    this.homeLocationGeo,
   });
 
   final String id;
@@ -47,18 +49,31 @@ class Member {
   /// (see `theme/person_colors.dart`).
   final String? color;
 
+  /// Where this person's day starts and ends, as displayed.
+  final String? homeLocation;
+
+  /// Home's coordinates. The backend measures travel time from here when a
+  /// drop-off/pickup has no earlier event to leave from; free text alone can't.
+  final GeoLocation? homeLocationGeo;
+
   bool get hasLogin => userId != null;
 
   factory Member.fromJson(Map<String, dynamic> j) => Member(
-        id: j['id'] as String,
-        relationName: j['relationName'] as String,
-        isCaretaker: j['isCaretaker'] as bool? ?? false,
-        isAdmin: j['isAdmin'] as bool? ?? false,
-        requiresCaretaker: j['requiresCaretaker'] as bool? ?? false,
-        generatesFamilyTasks: j['generatesFamilyTasks'] as bool? ?? true,
-        userId: j['userId'] as String?,
-        color: j['color'] as String?,
-      );
+    id: j['id'] as String,
+    relationName: j['relationName'] as String,
+    isCaretaker: j['isCaretaker'] as bool? ?? false,
+    isAdmin: j['isAdmin'] as bool? ?? false,
+    requiresCaretaker: j['requiresCaretaker'] as bool? ?? false,
+    generatesFamilyTasks: j['generatesFamilyTasks'] as bool? ?? true,
+    userId: j['userId'] as String?,
+    color: j['color'] as String?,
+    homeLocation: j['homeLocation'] as String?,
+    homeLocationGeo: j['homeLocationGeo'] == null
+        ? null
+        : GeoLocation.fromJson(
+            (j['homeLocationGeo'] as Map).cast<String, dynamic>(),
+          ),
+  );
 }
 
 /// A user-owned external calendar account (Google / iCloud / CalDAV), reusable
@@ -79,21 +94,21 @@ class ExternalAccount {
   final String? username;
 
   String get kindLabel => switch (kind) {
-        'google' => 'Google',
-        'icloud' => 'iCloud',
-        _ => 'CalDAV',
-      };
+    'google' => 'Google',
+    'icloud' => 'iCloud',
+    _ => 'CalDAV',
+  };
 
   /// The mirror method an account of this kind produces (google→google, else caldav).
   String get method => kind == 'google' ? 'google' : 'caldav';
 
   factory ExternalAccount.fromJson(Map<String, dynamic> j) => ExternalAccount(
-        id: j['id'] as String,
-        kind: j['kind'] as String,
-        name: j['name'] as String,
-        serverUrl: j['serverUrl'] as String?,
-        username: j['username'] as String?,
-      );
+    id: j['id'] as String,
+    kind: j['kind'] as String,
+    name: j['name'] as String,
+    serverUrl: j['serverUrl'] as String?,
+    username: j['username'] as String?,
+  );
 }
 
 /// A login method threaded to the current user (Sign in with Apple, or a
@@ -112,22 +127,22 @@ class LoginIdentity {
   final String providerRef;
 
   String get label => switch (provider) {
-        'apple' => 'Sign in with Apple',
-        'google' => 'Sign in with Google',
-        _ => providerRef,
-      };
+    'apple' => 'Sign in with Apple',
+    'google' => 'Sign in with Google',
+    _ => providerRef,
+  };
 
   String get kindLabel => switch (provider) {
-        'apple' => 'Apple',
-        'google' => 'Google',
-        _ => 'Magic link',
-      };
+    'apple' => 'Apple',
+    'google' => 'Google',
+    _ => 'Magic link',
+  };
 
   factory LoginIdentity.fromJson(Map<String, dynamic> j) => LoginIdentity(
-        id: j['id'] as String,
-        provider: j['provider'] as String,
-        providerRef: j['providerRef'] as String,
-      );
+    id: j['id'] as String,
+    provider: j['provider'] as String,
+    providerRef: j['providerRef'] as String,
+  );
 }
 
 class TaskItem {
@@ -179,24 +194,24 @@ class TaskItem {
       (end == null ? 0 : end!.difference(start).inMinutes);
 
   factory TaskItem.fromJson(Map<String, dynamic> j) => TaskItem(
-        id: j['id'] as String,
-        familyMemberId: j['familyMemberId'] as String,
-        type: j['type'] as String,
-        start: parseTimestamp(j['dtstart']),
-        end: j['dtend'] == null ? null : parseTimestamp(j['dtend']),
-        location: j['location'] as String?,
-        status: j['status'] as String,
-        createdVia: j['createdVia'] as String? ?? 'generated',
-        ownerMemberId: j['ownerMemberId'] as String?,
-        calendarEventId: j['calendarEventId'] as String?,
-        durationOverrideMin: j['durationOverrideMin'] as int?,
-      );
+    id: j['id'] as String,
+    familyMemberId: j['familyMemberId'] as String,
+    type: j['type'] as String,
+    start: parseTimestamp(j['dtstart']),
+    end: j['dtend'] == null ? null : parseTimestamp(j['dtend']),
+    location: j['location'] as String?,
+    status: j['status'] as String,
+    createdVia: j['createdVia'] as String? ?? 'generated',
+    ownerMemberId: j['ownerMemberId'] as String?,
+    calendarEventId: j['calendarEventId'] as String?,
+    durationOverrideMin: j['durationOverrideMin'] as int?,
+  );
 
   String get typeLabel => switch (type) {
-        'pickup' => 'Pickup',
-        'dropoff' => 'Drop-off',
-        _ => 'Attendance',
-      };
+    'pickup' => 'Pickup',
+    'dropoff' => 'Drop-off',
+    _ => 'Attendance',
+  };
 }
 
 /// An input feed (calendar source) as returned by the API.
@@ -205,6 +220,7 @@ class FeedItem {
     required this.id,
     required this.kind,
     required this.mode,
+    this.routed = false,
     this.url,
     this.sourceCalendarName,
     this.timezone,
@@ -215,6 +231,11 @@ class FeedItem {
   final String id;
   final String kind; // 'ics' | 'caldav' | 'google'
   final String mode; // 'standard' | 'exception' | 'busy'
+
+  /// Shared family calendar: one calendar carrying several members' events,
+  /// split per member by each link's `keep` rules. A property of the feed —
+  /// turning it on from any member's copy routes it for everyone linked.
+  final bool routed;
   final String? url;
   final String? sourceCalendarName;
   final String? timezone;
@@ -229,27 +250,44 @@ class FeedItem {
   /// Free/busy firewall feed: opaque availability blocks, google-kind only.
   bool get isBusy => mode == 'busy';
 
+  /// A routed shared family calendar (routing only applies to standard feeds).
+  bool get isRouted => mode == 'standard' && routed;
+
+  FeedItem copyWith({String? mode, bool? routed}) => FeedItem(
+    id: id,
+    kind: kind,
+    mode: mode ?? this.mode,
+    routed: routed ?? this.routed,
+    url: url,
+    sourceCalendarName: sourceCalendarName,
+    timezone: timezone,
+    status: status,
+    accountKind: accountKind,
+  );
+
   String get displayName =>
-      sourceCalendarName ?? (url != null ? Uri.tryParse(url!)?.host ?? url! : 'Feed');
+      sourceCalendarName ??
+      (url != null ? Uri.tryParse(url!)?.host ?? url! : 'Feed');
 
   /// Human-readable feed source, e.g. "Google Calendar" / "iCloud Calendar" /
   /// "CalDAV Calendar", instead of the raw kind.
   String get sourceLabel => switch (kind) {
-        'google' => 'Google Calendar',
-        'caldav' => accountKind == 'icloud' ? 'iCloud Calendar' : 'CalDAV Calendar',
-        _ => kind.toUpperCase(),
-      };
+    'google' => 'Google Calendar',
+    'caldav' => accountKind == 'icloud' ? 'iCloud Calendar' : 'CalDAV Calendar',
+    _ => kind.toUpperCase(),
+  };
 
   factory FeedItem.fromJson(Map<String, dynamic> j) => FeedItem(
-        id: j['id'] as String,
-        kind: j['kind'] as String? ?? 'ics',
-        mode: j['mode'] as String,
-        url: j['url'] as String?,
-        sourceCalendarName: j['sourceCalendarName'] as String?,
-        timezone: j['timezone'] as String?,
-        status: j['status'] as String?,
-        accountKind: j['accountKind'] as String?,
-      );
+    id: j['id'] as String,
+    kind: j['kind'] as String? ?? 'ics',
+    mode: j['mode'] as String,
+    routed: j['routed'] as bool? ?? false,
+    url: j['url'] as String?,
+    sourceCalendarName: j['sourceCalendarName'] as String?,
+    timezone: j['timezone'] as String?,
+    status: j['status'] as String?,
+    accountKind: j['accountKind'] as String?,
+  );
 }
 
 /// A feed↔member link. Carries the exception-feed baseline plus the task-gen
@@ -274,20 +312,20 @@ class GeoLocation {
   final double? radius;
 
   factory GeoLocation.fromJson(Map<String, dynamic> j) => GeoLocation(
-        lat: (j['lat'] as num).toDouble(),
-        lon: (j['lon'] as num).toDouble(),
-        title: j['title'] as String?,
-        address: j['address'] as String?,
-        radius: (j['radius'] as num?)?.toDouble(),
-      );
+    lat: (j['lat'] as num).toDouble(),
+    lon: (j['lon'] as num).toDouble(),
+    title: j['title'] as String?,
+    address: j['address'] as String?,
+    radius: (j['radius'] as num?)?.toDouble(),
+  );
 
   Map<String, dynamic> toJson() => {
-        'lat': lat,
-        'lon': lon,
-        if (title != null) 'title': title,
-        if (address != null) 'address': address,
-        if (radius != null) 'radius': radius,
-      };
+    'lat': lat,
+    'lon': lon,
+    if (title != null) 'title': title,
+    if (address != null) 'address': address,
+    if (radius != null) 'radius': radius,
+  };
 }
 
 class FeedLink {
@@ -326,22 +364,22 @@ class FeedLink {
   final int defaultPickupWindowMin;
 
   factory FeedLink.fromJson(Map<String, dynamic> j) => FeedLink(
-        id: j['id'] as String,
-        familyMemberId: j['familyMemberId'] as String,
-        memberRelation: j['memberRelation'] as String?,
-        active: j['active'] as bool? ?? true,
-        position: j['position'] as int? ?? 0,
-        weekdayMask: j['weekdayMask'] as int?,
-        dayStart: j['dayStart'] as String?,
-        dayEnd: j['dayEnd'] as String?,
-        location: j['location'] as String?,
-        locationGeo: j['locationGeo'] == null
-            ? null
-            : GeoLocation.fromJson(j['locationGeo'] as Map<String, dynamic>),
-        defaultTaskType: j['defaultTaskType'] as String? ?? 'transition',
-        defaultDropoffWindowMin: j['defaultDropoffWindowMin'] as int? ?? 15,
-        defaultPickupWindowMin: j['defaultPickupWindowMin'] as int? ?? 15,
-      );
+    id: j['id'] as String,
+    familyMemberId: j['familyMemberId'] as String,
+    memberRelation: j['memberRelation'] as String?,
+    active: j['active'] as bool? ?? true,
+    position: j['position'] as int? ?? 0,
+    weekdayMask: j['weekdayMask'] as int?,
+    dayStart: j['dayStart'] as String?,
+    dayEnd: j['dayEnd'] as String?,
+    location: j['location'] as String?,
+    locationGeo: j['locationGeo'] == null
+        ? null
+        : GeoLocation.fromJson(j['locationGeo'] as Map<String, dynamic>),
+    defaultTaskType: j['defaultTaskType'] as String? ?? 'transition',
+    defaultDropoffWindowMin: j['defaultDropoffWindowMin'] as int? ?? 15,
+    defaultPickupWindowMin: j['defaultPickupWindowMin'] as int? ?? 15,
+  );
 }
 
 /// One rule of a feed's override pipeline (schedule only; first match wins).
@@ -358,31 +396,34 @@ class OverrideRule {
 
   final String id;
   final int position;
-  final String matchField; // summary|location|description|any_text|all_day|duration
-  final String matchOp; // contains|starts_with|equals|regex|is_true|is_false|gte|lte
+  final String
+  matchField; // summary|location|description|any_text|all_day|duration
+  final String
+  matchOp; // contains|starts_with|equals|regex|is_true|is_false|gte|lte
   final String? matchValue;
-  final String outcome; // cancel_day|modify_day|ignore|add_event
+  final String outcome; // cancel_day|modify_day|ignore|add_event|keep
   final Map<String, dynamic>? params;
 
   String get outcomeLabel => switch (outcome) {
-        'cancel_day' => 'Cancel day',
-        'modify_day' => 'Modify day',
-        'add_event' => 'Add event',
-        _ => 'Ignore',
-      };
+    'cancel_day' => 'Cancel day',
+    'modify_day' => 'Modify day',
+    'add_event' => 'Add event',
+    'keep' => 'Route here',
+    _ => 'Ignore',
+  };
 
   /// A compact matcher summary, e.g. `Title matches /no school/i`.
   String get matcher => matcherSummary(matchField, matchOp, matchValue);
 
   factory OverrideRule.fromJson(Map<String, dynamic> j) => OverrideRule(
-        id: j['id'] as String,
-        position: j['position'] as int,
-        matchField: j['matchField'] as String,
-        matchOp: j['matchOp'] as String,
-        matchValue: j['matchValue'] as String?,
-        outcome: j['outcome'] as String,
-        params: j['params'] as Map<String, dynamic>?,
-      );
+    id: j['id'] as String,
+    position: j['position'] as int,
+    matchField: j['matchField'] as String,
+    matchOp: j['matchOp'] as String,
+    matchValue: j['matchValue'] as String?,
+    outcome: j['outcome'] as String,
+    params: j['params'] as Map<String, dynamic>?,
+  );
 }
 
 /// A shared matcher summary for override + task rules.
@@ -435,22 +476,23 @@ class TaskRule {
 
   bool get isTransition => resultType == 'transition';
   String get resultLabel => isTransition ? 'Drop-off & pickup' : 'Attendance';
-  String get scopeLabel => scope == 'all_calendars' ? 'All calendars' : 'This calendar';
+  String get scopeLabel =>
+      scope == 'all_calendars' ? 'All calendars' : 'This calendar';
 
   String get matcher => matcherSummary(matchField, matchOp, matchValue);
 
   factory TaskRule.fromJson(Map<String, dynamic> j) => TaskRule(
-        id: j['id'] as String,
-        position: j['position'] as int,
-        scope: j['scope'] as String,
-        linkId: j['linkId'] as String?,
-        matchField: j['matchField'] as String,
-        matchOp: j['matchOp'] as String,
-        matchValue: j['matchValue'] as String?,
-        resultType: j['resultType'] as String,
-        dropoffWindowMin: j['dropoffWindowMin'] as int?,
-        pickupWindowMin: j['pickupWindowMin'] as int?,
-      );
+    id: j['id'] as String,
+    position: j['position'] as int,
+    scope: j['scope'] as String,
+    linkId: j['linkId'] as String?,
+    matchField: j['matchField'] as String,
+    matchOp: j['matchOp'] as String,
+    matchValue: j['matchValue'] as String?,
+    resultType: j['resultType'] as String,
+    dropoffWindowMin: j['dropoffWindowMin'] as int?,
+    pickupWindowMin: j['pickupWindowMin'] as int?,
+  );
 }
 
 /// A calendar's terminal default in the task-rule pipeline.
@@ -466,15 +508,19 @@ class TaskDefault {
   final int pickupWindowMin;
 
   factory TaskDefault.fromJson(Map<String, dynamic> j) => TaskDefault(
-        resultType: j['defaultResultType'] as String,
-        dropoffWindowMin: j['dropoffWindowMin'] as int? ?? 15,
-        pickupWindowMin: j['pickupWindowMin'] as int? ?? 15,
-      );
+    resultType: j['defaultResultType'] as String,
+    dropoffWindowMin: j['dropoffWindowMin'] as int? ?? 15,
+    pickupWindowMin: j['pickupWindowMin'] as int? ?? 15,
+  );
 }
 
 /// The whole task-rule pipeline for a member + every calendar's default.
 class TaskRuleSet {
-  TaskRuleSet({required this.rules, required this.unifiedDefault, required this.linkDefaults});
+  TaskRuleSet({
+    required this.rules,
+    required this.unifiedDefault,
+    required this.linkDefaults,
+  });
 
   final List<TaskRule> rules;
   final TaskDefault unifiedDefault;
@@ -483,15 +529,21 @@ class TaskRuleSet {
   /// Rules that govern one calendar (all_calendars ∪ this-calendar-for-it),
   /// in position order — mirrors the engine's `taskRulesForCalendar`.
   List<TaskRule> forCalendar(String? linkId) {
-    final subset = rules
-        .where((r) => r.scope == 'all_calendars' || (r.scope == 'this_calendar' && r.linkId == linkId))
-        .toList()
-      ..sort((a, b) => a.position.compareTo(b.position));
+    final subset =
+        rules
+            .where(
+              (r) =>
+                  r.scope == 'all_calendars' ||
+                  (r.scope == 'this_calendar' && r.linkId == linkId),
+            )
+            .toList()
+          ..sort((a, b) => a.position.compareTo(b.position));
     return subset;
   }
 
-  TaskDefault defaultFor(String? linkId) =>
-      linkId == null ? unifiedDefault : (linkDefaults[linkId] ?? unifiedDefault);
+  TaskDefault defaultFor(String? linkId) => linkId == null
+      ? unifiedDefault
+      : (linkDefaults[linkId] ?? unifiedDefault);
 
   factory TaskRuleSet.fromJson(Map<String, dynamic> j) {
     final defaults = j['defaults'] as Map<String, dynamic>;
@@ -500,9 +552,12 @@ class TaskRuleSet {
       rules: ((j['rules'] as List?) ?? const [])
           .map((e) => TaskRule.fromJson(e as Map<String, dynamic>))
           .toList(),
-      unifiedDefault: TaskDefault.fromJson(defaults['unified'] as Map<String, dynamic>),
+      unifiedDefault: TaskDefault.fromJson(
+        defaults['unified'] as Map<String, dynamic>,
+      ),
       linkDefaults: {
-        for (final e in links.entries) e.key: TaskDefault.fromJson(e.value as Map<String, dynamic>),
+        for (final e in links.entries)
+          e.key: TaskDefault.fromJson(e.value as Map<String, dynamic>),
       },
     );
   }
@@ -520,6 +575,7 @@ class CalendarEventItem {
     this.summary,
     this.description,
     this.location,
+    this.travelTimeOverrideMin,
     this.taskId,
     this.taskIneligibleReason,
   });
@@ -535,6 +591,11 @@ class CalendarEventItem {
   final String? summary;
   final String? description;
   final String? location;
+
+  /// A human's own answer for how long getting here takes (minutes), which
+  /// overrides whatever the backend would estimate; 0 means no travel time at
+  /// all. Null ⇒ estimated from where the caretaker is coming from.
+  final int? travelTimeOverrideMin;
 
   /// For claimed_task events: the task this event reflects (the recursion).
   final String? taskId;
@@ -579,7 +640,9 @@ class CalendarEventItem {
       familyMemberId: j['familyMemberId'] as String,
       provenance: j['provenance'] as String,
       allDay: allDay,
-      start: allDay ? parseAllDayDate(j['dtstart']) : parseTimestamp(j['dtstart']),
+      start: allDay
+          ? parseAllDayDate(j['dtstart'])
+          : parseTimestamp(j['dtstart']),
       // `dtend` is exclusive. For an all-day event it's a UTC-midnight *date*
       // like dtstart, so it has to be read the same way: as a timestamp it
       // landed hours before its own start day was over (west of UTC) or on the
@@ -587,12 +650,11 @@ class CalendarEventItem {
       // 17-hour block down the Plan grid.
       end: j['dtend'] == null
           ? null
-          : (allDay
-              ? parseAllDayDate(j['dtend'])
-              : parseTimestamp(j['dtend'])),
+          : (allDay ? parseAllDayDate(j['dtend']) : parseTimestamp(j['dtend'])),
       summary: j['summary'] as String?,
       description: j['description'] as String?,
       location: j['location'] as String?,
+      travelTimeOverrideMin: j['travelTimeOverrideMin'] as int?,
       taskId: j['taskId'] as String?,
       taskIneligibleReason: j['taskIneligibleReason'] as String?,
     );
@@ -608,6 +670,8 @@ class PendingDecision {
     required this.familyMemberId,
     required this.start,
     required this.allDay,
+    this.kind = 'exception',
+    this.sourceEventId,
     this.end,
     this.summary,
     this.location,
@@ -616,8 +680,18 @@ class PendingDecision {
   final String id;
   final String feedId;
 
-  /// The member-feed link whose override pipeline the event fell through —
-  /// where a new rule to resolve it would need to live.
+  /// What's being asked. `exception` — an unmatched exception-feed event: what
+  /// does it do to this member's day? `routing` — an event on a shared family
+  /// calendar nobody's rules claimed: whose is it? A routing question comes as
+  /// one row per member of the feed, all sharing a [sourceEventId], and is
+  /// asked (and answered) as a single card — see [groupDecisions].
+  final String kind;
+
+  /// The feed event behind the decision; the grouping key for routing rows.
+  final String? sourceEventId;
+
+  /// The member-feed link whose pipeline the event fell through — where a new
+  /// rule to resolve it would need to live.
   final String linkId;
 
   /// The member whose calendar the event would land on.
@@ -628,20 +702,61 @@ class PendingDecision {
   final String? summary;
   final String? location;
 
+  bool get isRouting => kind == 'routing';
+
   factory PendingDecision.fromJson(Map<String, dynamic> j) {
     final allDay = j['allDay'] as bool? ?? false;
     return PendingDecision(
       id: j['id'] as String,
       feedId: j['feedId'] as String,
+      kind: j['kind'] as String? ?? 'exception',
+      sourceEventId: j['sourceEventId'] as String?,
       linkId: j['linkId'] as String,
       familyMemberId: j['familyMemberId'] as String,
       allDay: allDay,
-      start: allDay ? parseAllDayDate(j['dtstart']) : parseTimestamp(j['dtstart']),
+      start: allDay
+          ? parseAllDayDate(j['dtstart'])
+          : parseTimestamp(j['dtstart']),
       end: j['dtend'] == null ? null : parseTimestamp(j['dtend']),
       summary: j['summary'] as String?,
       location: j['location'] as String?,
     );
   }
+}
+
+/// One card's worth of decision: an exception decision is its own card, while a
+/// routing decision's per-member rows collapse into one — the API asks each
+/// member of the shared calendar separately so each answer is its own row, but
+/// the user is only ever asked "whose is this?" once.
+class DecisionGroup {
+  DecisionGroup(this.rows);
+
+  final List<PendingDecision> rows;
+
+  PendingDecision get first => rows.first;
+  bool get isRouting => first.isRouting;
+
+  /// The links (one per member of the shared calendar) the event can route to.
+  List<String> get candidateLinkIds => [for (final r in rows) r.linkId];
+}
+
+/// Collapse a decision list into cards, preserving the API's ordering (by the
+/// event's start). Routing rows for the same feed event group together.
+List<DecisionGroup> groupDecisions(List<PendingDecision> decisions) {
+  final groups = <DecisionGroup>[];
+  final byKey = <String, DecisionGroup>{};
+  for (final d in decisions) {
+    final key = d.isRouting ? '${d.feedId}:${d.sourceEventId}' : d.id;
+    final existing = byKey[key];
+    if (existing != null) {
+      existing.rows.add(d);
+      continue;
+    }
+    final group = DecisionGroup([d]);
+    byKey[key] = group;
+    groups.add(group);
+  }
+  return groups;
 }
 
 /// One of the two overlapping events in a [Conflict] (for the card copy).
@@ -664,7 +779,9 @@ class ConflictEventRef {
     final allDay = j['allDay'] as bool? ?? false;
     return ConflictEventRef(
       allDay: allDay,
-      start: allDay ? parseAllDayDate(j['dtstart']) : parseTimestamp(j['dtstart']),
+      start: allDay
+          ? parseAllDayDate(j['dtstart'])
+          : parseTimestamp(j['dtstart']),
       end: j['dtend'] == null ? null : parseTimestamp(j['dtend']),
       summary: j['summary'] as String?,
       location: j['location'] as String?,
@@ -681,6 +798,7 @@ class Conflict {
     required this.familyMemberId,
     required this.loser,
     required this.winner,
+    this.suggestedTravelMin,
   });
 
   final String id;
@@ -688,12 +806,18 @@ class Conflict {
   final ConflictEventRef loser;
   final ConflictEventRef winner;
 
+  /// Minutes between the two places, estimated server-side from their
+  /// coordinates — the resolution sheet's starting travel buffer. Null when
+  /// either end isn't geocoded, in which case the handles start at zero.
+  final int? suggestedTravelMin;
+
   factory Conflict.fromJson(Map<String, dynamic> j) => Conflict(
-        id: j['id'] as String,
-        familyMemberId: j['familyMemberId'] as String,
-        loser: ConflictEventRef.fromJson(j['loser'] as Map<String, dynamic>),
-        winner: ConflictEventRef.fromJson(j['winner'] as Map<String, dynamic>),
-      );
+    id: j['id'] as String,
+    familyMemberId: j['familyMemberId'] as String,
+    loser: ConflictEventRef.fromJson(j['loser'] as Map<String, dynamic>),
+    winner: ConflictEventRef.fromJson(j['winner'] as Map<String, dynamic>),
+    suggestedTravelMin: j['suggestedTravelMin'] as int?,
+  );
 }
 
 /// A member's designated unified-calendar target (the write-through mirror).
@@ -718,9 +842,11 @@ class MemberCalendarConfig {
   final List<int>? alertMinutes;
   final bool active;
 
-  String get methodLabel => targetMethod == 'google' ? 'Google' : 'iCloud / CalDAV';
+  String get methodLabel =>
+      targetMethod == 'google' ? 'Google' : 'iCloud / CalDAV';
 
-  factory MemberCalendarConfig.fromJson(Map<String, dynamic> j) => MemberCalendarConfig(
+  factory MemberCalendarConfig.fromJson(Map<String, dynamic> j) =>
+      MemberCalendarConfig(
         id: j['id'] as String,
         familyMemberId: j['familyMemberId'] as String,
         targetExternalAccountId: j['targetExternalAccountId'] as String?,
@@ -760,7 +886,9 @@ class SourceEventItem {
       id: j['id'] as String,
       feedId: j['feedId'] as String,
       allDay: allDay,
-      start: allDay ? parseAllDayDate(j['dtstart']) : parseTimestamp(j['dtstart']),
+      start: allDay
+          ? parseAllDayDate(j['dtstart'])
+          : parseTimestamp(j['dtstart']),
       dismissed: j['dismissedAt'] != null,
       summary: j['summary'] as String?,
       location: j['location'] as String?,

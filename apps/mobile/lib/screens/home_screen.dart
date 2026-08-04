@@ -15,6 +15,7 @@ import '../widgets/settings.dart';
 import '../widgets/task_row.dart';
 import 'conflict_resolution_sheet.dart';
 import 'feed_baseline_screen.dart';
+import 'route_event_sheet.dart';
 import 'task_actions_sheet.dart';
 
 /// Home — the claim hub. A multi-day list grouped under sticky day headers;
@@ -75,10 +76,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       await ref.read(allTasksProvider.future);
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text('Refresh failed: $e'),
-          margin: snackBarMarginAboveNav(context),
-        ));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Refresh failed: $e'),
+            margin: snackBarMarginAboveNav(context),
+          ),
+        );
       }
     } finally {
       if (mounted) setState(() => _refreshingFeeds = false);
@@ -97,12 +100,17 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final members = ref.watch(membersProvider).valueOrNull ?? const <Member>[];
     final me = ref.watch(currentMemberProvider).valueOrNull;
     final decisions =
-        ref.watch(pendingDecisionsProvider).valueOrNull ?? const <PendingDecision>[];
+        ref.watch(pendingDecisionsProvider).valueOrNull ??
+        const <PendingDecision>[];
+    // A routing decision is asked of every member of the shared calendar, but
+    // it's one question — the rows collapse into a single card.
+    final decisionCards = groupDecisions(decisions);
     final conflicts =
         ref.watch(conflictsProvider).valueOrNull ?? const <Conflict>[];
     final threshold = ref.watch(threadingThresholdProvider).valueOrNull ?? 30;
     final events =
-        ref.watch(calendarEventsProvider).valueOrNull ?? const <CalendarEventItem>[];
+        ref.watch(calendarEventsProvider).valueOrNull ??
+        const <CalendarEventItem>[];
     final eventsById = {for (final e in events) e.id: e};
     final byId = {for (final m in members) m.id: m};
     final now = DateTime.now();
@@ -110,7 +118,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     // Children I'm covering (for the "only my kids" filter): kids with a task I own.
     final myKids = {
       for (final t in rawTasks)
-        if (t.ownerMemberId == me?.id) t.familyMemberId
+        if (t.ownerMemberId == me?.id) t.familyMemberId,
     };
 
     // Upcoming tasks passing the base filters (child / type / only-my-kids).
@@ -121,18 +129,21 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         if ((_showCompleted || !t.isDismissed) &&
             !t.start.isBefore(now) &&
             _passesBase(t, myKids))
-          t
+          t,
     ];
     // The two 6b buckets. "Needs an owner" is everything unclaimed; "You're
     // covering" is what I own — plus any other caretakers opted into via
     // Filters. My own claimed tasks always show.
-    final unowned = [for (final t in upcoming) if (t.isUnowned) t];
+    final unowned = [
+      for (final t in upcoming)
+        if (t.isUnowned) t,
+    ];
     final covering = [
       for (final t in upcoming)
         if (!t.isUnowned &&
             !t.isDismissed &&
             (t.ownerMemberId == me?.id || _incOwners.contains(t.ownerMemberId)))
-          t
+          t,
     ];
 
     final unownedByDay = _groupByDay(unowned);
@@ -140,7 +151,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final unownedDays = unownedByDay.keys.toList()..sort();
     final coveringDays = coveringByDay.keys.toList()..sort();
     final nothing =
-        conflicts.isEmpty && decisions.isEmpty && unowned.isEmpty && covering.isEmpty;
+        conflicts.isEmpty &&
+        decisions.isEmpty &&
+        unowned.isEmpty &&
+        covering.isEmpty;
 
     return RefreshIndicator(
       onRefresh: () async {
@@ -164,7 +178,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                     SectionEyebrow(
                       'Double-booked',
                       color: AppColors.coral,
-                      trailing: TintBadge('${conflicts.length}', color: AppColors.coral),
+                      trailing: TintBadge(
+                        '${conflicts.length}',
+                        color: AppColors.coral,
+                      ),
                     ),
                     const SizedBox(height: 10),
                     for (final conflict in conflicts) ...[
@@ -184,19 +201,24 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                   ],
                   // Pending decisions rank ABOVE unclaimed tasks — they block
                   // the pipeline until a human decides.
-                  if (decisions.isNotEmpty) ...[
+                  if (decisionCards.isNotEmpty) ...[
                     SectionEyebrow(
                       'Needs a decision',
                       color: AppColors.amber,
-                      trailing: TintBadge('${decisions.length}', color: AppColors.amber),
+                      trailing: TintBadge(
+                        '${decisionCards.length}',
+                        color: AppColors.amber,
+                      ),
                     ),
                     const SizedBox(height: 10),
-                    for (final d in decisions) ...[
+                    for (final g in decisionCards) ...[
                       _DecisionCard(
-                        decision: d,
-                        member: byId[d.familyMemberId],
-                        onResolve: () => _openRuleEditor(d),
-                        onDismiss: () => _dismissDecision(d),
+                        group: g,
+                        members: byId,
+                        onResolve: () => g.isRouting
+                            ? _openRoutingSheet(g)
+                            : _openRuleEditor(g.first),
+                        onDismiss: () => _dismissDecision(g.first),
                       ),
                       const SizedBox(height: 10),
                     ],
@@ -210,9 +232,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             SliverToBoxAdapter(child: _pad(_error('${allAsync.error}')))
           else if (nothing)
             SliverToBoxAdapter(
-              child: _pad(_empty(allAsync.isLoading
-                  ? 'Loading…'
-                  : 'Nothing to cover — all clear 🎉')))
+              child: _pad(
+                _empty(
+                  allAsync.isLoading
+                      ? 'Loading…'
+                      : 'Nothing to cover — all clear 🎉',
+                ),
+              ),
+            )
           else ...[
             // Needs an owner — the claim queue, threaded. On a single day the
             // eyebrow carries the day + count ("Today · 3", as in 6b); across
@@ -311,16 +338,28 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
               ),
               SliverPadding(
                 padding: const EdgeInsets.fromLTRB(22, 0, 22, 8),
-                sliver: _daySliver(byDay[day]!, byId, eventsById, me, threshold,
-                    thread: thread),
+                sliver: _daySliver(
+                  byDay[day]!,
+                  byId,
+                  eventsById,
+                  me,
+                  threshold,
+                  thread: thread,
+                ),
               ),
             ],
           )
         else
           SliverPadding(
             padding: const EdgeInsets.fromLTRB(22, 2, 22, 8),
-            sliver: _daySliver(byDay[day]!, byId, eventsById, me, threshold,
-                thread: thread),
+            sliver: _daySliver(
+              byDay[day]!,
+              byId,
+              eventsById,
+              me,
+              threshold,
+              thread: thread,
+            ),
           ),
     ];
   }
@@ -354,9 +393,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     return chains;
   }
 
-  Widget _daySliver(List<TaskItem> tasks, Map<String, Member> byId,
-      Map<String, CalendarEventItem> eventsById, Member? me, int threshold,
-      {bool thread = true}) {
+  Widget _daySliver(
+    List<TaskItem> tasks,
+    Map<String, Member> byId,
+    Map<String, CalendarEventItem> eventsById,
+    Member? me,
+    int threshold, {
+    bool thread = true,
+  }) {
     // "You're covering" rows aren't threaded — they're already claimed, so the
     // "same trip / claim both" affordance doesn't apply.
     if (!thread) {
@@ -377,8 +421,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           rows: [for (final t in chain) _row(t, byId, eventsById, me)],
           gaps: [
             for (var j = 1; j < chain.length; j++)
-              chain[j]
-                  .start
+              chain[j].start
                   .difference(chain[j - 1].end ?? chain[j - 1].start)
                   .inMinutes,
           ],
@@ -414,12 +457,21 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       _refresh();
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text('Couldn\'t open rule editor: $e'),
-          margin: snackBarMarginAboveNav(context),
-        ));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Couldn\'t open rule editor: $e'),
+            margin: snackBarMarginAboveNav(context),
+          ),
+        );
       }
     }
+  }
+
+  /// Routing decisions are answered by picking who the event belongs to, not by
+  /// writing a rule first — the sheet offers "every time" as a second step.
+  Future<void> _openRoutingSheet(DecisionGroup group) async {
+    final resolved = await showRouteEventSheet(context, group: group);
+    if (resolved == true) _refresh();
   }
 
   Future<void> _dismissDecision(PendingDecision d) async {
@@ -429,10 +481,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       _refresh();
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text('Dismiss failed: $e'),
-          margin: snackBarMarginAboveNav(context),
-        ));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Dismiss failed: $e'),
+            margin: snackBarMarginAboveNav(context),
+          ),
+        );
       }
     }
   }
@@ -447,9 +501,15 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             children: [
               Row(
                 children: [
-                  Flexible(child: Text(greeting(now), style: AppText.screenTitleAlt)),
+                  Flexible(
+                    child: Text(greeting(now), style: AppText.screenTitleAlt),
+                  ),
                   const SizedBox(width: 7),
-                  const Icon(Icons.wb_sunny_rounded, color: AppColors.amberHero, size: 22),
+                  const Icon(
+                    Icons.wb_sunny_rounded,
+                    color: AppColors.amberHero,
+                    size: 22,
+                  ),
                 ],
               ),
               const SizedBox(height: 3),
@@ -474,8 +534,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final children = members.where((m) => m.requiresCaretaker).toList();
     // My own covered tasks always show under "You're covering", so the opt-in
     // list is only the *other* caretakers.
-    final caretakers =
-        members.where((m) => m.isCaretaker && m.id != me?.id).toList();
+    final caretakers = members
+        .where((m) => m.isCaretaker && m.id != me?.id)
+        .toList();
 
     showModalBottomSheet<void>(
       context: context,
@@ -485,9 +546,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       builder: (_) => StatefulBuilder(
         builder: (context, setSheet) {
           void toggle(Set<String> set, String key) => setSheet(() {
-                set.contains(key) ? set.remove(key) : set.add(key);
-                setState(() {});
-              });
+            set.contains(key) ? set.remove(key) : set.add(key);
+            setState(() {});
+          });
           return DraggableScrollableSheet(
             expand: false,
             initialChildSize: 0.72,
@@ -516,42 +577,54 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                 const SizedBox(height: 12),
                 Text('Children', style: AppText.eyebrow()),
                 const SizedBox(height: 10),
-                Wrap(spacing: 8, runSpacing: 8, children: [
-                  for (final c in children)
-                    TaskFilterChip(
-                      label: c.relationName,
-                      dotColor: personColor(c),
-                      selected: !_exChildren.contains(c.id),
-                      onTap: () => toggle(_exChildren, c.id),
-                    ),
-                ]),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    for (final c in children)
+                      TaskFilterChip(
+                        label: c.relationName,
+                        dotColor: personColor(c),
+                        selected: !_exChildren.contains(c.id),
+                        onTap: () => toggle(_exChildren, c.id),
+                      ),
+                  ],
+                ),
                 const SizedBox(height: 18),
                 Text('Also show claimed by', style: AppText.eyebrow()),
                 const SizedBox(height: 10),
-                Wrap(spacing: 8, runSpacing: 8, children: [
-                  for (final m in caretakers)
-                    TaskFilterChip(
-                      label: m.id == me?.id ? 'You' : m.relationName,
-                      dotColor: personColor(m),
-                      selected: _incOwners.contains(m.id),
-                      onTap: () => toggle(_incOwners, m.id),
-                    ),
-                ]),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    for (final m in caretakers)
+                      TaskFilterChip(
+                        label: m.id == me?.id ? 'You' : m.relationName,
+                        dotColor: personColor(m),
+                        selected: _incOwners.contains(m.id),
+                        onTap: () => toggle(_incOwners, m.id),
+                      ),
+                  ],
+                ),
                 const SizedBox(height: 18),
                 Text('Task type', style: AppText.eyebrow()),
                 const SizedBox(height: 10),
-                Wrap(spacing: 8, runSpacing: 8, children: [
-                  TaskFilterChip(
-                    label: 'Transitions',
-                    selected: !_exTypes.contains('transition'),
-                    onTap: () => toggle(_exTypes, 'transition'),
-                  ),
-                  TaskFilterChip(
-                    label: 'Attendance',
-                    selected: !_exTypes.contains('attendance'),
-                    onTap: () => toggle(_exTypes, 'attendance'),
-                  ),
-                ]),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    TaskFilterChip(
+                      label: 'Transitions',
+                      selected: !_exTypes.contains('transition'),
+                      onTap: () => toggle(_exTypes, 'transition'),
+                    ),
+                    TaskFilterChip(
+                      label: 'Attendance',
+                      selected: !_exTypes.contains('attendance'),
+                      onTap: () => toggle(_exTypes, 'attendance'),
+                    ),
+                  ],
+                ),
                 const SizedBox(height: 20),
                 AppCard(
                   child: Column(
@@ -615,8 +688,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     );
   }
 
-  Widget _row(TaskItem t, Map<String, Member> byId,
-      Map<String, CalendarEventItem> eventsById, Member? me) {
+  Widget _row(
+    TaskItem t,
+    Map<String, Member> byId,
+    Map<String, CalendarEventItem> eventsById,
+    Member? me,
+  ) {
     final child = byId[t.familyMemberId];
     final color = child != null ? personColor(child) : AppColors.textSecondary;
     final owned = t.status == 'owned';
@@ -629,7 +706,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       // The source-person badge names whose calendar the task came from (6b).
       // Only on the unclaimed rows, where the trailing chip isn't already an
       // avatar of a person.
-      sourceInitial: !owned && child != null ? initialFor(child.relationName) : null,
+      sourceInitial: !owned && child != null
+          ? initialFor(child.relationName)
+          : null,
       sourceColor: !owned && child != null ? color : null,
       typeLabel: taskTitle(t, eventsById[t.calendarEventId]),
       personName: child?.relationName ?? 'child',
@@ -638,54 +717,82 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           ? 'Attendance · ${friendlyRange(t.start, t.end!)}'
           : '${taskCategory(t.type)} · ${friendlyTime(t.start)}',
       ownedColor: owned ? ownerColor : null,
-      onTap: () => showTaskActions(context, ref, t,
-          sourceEvent: t.calendarEventId == null ? null : eventsById[t.calendarEventId]),
+      onTap: () => showTaskActions(
+        context,
+        ref,
+        t,
+        sourceEvent: t.calendarEventId == null
+            ? null
+            : eventsById[t.calendarEventId],
+      ),
       trailing: owned
           ? (isMine
-              ? YouChip(
-                  initial: initialFor(me?.relationName ?? '?'), color: ownerColor)
-              : _CoveredByChip(
-                  initial: initialFor(owner?.relationName ?? '?'),
-                  name: owner?.relationName ?? 'them',
-                  color: ownerColor))
-          : PillButton(label: 'Claim', dense: true, onPressed: () => _claim(t.id)),
+                ? YouChip(
+                    initial: initialFor(me?.relationName ?? '?'),
+                    color: ownerColor,
+                  )
+                : _CoveredByChip(
+                    initial: initialFor(owner?.relationName ?? '?'),
+                    name: owner?.relationName ?? 'them',
+                    color: ownerColor,
+                  ))
+          : PillButton(
+              label: 'Claim',
+              dense: true,
+              onPressed: () => _claim(t.id),
+            ),
     );
   }
 
   Widget _pad(Widget child) => Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 22),
-        child: child,
-      );
+    padding: const EdgeInsets.symmetric(horizontal: 22),
+    child: child,
+  );
 
   Widget _empty(String msg) => Padding(
-        padding: const EdgeInsets.symmetric(vertical: 40),
-        child: Center(child: Text(msg, style: AppText.subtitle)),
-      );
+    padding: const EdgeInsets.symmetric(vertical: 40),
+    child: Center(child: Text(msg, style: AppText.subtitle)),
+  );
 
   Widget _error(String msg) => Padding(
-        padding: const EdgeInsets.symmetric(vertical: 24),
-        child: Text(msg, style: font(kBodyFont, 13, 500, color: AppColors.coral)),
-      );
+    padding: const EdgeInsets.symmetric(vertical: 24),
+    child: Text(msg, style: font(kBodyFont, 13, 500, color: AppColors.coral)),
+  );
 }
 
-/// An unmatched exception-feed event awaiting a human decision (6b): amber
-/// dashed card with Resolve / Dismiss. The system never guesses.
+/// A feed event awaiting a human decision (6b): amber card with Resolve /
+/// Dismiss. The system never guesses. Either an unmatched exception-feed event
+/// ("what does this do to Theo's day?") or — grouped from its per-member rows —
+/// an unrouted event on a shared family calendar ("whose is this?").
 class _DecisionCard extends StatelessWidget {
   const _DecisionCard({
-    required this.decision,
-    required this.member,
+    required this.group,
+    required this.members,
     required this.onResolve,
     required this.onDismiss,
   });
-  final PendingDecision decision;
-  final Member? member;
+  final DecisionGroup group;
+  final Map<String, Member> members;
   final VoidCallback onResolve;
   final VoidCallback onDismiss;
 
+  PendingDecision get decision => group.first;
+
+  /// Who the card names: one member for an exception decision, the candidates
+  /// on the shared calendar for a routing one.
+  String get _who => group.isRouting
+      ? [
+          for (final r in group.rows)
+            members[r.familyMemberId]?.relationName ?? 'member',
+        ].join(' / ')
+      : members[decision.familyMemberId]?.relationName ?? 'member';
+
   @override
   Widget build(BuildContext context) {
-    final memberColor =
-        member != null ? personColor(member!) : AppColors.textSecondary;
+    final member = group.isRouting ? null : members[decision.familyMemberId];
+    final memberColor = member != null
+        ? personColor(member)
+        : AppColors.textSecondary;
     final when = decision.allDay
         ? homeDayHeader(dayKey(decision.start), DateTime.now())
         : friendlyTime(decision.start);
@@ -701,27 +808,39 @@ class _DecisionCard extends StatelessWidget {
         children: [
           Row(
             children: [
-              const IconTile(icon: Icons.help_outline_rounded, color: AppColors.amber, size: 38),
+              IconTile(
+                icon: group.isRouting
+                    ? Icons.call_split_rounded
+                    : Icons.help_outline_rounded,
+                color: AppColors.amber,
+                size: 38,
+              ),
               const SizedBox(width: 12),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text.rich(
-                      TextSpan(children: [
-                        TextSpan(
+                      TextSpan(
+                        children: [
+                          TextSpan(
                             text: decision.summary ?? 'Unmatched event',
-                            style: AppText.sectionItemTitle),
-                        TextSpan(
-                            text: ' · ${member?.relationName ?? 'member'}',
-                            style: font(kBodyFont, 14, 700, color: memberColor)),
-                      ]),
+                            style: AppText.sectionItemTitle,
+                          ),
+                          TextSpan(
+                            text: ' · $_who',
+                            style: font(kBodyFont, 14, 700, color: memberColor),
+                          ),
+                        ],
+                      ),
                       maxLines: 2,
                       overflow: TextOverflow.ellipsis,
                     ),
                     const SizedBox(height: 3),
                     Text(
-                      'No rule matched · $when — what should this generate?',
+                      group.isRouting
+                          ? 'On the shared calendar · $when — who is this for?'
+                          : 'No rule matched · $when — what should this generate?',
                       style: font(kBodyFont, 12, 500, color: AppColors.amber),
                     ),
                   ],
@@ -734,7 +853,10 @@ class _DecisionCard extends StatelessWidget {
             children: [
               Expanded(
                 child: PillButton(
-                    label: 'Resolve', variant: PillVariant.amber, onPressed: onResolve),
+                  label: 'Resolve',
+                  variant: PillVariant.amber,
+                  onPressed: onResolve,
+                ),
               ),
               const SizedBox(width: 10),
               Expanded(
@@ -801,10 +923,11 @@ class _ConflictCard extends StatelessWidget {
                 children: [
                   Expanded(
                     child: PillButton(
-                        label: 'Review & resolve',
-                        variant: PillVariant.amber,
-                        dense: true,
-                        onPressed: onOpen),
+                      label: 'Review & resolve',
+                      variant: PillVariant.amber,
+                      dense: true,
+                      onPressed: onOpen,
+                    ),
                   ),
                 ],
               ),
@@ -872,8 +995,10 @@ class _ThreadedChain extends StatelessWidget {
                 alignment: Alignment.centerRight,
                 child: TextButton(
                   onPressed: () => onClaimAll!(),
-                  child: Text('Claim both',
-                      style: font(kBodyFont, 12.5, 700, color: AppColors.coral)),
+                  child: Text(
+                    'Claim both',
+                    style: font(kBodyFont, 12.5, 700, color: AppColors.coral),
+                  ),
                 ),
               ),
             ),
@@ -902,7 +1027,10 @@ class _CoveredByChip extends StatelessWidget {
       children: [
         PersonAvatar(initial: initial, color: color, size: 24),
         const SizedBox(width: 6),
-        Text(name, style: font(kBodyFont, 12.5, 600, color: AppColors.textSecondary)),
+        Text(
+          name,
+          style: font(kBodyFont, 12.5, 600, color: AppColors.textSecondary),
+        ),
       ],
     );
   }
@@ -921,14 +1049,20 @@ class _DayHeaderDelegate extends SliverPersistentHeaderDelegate {
   double get maxExtent => 42;
 
   @override
-  Widget build(BuildContext context, double shrinkOffset, bool overlapsContent) {
+  Widget build(
+    BuildContext context,
+    double shrinkOffset,
+    bool overlapsContent,
+  ) {
     return Container(
       color: AppColors.bg,
       padding: const EdgeInsets.fromLTRB(24, 10, 24, 10),
       alignment: Alignment.center,
       child: Row(
         children: [
-          Expanded(child: Text(label, style: AppText.eyebrow(AppColors.amberHero))),
+          Expanded(
+            child: Text(label, style: AppText.eyebrow(AppColors.amberHero)),
+          ),
           if (trailing != null) Text(trailing!, style: AppText.secondary),
         ],
       ),

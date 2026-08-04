@@ -22,7 +22,8 @@ calendar_events (synthesized|claimed) → MIRROR → the member's one target cal
 **Two rule pipelines** (round-6 review split): `link_rules` are the feed's
 SCHEDULE overrides (`cancel_day`/`modify_day`/`ignore` on the baseline day an
 exception event covers, or `add_event` to put the feed event on the calendar
-*beside* an untouched baseline day — a school's community dinner);
+*beside* an untouched baseline day — a school's community dinner; plus `keep`,
+which on a **routed** feed claims the event for that link's member);
 `task_rules` are the per-member TYPING pipeline (`transition` vs `attendance`
 + drop-off/pickup windows, scoped `this_calendar`/`all_calendars`, with a
 terminal default per calendar on the link + member). Task type is resolved at
@@ -33,8 +34,10 @@ null ⇒ the member's own unified/direct calendar). A member's
 Every member (child or caretaker) can have a unified calendar: the DB
 (`calendar_events`) is canonical; an optional per-member external target
 (CalDAV/iCloud or Google, `member_calendars`) is a write-through mirror whose
-human-authored events are read back in. Unmatched exception-feed events become
-**pending decisions** — the system never guesses.
+human-authored events are read back in. Events the pipeline can't place become
+**pending decisions** — the system never guesses. Two kinds: an unmatched
+exception-feed event (`kind: 'exception'`), and an event on a routed shared
+family calendar that no member's `keep` rules claimed (`kind: 'routing'`).
 
 - Product spec: PRD 1 (unified calendars & task generation); `docs/original-plan.md` is the superseded original plan
 - Deploy: `docs/DEPLOYMENT.md` · Auth: `docs/AUTH.md`
@@ -72,6 +75,10 @@ Backend: Cloudflare Workers + Hono + D1 + Drizzle. Client: Flutter (Riverpod, di
   consume each other via `@igt/*` source path-mapping). `.npmrc` uses
   `shamefully-hoist=true`.
 - **Flutter via `fvm`** (Flutter 3.44.x). Don't call bare `flutter` for local work.
+  `pubspec.yaml`'s floor is Dart 3.12 / Flutter 3.44 — that floor *is* the
+  language version `dart format` reads, so it also selects the formatter's
+  style. CI runs `dart format --set-exit-if-changed`, so an unformatted file
+  fails the build; run `fvm dart format lib test` before committing.
 
 ## Commands
 
@@ -83,7 +90,7 @@ node_modules/.bin/vitest run --root apps/api
 # DB: generate a migration after editing libs/db/src/schema.ts
 pnpm db:generate                 # then commit libs/db/migrations/*
 # Flutter (always before committing client changes)
-cd apps/mobile && fvm flutter analyze && fvm flutter test
+cd apps/mobile && fvm dart format lib test && fvm flutter analyze && fvm flutter test
 ```
 
 **Always** run the relevant typecheck/tests before committing. Add or update tests
@@ -98,6 +105,21 @@ paths in particular).
   a `contentHash` skip — rule/config changes resynthesize without duplicating.
   Key forms: `bl:<linkId>:<date>`, `ev:<linkId>:<sourceEventId>`,
   `pd:<decisionId>`, `task:<taskId>`, `ext:<uid>:<recurrenceId>`.
+- **A routed feed (`feeds.routed`) is the shared family calendar**: one input
+  calendar carrying several members' events, split back out per member. It's the
+  only mode whose engine pass runs across *all* of a feed's links at once
+  (`synthesizeRouted` in `libs/classification`) — each link's `keep` rules filter
+  the same occurrence set, so an event can land on several calendars and one no
+  link keeps is unrouted. Routing is a property of the FEED, not of a link: flip
+  it from any member's copy of the calendar and every linked member routes.
+  Unrouted occurrences raise a `routing` pending decision **per link** (one
+  question per member, sharing a `sourceEventId`); the client groups them into
+  one card and `POST /pending-decisions/:id/resolve` answers the whole group —
+  `routeToLinkIds` get the event, the rest are dismissed. With `rule` it also
+  appends a `keep` rule to each chosen link (admin-only, and it must match the
+  event it came from) instead of writing one-off `pd:` events. Standard/exception
+  is still the mode; `routed` only applies to `standard` and is cleared if the
+  mode moves off it.
 - **Two recursion guards** keep the claim loop from echoing: task-gen never
   generates from `claimed_task` events (`libs/classification`), and read-back
   never imports events whose UID starts with `igt-`
@@ -130,6 +152,31 @@ paths in particular).
   event as `taskIneligibleReason` so the client can say which it is.
 - **CalDAV** does a direct authenticated `PUT`/`DELETE` to the discovered
   collection URL (`libs/delivery/src/caldav.ts`), not tsdav's create-only helper.
+- **Travel time is coordinate-driven, end to end.** `locationGeo` rides from the
+  source event (its `GEO`/`X-APPLE-STRUCTURED-LOCATION`, parsed in `@igt/ical`)
+  or the link's pinned place → `calendar_events` → `tasks` → the claimed event →
+  the mirrored VEVENT, where a geocode emits `GEO` +
+  `X-APPLE-STRUCTURED-LOCATION`. Apple needs *both* that structured location and
+  `X-APPLE-TRAVEL-DURATION` before it draws a travel block —
+  `X-APPLE-TRAVEL-ADVISORY-BEHAVIOR:AUTOMATIC` alone only governs the "time to
+  leave" alert. Drop `locationGeo` anywhere along that chain and travel time
+  silently stops working, which is why every content hash on the path folds it
+  in. The duration itself is derived in `mirror.ts` for claimed drop-off/pickup
+  events: it finds where the caretaker is coming *from* — the last thing on
+  their own calendar (human read-back events included), or
+  `family_members.home_location_geo` when the gap is long enough that they've
+  plainly been elsewhere — and runs `estimateTravelMinutes` (pure, in
+  `@igt/classification`: haversine × road factor ÷ a distance-dependent speed).
+  There is no routing service server-side and no traffic; it's a seed of about
+  the right size, which is all Apple needs to draw the block and then recompute
+  the leave-by time itself. With no origin at all it falls back to the family's
+  transition window. A human's own answer
+  (`calendar_events.travel_time_override_min`, set from the event's detail
+  sheet) beats all of that — `0` means no block, null hands it back to the
+  estimate — and it lives outside `contentHash` on purpose, so healing an event
+  never disturbs it. The same estimator seeds the conflict sheet's travel
+  buffers (`suggestedTravelMin` on `GET /conflicts`, from the two events'
+  geocodes).
 - **Credentials** are envelope-encrypted (KEK → DEK) into the `secret` table and
   never returned by the API. Accounts are **user-owned** (reused across
   families); the OAuth client secret stays in `apps/api`; the Google provider

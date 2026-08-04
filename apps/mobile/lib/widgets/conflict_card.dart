@@ -34,8 +34,9 @@ class ConflictCardHeader extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final memberColor =
-        member != null ? personColor(member!) : AppColors.textSecondary;
+    final memberColor = member != null
+        ? personColor(member!)
+        : AppColors.textSecondary;
     final name = member?.relationName;
     return Row(
       children: [
@@ -46,8 +47,10 @@ class ConflictCardHeader extends StatelessWidget {
         // The date takes the slack (rather than a Spacer) so the member cluster
         // stays flush right whatever its name is.
         Expanded(
-          child: Text(day,
-              style: font(kBodyFont, 12.5, 600, color: AppColors.textSecondary)),
+          child: Text(
+            day,
+            style: font(kBodyFont, 12.5, 600, color: AppColors.textSecondary),
+          ),
         ),
         const SizedBox(width: 9),
         PersonAvatar(
@@ -56,10 +59,12 @@ class ConflictCardHeader extends StatelessWidget {
           size: 26,
         ),
         const SizedBox(width: 7),
-        Text(name ?? 'Member',
-            style: font(kBodyFont, 13, 700, color: memberColor),
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis),
+        Text(
+          name ?? 'Member',
+          style: font(kBodyFont, 13, 700, color: memberColor),
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+        ),
       ],
     );
   }
@@ -105,8 +110,10 @@ class ConflictEventRow extends StatelessWidget {
             ),
           ),
           const SizedBox(width: 8),
-          Text(conflictEventTime(event),
-              style: font(kBodyFont, 11.5, 600, color: AppColors.textSecondary)),
+          Text(
+            conflictEventTime(event),
+            style: font(kBodyFont, 11.5, 600, color: AppColors.textSecondary),
+          ),
         ],
       ),
     );

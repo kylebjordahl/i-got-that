@@ -6,15 +6,19 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-Member _m(String id, String name,
-        {bool caretaker = false, bool admin = false, bool child = false}) =>
-    Member(
-      id: id,
-      relationName: name,
-      isCaretaker: caretaker,
-      isAdmin: admin,
-      requiresCaretaker: child,
-    );
+Member _m(
+  String id,
+  String name, {
+  bool caretaker = false,
+  bool admin = false,
+  bool child = false,
+}) => Member(
+  id: id,
+  relationName: name,
+  isCaretaker: caretaker,
+  isAdmin: admin,
+  requiresCaretaker: child,
+);
 
 void main() {
   final me = _m('dad', 'Dad', caretaker: true, admin: true);
@@ -43,26 +47,28 @@ void main() {
   final link = FeedLink(id: 'link1', familyMemberId: 'theo', active: true);
 
   Widget app() => ProviderScope(
-        overrides: [
-          membersProvider.overrideWith((ref) async => [me, theo]),
-          currentMemberProvider.overrideWith((ref) async => me),
-          unownedTasksProvider.overrideWith((ref) async => [task]),
-          allTasksProvider.overrideWith((ref) async => [task]),
-          pendingDecisionsProvider.overrideWith((ref) async => [decision]),
-          conflictsProvider.overrideWith((ref) async => const []),
-          calendarEventsProvider.overrideWith((ref) async => const []),
-          threadingThresholdProvider.overrideWith((ref) async => 30),
-          feedsProvider.overrideWith((ref) async => [feed]),
-          feedLinksProvider('f1').overrideWith((ref) async => [link]),
-        ],
-        child: MaterialApp(
-          theme: buildAppTheme(),
-          themeMode: ThemeMode.dark,
-          home: const Scaffold(body: HomeScreen()),
-        ),
-      );
+    overrides: [
+      membersProvider.overrideWith((ref) async => [me, theo]),
+      currentMemberProvider.overrideWith((ref) async => me),
+      unownedTasksProvider.overrideWith((ref) async => [task]),
+      allTasksProvider.overrideWith((ref) async => [task]),
+      pendingDecisionsProvider.overrideWith((ref) async => [decision]),
+      conflictsProvider.overrideWith((ref) async => const []),
+      calendarEventsProvider.overrideWith((ref) async => const []),
+      threadingThresholdProvider.overrideWith((ref) async => 30),
+      feedsProvider.overrideWith((ref) async => [feed]),
+      feedLinksProvider('f1').overrideWith((ref) async => [link]),
+    ],
+    child: MaterialApp(
+      theme: buildAppTheme(),
+      themeMode: ThemeMode.dark,
+      home: const Scaffold(body: HomeScreen()),
+    ),
+  );
 
-  testWidgets('pending decisions rank above unclaimed tasks on Home', (tester) async {
+  testWidgets('pending decisions rank above unclaimed tasks on Home', (
+    tester,
+  ) async {
     await tester.pumpWidget(app());
     await tester.pumpAndSettle();
 
@@ -78,15 +84,17 @@ void main() {
     expect(decisionY, lessThan(taskY));
   });
 
-  testWidgets('Resolve opens the override-rule editor pre-filled with the event title',
-      (tester) async {
-    await tester.pumpWidget(app());
-    await tester.pumpAndSettle();
+  testWidgets(
+    'Resolve opens the override-rule editor pre-filled with the event title',
+    (tester) async {
+      await tester.pumpWidget(app());
+      await tester.pumpAndSettle();
 
-    await tester.tap(find.text('Resolve'));
-    await tester.pumpAndSettle();
+      await tester.tap(find.text('Resolve'));
+      await tester.pumpAndSettle();
 
-    expect(find.text('New override rule'), findsOneWidget);
-    expect(find.text('Book Fair'), findsWidgets);
-  });
+      expect(find.text('New override rule'), findsOneWidget);
+      expect(find.text('Book Fair'), findsWidgets);
+    },
+  );
 }

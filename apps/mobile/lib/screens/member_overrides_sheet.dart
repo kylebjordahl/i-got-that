@@ -58,12 +58,18 @@ class _MemberOverridesSheet extends ConsumerWidget {
     // Watched (not passed in) so a revert redraws the list in place — the last
     // one reverted leaves the empty state rather than a stale card.
     final overrides = activeOverrides(
-        ref.watch(memberOverridesProvider(member.id)).valueOrNull ?? const <Conflict>[]);
+      ref.watch(memberOverridesProvider(member.id)).valueOrNull ??
+          const <Conflict>[],
+    );
 
     return SafeArea(
       child: SingleChildScrollView(
         padding: EdgeInsets.fromLTRB(
-            22, 4, 22, 28 + MediaQuery.of(context).viewInsets.bottom),
+          22,
+          4,
+          22,
+          28 + MediaQuery.of(context).viewInsets.bottom,
+        ),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -71,7 +77,11 @@ class _MemberOverridesSheet extends ConsumerWidget {
             Row(
               children: [
                 Expanded(
-                    child: Text('Overrides in effect', style: AppText.subPageTitle)),
+                  child: Text(
+                    'Overrides in effect',
+                    style: AppText.subPageTitle,
+                  ),
+                ),
                 if (overrides.isNotEmpty)
                   TintBadge('${overrides.length}', color: AppColors.green),
               ],
@@ -88,7 +98,10 @@ class _MemberOverridesSheet extends ConsumerWidget {
               AppCard(
                 child: Padding(
                   padding: const EdgeInsets.symmetric(vertical: 8),
-                  child: Text('No overrides in effect', style: AppText.subtitle),
+                  child: Text(
+                    'No overrides in effect',
+                    style: AppText.subtitle,
+                  ),
                 ),
               )
             else
@@ -115,10 +128,12 @@ class _MemberOverridesSheet extends ConsumerWidget {
       ref.invalidate(calendarEventsProvider);
     } catch (e) {
       if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text("Couldn't revert: $e"),
-          margin: snackBarMarginAboveNav(context),
-        ));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text("Couldn't revert: $e"),
+            margin: snackBarMarginAboveNav(context),
+          ),
+        );
       }
     }
   }
@@ -130,7 +145,11 @@ class _MemberOverridesSheet extends ConsumerWidget {
 /// trimmed around it (marked with the scissors, since the order alone no longer
 /// says which was cut).
 class _OverrideCard extends StatelessWidget {
-  const _OverrideCard({required this.conflict, required this.member, required this.onRevert});
+  const _OverrideCard({
+    required this.conflict,
+    required this.member,
+    required this.onRevert,
+  });
   final Conflict conflict;
   final Member member;
   final VoidCallback? onRevert;
@@ -166,10 +185,11 @@ class _OverrideCard extends StatelessWidget {
               // the thing the card is asking for.
               Expanded(
                 child: PillButton(
-                    label: 'Revert',
-                    variant: PillVariant.ghost,
-                    dense: true,
-                    onPressed: onRevert),
+                  label: 'Revert',
+                  variant: PillVariant.ghost,
+                  dense: true,
+                  onPressed: onRevert,
+                ),
               ),
             ],
           ),

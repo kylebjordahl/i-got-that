@@ -33,15 +33,19 @@ class _RecordingApiClient extends ApiClient {
   }
 }
 
-Member _m(String id, String name,
-        {bool caretaker = false, bool admin = false, bool child = false}) =>
-    Member(
-      id: id,
-      relationName: name,
-      isCaretaker: caretaker,
-      isAdmin: admin,
-      requiresCaretaker: child,
-    );
+Member _m(
+  String id,
+  String name, {
+  bool caretaker = false,
+  bool admin = false,
+  bool child = false,
+}) => Member(
+  id: id,
+  relationName: name,
+  isCaretaker: caretaker,
+  isAdmin: admin,
+  requiresCaretaker: child,
+);
 
 void main() {
   final me = _m('dad', 'Dad', caretaker: true, admin: true);
@@ -76,25 +80,26 @@ void main() {
   );
 
   Widget app() => ProviderScope(
-        overrides: [
-          membersProvider.overrideWith((ref) async => [me, theo]),
-          currentMemberProvider.overrideWith((ref) async => me),
-          unownedTasksProvider.overrideWith((ref) async => [task]),
-          allTasksProvider.overrideWith((ref) async => [task]),
-          pendingDecisionsProvider.overrideWith((ref) async => const []),
-          conflictsProvider.overrideWith((ref) async => [conflict]),
-          calendarEventsProvider.overrideWith((ref) async => const []),
-          threadingThresholdProvider.overrideWith((ref) async => 30),
-        ],
-        child: MaterialApp(
-          theme: buildAppTheme(),
-          themeMode: ThemeMode.dark,
-          home: const Scaffold(body: HomeScreen()),
-        ),
-      );
+    overrides: [
+      membersProvider.overrideWith((ref) async => [me, theo]),
+      currentMemberProvider.overrideWith((ref) async => me),
+      unownedTasksProvider.overrideWith((ref) async => [task]),
+      allTasksProvider.overrideWith((ref) async => [task]),
+      pendingDecisionsProvider.overrideWith((ref) async => const []),
+      conflictsProvider.overrideWith((ref) async => [conflict]),
+      calendarEventsProvider.overrideWith((ref) async => const []),
+      threadingThresholdProvider.overrideWith((ref) async => 30),
+    ],
+    child: MaterialApp(
+      theme: buildAppTheme(),
+      themeMode: ThemeMode.dark,
+      home: const Scaffold(body: HomeScreen()),
+    ),
+  );
 
-  testWidgets('a double-booking ranks at the top of Home and opens the sheet',
-      (tester) async {
+  testWidgets('a double-booking ranks at the top of Home and opens the sheet', (
+    tester,
+  ) async {
     await tester.pumpWidget(app());
     await tester.pumpAndSettle();
 
@@ -118,8 +123,10 @@ void main() {
     expect(find.text('Ignore conflict — keep both as-is'), findsOneWidget);
     // Loser (School day) split into two segments around the kept winner. Scoped
     // to the sheet — the card underneath names both events too.
-    Finder inSheet(String text) =>
-        find.descendant(of: find.byType(BottomSheet), matching: find.text(text));
+    Finder inSheet(String text) => find.descendant(
+      of: find.byType(BottomSheet),
+      matching: find.text(text),
+    );
     expect(inSheet('School day'), findsNWidgets(2));
     expect(inSheet('Doctor appointment'), findsOneWidget);
     expect(find.text('Fixed'), findsOneWidget);
@@ -158,8 +165,9 @@ void main() {
     expect(avatarX, lessThan(tester.getTopLeft(name).dx));
   });
 
-  testWidgets('trashing a half marks it not needed in the resolution',
-      (tester) async {
+  testWidgets('trashing a half marks it not needed in the resolution', (
+    tester,
+  ) async {
     // Tall enough that the whole sheet (both halves + footer) is on-screen.
     tester.view.physicalSize = const Size(600, 1600);
     tester.view.devicePixelRatio = 1.0;
@@ -167,25 +175,27 @@ void main() {
     addTearDown(tester.view.resetDevicePixelRatio);
 
     final api = _RecordingApiClient();
-    await tester.pumpWidget(ProviderScope(
-      overrides: [
-        apiClientProvider.overrideWithValue(api),
-        familyProvider.overrideWith((ref) async => 'fam-1'),
-        membersProvider.overrideWith((ref) async => [me, theo]),
-        currentMemberProvider.overrideWith((ref) async => me),
-        unownedTasksProvider.overrideWith((ref) async => [task]),
-        allTasksProvider.overrideWith((ref) async => [task]),
-        pendingDecisionsProvider.overrideWith((ref) async => const []),
-        conflictsProvider.overrideWith((ref) async => [conflict]),
-        calendarEventsProvider.overrideWith((ref) async => const []),
-        threadingThresholdProvider.overrideWith((ref) async => 30),
-      ],
-      child: MaterialApp(
-        theme: buildAppTheme(),
-        themeMode: ThemeMode.dark,
-        home: const Scaffold(body: HomeScreen()),
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          apiClientProvider.overrideWithValue(api),
+          familyProvider.overrideWith((ref) async => 'fam-1'),
+          membersProvider.overrideWith((ref) async => [me, theo]),
+          currentMemberProvider.overrideWith((ref) async => me),
+          unownedTasksProvider.overrideWith((ref) async => [task]),
+          allTasksProvider.overrideWith((ref) async => [task]),
+          pendingDecisionsProvider.overrideWith((ref) async => const []),
+          conflictsProvider.overrideWith((ref) async => [conflict]),
+          calendarEventsProvider.overrideWith((ref) async => const []),
+          threadingThresholdProvider.overrideWith((ref) async => 30),
+        ],
+        child: MaterialApp(
+          theme: buildAppTheme(),
+          themeMode: ThemeMode.dark,
+          home: const Scaffold(body: HomeScreen()),
+        ),
       ),
-    ));
+    );
     await tester.pumpAndSettle();
 
     await tester.tap(find.text('Review & resolve'));
@@ -210,6 +220,61 @@ void main() {
     });
   });
 
+  testWidgets('the estimated trip between the two places seeds both buffers', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(600, 1600);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    // Both events geocoded, so the backend sent an estimate of the trip.
+    final estimated = Conflict(
+      id: conflict.id,
+      familyMemberId: conflict.familyMemberId,
+      loser: conflict.loser,
+      winner: conflict.winner,
+      suggestedTravelMin: 20,
+    );
+    final api = _RecordingApiClient();
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          apiClientProvider.overrideWithValue(api),
+          familyProvider.overrideWith((ref) async => 'fam-1'),
+          membersProvider.overrideWith((ref) async => [me, theo]),
+          currentMemberProvider.overrideWith((ref) async => me),
+          unownedTasksProvider.overrideWith((ref) async => [task]),
+          allTasksProvider.overrideWith((ref) async => [task]),
+          pendingDecisionsProvider.overrideWith((ref) async => const []),
+          conflictsProvider.overrideWith((ref) async => [estimated]),
+          calendarEventsProvider.overrideWith((ref) async => const []),
+          threadingThresholdProvider.overrideWith((ref) async => 30),
+        ],
+        child: MaterialApp(
+          theme: buildAppTheme(),
+          themeMode: ThemeMode.dark,
+          home: const Scaffold(body: HomeScreen()),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Review & resolve'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Confirm split'));
+    await tester.pumpAndSettle();
+
+    // Leaving and coming back is the same trip, so both halves start there —
+    // no dragging needed to get a sensible split.
+    expect(api.lastResolve, {
+      'travelBeforeMin': 20,
+      'travelAfterMin': 20,
+      'beforeNeeded': true,
+      'afterNeeded': true,
+    });
+  });
+
   testWidgets('dragging a travel handle steps in 5-minute increments without '
       'dragging the sheet', (tester) async {
     tester.view.physicalSize = const Size(600, 1600);
@@ -218,25 +283,27 @@ void main() {
     addTearDown(tester.view.resetDevicePixelRatio);
 
     final api = _RecordingApiClient();
-    await tester.pumpWidget(ProviderScope(
-      overrides: [
-        apiClientProvider.overrideWithValue(api),
-        familyProvider.overrideWith((ref) async => 'fam-1'),
-        membersProvider.overrideWith((ref) async => [me, theo]),
-        currentMemberProvider.overrideWith((ref) async => me),
-        unownedTasksProvider.overrideWith((ref) async => [task]),
-        allTasksProvider.overrideWith((ref) async => [task]),
-        pendingDecisionsProvider.overrideWith((ref) async => const []),
-        conflictsProvider.overrideWith((ref) async => [conflict]),
-        calendarEventsProvider.overrideWith((ref) async => const []),
-        threadingThresholdProvider.overrideWith((ref) async => 30),
-      ],
-      child: MaterialApp(
-        theme: buildAppTheme(),
-        themeMode: ThemeMode.dark,
-        home: const Scaffold(body: HomeScreen()),
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          apiClientProvider.overrideWithValue(api),
+          familyProvider.overrideWith((ref) async => 'fam-1'),
+          membersProvider.overrideWith((ref) async => [me, theo]),
+          currentMemberProvider.overrideWith((ref) async => me),
+          unownedTasksProvider.overrideWith((ref) async => [task]),
+          allTasksProvider.overrideWith((ref) async => [task]),
+          pendingDecisionsProvider.overrideWith((ref) async => const []),
+          conflictsProvider.overrideWith((ref) async => [conflict]),
+          calendarEventsProvider.overrideWith((ref) async => const []),
+          threadingThresholdProvider.overrideWith((ref) async => 30),
+        ],
+        child: MaterialApp(
+          theme: buildAppTheme(),
+          themeMode: ThemeMode.dark,
+          home: const Scaffold(body: HomeScreen()),
+        ),
       ),
-    ));
+    );
     await tester.pumpAndSettle();
 
     await tester.tap(find.text('Review & resolve'));
@@ -276,7 +343,8 @@ void main() {
     // used to drag the sheet away instead) leaves the sheet exactly where it is,
     // mid-drag and after release. Travel is already at zero, so the only thing
     // that could move the title here is the sheet itself.
-    final grip = tester.getTopLeft(find.text('Pick-up · 10:00')) + const Offset(2, 4);
+    final grip =
+        tester.getTopLeft(find.text('Pick-up · 10:00')) + const Offset(2, 4);
     final gesture = await tester.startGesture(grip);
     await gesture.moveBy(const Offset(0, 120));
     await tester.pump();
@@ -304,38 +372,38 @@ void main() {
   /// "Review & resolve". Keyed on the conflict so pumping a different one builds
   /// a fresh scope instead of reusing the previous conflict's providers.
   Widget appWith(Conflict c) => ProviderScope(
-        key: ValueKey('${c.id}-${c.winner.end}'),
-        overrides: [
-          familyProvider.overrideWith((ref) async => 'fam-1'),
-          membersProvider.overrideWith((ref) async => [me, theo]),
-          currentMemberProvider.overrideWith((ref) async => me),
-          unownedTasksProvider.overrideWith((ref) async => [task]),
-          allTasksProvider.overrideWith((ref) async => [task]),
-          pendingDecisionsProvider.overrideWith((ref) async => const []),
-          conflictsProvider.overrideWith((ref) async => [c]),
-          calendarEventsProvider.overrideWith((ref) async => const []),
-          threadingThresholdProvider.overrideWith((ref) async => 30),
-        ],
-        child: MaterialApp(
-          theme: buildAppTheme(),
-          themeMode: ThemeMode.dark,
-          home: const Scaffold(body: HomeScreen()),
-        ),
-      );
+    key: ValueKey('${c.id}-${c.winner.end}'),
+    overrides: [
+      familyProvider.overrideWith((ref) async => 'fam-1'),
+      membersProvider.overrideWith((ref) async => [me, theo]),
+      currentMemberProvider.overrideWith((ref) async => me),
+      unownedTasksProvider.overrideWith((ref) async => [task]),
+      allTasksProvider.overrideWith((ref) async => [task]),
+      pendingDecisionsProvider.overrideWith((ref) async => const []),
+      conflictsProvider.overrideWith((ref) async => [c]),
+      calendarEventsProvider.overrideWith((ref) async => const []),
+      threadingThresholdProvider.overrideWith((ref) async => 30),
+    ],
+    child: MaterialApp(
+      theme: buildAppTheme(),
+      themeMode: ThemeMode.dark,
+      home: const Scaffold(body: HomeScreen()),
+    ),
+  );
 
   /// The same conflict with the appointment stretched to [hours] — the preview's
   /// zoom is derived from the appointment's length, so this changes the scale.
   Conflict withWinnerHours(int hours) => Conflict(
-        id: conflict.id,
-        familyMemberId: conflict.familyMemberId,
-        loser: conflict.loser,
-        winner: ConflictEventRef(
-          summary: conflict.winner.summary,
-          allDay: false,
-          start: conflict.winner.start,
-          end: conflict.winner.start.add(Duration(hours: hours)),
-        ),
-      );
+    id: conflict.id,
+    familyMemberId: conflict.familyMemberId,
+    loser: conflict.loser,
+    winner: ConflictEventRef(
+      summary: conflict.winner.summary,
+      allDay: false,
+      start: conflict.winner.start,
+      end: conflict.winner.start.add(Duration(hours: hours)),
+    ),
+  );
 
   testWidgets('the appointment and the travel gap render to one scale, zoomed '
       'to the conflict', (tester) async {
@@ -344,19 +412,26 @@ void main() {
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
 
-    Finder inSheet(String text) =>
-        find.descendant(of: find.byType(BottomSheet), matching: find.text(text));
+    Finder inSheet(String text) => find.descendant(
+      of: find.byType(BottomSheet),
+      matching: find.text(text),
+    );
     // A segment's block is the nearest Container around its label.
     double blockHeight(String text) => tester
-        .getSize(find
-            .ancestor(of: inSheet(text), matching: find.byType(Container))
-            .first)
+        .getSize(
+          find
+              .ancestor(of: inSheet(text), matching: find.byType(Container))
+              .first,
+        )
         .height;
 
     /// Opens [c]'s sheet, drags the pick-up handle up [dragPx], and returns the
     /// (appointment, travel gap) block heights — then closes the sheet again.
     Future<(double, double)> heights(
-        Conflict c, double dragPx, String travelLabel) async {
+      Conflict c,
+      double dragPx,
+      String travelLabel,
+    ) async {
       await tester.pumpWidget(appWith(c));
       await tester.pumpAndSettle();
       await tester.tap(find.text('Review & resolve'));
@@ -368,7 +443,10 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.text(travelLabel), findsOneWidget);
 
-      final measured = (blockHeight('Doctor appointment'), blockHeight(travelLabel));
+      final measured = (
+        blockHeight('Doctor appointment'),
+        blockHeight(travelLabel),
+      );
       await tester.tapAt(const Offset(8, 8)); // dismiss the sheet
       await tester.pumpAndSettle();
       expect(find.byType(BottomSheet), findsNothing);
@@ -377,15 +455,22 @@ void main() {
 
     // 90px of drag is 30 minutes of travel against a one-hour appointment, so
     // the gap block comes out half the appointment's height.
-    final (hourH, halfHourH) = await heights(conflict, 90, 'Travel time · 30 min');
+    final (hourH, halfHourH) = await heights(
+      conflict,
+      90,
+      'Travel time · 30 min',
+    );
     expect(halfHourH / hourH, closeTo(0.5, 0.05));
     // Drawn to scale, the appointment is no longer the halves' fixed height.
     expect(hourH, greaterThan(60));
 
     // The zoom follows the conflict: a three-hour appointment draws taller than
     // a one-hour one, with its own travel gap still in proportion.
-    final (threeHourH, hourGapH) =
-        await heights(withWinnerHours(3), 180, 'Travel time · 60 min');
+    final (threeHourH, hourGapH) = await heights(
+      withWinnerHours(3),
+      180,
+      'Travel time · 60 min',
+    );
     expect(threeHourH, greaterThan(hourH));
     expect(hourGapH / threeHourH, closeTo(1 / 3, 0.05));
   });
@@ -406,8 +491,12 @@ void main() {
         return null;
       },
     );
-    addTearDown(() => tester.binding.defaultBinaryMessenger
-        .setMockMethodCallHandler(SystemChannels.platform, null));
+    addTearDown(
+      () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform,
+        null,
+      ),
+    );
 
     await tester.pumpWidget(appWith(conflict));
     await tester.pumpAndSettle();
@@ -415,7 +504,8 @@ void main() {
     await tester.pumpAndSettle();
 
     // Pulling down at zero travel changes nothing, so it stays silent.
-    final grip = tester.getTopLeft(find.text('Pick-up · 10:00')) + const Offset(2, 4);
+    final grip =
+        tester.getTopLeft(find.text('Pick-up · 10:00')) + const Offset(2, 4);
     await tester.dragFrom(grip, const Offset(0, 60));
     await tester.pumpAndSettle();
     expect(haptics, isEmpty);
@@ -425,7 +515,10 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Travel time · 5 min'), findsOneWidget);
     expect(haptics, isNotEmpty);
-    expect(haptics.every((a) => a == 'HapticFeedbackType.selectionClick'), isTrue);
+    expect(
+      haptics.every((a) => a == 'HapticFeedbackType.selectionClick'),
+      isTrue,
+    );
 
     // Moving within the step (a minute's worth of drag, still rounding to 5)
     // doesn't tick again.

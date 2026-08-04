@@ -19,8 +19,8 @@ class _FakeApiClient extends ApiClient {
 
   @override
   Future<Map<String, dynamic>> me() async => {
-        'user': {'email': 'you@example.com'},
-      };
+    'user': {'email': 'you@example.com'},
+  };
 
   @override
   Future<void> logout() async {
@@ -35,14 +35,18 @@ void main() {
   // Keychain; stub the plugin channel so the test drives the real controller
   // without a MissingPluginException.
   setUp(() {
-    const channel = MethodChannel('plugins.it_nomads.com/flutter_secure_storage');
+    const channel = MethodChannel(
+      'plugins.it_nomads.com/flutter_secure_storage',
+    );
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(channel, (call) async => null);
     routeDepthNotifier.value = 0;
   });
 
   tearDown(() {
-    const channel = MethodChannel('plugins.it_nomads.com/flutter_secure_storage');
+    const channel = MethodChannel(
+      'plugins.it_nomads.com/flutter_secure_storage',
+    );
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(channel, null);
   });
@@ -51,28 +55,28 @@ void main() {
   // (keyed by [rootNavigatorKey]) with [PersistentAppNav] stacked above — the
   // nested Navigator is what makes the outer-context pop bug reproducible.
   Widget authedRoot() => Stack(
-        children: [
-          Navigator(
-            key: rootNavigatorKey,
-            observers: [AppNavObserver()],
-            onGenerateRoute: (settings) => MaterialPageRoute(
-              builder: (_) => const Scaffold(body: MeScreen()),
-              settings: settings,
-            ),
-          ),
-          const PersistentAppNav(),
-        ],
-      );
+    children: [
+      Navigator(
+        key: rootNavigatorKey,
+        observers: [AppNavObserver()],
+        onGenerateRoute: (settings) => MaterialPageRoute(
+          builder: (_) => const Scaffold(body: MeScreen()),
+          settings: settings,
+        ),
+      ),
+      const PersistentAppNav(),
+    ],
+  );
 
-  testWidgets(
-      'confirming the sign-out dialog closes it and logs out, instead of '
+  testWidgets('confirming the sign-out dialog closes it and logs out, instead of '
       'leaving the dialog stuck over a blank screen', (tester) async {
     final api = _FakeApiClient();
     final me = Member(
       id: 'me',
       relationName: 'Me',
       isCaretaker: true,
-      isAdmin: false, // false so the admin-only threading card stays out of the way
+      isAdmin:
+          false, // false so the admin-only threading card stays out of the way
       requiresCaretaker: false,
     );
 
@@ -81,9 +85,15 @@ void main() {
         overrides: [
           apiClientProvider.overrideWithValue(api),
           currentMemberProvider.overrideWith((ref) async => me),
-          familyInfoProvider.overrideWith((ref) async => (name: 'Test Family', count: 1)),
-          accountsProvider.overrideWith((ref) async => const <ExternalAccount>[]),
-          loginIdentitiesProvider.overrideWith((ref) async => const <LoginIdentity>[]),
+          familyInfoProvider.overrideWith(
+            (ref) async => (name: 'Test Family', count: 1),
+          ),
+          accountsProvider.overrideWith(
+            (ref) async => const <ExternalAccount>[],
+          ),
+          loginIdentitiesProvider.overrideWith(
+            (ref) async => const <LoginIdentity>[],
+          ),
         ],
         child: MaterialApp(home: authedRoot()),
       ),
@@ -100,7 +110,10 @@ void main() {
 
     // Confirm from the dialog's own button (the second 'Sign out' on screen).
     await tester.tap(
-      find.descendant(of: find.byType(AlertDialog), matching: find.text('Sign out')),
+      find.descendant(
+        of: find.byType(AlertDialog),
+        matching: find.text('Sign out'),
+      ),
     );
     await tester.pumpAndSettle();
 
