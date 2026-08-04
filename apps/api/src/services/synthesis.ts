@@ -87,6 +87,7 @@ function toOccurrence(e: EventRow): SourceOccurrence {
     contentHash: e.contentHash,
     summary: e.summary,
     location: e.location,
+    locationGeo: e.locationGeo,
     description: null,
     allDay: e.allDay,
     dtstart: e.dtstart,

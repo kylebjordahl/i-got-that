@@ -58,6 +58,7 @@ function occ(partial: Partial<SourceOccurrence>): SourceOccurrence {
     contentHash: partial.contentHash ?? 'hash',
     summary: partial.summary ?? null,
     location: partial.location ?? null,
+    locationGeo: partial.locationGeo ?? null,
     description: partial.description ?? null,
     allDay: partial.allDay ?? false,
     dtstart: partial.dtstart ?? new Date('2026-07-06T10:00:00Z'),
@@ -139,7 +140,32 @@ describe('synthesizeStandard', () => {
       sourceEventId: soccer.id,
       summary: 'Soccer practice',
       location: 'Field 3',
+      locationGeo: null,
     });
+  });
+
+  it("keeps the source event's own geocode (what carries travel time out)", () => {
+    const geo = { lat: 37.331686, lon: -122.030656, title: 'Field 3' };
+    const soccer = occ({ summary: 'Soccer practice', location: 'Field 3', locationGeo: geo });
+    const { events } = synthesizeStandard(schoolLink, [soccer]);
+    expect(events[0]?.locationGeo).toEqual(geo);
+  });
+
+  it("falls back to the link's geocode when both name the same place", () => {
+    const linkGeo = { lat: 42.36, lon: -71.06, title: 'Lincoln Elementary' };
+    const link = { ...schoolLink, locationGeo: linkGeo };
+    // Same place, spelled the same, only the link has it pinned.
+    const assembly = occ({ summary: 'Assembly', location: 'lincoln elementary  ' });
+    expect(synthesizeStandard(link, [assembly]).events[0]?.locationGeo).toEqual(linkGeo);
+
+    // A different place must never inherit the link's coordinates — the map pin
+    // would then contradict the text the event displays.
+    const away = occ({ summary: 'Away game', location: 'Field 3' });
+    expect(synthesizeStandard(link, [away]).events[0]?.locationGeo).toBeNull();
+
+    // Nor may an event with no location of its own borrow one.
+    const tbd = occ({ summary: 'Practice' });
+    expect(synthesizeStandard(link, [tbd]).events[0]?.locationGeo).toBeNull();
   });
 });
 

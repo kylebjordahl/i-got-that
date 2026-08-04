@@ -205,6 +205,8 @@ export interface OverrideRuleLike extends MatcherLike {
 export interface SourceOccurrence extends OccurrenceLike {
   id: string;
   contentHash: string;
+  /** Coordinates the source event carried for `location`, if any. */
+  locationGeo?: GeoLocation | null;
 }
 
 /** The link config synthesis needs (a `family_member_feeds` row shape). */
@@ -230,7 +232,11 @@ export interface EventIntent {
   allDay: boolean;
   summary: string | null;
   location: string | null;
-  /** Geocoded coords for `location` (baseline events only); null for feed events. */
+  /**
+   * Geocoded coords for `location`: the link's on a baseline day, the source
+   * event's own on a feed event (see `occurrenceGeo`). Null when nobody had
+   * coordinates — the event still carries its free text.
+   */
   locationGeo: GeoLocation | null;
   description: string | null;
 }
@@ -251,13 +257,32 @@ interface ModifyDayParamsLike {
   dayEnd?: string;
 }
 
+const sameText = (a: string | null, b: string | null): boolean =>
+  !!a && !!b && a.trim().toLowerCase() === b.trim().toLowerCase();
+
+/**
+ * A feed event's geocode: the coordinates the source event itself carried,
+ * else the link's — but only when the two name the same place in text, so the
+ * displayed location and the coordinates can never disagree. That fallback is
+ * what covers the common case of a feed that writes its venue as plain text
+ * while the family has pinned that same venue on the link.
+ */
+function occurrenceGeo(
+  link: LinkConfigLike,
+  occ: SourceOccurrence,
+): GeoLocation | null {
+  if (occ.locationGeo) return occ.locationGeo;
+  if (link.locationGeo && sameText(occ.location, link.location)) return link.locationGeo;
+  return null;
+}
+
 function occurrenceEvent(
-  linkId: string,
+  link: LinkConfigLike,
   occ: SourceOccurrence,
   matchedRuleId: string | null = null,
 ): EventIntent {
   return {
-    synthKey: `ev:${linkId}:${occ.id}`,
+    synthKey: `ev:${link.id}:${occ.id}`,
     sourceEventId: occ.id,
     matchedRuleId,
     dtstart: occ.dtstart,
@@ -265,7 +290,7 @@ function occurrenceEvent(
     allDay: occ.allDay,
     summary: occ.summary,
     location: occ.location,
-    locationGeo: null,
+    locationGeo: occurrenceGeo(link, occ),
     description: occ.description ?? null,
   };
 }
@@ -284,7 +309,7 @@ export function synthesizeStandard(
   link: LinkConfigLike,
   occurrences: SourceOccurrence[],
 ): SynthesisResult {
-  return { events: occurrences.map((o) => occurrenceEvent(link.id, o)), pending: [] };
+  return { events: occurrences.map((o) => occurrenceEvent(link, o)), pending: [] };
 }
 
 /**
@@ -356,7 +381,7 @@ export function synthesizeException(
       continue;
     }
     if (rule.outcome === 'add_event') {
-      events.push(occurrenceEvent(link.id, occ, rule.id));
+      events.push(occurrenceEvent(link, occ, rule.id));
       continue;
     }
     for (const day of coveredUtcDays(occ)) {

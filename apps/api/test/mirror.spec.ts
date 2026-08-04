@@ -295,6 +295,80 @@ describe('mirror reconcile (syncMemberMirror)', () => {
     expect(fake.upserts[0]!.event.timezone).toBe('America/Denver');
   });
 
+  it('gives a geocoded drop-off/pickup claim a travel-time block, sized by its window', async () => {
+    const fam = await setupFamily('mirror-travel@example.com');
+    const db = getDb(env.DB);
+    await connectTarget(db, fam, fam.adminMemberId);
+    const geo = { lat: 37.331686, lon: -122.030656, title: 'Lincoln Elementary' };
+
+    const claim = async (
+      type: 'dropoff' | 'attendance',
+      values: {
+        dtstart: Date;
+        dtend: Date | null;
+        locationGeo?: typeof geo | null;
+      },
+    ) => {
+      const task = (
+        await db
+          .insert(tasks)
+          .values({
+            familyId: fam.familyId,
+            familyMemberId: fam.childId,
+            type,
+            dtstart: values.dtstart,
+            dtend: values.dtend,
+            status: 'owned',
+            ownerMemberId: fam.adminMemberId,
+            createdVia: 'generated',
+          })
+          .returning()
+      )[0]!;
+      return insertEvent(db, fam.familyId, fam.adminMemberId, {
+        synthKey: `task:${task.id}`,
+        provenance: 'claimed_task',
+        summary: `${type} — child`,
+        taskId: task.id,
+        location: 'Lincoln Elementary',
+        locationGeo: values.locationGeo === undefined ? geo : values.locationGeo,
+        ...values,
+      });
+    };
+
+    // A 20-minute drop-off window ⇒ a 20-minute travel block.
+    const windowed = await claim('dropoff', {
+      dtstart: new Date('2026-07-06T15:30:00Z'),
+      dtend: new Date('2026-07-06T15:50:00Z'),
+    });
+    // A point-in-time transition has no window to borrow → the 15-min default.
+    const instant = await claim('dropoff', {
+      dtstart: new Date('2026-07-07T15:30:00Z'),
+      dtend: null,
+    });
+    // Free text gives Apple nothing to route to.
+    const textOnly = await claim('dropoff', {
+      dtstart: new Date('2026-07-08T15:30:00Z'),
+      dtend: new Date('2026-07-08T15:50:00Z'),
+      locationGeo: null,
+    });
+    // An attendance claim spans its event; it isn't a trip to a fixed moment.
+    const attendance = await claim('attendance', {
+      dtstart: new Date('2026-07-09T15:30:00Z'),
+      dtend: new Date('2026-07-09T21:45:00Z'),
+    });
+
+    const fake = new FakeProvider('caldav');
+    const registry = new DeliveryProviderRegistry().register(fake);
+    await syncMemberMirror(db, registry, env.KEK, fam.adminMemberId);
+
+    const travelFor = (eventId: string) =>
+      fake.upserts.find((u) => u.event.uid === `igt-${eventId}`)?.event.travelTimeMinutes;
+    expect(travelFor(windowed.id)).toBe(20);
+    expect(travelFor(instant.id)).toBe(15);
+    expect(travelFor(textOnly.id)).toBeUndefined();
+    expect(travelFor(attendance.id)).toBeUndefined();
+  });
+
   it('a member without a target is a clean no-op', async () => {
     const fam = await setupFamily('mirror-notarget@example.com');
     const db = getDb(env.DB);

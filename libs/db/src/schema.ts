@@ -307,6 +307,11 @@ export const sourceEvents = sqliteTable(
     allDay: integer('all_day', { mode: 'boolean' }).notNull().default(false),
     summary: text('summary'),
     location: text('location'),
+    // Coordinates the source event carried for `location` (its GEO and/or
+    // X-APPLE-STRUCTURED-LOCATION). Synthesis stamps them onto the events it
+    // makes, so a feed whose events are geocoded upstream keeps travel time
+    // all the way out to a claimed drop-off/pickup. Null ⇒ free text only.
+    locationGeo: text('location_geo', { mode: 'json' }).$type<GeoLocation>(),
     raw: text('raw'),
     contentHash: text('content_hash').notNull(),
     // The content_hash synthesis last consumed. Needs (re)processing iff

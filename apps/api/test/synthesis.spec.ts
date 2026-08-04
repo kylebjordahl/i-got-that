@@ -449,6 +449,55 @@ describe('synthesis: standard feeds', () => {
     ).toHaveLength(0);
   });
 
+  it("carries a source event's geocode through to the tasks it generates", async () => {
+    // The reported gap: a calendar input whose events are geocoded upstream
+    // produced drop-off/pickup tasks with free text only, so the claimed events
+    // mirrored out with nothing for Apple to compute travel time against.
+    const fam = await setupFamily('synth-std-geo@example.com');
+    const db = getDb(env.DB);
+    const feed = (
+      await db
+        .insert(feeds)
+        .values({
+          familyId: fam.familyId,
+          mode: 'standard',
+          url: 'https://feed.example.com/swim.ics',
+        })
+        .returning()
+    )[0]!;
+    await db
+      .insert(familyMemberFeeds)
+      .values({ familyId: fam.familyId, feedId: feed.id, familyMemberId: fam.childId });
+
+    const geo = { lat: 37.331686, lon: -122.030656, title: 'Rec Center' };
+    await insertSource(db, feed, {
+      icalUid: 'swim',
+      summary: 'Swim lesson',
+      location: 'Rec Center',
+      locationGeo: geo,
+      dtstart: new Date('2026-07-08T16:00:00Z'),
+      dtend: new Date('2026-07-08T17:00:00Z'),
+      allDay: false,
+    });
+
+    await synthesizeFeed(db, feed, WINDOW);
+    const events = await db
+      .select()
+      .from(calendarEvents)
+      .where(eq(calendarEvents.familyMemberId, fam.childId));
+    expect(events).toHaveLength(1);
+    expect(events[0]!.locationGeo).toEqual(geo);
+
+    await buildMemberTasks(db, fam.childId);
+    const generated = await db
+      .select()
+      .from(tasks)
+      .where(eq(tasks.familyMemberId, fam.childId));
+    // Default typing is a transition: a drop-off and a pickup, both pinned.
+    expect(generated.map((t) => t.type).sort()).toEqual(['dropoff', 'pickup']);
+    expect(generated.every((t) => t.locationGeo?.lat === geo.lat)).toBe(true);
+  });
+
   it('resynthesizes idempotently when the window boundary lands inside an already-synthesized event', async () => {
     // Regression: production 500 — an evening event in a negative-UTC-offset
     // zone commonly starts before the UTC day rolls over and ends after

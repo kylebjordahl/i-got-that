@@ -160,6 +160,9 @@ export async function readBackMember(
       allDay: occ.allDay,
       summary: occ.summary,
       location: occ.location,
+      // A human event pinned to a real place on the target calendar keeps its
+      // coordinates, so the tasks it generates can drive travel time too.
+      locationGeo: occ.locationGeo,
       description: null,
     };
     const contentHash = hashCalendarEvent(payload);

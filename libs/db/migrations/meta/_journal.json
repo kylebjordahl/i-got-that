@@ -85,6 +85,13 @@
       "when": 1785041450311,
       "tag": "0011_cool_penance",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "6",
+      "when": 1785820403348,
+      "tag": "0012_opposite_genesis",
+      "breakpoints": true
     }
   ]
 }
