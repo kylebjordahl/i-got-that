@@ -168,4 +168,24 @@ void main() {
       expect(geo.toJson(), {'lat': 40.7128, 'lon': -74.006});
     });
   });
+
+  group("Member's home", () {
+    test('parses a geocoded home address', () {
+      final member = Member.fromJson({
+        'id': 'm1',
+        'relationName': 'Dad',
+        'homeLocation': '1 Elm St',
+        'homeLocationGeo': {'lat': 37.4419, 'lon': -122.143, 'title': 'Home'},
+      });
+      expect(member.homeLocation, '1 Elm St');
+      expect(member.homeLocationGeo!.lat, 37.4419);
+      expect(member.homeLocationGeo!.title, 'Home');
+    });
+
+    test('is null for a member who never set one', () {
+      final member = Member.fromJson({'id': 'm2', 'relationName': 'Mom'});
+      expect(member.homeLocation, isNull);
+      expect(member.homeLocationGeo, isNull);
+    });
+  });
 }

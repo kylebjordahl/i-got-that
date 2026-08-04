@@ -20,7 +20,8 @@ import {
   type DeliveryTarget,
   GoogleCalendarProvider,
 } from '@igt/delivery';
-import { geoKey } from '@igt/domain';
+import { estimateTravelMinutes } from '@igt/classification';
+import { geoKey, type GeoLocation } from '@igt/domain';
 import type { Bindings } from '../env.js';
 import { googleRefresherFor } from '../lib/google-oauth.js';
 import { createGuardedFetch } from '../lib/outbound-url.js';
@@ -130,13 +131,54 @@ export function mirroredSummary(event: CalendarEventRow): string {
 }
 
 /**
- * Fallback travel-time block for a transition claim whose window is a single
- * instant (a 0-minute drop-off/pickup) — there's no configured span to borrow,
- * but the caretaker still has to drive there.
+ * A gap this long before the trip means the caretaker isn't coming from
+ * whatever was last on their calendar any more — the school run at 08:30 isn't
+ * launched from last night's dinner. Past it we measure from home instead,
+ * which also covers the first thing in the morning (nothing precedes it).
+ */
+const HOME_GAP_MIN = 90;
+/**
+ * Last-resort travel block when we can't measure a trip at all — no home on
+ * file and nothing geocoded to leave from. Same shape as before this estimate
+ * existed: the family's own transition window, or this when that's a point in
+ * time. Deliberately kept, so travel time doesn't vanish for anyone who hasn't
+ * set a home address.
  */
 const DEFAULT_TRAVEL_MIN = 15;
-/** Ceiling on a derived travel block, so an oddly long window can't reserve a whole day. */
-const MAX_TRAVEL_MIN = 120;
+/** Ceiling on the window-derived fallback, so an odd window can't reserve a whole day. */
+const MAX_WINDOW_TRAVEL_MIN = 120;
+
+/**
+ * Where the caretaker is coming *from* for a trip starting at `tripStart`: the
+ * last place they're accounted for beforehand, else home.
+ *
+ * `events` is the member's own calendar, ascending by start. The candidate is
+ * the latest event that has already ended when the trip starts — the meeting
+ * they're driving from. All-day events are skipped: they say what the day is
+ * about, not where the person physically is at 3pm. A candidate close enough in
+ * time but with no coordinates means we genuinely don't know where they'll be,
+ * and guessing "home" would be worse than not estimating at all.
+ */
+function tripOrigin(
+  events: CalendarEventRow[],
+  trip: CalendarEventRow,
+  home: GeoLocation | null,
+): GeoLocation | null {
+  const tripStart = trip.dtstart.getTime();
+  let preceding: CalendarEventRow | null = null;
+  for (const e of events) {
+    if (e.id === trip.id || e.allDay) continue;
+    const end = (e.dtend ?? e.dtstart).getTime();
+    if (end > tripStart) continue;
+    if (!preceding || end > (preceding.dtend ?? preceding.dtstart).getTime()) preceding = e;
+  }
+  if (preceding) {
+    const gapMin =
+      (tripStart - (preceding.dtend ?? preceding.dtstart).getTime()) / 60_000;
+    if (gapMin < HOME_GAP_MIN) return preceding.locationGeo ?? null;
+  }
+  return home;
+}
 
 /**
  * The travel-time block (minutes) to mirror out with an event, 0 for none.
@@ -144,25 +186,31 @@ const MAX_TRAVEL_MIN = 120;
  * Only claimed drop-off/pickup events get one: a transition is a trip to a
  * place at a fixed moment, which is exactly what Apple's travel time is for
  * (an attendance claim spans its event, and a synthesized event is the child's
- * own day, not a caretaker's journey). It needs coordinates — free text gives
- * Apple nothing dependable to route to — and can't apply to an all-day block.
+ * own day, not a caretaker's journey). It needs coordinates on the destination
+ * — free text gives Apple nothing dependable to route to — and can't apply to
+ * an all-day block.
  *
- * The length is the family's own transition window (the drop-off/pickup window
- * on the link, or a per-task override), which is already their answer to "how
- * much slack does this handoff need"; Apple then recomputes the leave-by time
- * from live traffic against the coordinates.
+ * With an origin (see `tripOrigin`) the length is an actual distance estimate.
+ * Without one it falls back to the family's own transition window, which is at
+ * least their answer to "how much slack does this handoff need". Either way
+ * it's a seed: Apple recomputes the leave-by time from live traffic against the
+ * destination's coordinates.
  */
 function travelTimeMinutes(
   event: CalendarEventRow,
   taskType: string | undefined,
+  resolveOrigin: () => GeoLocation | null,
 ): number {
   if (event.provenance !== 'claimed_task') return 0;
   if (taskType !== 'dropoff' && taskType !== 'pickup') return 0;
   if (!event.locationGeo || event.allDay) return 0;
+  // Only now is the calendar worth scanning for where they're coming from.
+  const origin = resolveOrigin();
+  if (origin) return estimateTravelMinutes(origin, event.locationGeo);
   const windowMin = event.dtend
     ? Math.round((event.dtend.getTime() - event.dtstart.getTime()) / 60_000)
     : 0;
-  return Math.min(windowMin > 0 ? windowMin : DEFAULT_TRAVEL_MIN, MAX_TRAVEL_MIN);
+  return Math.min(windowMin > 0 ? windowMin : DEFAULT_TRAVEL_MIN, MAX_WINDOW_TRAVEL_MIN);
 }
 
 /** djb2 over the meaningful mirrored fields; cheap + synchronous. */
@@ -304,6 +352,24 @@ export async function syncMemberMirror(
   const timezones = await linkTimezones(db, cal.familyId);
   const claimedTasks = await claimedTaskMeta(db, cal.familyId);
 
+  // Everything on this member's own calendar — human read-back events included,
+  // since a meeting they added by hand is exactly the kind of thing a school
+  // run leaves from. Only used to place the caretaker before each trip.
+  const ownCalendar = await db
+    .select()
+    .from(calendarEvents)
+    .where(
+      and(eq(calendarEvents.familyMemberId, memberId), isNull(calendarEvents.maskedAt)),
+    );
+  const home =
+    (
+      await db
+        .select({ homeLocationGeo: familyMembers.homeLocationGeo })
+        .from(familyMembers)
+        .where(eq(familyMembers.id, memberId))
+        .limit(1)
+    )[0]?.homeLocationGeo ?? null;
+
   const existing = await db
     .select()
     .from(eventMirrors)
@@ -341,7 +407,9 @@ export async function syncMemberMirror(
     const summary = mirroredSummary(event);
     const taskMeta = event.taskId ? claimedTasks.get(event.taskId) : undefined;
     const timezone = event.linkId ? timezones.get(event.linkId) : taskMeta?.timezone;
-    const travelMinutes = travelTimeMinutes(event, taskMeta?.type);
+    const travelMinutes = travelTimeMinutes(event, taskMeta?.type, () =>
+      tripOrigin(ownCalendar, event, home),
+    );
     const hash = hashMirrorPayload(summary, event, alertMinutes, timezone, travelMinutes);
     const prior = existingByEvent.get(event.id);
     if (prior && prior.payloadHash === hash) continue;

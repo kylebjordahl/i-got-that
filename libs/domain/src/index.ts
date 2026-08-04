@@ -384,6 +384,15 @@ export const UpdateFamilyMemberInput = z.object({
   requiresCaretaker: z.boolean().optional(),
   generatesFamilyTasks: z.boolean().optional(),
   color: HexColor.optional(),
+  /** Where this person's day starts and ends. Pass `null` to clear it. */
+  homeLocation: z.string().max(256).nullable().optional(),
+  /**
+   * Home's coordinates, geocoded client-side like a feed's location. This is
+   * the origin travel time is measured from when a trip has no earlier event to
+   * leave from — without it we can only fall back to a nominal allowance.
+   * Pass `null` to clear (e.g. the address was edited back to free text).
+   */
+  homeLocationGeo: GeoLocation.nullable().optional(),
 });
 export type UpdateFamilyMemberInput = z.infer<typeof UpdateFamilyMemberInput>;
 

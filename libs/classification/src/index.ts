@@ -691,3 +691,64 @@ export function subtractIntervals(base: Interval, cuts: Interval[]): Interval[] 
   if (cursor < be) out.push({ dtstart: new Date(cursor), dtend: new Date(be) });
   return out;
 }
+
+// --- Stage D: travel estimation (how long the trip there takes) --------------
+
+/**
+ * Distance in kilometres between two points, great-circle (haversine).
+ * Exported for testing; callers want `estimateTravelMinutes`.
+ */
+export function haversineKm(from: GeoLocation, to: GeoLocation): number {
+  const R = 6371;
+  const rad = (d: number) => (d * Math.PI) / 180;
+  const dLat = rad(to.lat - from.lat);
+  const dLon = rad(to.lon - from.lon);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(rad(from.lat)) * Math.cos(rad(to.lat)) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(a)));
+}
+
+/**
+ * Roads aren't straight lines. A 1.3 multiplier on the great-circle distance is
+ * the usual planning-grade approximation of real road distance.
+ */
+const ROAD_FACTOR = 1.3;
+/**
+ * Door-to-door overhead every trip pays regardless of distance: getting to the
+ * car, parking, walking in with a child.
+ */
+const OVERHEAD_MIN = 4;
+/** Rounded to this step, the way Apple's own travel-time picker offers values. */
+const STEP_MIN = 5;
+const MIN_TRAVEL_MIN = 5;
+const MAX_TRAVEL_MIN = 120;
+
+/**
+ * Average door-to-door speed (km/h) for a trip of `km` road kilometres. Short
+ * hops are dominated by stop signs and school zones; long ones are mostly
+ * highway, so the effective speed climbs with distance.
+ */
+function averageSpeedKmh(km: number): number {
+  if (km <= 3) return 24;
+  if (km <= 15) return 40;
+  if (km <= 50) return 65;
+  return 85;
+}
+
+/**
+ * Estimate the minutes it takes to get from one place to another.
+ *
+ * This is deliberately a *seed*, not a routing result: we have no routing
+ * service (and no traffic) server-side, so it's distance, a road factor, a
+ * distance-dependent average speed, and a fixed door-to-door overhead, rounded
+ * to a 5-minute step. Apple re-derives the real leave-by time from live traffic
+ * against the event's coordinates — what it needs from us is a travel block of
+ * roughly the right size, which is what makes it show travel time at all.
+ */
+export function estimateTravelMinutes(from: GeoLocation, to: GeoLocation): number {
+  const km = haversineKm(from, to) * ROAD_FACTOR;
+  const minutes = (km / averageSpeedKmh(km)) * 60 + OVERHEAD_MIN;
+  const rounded = Math.ceil(minutes / STEP_MIN) * STEP_MIN;
+  return Math.min(MAX_TRAVEL_MIN, Math.max(MIN_TRAVEL_MIN, rounded));
+}

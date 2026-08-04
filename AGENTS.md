@@ -137,10 +137,18 @@ paths in particular).
   `X-APPLE-STRUCTURED-LOCATION`. Apple needs *both* that structured location and
   `X-APPLE-TRAVEL-DURATION` before it draws a travel block —
   `X-APPLE-TRAVEL-ADVISORY-BEHAVIOR:AUTOMATIC` alone only governs the "time to
-  leave" alert. The duration is derived in `mirror.ts` for claimed
-  drop-off/pickup events from the family's own transition window. Drop
-  `locationGeo` anywhere along that chain and travel time silently stops
-  working, which is why every content hash on the path folds it in.
+  leave" alert. Drop `locationGeo` anywhere along that chain and travel time
+  silently stops working, which is why every content hash on the path folds it
+  in. The duration itself is derived in `mirror.ts` for claimed drop-off/pickup
+  events: it finds where the caretaker is coming *from* — the last thing on
+  their own calendar (human read-back events included), or
+  `family_members.home_location_geo` when the gap is long enough that they've
+  plainly been elsewhere — and runs `estimateTravelMinutes` (pure, in
+  `@igt/classification`: haversine × road factor ÷ a distance-dependent speed).
+  There is no routing service server-side and no traffic; it's a seed of about
+  the right size, which is all Apple needs to draw the block and then recompute
+  the leave-by time itself. With no origin at all it falls back to the family's
+  transition window.
 - **Credentials** are envelope-encrypted (KEK → DEK) into the `secret` table and
   never returned by the API. Accounts are **user-owned** (reused across
   families); the OAuth client secret stays in `apps/api`; the Google provider

@@ -124,6 +124,12 @@ export const familyMembers = sqliteTable(
       .default(true),
     /** Persistent per-person accent color (hex `#RRGGBB`). Null ⇒ derived client-side. */
     color: text('color'),
+    // Where this person's day starts and ends. Display text plus (when the
+    // client could geocode it) coordinates: the mirror measures travel time
+    // from here whenever a trip has no earlier event to leave from — the first
+    // thing in the morning, or anything after a long unscheduled gap.
+    homeLocation: text('home_location'),
+    homeLocationGeo: text('home_location_geo', { mode: 'json' }).$type<GeoLocation>(),
     // The task-rule terminal default for this member's own unified/direct
     // calendar (events added by hand, not synthesized from a feed).
     unifiedDefaultTaskType: text('unified_default_task_type', {

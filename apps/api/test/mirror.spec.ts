@@ -4,6 +4,7 @@ import {
   eq,
   eventMirrors,
   familyMemberFeeds,
+  familyMembers,
   feeds,
   getDb,
   memberCalendars,
@@ -15,6 +16,7 @@ import {
   DeliveryProviderRegistry,
   type DeliveryTarget,
 } from '@igt/delivery';
+import { estimateTravelMinutes } from '@igt/classification';
 import type { DeliveryMethod } from '@igt/domain';
 import { describe, expect, it } from 'vitest';
 import { decryptSecret, encryptSecret } from '../src/lib/secrets.js';
@@ -295,7 +297,95 @@ describe('mirror reconcile (syncMemberMirror)', () => {
     expect(fake.upserts[0]!.event.timezone).toBe('America/Denver');
   });
 
-  it('gives a geocoded drop-off/pickup claim a travel-time block, sized by its window', async () => {
+  it('measures a claim\'s travel block from wherever the caretaker is coming from', async () => {
+    const fam = await setupFamily('mirror-travel-origin@example.com');
+    const db = getDb(env.DB);
+    await connectTarget(db, fam, fam.adminMemberId);
+
+    // Home is ~50 km out; the school is in the city, a short hop from the
+    // caretaker's own morning meeting. The two origins therefore produce
+    // obviously different blocks, which is what these assertions turn on.
+    const home = { lat: 37.4419, lon: -122.143, title: 'Home' };
+    const school = { lat: 37.7955, lon: -122.3937, title: 'Lincoln Elementary' };
+    const meeting = { lat: 37.7896, lon: -122.4, title: 'Office' };
+    await db
+      .update(familyMembers)
+      .set({ homeLocation: 'Home', homeLocationGeo: home })
+      .where(eq(familyMembers.id, fam.adminMemberId));
+
+    const dropoff = async (dtstart: Date) => {
+      const task = (
+        await db
+          .insert(tasks)
+          .values({
+            familyId: fam.familyId,
+            familyMemberId: fam.childId,
+            type: 'dropoff',
+            dtstart,
+            dtend: new Date(dtstart.getTime() + 15 * 60_000),
+            status: 'owned',
+            ownerMemberId: fam.adminMemberId,
+            createdVia: 'generated',
+          })
+          .returning()
+      )[0]!;
+      return insertEvent(db, fam.familyId, fam.adminMemberId, {
+        synthKey: `task:${task.id}`,
+        provenance: 'claimed_task',
+        summary: 'Drop-off — child',
+        taskId: task.id,
+        dtstart,
+        dtend: new Date(dtstart.getTime() + 15 * 60_000),
+        location: 'Lincoln Elementary',
+        locationGeo: school,
+      });
+    };
+
+    // Monday: nothing precedes the 08:30 run, so it starts from home.
+    const fromHome = await dropoff(new Date('2026-07-06T15:30:00Z'));
+
+    // Tuesday: a meeting of the caretaker's own ends 20 minutes before the run
+    // — they're leaving from there, not from home. It's a human read-back
+    // event, the kind that only exists because we can see the target calendar.
+    await insertEvent(db, fam.familyId, fam.adminMemberId, {
+      synthKey: 'ext:standup:',
+      provenance: 'human',
+      summary: 'Standup',
+      dtstart: new Date('2026-07-07T14:30:00Z'),
+      dtend: new Date('2026-07-07T15:10:00Z'),
+      location: 'Office',
+      locationGeo: meeting,
+    });
+    const fromMeeting = await dropoff(new Date('2026-07-07T15:30:00Z'));
+
+    // Wednesday: the preceding thing is 3 hours earlier — long enough that
+    // they've plainly been elsewhere since, so home is the better guess.
+    await insertEvent(db, fam.familyId, fam.adminMemberId, {
+      synthKey: 'ext:early-call:',
+      provenance: 'human',
+      summary: 'Early call',
+      dtstart: new Date('2026-07-08T11:30:00Z'),
+      dtend: new Date('2026-07-08T12:30:00Z'),
+      location: 'Office',
+      locationGeo: meeting,
+    });
+    const afterLongGap = await dropoff(new Date('2026-07-08T15:30:00Z'));
+
+    const fake = new FakeProvider('caldav');
+    const registry = new DeliveryProviderRegistry().register(fake);
+    await syncMemberMirror(db, registry, env.KEK, fam.adminMemberId);
+    const travelFor = (eventId: string) =>
+      fake.upserts.find((u) => u.event.uid === `igt-${eventId}`)?.event.travelTimeMinutes;
+
+    expect(travelFor(fromHome.id)).toBe(estimateTravelMinutes(home, school));
+    expect(travelFor(fromMeeting.id)).toBe(estimateTravelMinutes(meeting, school));
+    expect(travelFor(afterLongGap.id)).toBe(estimateTravelMinutes(home, school));
+    // Sanity: the long haul from home really is the bigger block, so the three
+    // assertions above aren't all quietly agreeing on the same number.
+    expect(travelFor(fromHome.id)!).toBeGreaterThan(travelFor(fromMeeting.id)!);
+  });
+
+  it("falls back to the claim's own window when there's nowhere to measure from", async () => {
     const fam = await setupFamily('mirror-travel@example.com');
     const db = getDb(env.DB);
     await connectTarget(db, fam, fam.adminMemberId);

@@ -29,6 +29,8 @@ class Member {
     this.generatesFamilyTasks = true,
     this.userId,
     this.color,
+    this.homeLocation,
+    this.homeLocationGeo,
   });
 
   final String id;
@@ -47,6 +49,13 @@ class Member {
   /// (see `theme/person_colors.dart`).
   final String? color;
 
+  /// Where this person's day starts and ends, as displayed.
+  final String? homeLocation;
+
+  /// Home's coordinates. The backend measures travel time from here when a
+  /// drop-off/pickup has no earlier event to leave from; free text alone can't.
+  final GeoLocation? homeLocationGeo;
+
   bool get hasLogin => userId != null;
 
   factory Member.fromJson(Map<String, dynamic> j) => Member(
@@ -58,6 +67,11 @@ class Member {
         generatesFamilyTasks: j['generatesFamilyTasks'] as bool? ?? true,
         userId: j['userId'] as String?,
         color: j['color'] as String?,
+        homeLocation: j['homeLocation'] as String?,
+        homeLocationGeo: j['homeLocationGeo'] == null
+            ? null
+            : GeoLocation.fromJson(
+                (j['homeLocationGeo'] as Map).cast<String, dynamic>()),
       );
 }
 

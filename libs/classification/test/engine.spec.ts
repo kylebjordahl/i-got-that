@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 import {
   coveredUtcDays,
   detectConflicts,
+  estimateTravelMinutes,
   firstMatch,
+  haversineKm,
   generateTaskIntents,
   intervalsOverlap,
   resolveTaskResult,
@@ -579,5 +581,45 @@ describe('subtractIntervals', () => {
       ['2026-07-06T08:30:00.000Z', '2026-07-06T10:00:00.000Z'],
       ['2026-07-06T12:00:00.000Z', '2026-07-06T15:00:00.000Z'],
     ]);
+  });
+});
+
+// --- Stage D: travel estimation ---------------------------------------------
+
+describe('estimateTravelMinutes', () => {
+  // Well-known reference pair: ~3.9 km apart in San Francisco.
+  const ferryBuilding = { lat: 37.7955, lon: -122.3937 };
+  const missionDolores = { lat: 37.7596, lon: -122.4269 };
+
+  it('measures the great-circle distance between two places', () => {
+    expect(haversineKm(ferryBuilding, missionDolores)).toBeCloseTo(4.9, 0);
+    expect(haversineKm(ferryBuilding, ferryBuilding)).toBe(0);
+  });
+
+  it('scales with distance, in 5-minute steps', () => {
+    const acrossTown = estimateTravelMinutes(ferryBuilding, missionDolores);
+    // ~6.4 road km at 40 km/h + overhead ⇒ a quarter hour, give or take a step.
+    expect(acrossTown).toBeGreaterThanOrEqual(10);
+    expect(acrossTown).toBeLessThanOrEqual(20);
+    expect(acrossTown % 5).toBe(0);
+
+    // Palo Alto — ~50 km south, mostly highway, so it must come out longer but
+    // not proportionally so.
+    const downThePeninsula = estimateTravelMinutes(ferryBuilding, { lat: 37.4419, lon: -122.143 });
+    expect(downThePeninsula).toBeGreaterThan(acrossTown);
+    expect(downThePeninsula).toBeLessThan(90);
+  });
+
+  it('floors a next-door trip and caps a transcontinental one', () => {
+    // Same building: still 5 minutes — you don't teleport into the classroom.
+    expect(estimateTravelMinutes(ferryBuilding, ferryBuilding)).toBe(5);
+    // New York: nobody is driving this, but the block stays sane.
+    expect(estimateTravelMinutes(ferryBuilding, { lat: 40.7128, lon: -74.006 })).toBe(120);
+  });
+
+  it('is symmetric', () => {
+    expect(estimateTravelMinutes(ferryBuilding, missionDolores)).toBe(
+      estimateTravelMinutes(missionDolores, ferryBuilding),
+    );
   });
 });
