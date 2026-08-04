@@ -468,6 +468,17 @@ export const SetTaskDurationInput = z.object({
 export type SetTaskDurationInput = z.infer<typeof SetTaskDurationInput>;
 
 /**
+ * Set (or clear) how much travel time a calendar event carries out to the
+ * member's target calendar — Apple's travel block. An explicit value wins over
+ * everything the mirror would work out on its own, `0` says this trip needs no
+ * travel time at all, and `null` hands it back to the estimate. Capped at 4h.
+ */
+export const SetEventTravelTimeInput = z.object({
+  travelMinutes: z.number().int().min(0).max(240).nullable(),
+});
+export type SetEventTravelTimeInput = z.infer<typeof SetEventTravelTimeInput>;
+
+/**
  * How to resolve a conflict's split (design §8b). Every field is optional — an
  * empty body is the plain split: the lower-priority loser trimmed flush around
  * the higher-priority winner, both halves kept, no travel buffer.

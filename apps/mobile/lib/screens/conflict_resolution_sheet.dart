@@ -66,8 +66,14 @@ class _ConflictResolutionSheetState
   // displayed / sent.
   bool _beforeNeeded = true;
   bool _afterNeeded = true;
-  double _travelBefore = 0;
-  double _travelAfter = 0;
+  // Seeded with the backend's estimate of the trip between the two places
+  // (null when either end isn't geocoded — then the handles start at zero, as
+  // they always did). Getting there and coming back is the same trip, so both
+  // start at the same number; dragging either handle takes over from there.
+  late double _travelBefore =
+      (widget.conflict.suggestedTravelMin ?? 0).toDouble();
+  late double _travelAfter =
+      (widget.conflict.suggestedTravelMin ?? 0).toDouble();
 
   /// Vertical drag sensitivity — logical px per minute. Deliberately coarse: at
   /// the original 1.4px/min a thumb-sized twitch swung travel by 15+ minutes,

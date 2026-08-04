@@ -183,12 +183,19 @@ function tripOrigin(
 /**
  * The travel-time block (minutes) to mirror out with an event, 0 for none.
  *
- * Only claimed drop-off/pickup events get one: a transition is a trip to a
- * place at a fixed moment, which is exactly what Apple's travel time is for
- * (an attendance claim spans its event, and a synthesized event is the child's
- * own day, not a caretaker's journey). It needs coordinates on the destination
- * — free text gives Apple nothing dependable to route to — and can't apply to
- * an all-day block.
+ * A human's own answer wins outright. Someone who knows the run takes 25
+ * minutes has better information than any estimate we can make without a
+ * routing service, and `0` is them saying this trip needs no block at all. It
+ * still needs somewhere to be going — travel time on an event with no location
+ * would be a block to nowhere — but free text is enough here, because the
+ * duration no longer has to be computed from coordinates.
+ *
+ * Failing that, only claimed drop-off/pickup events get one: a transition is a
+ * trip to a place at a fixed moment, which is exactly what Apple's travel time
+ * is for (an attendance claim spans its event, and a synthesized event is the
+ * child's own day, not a caretaker's journey). The estimate needs coordinates
+ * on the destination — free text gives Apple nothing dependable to route to —
+ * and can't apply to an all-day block.
  *
  * With an origin (see `tripOrigin`) the length is an actual distance estimate.
  * Without one it falls back to the family's own transition window, which is at
@@ -201,6 +208,10 @@ function travelTimeMinutes(
   taskType: string | undefined,
   resolveOrigin: () => GeoLocation | null,
 ): number {
+  const hasSomewhereToGo = !!event.location || !!event.locationGeo;
+  if (event.travelTimeOverrideMin != null) {
+    return hasSomewhereToGo ? event.travelTimeOverrideMin : 0;
+  }
   if (event.provenance !== 'claimed_task') return 0;
   if (taskType !== 'dropoff' && taskType !== 'pickup') return 0;
   if (!event.locationGeo || event.allDay) return 0;

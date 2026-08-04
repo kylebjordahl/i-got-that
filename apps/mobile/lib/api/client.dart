@@ -537,6 +537,16 @@ class ApiClient {
         data: <String, dynamic>{}, options: _auth);
   }
 
+  /// Set how much travel time an event carries out to the target calendar
+  /// (Apple's travel block). An explicit value beats the backend's estimate,
+  /// `0` means no travel time on this one, and `null` hands it back to the
+  /// estimate.
+  Future<void> setEventTravelTime(
+      String familyId, String eventId, int? travelMinutes) async {
+    await _dio.post('/families/$familyId/calendar-events/$eventId/travel-time',
+        data: {'travelMinutes': travelMinutes}, options: _auth);
+  }
+
   /// Convert a feed-generated task into a chosen set of types (attendance /
   /// pickup / dropoff). The event's tasks for that dependent become exactly
   /// these types.

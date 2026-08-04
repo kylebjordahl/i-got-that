@@ -21,9 +21,15 @@ import {
   ConvertTaskInput,
   ResolveConflictInput,
   ResolvePendingDecisionInput,
+  SetEventTravelTimeInput,
   SetTaskDurationInput,
 } from '@igt/domain';
-import { transitionWindow, wallTimeToUtc, startOfUtcDay } from '@igt/classification';
+import {
+  estimateTravelMinutes,
+  transitionWindow,
+  wallTimeToUtc,
+  startOfUtcDay,
+} from '@igt/classification';
 import { Hono } from 'hono';
 import type { HonoEnv } from '../env.js';
 import { requireFamilyMember } from '../middleware/auth.js';
@@ -564,6 +570,7 @@ taskRoutes.get('/conflicts', async (c) => {
       synthKey: calendarEvents.synthKey,
       summary: calendarEvents.summary,
       location: calendarEvents.location,
+      locationGeo: calendarEvents.locationGeo,
       dtstart: calendarEvents.dtstart,
       dtend: calendarEvents.dtend,
       allDay: calendarEvents.allDay,
@@ -578,14 +585,26 @@ taskRoutes.get('/conflicts', async (c) => {
   const evByKey = new Map(evs.map((e) => [`${e.familyMemberId}|${e.synthKey}`, e]));
 
   const out = rows
-    .map((r) => ({
-      id: r.id,
-      familyMemberId: r.familyMemberId,
-      status: r.status,
-      createdAt: r.createdAt,
-      loser: evByKey.get(`${r.familyMemberId}|${r.loserKey}`) ?? null,
-      winner: evByKey.get(`${r.familyMemberId}|${r.winnerKey}`) ?? null,
-    }))
+    .map((r) => {
+      const loser = evByKey.get(`${r.familyMemberId}|${r.loserKey}`) ?? null;
+      const winner = evByKey.get(`${r.familyMemberId}|${r.winnerKey}`) ?? null;
+      return {
+        id: r.id,
+        familyMemberId: r.familyMemberId,
+        status: r.status,
+        createdAt: r.createdAt,
+        loser,
+        winner,
+        // Splitting the loser around the winner means leaving one place and
+        // coming back to it, so both buffers are the same trip. Suggested only
+        // when both ends are geocoded — the sheet leaves the handles at zero
+        // otherwise rather than inventing a number.
+        suggestedTravelMin:
+          loser?.locationGeo && winner?.locationGeo
+            ? estimateTravelMinutes(loser.locationGeo, winner.locationGeo)
+            : null,
+      };
+    })
     .filter((r) => r.loser && r.winner);
   return c.json({ conflicts: out });
 });
@@ -791,6 +810,7 @@ taskRoutes.get('/calendar-events', async (c) => {
       summary: calendarEvents.summary,
       description: calendarEvents.description,
       location: calendarEvents.location,
+      travelTimeOverrideMin: calendarEvents.travelTimeOverrideMin,
       synthKey: calendarEvents.synthKey,
       generatesFamilyTasks: familyMembers.generatesFamilyTasks,
     })
@@ -920,6 +940,52 @@ taskRoutes.post('/calendar-events/:eventId/tasks', async (c) => {
     .from(tasks)
     .where(eq(tasks.calendarEventId, event.id));
   return c.json({ tasks: rows, restored: restored.length });
+});
+
+/**
+ * Set (or clear) an event's travel time — the block Apple reserves before it.
+ *
+ * The mirror estimates this from where the caretaker is coming from, which is a
+ * guess about distance and traffic it makes without a routing service. A human
+ * who knows the run takes 25 minutes says so here, and that stands: an explicit
+ * value wins over every estimate, `0` means this trip carries no travel time at
+ * all, and `null` hands it back to the estimate. Stored off the content hash,
+ * so healing the event never disturbs it — but re-claiming does, since that's a
+ * different person making a different trip.
+ */
+taskRoutes.post('/calendar-events/:eventId/travel-time', async (c) => {
+  const parsed = SetEventTravelTimeInput.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) return c.json({ error: 'invalid', issues: parsed.error.issues }, 400);
+
+  const db = getDb(c.env.DB);
+  const me = c.get('member');
+  const event = (
+    await db
+      .select()
+      .from(calendarEvents)
+      .where(
+        and(
+          eq(calendarEvents.id, c.req.param('eventId')),
+          eq(calendarEvents.familyId, me.familyId),
+        ),
+      )
+      .limit(1)
+  )[0];
+  if (!event) return c.json({ error: 'not_found' }, 404);
+  // Travel time is a mirrored-event property; a human event already lives on
+  // the target calendar with whatever travel time its owner gave it there.
+  if (event.provenance === 'human') return c.json({ error: 'not_mirrored' }, 409);
+
+  await db
+    .update(calendarEvents)
+    .set({ travelTimeOverrideMin: parsed.data.travelMinutes })
+    .where(eq(calendarEvents.id, event.id));
+  enqueueReconcile(c, { kind: 'member', memberId: event.familyMemberId });
+
+  const updated = (
+    await db.select().from(calendarEvents).where(eq(calendarEvents.id, event.id)).limit(1)
+  )[0]!;
+  return c.json({ event: { id: updated.id, travelTimeOverrideMin: updated.travelTimeOverrideMin } });
 });
 
 /**

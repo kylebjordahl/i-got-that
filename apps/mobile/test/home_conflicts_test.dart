@@ -210,6 +210,58 @@ void main() {
     });
   });
 
+  testWidgets('the estimated trip between the two places seeds both buffers',
+      (tester) async {
+    tester.view.physicalSize = const Size(600, 1600);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    // Both events geocoded, so the backend sent an estimate of the trip.
+    final estimated = Conflict(
+      id: conflict.id,
+      familyMemberId: conflict.familyMemberId,
+      loser: conflict.loser,
+      winner: conflict.winner,
+      suggestedTravelMin: 20,
+    );
+    final api = _RecordingApiClient();
+    await tester.pumpWidget(ProviderScope(
+      overrides: [
+        apiClientProvider.overrideWithValue(api),
+        familyProvider.overrideWith((ref) async => 'fam-1'),
+        membersProvider.overrideWith((ref) async => [me, theo]),
+        currentMemberProvider.overrideWith((ref) async => me),
+        unownedTasksProvider.overrideWith((ref) async => [task]),
+        allTasksProvider.overrideWith((ref) async => [task]),
+        pendingDecisionsProvider.overrideWith((ref) async => const []),
+        conflictsProvider.overrideWith((ref) async => [estimated]),
+        calendarEventsProvider.overrideWith((ref) async => const []),
+        threadingThresholdProvider.overrideWith((ref) async => 30),
+      ],
+      child: MaterialApp(
+        theme: buildAppTheme(),
+        themeMode: ThemeMode.dark,
+        home: const Scaffold(body: HomeScreen()),
+      ),
+    ));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Review & resolve'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Confirm split'));
+    await tester.pumpAndSettle();
+
+    // Leaving and coming back is the same trip, so both halves start there —
+    // no dragging needed to get a sensible split.
+    expect(api.lastResolve, {
+      'travelBeforeMin': 20,
+      'travelAfterMin': 20,
+      'beforeNeeded': true,
+      'afterNeeded': true,
+    });
+  });
+
   testWidgets('dragging a travel handle steps in 5-minute increments without '
       'dragging the sheet', (tester) async {
     tester.view.physicalSize = const Size(600, 1600);

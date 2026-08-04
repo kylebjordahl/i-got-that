@@ -148,7 +148,13 @@ paths in particular).
   There is no routing service server-side and no traffic; it's a seed of about
   the right size, which is all Apple needs to draw the block and then recompute
   the leave-by time itself. With no origin at all it falls back to the family's
-  transition window.
+  transition window. A human's own answer
+  (`calendar_events.travel_time_override_min`, set from the event's detail
+  sheet) beats all of that — `0` means no block, null hands it back to the
+  estimate — and it lives outside `contentHash` on purpose, so healing an event
+  never disturbs it. The same estimator seeds the conflict sheet's travel
+  buffers (`suggestedTravelMin` on `GET /conflicts`, from the two events'
+  geocodes).
 - **Credentials** are envelope-encrypted (KEK → DEK) into the `secret` table and
   never returned by the API. Accounts are **user-owned** (reused across
   families); the OAuth client secret stays in `apps/api`; the Google provider

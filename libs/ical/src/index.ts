@@ -531,7 +531,7 @@ function buildICalendar(
   const inviteLocation = resolveIcalLocation(input.location, input.locationGeo);
   if (inviteLocation) {
     event.location(inviteLocation);
-    if (input.locationGeo) addTravelTime(event, input.travelTimeMinutes);
+    addTravelTime(event, input.travelTimeMinutes);
   }
   if (method === ICalCalendarMethod.REQUEST) addAlarms(event, input.alertMinutes);
   event.organizer({
@@ -582,13 +582,13 @@ export function buildStoredEventICalendar(input: {
   if (input.description) event.description(input.description);
   const storedLocation = resolveIcalLocation(input.location, input.locationGeo);
   if (storedLocation) {
-    // Opt the event into Apple Calendar's travel time, and — when we handed it
-    // coordinates — seed the travel block so it shows up without anyone having
-    // to open the event. Free text alone leaves Apple nothing dependable to
-    // route to, so it just gets the advisory flag. Harmless on Google/other
-    // clients, which ignore X-APPLE-* props.
+    // Opt the event into Apple Calendar's travel time, and reserve the block
+    // when the caller sized one, so it shows up without anyone having to open
+    // the event. Whether a given event deserves minutes — and how many — is the
+    // caller's call (see the mirror); this just emits what it's handed.
+    // Harmless on Google/other clients, which ignore X-APPLE-* props.
     event.location(storedLocation);
-    addTravelTime(event, input.locationGeo ? input.travelTimeMinutes : null);
+    addTravelTime(event, input.travelTimeMinutes);
   }
   addAlarms(event, input.alertMinutes);
   return cal.toString();

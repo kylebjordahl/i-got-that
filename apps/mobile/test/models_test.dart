@@ -188,4 +188,49 @@ void main() {
       expect(member.homeLocationGeo, isNull);
     });
   });
+
+  group('travel time', () {
+    test("reads an event's explicit override, and its absence", () {
+      final overridden = CalendarEventItem.fromJson({
+        'id': 'e1',
+        'familyMemberId': 'm1',
+        'provenance': 'claimed_task',
+        'dtstart': '2026-07-06T15:30:00.000Z',
+        'travelTimeOverrideMin': 25,
+      });
+      expect(overridden.travelTimeOverrideMin, 25);
+
+      final estimated = CalendarEventItem.fromJson({
+        'id': 'e2',
+        'familyMemberId': 'm1',
+        'provenance': 'claimed_task',
+        'dtstart': '2026-07-06T15:30:00.000Z',
+      });
+      expect(estimated.travelTimeOverrideMin, isNull);
+    });
+
+    test("reads a conflict's suggested buffer, null when either end is unpinned", () {
+      Map<String, dynamic> ev(String summary) => {
+            'summary': summary,
+            'allDay': false,
+            'dtstart': '2026-07-06T15:30:00.000Z',
+          };
+      final suggested = Conflict.fromJson({
+        'id': 'c1',
+        'familyMemberId': 'm1',
+        'loser': ev('School day'),
+        'winner': ev('Doctor'),
+        'suggestedTravelMin': 20,
+      });
+      expect(suggested.suggestedTravelMin, 20);
+
+      final unpinned = Conflict.fromJson({
+        'id': 'c2',
+        'familyMemberId': 'm1',
+        'loser': ev('School day'),
+        'winner': ev('Doctor'),
+      });
+      expect(unpinned.suggestedTravelMin, isNull);
+    });
+  });
 }

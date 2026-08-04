@@ -349,6 +349,101 @@ describe('calendar-events task eligibility', () => {
   });
 });
 
+describe("an event's travel time", () => {
+  it('sets, clears, and reports an explicit override; rejects nonsense', async () => {
+    const fam = await setupFamily('event-travel@example.com');
+    const db = getDb(env.DB);
+    const event = await insertEvent(db, fam.familyId, fam.childId, {
+      synthKey: 'bl:l1:travel',
+      summary: 'School day',
+      location: 'Lincoln Elementary',
+    });
+    const post = (body: unknown) =>
+      call(
+        `/families/${fam.familyId}/calendar-events/${event.id}/travel-time`,
+        authed(fam.admin.token, body),
+      );
+
+    const set = await post({ travelMinutes: 25 });
+    expect(set.status).toBe(200);
+    expect(
+      ((await set.json()) as { event: { travelTimeOverrideMin: number | null } }).event
+        .travelTimeOverrideMin,
+    ).toBe(25);
+
+    // It reaches the client through the calendar-events payload.
+    const listed = await call(
+      `/families/${fam.familyId}/calendar-events`,
+      bearer(fam.admin.token),
+    );
+    const { events } = (await listed.json()) as {
+      events: { id: string; travelTimeOverrideMin: number | null }[];
+    };
+    expect(events.find((e) => e.id === event.id)?.travelTimeOverrideMin).toBe(25);
+
+    // Zero is a real answer (no travel block), distinct from clearing.
+    expect((await post({ travelMinutes: 0 })).status).toBe(200);
+    const zeroed = (
+      await db.select().from(calendarEvents).where(eq(calendarEvents.id, event.id)).limit(1)
+    )[0]!;
+    expect(zeroed.travelTimeOverrideMin).toBe(0);
+
+    // Null hands it back to the estimate.
+    expect((await post({ travelMinutes: null })).status).toBe(200);
+    const cleared = (
+      await db.select().from(calendarEvents).where(eq(calendarEvents.id, event.id)).limit(1)
+    )[0]!;
+    expect(cleared.travelTimeOverrideMin).toBeNull();
+
+    // Out of range, and negative, are refused.
+    expect((await post({ travelMinutes: 999 })).status).toBe(400);
+    expect((await post({ travelMinutes: -5 })).status).toBe(400);
+  });
+
+  it("leaves the event's schedule hash alone, so healing never disturbs it", async () => {
+    const fam = await setupFamily('event-travel-hash@example.com');
+    const db = getDb(env.DB);
+    const event = await insertEvent(db, fam.familyId, fam.childId, {
+      synthKey: 'bl:l1:travel-hash',
+      location: 'Lincoln Elementary',
+    });
+    await call(
+      `/families/${fam.familyId}/calendar-events/${event.id}/travel-time`,
+      authed(fam.admin.token, { travelMinutes: 30 }),
+    );
+    const after = (
+      await db.select().from(calendarEvents).where(eq(calendarEvents.id, event.id)).limit(1)
+    )[0]!;
+    expect(after.contentHash).toBe(event.contentHash);
+  });
+
+  it('refuses a human event (it already lives on the target) and another family\'s', async () => {
+    const fam = await setupFamily('event-travel-human@example.com');
+    const other = await setupFamily('event-travel-other@example.com');
+    const db = getDb(env.DB);
+    const human = await insertEvent(db, fam.familyId, fam.childId, {
+      synthKey: 'ext:their-own:',
+      provenance: 'human',
+      location: 'Anywhere',
+    });
+    const res = await call(
+      `/families/${fam.familyId}/calendar-events/${human.id}/travel-time`,
+      authed(fam.admin.token, { travelMinutes: 10 }),
+    );
+    expect(res.status).toBe(409);
+
+    const mine = await insertEvent(db, fam.familyId, fam.childId, {
+      synthKey: 'bl:l1:mine',
+      location: 'Lincoln Elementary',
+    });
+    const crossFamily = await call(
+      `/families/${other.familyId}/calendar-events/${mine.id}/travel-time`,
+      authed(other.admin.token, { travelMinutes: 10 }),
+    );
+    expect(crossFamily.status).toBe(404);
+  });
+});
+
 describe('un-masking an event after a conflict', () => {
   it('rebuilds the tasks the mask swept, instead of leaving it permanently bare', async () => {
     const fam = await setupFamily('event-unmask@example.com');

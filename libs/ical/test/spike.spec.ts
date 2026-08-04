@@ -436,16 +436,28 @@ END:VCALENDAR`;
     expect(noTravel).toContain('X-APPLE-TRAVEL-ADVISORY-BEHAVIOR:AUTOMATIC');
     expect(noTravel).not.toContain('X-APPLE-TRAVEL-DURATION');
 
-    // Free text has no coordinates to route from, so no block is reserved even
-    // if minutes are offered.
+    // Minutes on a free-text location still reserve the block — the caller
+    // decides what deserves one (a human's own override does, an estimate
+    // can't be made without coordinates); this layer just emits it.
     const textOnly = unfold(
       buildStoredEventICalendar({
         ...geocoded,
         locationGeo: null,
-        travelTimeMinutes: 15,
+        travelTimeMinutes: 25,
       }),
     );
-    expect(textOnly).not.toContain('X-APPLE-TRAVEL-DURATION');
+    expect(textOnly).toContain('X-APPLE-TRAVEL-DURATION;VALUE=DURATION:PT25M');
+
+    // Nowhere to go at all ⇒ nothing travel-related, block or flag.
+    const noLocation = unfold(
+      buildStoredEventICalendar({
+        ...geocoded,
+        location: undefined,
+        locationGeo: null,
+        travelTimeMinutes: 25,
+      }),
+    );
+    expect(noLocation).not.toContain('X-APPLE-TRAVEL');
   });
 
   it('reads the calendar timezone from X-WR-TIMEZONE when present', () => {

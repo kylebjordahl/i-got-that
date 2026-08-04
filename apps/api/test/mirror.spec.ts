@@ -104,6 +104,8 @@ async function insertEvent(
         taskId: values.taskId ?? null,
         contentHash: hashCalendarEvent(payload as never),
         ...payload,
+        // Deliberately outside the hashed payload, like the column itself.
+        travelTimeOverrideMin: values.travelTimeOverrideMin ?? null,
         synthKey: values.synthKey,
       })
       .returning()
@@ -471,6 +473,79 @@ describe('mirror reconcile (syncMemberMirror)', () => {
     expect(travelFor(instant.id)).toBe(15);
     expect(travelFor(textOnly.id)).toBeUndefined();
     expect(travelFor(attendance.id)).toBeUndefined();
+  });
+
+  it('lets an explicit travel-time override beat every estimate', async () => {
+    const fam = await setupFamily('mirror-travel-override@example.com');
+    const db = getDb(env.DB);
+    await connectTarget(db, fam, fam.adminMemberId);
+    const geo = { lat: 37.331686, lon: -122.030656, title: 'Lincoln Elementary' };
+
+    const claimed = async (dtstart: Date, values: Partial<typeof calendarEvents.$inferInsert>) => {
+      const task = (
+        await db
+          .insert(tasks)
+          .values({
+            familyId: fam.familyId,
+            familyMemberId: fam.childId,
+            type: 'dropoff',
+            dtstart,
+            dtend: new Date(dtstart.getTime() + 15 * 60_000),
+            status: 'owned',
+            ownerMemberId: fam.adminMemberId,
+            createdVia: 'generated',
+          })
+          .returning()
+      )[0]!;
+      return insertEvent(db, fam.familyId, fam.adminMemberId, {
+        synthKey: `task:${task.id}`,
+        provenance: 'claimed_task',
+        summary: 'Drop-off — child',
+        taskId: task.id,
+        dtstart,
+        dtend: new Date(dtstart.getTime() + 15 * 60_000),
+        location: 'Lincoln Elementary',
+        ...values,
+      });
+    };
+
+    // "It takes me 40 minutes, whatever you think" — beats the estimate.
+    const overridden = await claimed(new Date('2026-07-06T15:30:00Z'), {
+      locationGeo: geo,
+      travelTimeOverrideMin: 40,
+    });
+    // Zero is a real answer: this one needs no travel block at all.
+    const suppressed = await claimed(new Date('2026-07-07T15:30:00Z'), {
+      locationGeo: geo,
+      travelTimeOverrideMin: 0,
+    });
+    // No coordinates is no obstacle to an override — the human supplied the
+    // number, so nothing had to be routed.
+    const textOnly = await claimed(new Date('2026-07-08T15:30:00Z'), {
+      travelTimeOverrideMin: 20,
+    });
+    // An override is honoured on an ordinary synthesized event too, which the
+    // estimate never touches.
+    const synthesized = await insertEvent(db, fam.familyId, fam.adminMemberId, {
+      synthKey: 'bl:l1:2026-07-09',
+      summary: 'School day',
+      dtstart: new Date('2026-07-09T15:30:00Z'),
+      dtend: new Date('2026-07-09T21:45:00Z'),
+      location: 'Lincoln Elementary',
+      locationGeo: geo,
+      travelTimeOverrideMin: 35,
+    });
+
+    const fake = new FakeProvider('caldav');
+    const registry = new DeliveryProviderRegistry().register(fake);
+    await syncMemberMirror(db, registry, env.KEK, fam.adminMemberId);
+    const travelFor = (eventId: string) =>
+      fake.upserts.find((u) => u.event.uid === `igt-${eventId}`)?.event.travelTimeMinutes;
+
+    expect(travelFor(overridden.id)).toBe(40);
+    expect(travelFor(suppressed.id)).toBeUndefined();
+    expect(travelFor(textOnly.id)).toBe(20);
+    expect(travelFor(synthesized.id)).toBe(35);
   });
 
   it('a member without a target is a clean no-op', async () => {

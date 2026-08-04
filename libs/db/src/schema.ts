@@ -687,6 +687,12 @@ export const calendarEvents = sqliteTable(
     // Geocoded coordinates for `location`, carried from the synthesizing link so
     // the mirror can emit GEO + X-APPLE-STRUCTURED-LOCATION. Null ⇒ text only.
     locationGeo: text('location_geo', { mode: 'json' }).$type<GeoLocation>(),
+    // A human's own answer for how long getting here takes (minutes), set on
+    // the event itself. Overrides everything the mirror would estimate; 0 means
+    // "no travel time on this one". Null ⇒ estimate it (see mirror.ts). Not
+    // part of `contentHash`: it's a property of the trip, not of the event's
+    // schedule, so healing the event never disturbs it.
+    travelTimeOverrideMin: integer('travel_time_override_min'),
     description: text('description'),
     // Task typing is NOT stamped here — task-gen resolves it at build time from
     // the member's task-rule pipeline, keyed by this event's `linkId` (the
