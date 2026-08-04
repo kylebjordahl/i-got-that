@@ -158,6 +158,7 @@ class TaskItem {
     this.ownerMemberId,
     this.calendarEventId,
     this.durationOverrideMin,
+    this.autoAssignedRuleId,
   });
 
   final String id;
@@ -182,9 +183,17 @@ class TaskItem {
   /// Null ⇒ the window is the rule-derived default. See [signedDurationMin].
   final int? durationOverrideMin;
 
+  /// The assignment rule that auto-claimed this task, when one did. Null ⇒ the
+  /// owner (if any) is a human claim, so the UI can tell the two apart and name
+  /// the responsible rule. Cleared the moment anyone claims/unassigns by hand.
+  final String? autoAssignedRuleId;
+
   bool get isDismissed => status == 'dismissed';
   bool get isUnowned => status == 'unowned';
   bool get isTransition => type == 'pickup' || type == 'dropoff';
+
+  /// Owned because a rule matched, rather than because someone claimed it.
+  bool get isAutoAssigned => autoAssignedRuleId != null;
 
   /// The task's window length in signed minutes from its anchor: the explicit
   /// override when set, otherwise derived from the stored span (a generated
@@ -205,6 +214,7 @@ class TaskItem {
     ownerMemberId: j['ownerMemberId'] as String?,
     calendarEventId: j['calendarEventId'] as String?,
     durationOverrideMin: j['durationOverrideMin'] as int?,
+    autoAssignedRuleId: j['autoAssignedRuleId'] as String?,
   );
 
   String get typeLabel => switch (type) {
@@ -527,22 +537,23 @@ class AssignmentRule {
 
   /// Selected weekdays as 0..6 (Mon..Sun); empty ⇒ any day.
   Set<int> get weekdays => {
-        for (var i = 0; i < 7; i++)
-          if (weekdayMask & (1 << i) != 0) i,
-      };
+    for (var i = 0; i < 7; i++)
+      if (weekdayMask & (1 << i) != 0) i,
+  };
 
   factory AssignmentRule.fromJson(Map<String, dynamic> j) => AssignmentRule(
-        id: j['id'] as String,
-        position: j['position'] as int,
-        ownerMemberId: j['ownerMemberId'] as String,
-        aboutMemberId: j['aboutMemberId'] as String?,
-        linkId: j['linkId'] as String?,
-        taskType: j['taskType'] as String?,
-        weekdayMask: j['weekdayMask'] as int? ?? 0,
-        cadenceWeeks: j['cadenceWeeks'] as int? ?? 1,
-        anchorDate:
-            j['anchorDate'] == null ? null : parseTimestamp(j['anchorDate']),
-      );
+    id: j['id'] as String,
+    position: j['position'] as int,
+    ownerMemberId: j['ownerMemberId'] as String,
+    aboutMemberId: j['aboutMemberId'] as String?,
+    linkId: j['linkId'] as String?,
+    taskType: j['taskType'] as String?,
+    weekdayMask: j['weekdayMask'] as int? ?? 0,
+    cadenceWeeks: j['cadenceWeeks'] as int? ?? 1,
+    anchorDate: j['anchorDate'] == null
+        ? null
+        : parseTimestamp(j['anchorDate']),
+  );
 }
 
 /// A feed↔member link, as returned by the assignment-rules endpoint so the
@@ -559,10 +570,10 @@ class AssignmentLink {
   final String familyMemberId;
 
   factory AssignmentLink.fromJson(Map<String, dynamic> j) => AssignmentLink(
-        id: j['id'] as String,
-        feedId: j['feedId'] as String,
-        familyMemberId: j['familyMemberId'] as String,
-      );
+    id: j['id'] as String,
+    feedId: j['feedId'] as String,
+    familyMemberId: j['familyMemberId'] as String,
+  );
 }
 
 /// The family's whole assignment pipeline + the links its per-feed picker needs.
@@ -572,7 +583,8 @@ class AssignmentRuleSet {
   final List<AssignmentRule> rules;
   final List<AssignmentLink> links;
 
-  factory AssignmentRuleSet.fromJson(Map<String, dynamic> j) => AssignmentRuleSet(
+  factory AssignmentRuleSet.fromJson(Map<String, dynamic> j) =>
+      AssignmentRuleSet(
         rules: (((j['rules'] as List?) ?? const [])
             .map((r) => AssignmentRule.fromJson(r as Map<String, dynamic>))
             .toList()),

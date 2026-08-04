@@ -17,16 +17,20 @@ import 'package:flutter_test/flutter_test.dart';
 void main() {
   final outDir = Platform.environment['SCREENSHOT_DIR'];
 
-  Member m(String id, String name,
-          {bool caretaker = false, bool child = false, String? color}) =>
-      Member(
-        id: id,
-        relationName: name,
-        isCaretaker: caretaker,
-        isAdmin: caretaker,
-        requiresCaretaker: child,
-        color: color,
-      );
+  Member m(
+    String id,
+    String name, {
+    bool caretaker = false,
+    bool child = false,
+    String? color,
+  }) => Member(
+    id: id,
+    relationName: name,
+    isCaretaker: caretaker,
+    isAdmin: caretaker,
+    requiresCaretaker: child,
+    color: color,
+  );
 
   final members = [
     m('mom', 'Mom', caretaker: true, color: '#7C6CF0'),
@@ -37,7 +41,12 @@ void main() {
   final caretakers = members.where((x) => x.isCaretaker).toList();
   final children = members.where((x) => x.requiresCaretaker).toList();
   final feeds = [
-    FeedItem(id: 'f1', kind: 'ics', mode: 'standard', sourceCalendarName: 'Soccer'),
+    FeedItem(
+      id: 'f1',
+      kind: 'ics',
+      mode: 'standard',
+      sourceCalendarName: 'Soccer',
+    ),
   ];
   final ruleSet = AssignmentRuleSet(
     rules: [
@@ -63,12 +72,12 @@ void main() {
   );
 
   List<Override> overrides() => [
-        membersProvider.overrideWith((ref) async => members),
-        caretakersProvider.overrideWith((ref) async => caretakers),
-        dependentsProvider.overrideWith((ref) async => children),
-        feedsProvider.overrideWith((ref) async => feeds),
-        assignmentRulesProvider.overrideWith((ref) async => ruleSet),
-      ];
+    membersProvider.overrideWith((ref) async => members),
+    caretakersProvider.overrideWith((ref) async => caretakers),
+    dependentsProvider.overrideWith((ref) async => children),
+    feedsProvider.overrideWith((ref) async => feeds),
+    assignmentRulesProvider.overrideWith((ref) async => ruleSet),
+  ];
 
   Future<void> loadFonts() async {
     for (final family in const ['Hanken Grotesk', 'Schibsted Grotesk']) {
@@ -103,22 +112,22 @@ void main() {
 
     final key = GlobalKey();
     Widget app() => ProviderScope(
-          overrides: overrides(),
-          child: RepaintBoundary(
-            key: key,
-            child: MaterialApp(
-              debugShowCheckedModeBanner: false,
-              theme: ThemeData.dark(useMaterial3: true).copyWith(
-                scaffoldBackgroundColor: const Color(0xFF15121B),
-                canvasColor: const Color(0xFF15121B),
-                bottomSheetTheme: const BottomSheetThemeData(
-                  backgroundColor: Color(0xFF15121B),
-                ),
-              ),
-              home: const AssignmentRulesScreen(),
+      overrides: overrides(),
+      child: RepaintBoundary(
+        key: key,
+        child: MaterialApp(
+          debugShowCheckedModeBanner: false,
+          theme: ThemeData.dark(useMaterial3: true).copyWith(
+            scaffoldBackgroundColor: const Color(0xFF15121B),
+            canvasColor: const Color(0xFF15121B),
+            bottomSheetTheme: const BottomSheetThemeData(
+              backgroundColor: Color(0xFF15121B),
             ),
           ),
-        );
+          home: const AssignmentRulesScreen(),
+        ),
+      ),
+    );
 
     await tester.pumpWidget(app());
     await tester.pumpAndSettle();

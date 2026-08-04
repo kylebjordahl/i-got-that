@@ -219,6 +219,30 @@ void main() {
     });
   });
 
+  group('TaskItem auto-assignment provenance', () {
+    Map<String, dynamic> task(Map<String, dynamic> extra) => {
+      'id': 't1',
+      'familyMemberId': 'theo',
+      'type': 'pickup',
+      'dtstart': '2026-07-06T15:30:00.000Z',
+      'status': 'owned',
+      'ownerMemberId': 'dad',
+      ...extra,
+    };
+
+    test('reads the rule that claimed the task', () {
+      final t = TaskItem.fromJson(task({'autoAssignedRuleId': 'ar1'}));
+      expect(t.autoAssignedRuleId, 'ar1');
+      expect(t.isAutoAssigned, isTrue);
+    });
+
+    test('a hand-claimed task carries no rule', () {
+      final t = TaskItem.fromJson(task(const {}));
+      expect(t.autoAssignedRuleId, isNull);
+      expect(t.isAutoAssigned, isFalse);
+    });
+  });
+
   group("Member's home", () {
     test('parses a geocoded home address', () {
       final member = Member.fromJson({

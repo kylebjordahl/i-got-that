@@ -7,10 +7,9 @@ import '../state/family.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_text.dart';
 import '../theme/person_colors.dart';
+import '../util/assignment_text.dart';
 import '../widgets/primitives.dart';
 import '../widgets/settings.dart';
-
-const _weekdayLabels = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
 String _initialFor(String name) =>
     name.trim().isEmpty ? '?' : name.trim()[0].toUpperCase();
@@ -44,11 +43,12 @@ class AssignmentRulesScreen extends ConsumerWidget {
               child: setAsync.when(
                 loading: () => const Center(child: CircularProgressIndicator()),
                 error: (e, _) => Center(
-                  child: Text('$e',
-                      style: font(kBodyFont, 13, 500, color: AppColors.coral)),
+                  child: Text(
+                    '$e',
+                    style: font(kBodyFont, 13, 500, color: AppColors.coral),
+                  ),
                 ),
-                data: (ruleSet) =>
-                    _body(context, ref, ruleSet, members, feeds),
+                data: (ruleSet) => _body(context, ref, ruleSet, members, feeds),
               ),
             ),
           ],
@@ -82,16 +82,20 @@ class AssignmentRulesScreen extends ConsumerWidget {
             style: font(kBodyFont, 12, 500, color: AppColors.indigo),
           ),
         ),
-        SectionEyebrow('Rules',
-            color: AppColors.purple,
-            trailing: Text('First match applies', style: AppText.secondary)),
+        SectionEyebrow(
+          'Rules',
+          color: AppColors.purple,
+          trailing: Text('First match applies', style: AppText.secondary),
+        ),
         const SizedBox(height: 12),
         if (ruleSet.rules.isEmpty)
           Padding(
             padding: const EdgeInsets.symmetric(vertical: 26),
             child: Center(
-              child: Text('No rules yet — tap “Add rule” to create one',
-                  style: AppText.subtitle),
+              child: Text(
+                'No rules yet — tap “Add rule” to create one',
+                style: AppText.subtitle,
+              ),
             ),
           ),
         for (final r in ruleSet.rules) ...[
@@ -107,9 +111,15 @@ class AssignmentRulesScreen extends ConsumerWidget {
         Center(
           child: TextButton.icon(
             onPressed: () => _openSheet(context, ref, ruleSet),
-            icon: const Icon(Icons.add_rounded, size: 18, color: AppColors.purple),
-            label: Text('Add rule',
-                style: font(kBodyFont, 13, 700, color: AppColors.purple)),
+            icon: const Icon(
+              Icons.add_rounded,
+              size: 18,
+              color: AppColors.purple,
+            ),
+            label: Text(
+              'Add rule',
+              style: font(kBodyFont, 13, 700, color: AppColors.purple),
+            ),
           ),
         ),
       ],
@@ -135,48 +145,6 @@ class AssignmentRulesScreen extends ConsumerWidget {
       ref.invalidate(calendarEventsProvider);
     }
   }
-}
-
-/// Human-readable one-liner describing who a rule assigns and when.
-String describeRule(
-  AssignmentRule r,
-  List<Member> members,
-  List<FeedItem> feeds,
-  List<AssignmentLink> links,
-) {
-  String memberName(String? id) =>
-      members.where((m) => m.id == id).map((m) => m.relationName).firstOrNull ??
-      'someone';
-
-  final parts = <String>[];
-  parts.add(switch (r.taskType) {
-    'pickup' => 'Pickup',
-    'dropoff' => 'Drop-off',
-    'attendance' => 'Attendance',
-    _ => 'All tasks',
-  });
-
-  if (r.linkId != null) {
-    final link = links.where((l) => l.id == r.linkId).firstOrNull;
-    final feed = feeds.where((f) => f.id == link?.feedId).firstOrNull;
-    parts.add('from ${feed?.displayName ?? 'a feed'}');
-  } else if (r.aboutMemberId != null) {
-    parts.add('for ${memberName(r.aboutMemberId)}');
-  } else {
-    parts.add('for any child');
-  }
-
-  final days = r.weekdays;
-  if (days.isEmpty) {
-    parts.add('any day');
-  } else if (days.length == 7) {
-    parts.add('every day');
-  } else {
-    parts.add(days.map((d) => _weekdayLabels[d]).join(', '));
-  }
-  if (r.isBiweekly) parts.add('every other week');
-
-  return parts.join(' · ');
 }
 
 class _RuleCard extends StatelessWidget {
@@ -212,13 +180,17 @@ class _RuleCard extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(owner?.relationName ?? 'Unknown',
-                    style: AppText.sectionItemTitle),
+                Text(
+                  owner?.relationName ?? 'Unknown',
+                  style: AppText.sectionItemTitle,
+                ),
                 const SizedBox(height: 3),
-                Text(describeRule(rule, members, feeds, links),
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: AppText.secondary),
+                Text(
+                  describeRule(rule, members, feeds, links),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: AppText.secondary,
+                ),
               ],
             ),
           ),
@@ -300,14 +272,20 @@ class _AssignmentRuleSheetState extends ConsumerState<_AssignmentRuleSheet> {
 
     return Padding(
       padding: EdgeInsets.fromLTRB(
-          22, 4, 22, 28 + MediaQuery.of(context).viewInsets.bottom),
+        22,
+        4,
+        22,
+        28 + MediaQuery.of(context).viewInsets.bottom,
+      ),
       child: SingleChildScrollView(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(widget.existing == null ? 'New rule' : 'Edit rule',
-                style: AppText.subPageTitle),
+            Text(
+              widget.existing == null ? 'New rule' : 'Edit rule',
+              style: AppText.subPageTitle,
+            ),
             const SizedBox(height: 18),
 
             // Owner (required).
@@ -347,10 +325,7 @@ class _AssignmentRuleSheetState extends ConsumerState<_AssignmentRuleSheet> {
               options: [
                 (null, 'Any feed'),
                 for (final l in widget.ruleSet.links)
-                  (
-                    l.id,
-                    _feedLabel(l, feeds, members),
-                  ),
+                  (l.id, _feedLabel(l, feeds, members)),
               ],
               value: _linkId,
               onChanged: (v) => setState(() => _linkId = v),
@@ -389,23 +364,31 @@ class _AssignmentRuleSheetState extends ConsumerState<_AssignmentRuleSheet> {
               children: [
                 for (var i = 0; i < 7; i++)
                   _DayChip(
-                    label: _weekdayLabels[i],
+                    label: kWeekdayLabels[i],
                     selected: _weekdays.contains(i),
-                    onTap: () => setState(() =>
-                        _weekdays.contains(i) ? _weekdays.remove(i) : _weekdays.add(i)),
+                    onTap: () => setState(
+                      () => _weekdays.contains(i)
+                          ? _weekdays.remove(i)
+                          : _weekdays.add(i),
+                    ),
                   ),
               ],
             ),
             const SizedBox(height: 4),
-            Text('No days selected means any day.',
-                style: font(kBodyFont, 11, 500, color: AppColors.textMuted)),
+            Text(
+              'No days selected means any day.',
+              style: font(kBodyFont, 11, 500, color: AppColors.textMuted),
+            ),
             const SizedBox(height: 20),
 
             // Cadence.
             Text('HOW OFTEN', style: AppText.eyebrow()),
             const SizedBox(height: 10),
             _Segmented(
-              options: const [(false, 'Every week'), (true, 'Every other week')],
+              options: const [
+                (false, 'Every week'),
+                (true, 'Every other week'),
+              ],
               value: _biweekly,
               onChanged: (v) => setState(() => _biweekly = v),
             ),
@@ -415,7 +398,10 @@ class _AssignmentRuleSheetState extends ConsumerState<_AssignmentRuleSheet> {
                 onTap: _pickAnchor,
                 borderRadius: BorderRadius.circular(12),
                 child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 14,
+                    vertical: 12,
+                  ),
                   decoration: BoxDecoration(
                     color: AppColors.bg,
                     borderRadius: BorderRadius.circular(12),
@@ -423,16 +409,27 @@ class _AssignmentRuleSheetState extends ConsumerState<_AssignmentRuleSheet> {
                   ),
                   child: Row(
                     children: [
-                      const Icon(Icons.event_rounded,
-                          size: 18, color: AppColors.textSecondary),
+                      const Icon(
+                        Icons.event_rounded,
+                        size: 18,
+                        color: AppColors.textSecondary,
+                      ),
                       const SizedBox(width: 10),
                       Expanded(
-                        child: Text('Starting the week of ${_fmtDate(_anchor)}',
-                            style: font(kBodyFont, 13, 600,
-                                color: AppColors.textSecondary)),
+                        child: Text(
+                          'Starting the week of ${_fmtDate(_anchor)}',
+                          style: font(
+                            kBodyFont,
+                            13,
+                            600,
+                            color: AppColors.textSecondary,
+                          ),
+                        ),
                       ),
-                      const Icon(Icons.chevron_right_rounded,
-                          color: AppColors.textMuted),
+                      const Icon(
+                        Icons.chevron_right_rounded,
+                        color: AppColors.textMuted,
+                      ),
                     ],
                   ),
                 ),
@@ -441,8 +438,10 @@ class _AssignmentRuleSheetState extends ConsumerState<_AssignmentRuleSheet> {
 
             if (_error != null) ...[
               const SizedBox(height: 14),
-              Text(_error!,
-                  style: font(kBodyFont, 12, 600, color: AppColors.coral)),
+              Text(
+                _error!,
+                style: font(kBodyFont, 12, 600, color: AppColors.coral),
+              ),
             ],
             const SizedBox(height: 22),
             Row(
@@ -450,8 +449,10 @@ class _AssignmentRuleSheetState extends ConsumerState<_AssignmentRuleSheet> {
                 if (widget.existing != null) ...[
                   IconButton(
                     onPressed: _saving ? null : _delete,
-                    icon: const Icon(Icons.delete_outline_rounded,
-                        color: AppColors.coral),
+                    icon: const Icon(
+                      Icons.delete_outline_rounded,
+                      color: AppColors.coral,
+                    ),
                   ),
                   const SizedBox(width: 6),
                 ],
@@ -471,22 +472,26 @@ class _AssignmentRuleSheetState extends ConsumerState<_AssignmentRuleSheet> {
   }
 
   void _setDays(Set<int> days) => setState(() {
-        _weekdays
-          ..clear()
-          ..addAll(days);
-      });
+    _weekdays
+      ..clear()
+      ..addAll(days);
+  });
 
   Widget _preset(String label, VoidCallback onTap) => GestureDetector(
-        onTap: onTap,
-        child: Text(label,
-            style: font(kBodyFont, 12, 700, color: AppColors.indigo)),
-      );
+    onTap: onTap,
+    child: Text(
+      label,
+      style: font(kBodyFont, 12, 700, color: AppColors.indigo),
+    ),
+  );
 
   String _feedLabel(
-      AssignmentLink l, List<FeedItem> feeds, List<Member> members) {
+    AssignmentLink l,
+    List<FeedItem> feeds,
+    List<Member> members,
+  ) {
     final feed = feeds.where((f) => f.id == l.feedId).firstOrNull;
-    final member =
-        members.where((m) => m.id == l.familyMemberId).firstOrNull;
+    final member = members.where((m) => m.id == l.familyMemberId).firstOrNull;
     final name = feed?.displayName ?? 'Feed';
     return member != null ? '$name · ${member.relationName}' : name;
   }
@@ -575,8 +580,11 @@ class _AssignmentRuleSheetState extends ConsumerState<_AssignmentRuleSheet> {
 }
 
 class _OwnerChip extends StatelessWidget {
-  const _OwnerChip(
-      {required this.member, required this.selected, required this.onTap});
+  const _OwnerChip({
+    required this.member,
+    required this.selected,
+    required this.onTap,
+  });
   final Member member;
   final bool selected;
   final VoidCallback onTap;
@@ -597,13 +605,22 @@ class _OwnerChip extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           children: [
             PersonAvatar(
-                initial: _initialFor(member.relationName),
-                color: color,
-                size: 30),
+              initial: _initialFor(member.relationName),
+              color: color,
+              size: 30,
+            ),
             const SizedBox(width: 8),
-            Text(member.relationName,
-                style: font(kBodyFont, 13, 600,
-                    color: selected ? AppColors.textPrimary : AppColors.textSecondary)),
+            Text(
+              member.relationName,
+              style: font(
+                kBodyFont,
+                13,
+                600,
+                color: selected
+                    ? AppColors.textPrimary
+                    : AppColors.textSecondary,
+              ),
+            ),
           ],
         ),
       ),
@@ -614,8 +631,11 @@ class _OwnerChip extends StatelessWidget {
 /// A wrapping single-select row of pill options; `T?` value, first option's
 /// value may be null ("Any").
 class _ChoiceRow<T> extends StatelessWidget {
-  const _ChoiceRow(
-      {required this.options, required this.value, required this.onChanged});
+  const _ChoiceRow({
+    required this.options,
+    required this.value,
+    required this.onChanged,
+  });
   final List<(T?, String)> options;
   final T? value;
   final ValueChanged<T?> onChanged;
@@ -635,13 +655,20 @@ class _ChoiceRow<T> extends StatelessWidget {
                 color: v == value ? AppColors.indigo : AppColors.card,
                 borderRadius: BorderRadius.circular(999),
                 border: Border.all(
-                    color: v == value ? AppColors.indigo : AppColors.border),
+                  color: v == value ? AppColors.indigo : AppColors.border,
+                ),
               ),
-              child: Text(label,
-                  style: font(kBodyFont, 13, 600,
-                      color: v == value
-                          ? const Color(0xFF17162B)
-                          : AppColors.textSecondary)),
+              child: Text(
+                label,
+                style: font(
+                  kBodyFont,
+                  13,
+                  600,
+                  color: v == value
+                      ? const Color(0xFF17162B)
+                      : AppColors.textSecondary,
+                ),
+              ),
             ),
           ),
       ],
@@ -650,8 +677,11 @@ class _ChoiceRow<T> extends StatelessWidget {
 }
 
 class _Segmented<T> extends StatelessWidget {
-  const _Segmented(
-      {required this.options, required this.value, required this.onChanged});
+  const _Segmented({
+    required this.options,
+    required this.value,
+    required this.onChanged,
+  });
   final List<(T, String)> options;
   final T value;
   final ValueChanged<T> onChanged;
@@ -678,13 +708,19 @@ class _Segmented<T> extends StatelessWidget {
                     color: v == value ? AppColors.indigo : Colors.transparent,
                     borderRadius: BorderRadius.circular(10),
                   ),
-                  child: Text(label,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: font(kBodyFont, 12, 700,
-                          color: v == value
-                              ? const Color(0xFF17162B)
-                              : AppColors.textSecondary)),
+                  child: Text(
+                    label,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: font(
+                      kBodyFont,
+                      12,
+                      700,
+                      color: v == value
+                          ? const Color(0xFF17162B)
+                          : AppColors.textSecondary,
+                    ),
+                  ),
                 ),
               ),
             ),
@@ -695,8 +731,11 @@ class _Segmented<T> extends StatelessWidget {
 }
 
 class _DayChip extends StatelessWidget {
-  const _DayChip(
-      {required this.label, required this.selected, required this.onTap});
+  const _DayChip({
+    required this.label,
+    required this.selected,
+    required this.onTap,
+  });
   final String label;
   final bool selected;
   final VoidCallback onTap;
@@ -710,11 +749,19 @@ class _DayChip extends StatelessWidget {
         decoration: BoxDecoration(
           color: selected ? AppColors.amber : AppColors.bg,
           borderRadius: BorderRadius.circular(999),
-          border: Border.all(color: selected ? AppColors.amber : AppColors.border),
+          border: Border.all(
+            color: selected ? AppColors.amber : AppColors.border,
+          ),
         ),
-        child: Text(label,
-            style: font(kBodyFont, 13, 600,
-                color: selected ? const Color(0xFF2A1E05) : AppColors.textSecondary)),
+        child: Text(
+          label,
+          style: font(
+            kBodyFont,
+            13,
+            600,
+            color: selected ? const Color(0xFF2A1E05) : AppColors.textSecondary,
+          ),
+        ),
       ),
     );
   }

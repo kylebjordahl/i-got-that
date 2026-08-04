@@ -75,9 +75,14 @@ class FamilyScreen extends ConsumerWidget {
               iconColor: AppColors.indigo,
               title: 'Assignment rules',
               subtitle: 'Auto-claim tasks for a caretaker',
-              trailing: const Icon(Icons.chevron_right_rounded, color: AppColors.textMuted),
+              trailing: const Icon(
+                Icons.chevron_right_rounded,
+                color: AppColors.textMuted,
+              ),
               onTap: () => Navigator.of(context).push(
-                MaterialPageRoute(builder: (_) => const AssignmentRulesScreen()),
+                MaterialPageRoute(
+                  builder: (_) => const AssignmentRulesScreen(),
+                ),
               ),
             ),
           ),

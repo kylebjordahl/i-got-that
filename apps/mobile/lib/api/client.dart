@@ -1115,13 +1115,21 @@ class ApiClient {
   }
 
   Future<void> deleteAssignmentRule(String familyId, String ruleId) async {
-    await _dio.delete('${_assignmentRulesBase(familyId)}/$ruleId', options: _auth);
+    await _dio.delete(
+      '${_assignmentRulesBase(familyId)}/$ruleId',
+      options: _auth,
+    );
   }
 
   Future<void> reorderAssignmentRules(
-      String familyId, List<String> ruleIds) async {
-    await _dio.put('${_assignmentRulesBase(familyId)}/order',
-        data: {'ruleIds': ruleIds}, options: _auth);
+    String familyId,
+    List<String> ruleIds,
+  ) async {
+    await _dio.put(
+      '${_assignmentRulesBase(familyId)}/order',
+      data: {'ruleIds': ruleIds},
+      options: _auth,
+    );
   }
 
   /// Set a calendar's terminal default; `linkId` null = the unified calendar.
