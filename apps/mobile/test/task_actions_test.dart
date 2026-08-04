@@ -15,10 +15,17 @@ class _RecordingApiClient extends ApiClient {
   _RecordingApiClient() : super(baseUrl: 'http://test');
 
   List<String>? lastConvertTypes;
+  ({String eventId, int? minutes})? lastTravelTime;
 
   @override
   Future<void> convertTask(String familyId, String taskId, List<String> types) async {
     lastConvertTypes = types;
+  }
+
+  @override
+  Future<void> setEventTravelTime(
+      String familyId, String eventId, int? travelMinutes) async {
+    lastTravelTime = (eventId: eventId, minutes: travelMinutes);
   }
 }
 
@@ -122,5 +129,69 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(api.lastConvertTypes, ['dropoff', 'pickup']);
+  });
+
+  testWidgets("a claimed drop-off's sheet edits the travel time on its claim",
+      (tester) async {
+    // Plan draws drop-offs and pickups as tabs on their source event and never
+    // as claim blocks, so this sheet — not the event-details one — is where a
+    // transition's travel time has to be reachable.
+    final me = _m('dad', 'Dad', caretaker: true, admin: true);
+    final claimed = TaskItem(
+      id: 't3',
+      familyMemberId: 'theo',
+      type: 'dropoff',
+      start: DateTime.now().add(const Duration(hours: 2)),
+      status: 'owned',
+      ownerMemberId: 'dad',
+      createdVia: 'generated',
+      calendarEventId: 'e3',
+    );
+    // The claim: the copy of that task on Dad's own calendar, which is what
+    // mirrors out and carries the travel block.
+    final claimEvent = CalendarEventItem(
+      id: 'claim-3',
+      familyMemberId: 'dad',
+      provenance: 'claimed_task',
+      start: claimed.start,
+      allDay: false,
+      summary: 'Drop-off — Theo',
+      location: 'Lincoln Elementary',
+      taskId: 't3',
+    );
+    final api = _RecordingApiClient();
+
+    await tester.pumpWidget(ProviderScope(
+      overrides: [
+        apiClientProvider.overrideWithValue(api),
+        familyProvider.overrideWith((ref) async => 'fam-1'),
+        membersProvider.overrideWith((ref) async => [me, _m('theo', 'Theo', child: true)]),
+        currentMemberProvider.overrideWith((ref) async => me),
+        unownedTasksProvider.overrideWith((ref) async => const []),
+        allTasksProvider.overrideWith((ref) async => [claimed]),
+        pendingDecisionsProvider.overrideWith((ref) async => const []),
+        conflictsProvider.overrideWith((ref) async => const []),
+        calendarEventsProvider.overrideWith((ref) async => [claimEvent]),
+        threadingThresholdProvider.overrideWith((ref) async => 30),
+      ],
+      child: MaterialApp(
+        theme: buildAppTheme(),
+        themeMode: ThemeMode.dark,
+        home: const Scaffold(body: HomeScreen()),
+      ),
+    ));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byType(TaskRow));
+    await tester.pumpAndSettle();
+
+    expect(find.text('TRAVEL TIME'), findsOneWidget);
+    // The duration field has its own "Set"; travel is the last section.
+    await tester.enterText(find.byType(TextField).last, '25');
+    await tester.tap(find.widgetWithText(FilledButton, 'Set').last);
+    await tester.pumpAndSettle();
+
+    // Written to the claim, not to the source event the task came from.
+    expect(api.lastTravelTime, (eventId: 'claim-3', minutes: 25));
   });
 }
