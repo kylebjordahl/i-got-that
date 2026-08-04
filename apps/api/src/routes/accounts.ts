@@ -23,6 +23,12 @@ import {
   googleRefresherFor,
 } from '../lib/google-oauth.js';
 import { authMiddleware } from '../middleware/auth.js';
+import {
+  assertSafeOutboundUrl,
+  createGuardedFetch,
+  outboundPolicy,
+  UnsafeOutboundUrlError,
+} from '../lib/outbound-url.js';
 import { storeSecret } from '../lib/secrets.js';
 
 /** iCloud's well-known CalDAV endpoint (used when no serverUrl is given). */
@@ -96,6 +102,17 @@ accountRoutes.post('/', async (c) => {
     }
   } else {
     serverUrl = d.kind === 'icloud' ? d.serverUrl ?? ICLOUD_CALDAV_URL : d.serverUrl!;
+    // We do authenticated discovery against this URL — and send the stored
+    // basic credential with it — so it has to clear the outbound policy before
+    // the account row (and its secret) exist.
+    try {
+      assertSafeOutboundUrl(serverUrl, outboundPolicy(c.env));
+    } catch (err) {
+      if (err instanceof UnsafeOutboundUrlError) {
+        return c.json({ error: 'unsafe_url', reason: err.reason, path: 'serverUrl' }, 400);
+      }
+      throw err;
+    }
     username = d.username!;
     payload = JSON.stringify({ kind: 'basic', username: d.username, password: d.password });
   }
@@ -156,10 +173,23 @@ accountRoutes.post('/:accountId/calendars', async (c) => {
       return c.json({ calendars: await fetchGoogleCalendars(accessToken) });
     }
     if (credential.kind !== 'basic') return c.json({ error: 'bad_credential' }, 400);
+    // Re-vet the stored serverUrl: rows written before the outbound policy
+    // existed were never checked, and DNS may have moved since. The guarded
+    // fetch also re-checks every discovery hop tsdav walks to from here.
+    const serverUrl = account.serverUrl ?? ICLOUD_CALDAV_URL;
+    try {
+      assertSafeOutboundUrl(serverUrl, outboundPolicy(c.env));
+    } catch (err) {
+      if (err instanceof UnsafeOutboundUrlError) {
+        return c.json({ error: 'unsafe_url', reason: err.reason, path: 'serverUrl' }, 400);
+      }
+      throw err;
+    }
     const client = await createCalDavClient({
-      serverUrl: account.serverUrl ?? ICLOUD_CALDAV_URL,
+      serverUrl,
       username: credential.username,
       password: credential.password,
+      fetchImpl: createGuardedFetch(c.env),
     });
     const calendars = await client.fetchCalendars();
     const list = calendars.map((cal) => ({
@@ -171,7 +201,11 @@ accountRoutes.post('/:accountId/calendars', async (c) => {
     }));
     return c.json({ calendars: list });
   } catch (err) {
-    return c.json({ error: 'list_failed', message: String(err) }, 400);
+    // Deliberately opaque: the upstream error text is derived from a response
+    // to a URL the caller chose, so reflecting it turns a failed discovery
+    // into a read primitive. The detail stays in the Worker's logs.
+    console.error(`calendar discovery failed for account ${account.id}`, err);
+    return c.json({ error: 'list_failed' }, 400);
   }
 });
 

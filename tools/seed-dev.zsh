@@ -21,7 +21,7 @@ command -v jq >/dev/null || { print -u2 "error: jq is required"; exit 1; }
 print "→ requesting magic link for $EMAIL"
 dev_token=$(curl -fsS "$BASE/auth/magic-link/request" -H "$CT" \
   -d "{\"email\":\"$EMAIL\"}" | jq -r '.devToken // empty')
-[[ -n "$dev_token" ]] || { print -u2 "error: no devToken (is ENVIRONMENT=production, or API down?)"; exit 1; }
+[[ -n "$dev_token" ]] || { print -u2 "error: no devToken — this script only works against local dev (ALLOW_DEV_TOKENS=true in wrangler.jsonc's top-level vars). Deployed envs never return one; is BASE pointed at a deployment, or the API down?"; exit 1; }
 
 token=$(curl -fsS "$BASE/auth/magic-link/verify" -H "$CT" \
   -d "{\"token\":\"$dev_token\"}" | jq -r '.sessionToken')
@@ -55,7 +55,8 @@ link=$(curl -fsS "$BASE/families/$fam/feeds/$feed/member-links" -H "$auth" -H "$
   | jq -r '.link.id')
 print "→ baseline link $link (Mon–Fri 08:30→14:45)"
 
-# Override rules (schedule only): cancel / modify the baseline day.
+# Override rules (schedule only): cancel / modify the baseline day, or add the
+# feed's own event beside an untouched one.
 rules="$BASE/families/$fam/feeds/$feed/member-links/$link/rules"
 curl -fsS "$rules" -H "$auth" -H "$CT" -d "$(jq -nc \
   '{matchField:"summary", matchOp:"regex", matchValue:"/no school|closed/i", outcome:"cancel_day"}')" >/dev/null
@@ -63,13 +64,19 @@ print "→ override 0: /no school|closed/i → cancel day"
 curl -fsS "$rules" -H "$auth" -H "$CT" -d "$(jq -nc \
   '{matchField:"summary", matchOp:"contains", matchValue:"Early", outcome:"modify_day", params:{dayEnd:"12:00"}}')" >/dev/null
 print "→ override 1: contains 'Early' → modify day (ends 12:00)"
+curl -fsS "$rules" -H "$auth" -H "$CT" -d "$(jq -nc \
+  '{matchField:"summary", matchOp:"contains", matchValue:"Community Dinner", outcome:"add_event"}')" >/dev/null
+print "→ override 2: contains 'Community Dinner' → add event (school day untouched)"
 
-# Task rules (typing): school days default to drop-off + pickup, field trips → attendance.
+# Task rules (typing): school days default to drop-off + pickup, field trips and
+# the community dinner → attendance.
 curl -fsS "$BASE/families/$fam/members/$child/task-default" -X PUT -H "$auth" -H "$CT" -d "$(jq -nc \
   --arg l "$link" '{linkId:$l, defaultResultType:"transition"}')" >/dev/null
 curl -fsS "$BASE/families/$fam/members/$child/task-rules" -H "$auth" -H "$CT" -d "$(jq -nc \
   --arg l "$link" '{linkId:$l, scope:"this_calendar", resultType:"attendance", matchValue:"/field trip/i"}')" >/dev/null
-print "→ task rules: default drop-off+pickup; /field trip/i → attendance"
+curl -fsS "$BASE/families/$fam/members/$child/task-rules" -H "$auth" -H "$CT" -d "$(jq -nc \
+  --arg l "$link" '{linkId:$l, scope:"this_calendar", resultType:"attendance", matchValue:"/community dinner/i"}')" >/dev/null
+print "→ task rules: default drop-off+pickup; /field trip/i + /community dinner/i → attendance"
 
 print "→ refreshing feeds (ingest → synthesize → generate tasks)…"
 curl -fsS "$BASE/families/$fam/feeds/refresh-all" -H "$auth" -H "$CT" -d '{}' | jq -c '.synthesis'

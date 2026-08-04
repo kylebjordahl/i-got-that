@@ -39,7 +39,12 @@ final apiClientProvider = Provider<ApiClient>(
 );
 
 class AuthState {
-  const AuthState({this.sessionToken, this.user, this.error, this.restoring = false});
+  const AuthState({
+    this.sessionToken,
+    this.user,
+    this.error,
+    this.restoring = false,
+  });
   final String? sessionToken;
   final Map<String, dynamic>? user;
 
@@ -76,7 +81,8 @@ class AuthController extends StateNotifier<AuthState> {
     // session cookie in place, so we just let the fragment be stripped and fall
     // through to the cookie restore below — the freshly linked identity /
     // connected account is picked up on the reload.
-    final (:session, :error, linked: _, connected: _) = consumeWebAuthFragment();
+    final (:session, :error, linked: _, connected: _) =
+        consumeWebAuthFragment();
     if (session != null) {
       _api.setSession(session);
       try {
@@ -145,7 +151,8 @@ class AuthController extends StateNotifier<AuthState> {
   /// afresh). The session cookie rides along on the redirect, so the callback
   /// threads Apple onto this account and sends the browser back to
   /// `/app/#linked=apple`. Native uses [linkWithAppleNative].
-  void linkWithApple() => startWebRedirect('$apiBaseUrl/auth/apple/start?link=1');
+  void linkWithApple() =>
+      startWebRedirect('$apiBaseUrl/auth/apple/start?link=1');
 
   /// Web: begin Sign in with Google by navigating to the API's redirect
   /// endpoint. Google sends the browser back to `/app/#session=…` (picked up on
@@ -213,7 +220,10 @@ class AuthController extends StateNotifier<AuthState> {
   Future<void> loginWithGoogleNative() async {
     final cred = await _requestGoogleIdentity();
     if (cred == null) return; // user dismissed the sheet
-    final res = await _api.signInWithGoogle(cred.idToken, serverAuthCode: cred.serverAuthCode);
+    final res = await _api.signInWithGoogle(
+      cred.idToken,
+      serverAuthCode: cred.serverAuthCode,
+    );
     final token = res['sessionToken'] as String;
     state = AuthState(
       sessionToken: token,
@@ -234,7 +244,8 @@ class AuthController extends StateNotifier<AuthState> {
   /// Drive the native Google sign-in sheet and return its ID token (+ an
   /// optional server auth code for the calendar auto-connect), or null if the
   /// user dismissed it.
-  Future<({String idToken, String? serverAuthCode})?> _requestGoogleIdentity() async {
+  Future<({String idToken, String? serverAuthCode})?>
+  _requestGoogleIdentity() async {
     final account = await _googleSignIn.signIn();
     if (account == null) return null; // user dismissed the sheet
     final auth = await account.authentication;
@@ -246,13 +257,14 @@ class AuthController extends StateNotifier<AuthState> {
   }
 
   /// Dev flow: request a magic link and immediately verify with the returned
-  /// dev token. In production the token is emailed and this would instead deep-
-  /// link back into verify().
+  /// dev token. Only local dev hands the token back (the API gates it on
+  /// ALLOW_DEV_TOKENS); anywhere else the token is emailed and the link deep-
+  /// links back into verify().
   Future<void> loginWithEmail(String email) async {
     final devToken = await _api.requestMagicLink(email);
     if (devToken == null) {
       throw Exception(
-        'Magic link sent — check your email (no dev token in production).',
+        'Magic link sent — open the link in your email to finish signing in.',
       );
     }
     final res = await _api.verifyMagicLink(devToken);
@@ -309,7 +321,6 @@ class AuthController extends StateNotifier<AuthState> {
   }
 }
 
-final authControllerProvider =
-    StateNotifierProvider<AuthController, AuthState>(
+final authControllerProvider = StateNotifierProvider<AuthController, AuthState>(
   (ref) => AuthController(ref.watch(apiClientProvider)),
 );

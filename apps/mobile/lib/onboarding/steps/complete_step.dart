@@ -14,28 +14,41 @@ import '../wizard_outcomes.dart';
 /// steps get a check, skipped ones say so — and the amber card leads into the
 /// second-parent join.
 class CompleteStep extends ConsumerWidget {
-  const CompleteStep({super.key, required this.outcomes, required this.onGoHome});
+  const CompleteStep({
+    super.key,
+    required this.outcomes,
+    required this.onGoHome,
+  });
 
   final WizardOutcomes outcomes;
   final VoidCallback onGoHome;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final accounts = ref.watch(accountsProvider).valueOrNull ?? const <ExternalAccount>[];
+    final accounts =
+        ref.watch(accountsProvider).valueOrNull ?? const <ExternalAccount>[];
     final info = ref.watch(familyInfoProvider).valueOrNull;
-    final children = ref.watch(dependentsProvider).valueOrNull ?? const <Member>[];
-    final caretakers = ref.watch(caretakersProvider).valueOrNull ?? const <Member>[];
+    final children =
+        ref.watch(dependentsProvider).valueOrNull ?? const <Member>[];
+    final caretakers =
+        ref.watch(caretakersProvider).valueOrNull ?? const <Member>[];
     final self = ref.watch(currentMemberProvider).valueOrNull;
-    final invitable =
-        caretakers.where((m) => !m.hasLogin).where((m) => m.isCaretaker).toList();
+    final invitable = caretakers
+        .where((m) => !m.hasLogin)
+        .where((m) => m.isCaretaker)
+        .toList();
 
     final childNames = _joinNames(children.map((c) => c.relationName).toList());
 
     // Co-parents the user answered 1g for, split by what they chose. Caretakers
     // missing from the map were never reached and get no row at all.
     final others = caretakers.where((m) => m.id != self?.id);
-    final othersDone = others.where((m) => outcomes.adultCalendars[m.id] == true).toList();
-    final othersSkipped = others.where((m) => outcomes.adultCalendars[m.id] == false).toList();
+    final othersDone = others
+        .where((m) => outcomes.adultCalendars[m.id] == true)
+        .toList();
+    final othersSkipped = others
+        .where((m) => outcomes.adultCalendars[m.id] == false)
+        .toList();
     final selfDone = self != null && outcomes.adultCalendars[self.id] == true;
 
     return Scaffold(
@@ -59,54 +72,83 @@ class CompleteStep extends ConsumerWidget {
                   children: [
                     _CheckHero(),
                     const SizedBox(height: 22),
-                    Text("You're all set", style: font(kDisplayFont, 28, 600, letterSpacing: -0.3)),
+                    Text(
+                      "You're all set",
+                      style: font(kDisplayFont, 28, 600, letterSpacing: -0.3),
+                    ),
                     const SizedBox(height: 8),
                     Text(
-                        'The app is watching the ${info?.name ?? 'family'} calendars and '
-                        "generating tasks. Here's what's live:",
-                        style: font(kBodyFont, 14.5, 500,
-                            color: AppColors.textSecondary, height: 1.55)),
+                      'The app is watching the ${info?.name ?? 'family'} calendars and '
+                      "generating tasks. Here's what's live:",
+                      style: font(
+                        kBodyFont,
+                        14.5,
+                        500,
+                        color: AppColors.textSecondary,
+                        height: 1.55,
+                      ),
+                    ),
                     const SizedBox(height: 22),
-                    GroupedCard(children: [
-                      if (outcomes.accountsConnected)
-                        ReceiptRow(
+                    GroupedCard(
+                      children: [
+                        if (outcomes.accountsConnected)
+                          ReceiptRow(
                             done: true,
-                            text: '${accounts.length} calendar account'
-                                '${accounts.length == 1 ? '' : 's'} connected')
-                      else
-                        const ReceiptRow(
+                            text:
+                                '${accounts.length} calendar account'
+                                '${accounts.length == 1 ? '' : 's'} connected',
+                          )
+                        else
+                          const ReceiptRow(
                             done: false,
                             text: 'No calendar accounts connected',
-                            note: 'Add them anytime from Me.'),
-                      ReceiptRow(
+                            note: 'Add them anytime from Me.',
+                          ),
+                        ReceiptRow(
                           done: true,
-                          text: '${info?.name ?? 'Family'} created · ${info?.count ?? 1} '
-                              'member${(info?.count ?? 1) == 1 ? '' : 's'}'),
-                      if (childNames.isNotEmpty)
-                        ReceiptRow(done: true, text: 'Unified calendar for $childNames'),
-                      if (selfDone)
-                        const ReceiptRow(done: true, text: 'Your calendar ready to claim onto')
-                      else
-                        const ReceiptRow(
+                          text:
+                              '${info?.name ?? 'Family'} created · ${info?.count ?? 1} '
+                              'member${(info?.count ?? 1) == 1 ? '' : 's'}',
+                        ),
+                        if (childNames.isNotEmpty)
+                          ReceiptRow(
+                            done: true,
+                            text: 'Unified calendar for $childNames',
+                          ),
+                        if (selfDone)
+                          const ReceiptRow(
+                            done: true,
+                            text: 'Your calendar ready to claim onto',
+                          )
+                        else
+                          const ReceiptRow(
                             done: false,
                             text: 'No calendar of your own to claim onto',
-                            note: 'Pick one anytime from Me.'),
-                      if (othersDone.isNotEmpty)
-                        ReceiptRow(
+                            note: 'Pick one anytime from Me.',
+                          ),
+                        if (othersDone.isNotEmpty)
+                          ReceiptRow(
                             done: true,
-                            text: 'Unified calendar for '
-                                '${_joinNames(othersDone.map((m) => m.relationName).toList())}'),
-                      if (othersSkipped.isNotEmpty)
-                        ReceiptRow(
+                            text:
+                                'Unified calendar for '
+                                '${_joinNames(othersDone.map((m) => m.relationName).toList())}',
+                          ),
+                        if (othersSkipped.isNotEmpty)
+                          ReceiptRow(
                             done: false,
-                            text: 'No calendar yet for '
+                            text:
+                                'No calendar yet for '
                                 '${_joinNames(othersSkipped.map((m) => m.relationName).toList())}',
-                            note: "They'll pick their own when they join."),
-                    ]),
+                            note: "They'll pick their own when they join.",
+                          ),
+                      ],
+                    ),
                     if (invitable.isNotEmpty) ...[
                       const SizedBox(height: 16),
                       _InviteCard(
-                        names: _joinNames(invitable.map((m) => m.relationName).toList()),
+                        names: _joinNames(
+                          invitable.map((m) => m.relationName).toList(),
+                        ),
                         member: invitable.first,
                       ),
                     ],
@@ -115,7 +157,10 @@ class CompleteStep extends ConsumerWidget {
               ),
               Padding(
                 padding: const EdgeInsets.fromLTRB(22, 12, 22, 20),
-                child: OnboardingButton(label: 'Go to Home', onPressed: onGoHome),
+                child: OnboardingButton(
+                  label: 'Go to Home',
+                  onPressed: onGoHome,
+                ),
               ),
             ],
           ),
@@ -171,14 +216,16 @@ class _InviteCardState extends ConsumerState<_InviteCard> {
       if (token != null) {
         await Clipboard.setData(ClipboardData(text: token));
         if (mounted) {
-          ScaffoldMessenger.of(context)
-              .showSnackBar(const SnackBar(content: Text('Invite code copied to clipboard')));
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Invite code copied to clipboard')),
+          );
         }
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('Could not create invite: $e')));
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Could not create invite: $e')));
       }
     } finally {
       if (mounted) setState(() => _busy = false);
@@ -203,10 +250,21 @@ class _InviteCardState extends ConsumerState<_InviteCard> {
         children: [
           Text('ONE MORE THING', style: AppText.eyebrow(AppColors.amber)),
           const SizedBox(height: 6),
-          Text('Invite ${widget.names}', style: font(kBodyFont, 15, 600, height: 1.4)),
+          Text(
+            'Invite ${widget.names}',
+            style: font(kBodyFont, 15, 600, height: 1.4),
+          ),
           const SizedBox(height: 4),
-          Text("They'll only need to log in once — you did the heavy setup.",
-              style: font(kBodyFont, 12.5, 500, color: AppColors.textSecondary, height: 1.5)),
+          Text(
+            "They'll only need to log in once — you did the heavy setup.",
+            style: font(
+              kBodyFont,
+              12.5,
+              500,
+              color: AppColors.textSecondary,
+              height: 1.5,
+            ),
+          ),
           const SizedBox(height: 12),
           OnboardingButton(
             label: _busy ? 'Creating…' : 'Copy invite link',

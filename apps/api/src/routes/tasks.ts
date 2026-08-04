@@ -10,6 +10,7 @@ import {
   gte,
   inArray,
   isNull,
+  linkRules,
   lt,
   pendingDecisions,
   sourceEvents,
@@ -17,17 +18,27 @@ import {
 } from '@igt/db';
 import {
   AssignTaskInput,
+  ConflictStatus,
   ConvertTaskInput,
+  ResolveConflictInput,
   ResolvePendingDecisionInput,
+  SetEventTravelTimeInput,
   SetTaskDurationInput,
 } from '@igt/domain';
-import { transitionWindow, wallTimeToUtc, startOfUtcDay } from '@igt/classification';
+import {
+  estimateTravelMinutes,
+  ruleMatches,
+  startOfUtcDay,
+  transitionWindow,
+  wallTimeToUtc,
+} from '@igt/classification';
 import { Hono } from 'hono';
 import type { HonoEnv } from '../env.js';
 import { requireFamilyMember } from '../middleware/auth.js';
 import { removeClaimEvent, upsertClaimEvent } from '../services/claim.js';
-import { reconcileMemberConflicts } from '../services/conflicts.js';
+import { reconcileMemberConflicts, scheduleStamp } from '../services/conflicts.js';
 import { enqueueReconcile, getProductionRegistry, syncFamilyMirror } from '../services/mirror.js';
+import { resynthesizeFeed } from '../services/pipeline.js';
 import { hashCalendarEvent } from '../services/synthesis.js';
 import { buildMemberTasks } from '../services/task-gen.js';
 
@@ -293,6 +304,7 @@ taskRoutes.post('/tasks/:taskId/convert', async (c) => {
       dtstart: anchorStart,
       dtend: type === 'attendance' ? event.dtend : null,
       location: event.location,
+      locationGeo: event.locationGeo,
       status: 'unowned',
       createdVia: 'manual',
     });
@@ -392,7 +404,14 @@ taskRoutes.post('/tasks/:taskId/duration', async (c) => {
 
 // --- Pending decisions -----------------------------------------------------
 
-/** Open pending decisions, with the source event's payload for the card copy. */
+/**
+ * Open pending decisions, with the source event's payload for the card copy.
+ *
+ * `routing` decisions come one per link of the shared calendar — the same
+ * occurrence asked of every member — so they're returned flat and grouped by
+ * `sourceEventId` into one card: "whose is this?", answered once for all of
+ * them (see the resolve route).
+ */
 taskRoutes.get('/pending-decisions', async (c) => {
   const db = getDb(c.env.DB);
   const familyId = c.get('member').familyId;
@@ -400,6 +419,7 @@ taskRoutes.get('/pending-decisions', async (c) => {
     .select({
       id: pendingDecisions.id,
       feedId: pendingDecisions.feedId,
+      kind: pendingDecisions.kind,
       linkId: pendingDecisions.linkId,
       familyMemberId: pendingDecisions.familyMemberId,
       sourceEventId: pendingDecisions.sourceEventId,
@@ -424,10 +444,52 @@ taskRoutes.get('/pending-decisions', async (c) => {
 });
 
 /**
- * Resolve a pending decision: the unmatched event becomes a synthesized event
- * (`pd:` key) on the member's unified calendar with the chosen task types, its
- * tasks are generated immediately, and the member's mirror reconciles. Optional
- * start-time/duration adjustments override the source event's own times.
+ * The event a resolved decision puts on a member's calendar: the source event's
+ * payload, with the optional wall-clock adjustments applied. Times are read in
+ * the feed's zone, exactly as exception baselines are.
+ */
+function resolvedPayload(
+  source: typeof sourceEvents.$inferSelect,
+  d: { startTime?: string; endTime?: string },
+  tz: string,
+) {
+  let dtstart = source.dtstart;
+  let dtend = source.dtend;
+  let allDay = source.allDay;
+  if (d.startTime) {
+    dtstart = wallTimeToUtc(startOfUtcDay(source.dtstart), d.startTime, 8, tz);
+    allDay = false;
+    dtend = dtend && dtend.getTime() > dtstart.getTime() ? dtend : null;
+  }
+  if (d.endTime) {
+    dtend = wallTimeToUtc(startOfUtcDay(dtstart), d.endTime, 15, tz);
+    allDay = false;
+  }
+  return {
+    dtstart,
+    dtend,
+    allDay,
+    summary: source.summary,
+    location: source.location,
+    description: null,
+  };
+}
+
+/**
+ * Resolve a pending decision.
+ *
+ * `exception`: the unmatched event becomes a synthesized event (`pd:` key) on
+ * the member's unified calendar, its tasks are generated immediately, and the
+ * member's mirror reconciles. Optional start/end adjustments override the
+ * source event's own times.
+ *
+ * `routing` (a shared family calendar): `routeToLinkIds` says whose the event
+ * is. The sibling decisions — the same occurrence asked of every other member
+ * of the feed — are answered by the same call: the links picked get the event,
+ * the rest are dismissed, so the question is never asked twice. Without `rule`
+ * that's this event only; with `rule` a `keep` rule is appended to each picked
+ * link so events like it route themselves from here on, and the feed
+ * resynthesizes so the rule takes effect immediately.
  */
 taskRoutes.post('/pending-decisions/:decisionId/resolve', async (c) => {
   const parsed = ResolvePendingDecisionInput.safeParse(
@@ -468,60 +530,140 @@ taskRoutes.post('/pending-decisions/:decisionId/resolve', async (c) => {
     await db.select().from(feeds).where(eq(feeds.id, decision.feedId)).limit(1)
   )[0];
   const tz = feed?.timezone ?? 'UTC';
+  const d = parsed.data;
+  const resolvedAt = new Date();
+
+  /** Accept the occurrence onto one member's calendar as a `pd:` event. */
+  const acceptOnto = async (row: typeof pendingDecisions.$inferSelect) => {
+    const payload = resolvedPayload(source, d, tz);
+    await db.insert(calendarEvents).values({
+      familyId: me.familyId,
+      familyMemberId: row.familyMemberId,
+      provenance: 'synthesized',
+      synthKey: `pd:${row.id}`,
+      linkId: row.linkId,
+      sourceEventId: row.sourceEventId,
+      pendingDecisionId: row.id,
+      contentHash: hashCalendarEvent(payload),
+      ...payload,
+    });
+    await db
+      .update(pendingDecisions)
+      .set({ status: 'resolved', resolvedByMemberId: me.id, resolvedAt })
+      .where(eq(pendingDecisions.id, row.id));
+  };
+
+  if (decision.kind === 'routing') {
+    if (!d.routeToLinkIds) return c.json({ error: 'route_targets_required' }, 400);
+    // Writing a rule is a feed-config change, so it's admin-only — the one-off
+    // routing beside it stays open to any member, like every other decision.
+    if (d.rule && !me.isAdmin) return c.json({ error: 'forbidden' }, 403);
+
+    // The same occurrence, asked of every member of this shared calendar.
+    const siblings = (
+      await db
+        .select()
+        .from(pendingDecisions)
+        .where(
+          and(
+            eq(pendingDecisions.feedId, decision.feedId),
+            eq(pendingDecisions.sourceEventId, decision.sourceEventId),
+            eq(pendingDecisions.kind, 'routing'),
+            eq(pendingDecisions.status, 'pending'),
+          ),
+        )
+    ).filter((row) => row.familyId === me.familyId);
+    const byLink = new Map(siblings.map((row) => [row.linkId, row]));
+    const chosen = [...new Set(d.routeToLinkIds)].map((linkId) => byLink.get(linkId));
+    if (chosen.some((row) => !row)) return c.json({ error: 'link_not_found' }, 404);
+    const targets = chosen as (typeof pendingDecisions.$inferSelect)[];
+
+    if (d.rule) {
+      // A rule that doesn't match the event it was created from would route
+      // nothing and leave the decision to be re-raised — refuse rather than
+      // silently no-op. (Future events still have to match on their own.)
+      const matcher = {
+        matchField: d.rule.matchField,
+        matchOp: d.rule.matchOp,
+        matchValue: d.rule.matchValue ?? null,
+      };
+      const occurrence = {
+        summary: source.summary,
+        location: source.location,
+        description: null,
+        allDay: source.allDay,
+        dtstart: source.dtstart,
+        dtend: source.dtend,
+      };
+      if (!ruleMatches(occurrence, matcher)) {
+        return c.json({ error: 'rule_does_not_match' }, 400);
+      }
+      for (const row of targets) {
+        const existing = await db
+          .select({ id: linkRules.id })
+          .from(linkRules)
+          .where(eq(linkRules.linkId, row.linkId));
+        await db.insert(linkRules).values({
+          familyId: me.familyId,
+          linkId: row.linkId,
+          position: existing.length,
+          ...matcher,
+          outcome: 'keep',
+        });
+      }
+    }
+
+    for (const row of siblings) {
+      if (targets.some((t) => t.id === row.id)) {
+        // A rule already puts the event on this calendar (as an `ev:` event on
+        // the next synthesis) — a `pd:` copy on top would double-book the day.
+        if (d.rule) {
+          await db
+            .update(pendingDecisions)
+            .set({ status: 'resolved', resolvedByMemberId: me.id, resolvedAt })
+            .where(eq(pendingDecisions.id, row.id));
+        } else {
+          await acceptOnto(row);
+        }
+        continue;
+      }
+      // Not this member's event: close the question so it isn't asked again.
+      await db
+        .update(pendingDecisions)
+        .set({ status: 'dismissed', dismissedAt: resolvedAt })
+        .where(eq(pendingDecisions.id, row.id));
+    }
+
+    if (d.rule && feed) {
+      await resynthesizeFeed(c, db, feed);
+    } else {
+      for (const row of targets) {
+        await reconcileMemberConflicts(db, row.familyMemberId);
+        await buildMemberTasks(db, row.familyMemberId);
+      }
+      enqueueReconcile(c, { kind: 'family', familyId: me.familyId });
+    }
+    return c.json({ ok: true, routedTo: targets.map((t) => t.familyMemberId) });
+  }
+
+  if (d.routeToLinkIds || d.rule) {
+    return c.json({ error: 'not_a_routing_decision' }, 400);
+  }
 
   // Resolving accepts the event onto the calendar as a normal scheduled day;
   // task typing then flows through the member's task rules like any event.
-  // Optional adjustments override the source event's own times (wall-clock in
-  // the feed's zone, matching baseline times).
-  const d = parsed.data;
-  let dtstart = source.dtstart;
-  let dtend = source.dtend;
-  let allDay = source.allDay;
-  if (d.startTime) {
-    dtstart = wallTimeToUtc(startOfUtcDay(source.dtstart), d.startTime, 8, tz);
-    allDay = false;
-    dtend = dtend && dtend.getTime() > dtstart.getTime() ? dtend : null;
-  }
-  if (d.endTime) {
-    dtend = wallTimeToUtc(startOfUtcDay(dtstart), d.endTime, 15, tz);
-    allDay = false;
-  }
-
-  const payload = {
-    dtstart,
-    dtend,
-    allDay,
-    summary: source.summary,
-    location: source.location,
-    description: null,
-  };
-  await db.insert(calendarEvents).values({
-    familyId: me.familyId,
-    familyMemberId: decision.familyMemberId,
-    provenance: 'synthesized',
-    synthKey: `pd:${decision.id}`,
-    linkId: decision.linkId,
-    sourceEventId: decision.sourceEventId,
-    pendingDecisionId: decision.id,
-    contentHash: hashCalendarEvent(payload),
-    ...payload,
-  });
-  await db
-    .update(pendingDecisions)
-    .set({
-      status: 'resolved',
-      resolvedByMemberId: me.id,
-      resolvedAt: new Date(),
-    })
-    .where(eq(pendingDecisions.id, decision.id));
-
+  await acceptOnto(decision);
   await reconcileMemberConflicts(db, decision.familyMemberId);
   await buildMemberTasks(db, decision.familyMemberId);
   enqueueReconcile(c, { kind: 'member', memberId: decision.familyMemberId });
   return c.json({ ok: true });
 });
 
-/** Dismiss a pending decision — the event stays off the unified calendar. */
+/**
+ * Dismiss a pending decision — the event stays off the unified calendar. For a
+ * `routing` decision that's the whole card's answer ("nobody's"), so the sibling
+ * rows asking about the same occurrence go with it.
+ */
 taskRoutes.post('/pending-decisions/:decisionId/dismiss', async (c) => {
   const db = getDb(c.env.DB);
   const me = c.get('member');
@@ -540,28 +682,50 @@ taskRoutes.post('/pending-decisions/:decisionId/dismiss', async (c) => {
   if (!decision) return c.json({ error: 'not_found' }, 404);
   if (decision.status !== 'pending') return c.json({ error: 'not_pending' }, 409);
 
+  const dismissedAt = new Date();
+  const scope =
+    decision.kind === 'routing'
+      ? and(
+          eq(pendingDecisions.familyId, me.familyId),
+          eq(pendingDecisions.feedId, decision.feedId),
+          eq(pendingDecisions.sourceEventId, decision.sourceEventId),
+          eq(pendingDecisions.kind, 'routing'),
+          eq(pendingDecisions.status, 'pending'),
+        )
+      : eq(pendingDecisions.id, decision.id);
   await db
     .update(pendingDecisions)
-    .set({ status: 'dismissed', dismissedAt: new Date() })
-    .where(eq(pendingDecisions.id, decision.id));
+    .set({ status: 'dismissed', dismissedAt })
+    .where(scope);
   return c.json({ ok: true });
 });
 
 // --- Conflicts (agenda overlaps) -------------------------------------------
 
 /**
- * Open agenda conflicts, each with its two overlapping events' details for the
- * card copy. A conflict is a maskable event (the `loser`) overlapped by a
+ * Agenda conflicts, each with its two overlapping events' details for the card
+ * copy. A conflict is a maskable event (the `loser`) overlapped by a
  * higher-priority one (the `winner`) on a member's unified calendar. Rows whose
  * events have vanished are skipped (they clear on the next reconcile).
+ *
+ * Defaults to `status=pending` (Home's decision queue). Pass `status=resolved`
+ * to list overrides currently in effect (e.g. a member's masked/split events),
+ * and `memberId` to scope to one member.
  */
 taskRoutes.get('/conflicts', async (c) => {
   const db = getDb(c.env.DB);
   const familyId = c.get('member').familyId;
+  const statusParam = c.req.query('status') ?? 'pending';
+  const status = ConflictStatus.options.includes(statusParam as ConflictStatus)
+    ? (statusParam as ConflictStatus)
+    : 'pending';
+  const memberId = c.req.query('memberId');
+  const conditions = [eq(conflicts.familyId, familyId), eq(conflicts.status, status)];
+  if (memberId) conditions.push(eq(conflicts.familyMemberId, memberId));
   const rows = await db
     .select()
     .from(conflicts)
-    .where(and(eq(conflicts.familyId, familyId), eq(conflicts.status, 'pending')))
+    .where(and(...conditions))
     .orderBy(asc(conflicts.createdAt));
   if (rows.length === 0) return c.json({ conflicts: [] });
 
@@ -572,6 +736,7 @@ taskRoutes.get('/conflicts', async (c) => {
       synthKey: calendarEvents.synthKey,
       summary: calendarEvents.summary,
       location: calendarEvents.location,
+      locationGeo: calendarEvents.locationGeo,
       dtstart: calendarEvents.dtstart,
       dtend: calendarEvents.dtend,
       allDay: calendarEvents.allDay,
@@ -586,14 +751,26 @@ taskRoutes.get('/conflicts', async (c) => {
   const evByKey = new Map(evs.map((e) => [`${e.familyMemberId}|${e.synthKey}`, e]));
 
   const out = rows
-    .map((r) => ({
-      id: r.id,
-      familyMemberId: r.familyMemberId,
-      status: r.status,
-      createdAt: r.createdAt,
-      loser: evByKey.get(`${r.familyMemberId}|${r.loserKey}`) ?? null,
-      winner: evByKey.get(`${r.familyMemberId}|${r.winnerKey}`) ?? null,
-    }))
+    .map((r) => {
+      const loser = evByKey.get(`${r.familyMemberId}|${r.loserKey}`) ?? null;
+      const winner = evByKey.get(`${r.familyMemberId}|${r.winnerKey}`) ?? null;
+      return {
+        id: r.id,
+        familyMemberId: r.familyMemberId,
+        status: r.status,
+        createdAt: r.createdAt,
+        loser,
+        winner,
+        // Splitting the loser around the winner means leaving one place and
+        // coming back to it, so both buffers are the same trip. Suggested only
+        // when both ends are geocoded — the sheet leaves the handles at zero
+        // otherwise rather than inventing a number.
+        suggestedTravelMin:
+          loser?.locationGeo && winner?.locationGeo
+            ? estimateTravelMinutes(loser.locationGeo, winner.locationGeo)
+            : null,
+      };
+    })
     .filter((r) => r.loser && r.winner);
   return c.json({ conflicts: out });
 });
@@ -614,6 +791,39 @@ async function loadConflict(
 }
 
 /**
+ * The loser/winner events' current schedule stamps, to snapshot against a
+ * resolve/dismiss decision — see loserScheduleStamp/winnerScheduleStamp on the
+ * conflicts table. A later reconcile pass reopens the conflict when either
+ * event has moved away from the stamp captured here.
+ */
+async function decisionStamps(
+  db: ReturnType<typeof getDb>,
+  familyMemberId: string,
+  loserKey: string,
+  winnerKey: string,
+) {
+  const rows = await db
+    .select({
+      synthKey: calendarEvents.synthKey,
+      dtstart: calendarEvents.dtstart,
+      dtend: calendarEvents.dtend,
+      allDay: calendarEvents.allDay,
+    })
+    .from(calendarEvents)
+    .where(
+      and(
+        eq(calendarEvents.familyMemberId, familyMemberId),
+        inArray(calendarEvents.synthKey, [loserKey, winnerKey]),
+      ),
+    );
+  const byKey = new Map(rows.map((r) => [r.synthKey, scheduleStamp(r)]));
+  return {
+    loserScheduleStamp: byKey.get(loserKey) ?? null,
+    winnerScheduleStamp: byKey.get(winnerKey) ?? null,
+  };
+}
+
+/**
  * Resolve a conflict — accept the default split: the lower-priority loser is
  * trimmed/split around the higher-priority winner, and task-gen spawns the
  * drop-off/pickup at each new segment boundary. Idempotent.
@@ -623,6 +833,21 @@ taskRoutes.post('/conflicts/:conflictId/resolve', async (c) => {
   const me = c.get('member');
   const conflict = await loadConflict(db, me.familyId, c.req.param('conflictId'));
   if (!conflict) return c.json({ error: 'not_found' }, 404);
+  // An empty body is the plain split; a body may carry travel buffers and/or
+  // per-side "not needed" (design §8b).
+  const parsed = ResolveConflictInput.safeParse(
+    await c.req.json().catch(() => ({})),
+  );
+  if (!parsed.success) {
+    return c.json({ error: 'invalid_input', issues: parsed.error.issues }, 400);
+  }
+  const res = parsed.data;
+  const stamps = await decisionStamps(
+    db,
+    conflict.familyMemberId,
+    conflict.loserKey,
+    conflict.winnerKey,
+  );
   await db
     .update(conflicts)
     .set({
@@ -630,6 +855,11 @@ taskRoutes.post('/conflicts/:conflictId/resolve', async (c) => {
       resolvedByMemberId: me.id,
       resolvedAt: new Date(),
       dismissedAt: null,
+      travelBeforeMin: res.travelBeforeMin,
+      travelAfterMin: res.travelAfterMin,
+      beforeNeeded: res.beforeNeeded,
+      afterNeeded: res.afterNeeded,
+      ...stamps,
     })
     .where(eq(conflicts.id, conflict.id));
   await reconcileMemberConflicts(db, conflict.familyMemberId);
@@ -647,6 +877,12 @@ taskRoutes.post('/conflicts/:conflictId/dismiss', async (c) => {
   const me = c.get('member');
   const conflict = await loadConflict(db, me.familyId, c.req.param('conflictId'));
   if (!conflict) return c.json({ error: 'not_found' }, 404);
+  const stamps = await decisionStamps(
+    db,
+    conflict.familyMemberId,
+    conflict.loserKey,
+    conflict.winnerKey,
+  );
   await db
     .update(conflicts)
     .set({
@@ -654,6 +890,41 @@ taskRoutes.post('/conflicts/:conflictId/dismiss', async (c) => {
       dismissedAt: new Date(),
       resolvedByMemberId: null,
       resolvedAt: null,
+      ...stamps,
+    })
+    .where(eq(conflicts.id, conflict.id));
+  await reconcileMemberConflicts(db, conflict.familyMemberId);
+  await buildMemberTasks(db, conflict.familyMemberId);
+  enqueueReconcile(c, { kind: 'member', memberId: conflict.familyMemberId });
+  return c.json({ ok: true });
+});
+
+/**
+ * Revert a resolved conflict — undo a prior "split around it" decision. The
+ * loser is unmasked and its `cf:` split segments removed, and the conflict
+ * goes back to pending so it re-enters the decision queue (it re-resolves or
+ * clears on the next reconcile if the overlap itself is gone).
+ */
+taskRoutes.post('/conflicts/:conflictId/revert', async (c) => {
+  const db = getDb(c.env.DB);
+  const me = c.get('member');
+  const conflict = await loadConflict(db, me.familyId, c.req.param('conflictId'));
+  if (!conflict) return c.json({ error: 'not_found' }, 404);
+  await db
+    .update(conflicts)
+    .set({
+      status: 'pending',
+      resolvedByMemberId: null,
+      resolvedAt: null,
+      dismissedAt: null,
+      loserScheduleStamp: null,
+      winnerScheduleStamp: null,
+      // Discard the prior resolution's parameters so a fresh decision starts
+      // from the plain split.
+      travelBeforeMin: 0,
+      travelAfterMin: 0,
+      beforeNeeded: true,
+      afterNeeded: true,
     })
     .where(eq(conflicts.id, conflict.id));
   await reconcileMemberConflicts(db, conflict.familyMemberId);
@@ -705,11 +976,182 @@ taskRoutes.get('/calendar-events', async (c) => {
       summary: calendarEvents.summary,
       description: calendarEvents.description,
       location: calendarEvents.location,
+      travelTimeOverrideMin: calendarEvents.travelTimeOverrideMin,
+      synthKey: calendarEvents.synthKey,
+      generatesFamilyTasks: familyMembers.generatesFamilyTasks,
     })
     .from(calendarEvents)
+    .innerJoin(
+      familyMembers,
+      eq(familyMembers.id, calendarEvents.familyMemberId),
+    )
     .where(and(...conditions))
     .orderBy(asc(calendarEvents.dtstart));
-  return c.json({ events: rows });
+
+  // Why an event can't carry claimable tasks, so a client showing one with none
+  // can say which of these it is rather than just "nothing to claim". Null ⇒ it
+  // is eligible, and any absence of tasks is a dismissal or a stale build.
+  return c.json({
+    events: rows.map(({ synthKey, generatesFamilyTasks, ...e }) => ({
+      ...e,
+      taskIneligibleReason: taskIneligibleReason({
+        provenance: e.provenance,
+        synthKey,
+        generatesFamilyTasks,
+      }),
+    })),
+  });
+});
+
+/**
+ * Why an event is structurally incapable of carrying claimable tasks — the same
+ * three exclusions task-gen applies, named so a client can explain them:
+ *
+ *  - `paused`: the member's `generatesFamilyTasks` is off (rules kept, gen off).
+ *  - `busy_calendar`: an `fb:` free/busy firewall block — opaque availability
+ *    from a `busy`-mode feed, never family logistics.
+ *  - `claimed`: a `claimed_task` event, which *is* somebody's claim already
+ *    (generating from it would echo the recursion).
+ *
+ * Null means the event is eligible, so having no tasks is a dismissal or a
+ * stale build rather than a rule — `POST /calendar-events/:id/tasks` fixes that.
+ */
+function taskIneligibleReason(e: {
+  provenance: string;
+  synthKey: string;
+  generatesFamilyTasks: boolean;
+}): 'paused' | 'busy_calendar' | 'claimed' | null {
+  if (e.provenance === 'claimed_task') return 'claimed';
+  if (e.synthKey.startsWith('fb:')) return 'busy_calendar';
+  if (!e.generatesFamilyTasks) return 'paused';
+  return null;
+}
+
+/**
+ * Rebuild one event's claimable tasks — the way back for an event on the
+ * calendar with nothing to claim on it.
+ *
+ * Marking a task "not needed" is sticky by design: the dismissed row stays, and
+ * task-gen heals it without ever resurrecting it, so the event keeps showing up
+ * with no claimable task and no way back. (A `convert` can also leave the event
+ * holding only a dismissed row, and a `manual` one at that, which freezes the
+ * type set.) This restores every dismissed task on the event, then re-runs
+ * task-gen over it, so whatever the member's task-rule pipeline says the event
+ * should generate is what it ends up with.
+ *
+ * Rejects the three cases where having no tasks is the rule rather than a
+ * mishap — see `taskIneligibleReason`.
+ */
+taskRoutes.post('/calendar-events/:eventId/tasks', async (c) => {
+  const db = getDb(c.env.DB);
+  const me = c.get('member');
+
+  const event = (
+    await db
+      .select()
+      .from(calendarEvents)
+      .where(
+        and(
+          eq(calendarEvents.id, c.req.param('eventId')),
+          eq(calendarEvents.familyId, me.familyId),
+        ),
+      )
+      .limit(1)
+  )[0];
+  if (!event) return c.json({ error: 'not_found' }, 404);
+  // A masked loser is stood in for by its cf: split segments, which carry the
+  // tasks — rebuilding this row's would duplicate them.
+  if (event.maskedAt != null) return c.json({ error: 'event_masked' }, 409);
+
+  const member = (
+    await db
+      .select()
+      .from(familyMembers)
+      .where(eq(familyMembers.id, event.familyMemberId))
+      .limit(1)
+  )[0];
+  if (!member) return c.json({ error: 'not_found' }, 404);
+
+  const reason = taskIneligibleReason({
+    provenance: event.provenance,
+    synthKey: event.synthKey,
+    generatesFamilyTasks: member.generatesFamilyTasks,
+  });
+  if (reason) return c.json({ error: 'not_eligible', reason }, 409);
+
+  // Un-dismiss first: task-gen keeps a dismissed row for a type it still wants
+  // (it heals, never resurrects), so restoring has to happen before the rebuild
+  // or the event stays exactly as stuck as it was.
+  const restored = await db
+    .update(tasks)
+    .set({ status: 'unowned', ownerMemberId: null })
+    .where(
+      and(
+        eq(tasks.calendarEventId, event.id),
+        eq(tasks.status, 'dismissed'),
+      ),
+    )
+    .returning({ id: tasks.id });
+
+  // Clear the build stamp so task-gen reconsiders this event even though its
+  // content hasn't changed, then let the member's pipeline do the typing.
+  await db
+    .update(calendarEvents)
+    .set({ tasksBuiltHash: null })
+    .where(eq(calendarEvents.id, event.id));
+  await buildMemberTasks(db, event.familyMemberId);
+
+  const rows = await db
+    .select()
+    .from(tasks)
+    .where(eq(tasks.calendarEventId, event.id));
+  return c.json({ tasks: rows, restored: restored.length });
+});
+
+/**
+ * Set (or clear) an event's travel time — the block Apple reserves before it.
+ *
+ * The mirror estimates this from where the caretaker is coming from, which is a
+ * guess about distance and traffic it makes without a routing service. A human
+ * who knows the run takes 25 minutes says so here, and that stands: an explicit
+ * value wins over every estimate, `0` means this trip carries no travel time at
+ * all, and `null` hands it back to the estimate. Stored off the content hash,
+ * so healing the event never disturbs it — but re-claiming does, since that's a
+ * different person making a different trip.
+ */
+taskRoutes.post('/calendar-events/:eventId/travel-time', async (c) => {
+  const parsed = SetEventTravelTimeInput.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) return c.json({ error: 'invalid', issues: parsed.error.issues }, 400);
+
+  const db = getDb(c.env.DB);
+  const me = c.get('member');
+  const event = (
+    await db
+      .select()
+      .from(calendarEvents)
+      .where(
+        and(
+          eq(calendarEvents.id, c.req.param('eventId')),
+          eq(calendarEvents.familyId, me.familyId),
+        ),
+      )
+      .limit(1)
+  )[0];
+  if (!event) return c.json({ error: 'not_found' }, 404);
+  // Travel time is a mirrored-event property; a human event already lives on
+  // the target calendar with whatever travel time its owner gave it there.
+  if (event.provenance === 'human') return c.json({ error: 'not_mirrored' }, 409);
+
+  await db
+    .update(calendarEvents)
+    .set({ travelTimeOverrideMin: parsed.data.travelMinutes })
+    .where(eq(calendarEvents.id, event.id));
+  enqueueReconcile(c, { kind: 'member', memberId: event.familyMemberId });
+
+  const updated = (
+    await db.select().from(calendarEvents).where(eq(calendarEvents.id, event.id)).limit(1)
+  )[0]!;
+  return c.json({ event: { id: updated.id, travelTimeOverrideMin: updated.travelTimeOverrideMin } });
 });
 
 /**

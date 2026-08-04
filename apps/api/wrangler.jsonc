@@ -20,9 +20,23 @@
         // locally — the Apple web redirect flow only runs on a deployed HTTPS host.
         "PUBLIC_ORIGIN": "",
         "ORGANIZER_EMAIL": "noreply@igt.local",
+        // LOCAL DEV + TESTS ONLY: return the magic-link token in the
+        // /auth/magic-link/request response (`devToken`) so you can log in
+        // without a mailbox (tools/seed-dev.zsh needs it). Anyone who can reach
+        // the endpoint could then log in as ANY email, so it must never be set
+        // in a deployed env — named envs below deliberately omit it, and they
+        // do not inherit these top-level vars.
+        "ALLOW_DEV_TOKENS": "true",
         // DEV ONLY KEK (envelope-encryption key-encryption key). Production sets a
         // real secret via `wrangler secret put KEK` / Terraform — never commit prod keys.
         "KEK": "2OmcakKhoLtzTqOq5ZrXq/e/7mXa8Gmav+dtCe/2ThM=",
+        // Escape hatch for the outbound-URL (SSRF) policy in
+        // src/lib/outbound-url.ts: comma-separated `host` / `host:port` entries
+        // that user-supplied feed + CalDAV URLs may target even though the
+        // default policy (public hosts, https, ports 80/443) rejects them —
+        // e.g. "127.0.0.1:8080" for a local ICS fixture, or a self-hosted
+        // CalDAV server on an odd port. Empty ⇒ default policy only.
+        "OUTBOUND_ALLOWED_HOSTS": "",
         // Allowed Apple `aud` values for Sign in with Apple (comma-separated: the
         // iOS bundle id and/or web Services ID). Empty ⇒ Apple login disabled.
         // Set per env (or via secret). See docs/AUTH.md.
@@ -76,6 +90,8 @@
                 "APPLE_WEB_CLIENT_ID": "com.kylebjordahl.igt.web.staging",
                 "GOOGLE_OAUTH_CLIENT_ID": "503268168924-2tdfajihn62m5o051jjdjnkfjrg921o1.apps.googleusercontent.com",
                 "GOOGLE_IOS_CLIENT_IDS": "503268168924-honi8hhgikagd2gbu2tpb9qrf0n6eqcm.apps.googleusercontent.com",
+                // Matches ios/Flutter/staging*.xcconfig's GOOGLE_OAUTH_CALLBACK_SCHEME.
+                "GOOGLE_IOS_OAUTH_CALLBACK_SCHEME": "com.kylebjordahl.igt.staging.oauth",
                 // Fill in your 10-char Apple Team ID: "<TeamID>.com.kylebjordahl.igt.staging".
                 "APPLE_APP_ID_PREFIX": "WG5R9LUU9X.com.kylebjordahl.igt.staging",
             },
@@ -135,6 +151,8 @@
                 "APPLE_WEB_CLIENT_ID": "com.kylebjordahl.igt.web",
                 "GOOGLE_OAUTH_CLIENT_ID": "503268168924-5ogd6crcl1p1pfpoe3kdtqbo9nqhivpj.apps.googleusercontent.com",
                 "GOOGLE_IOS_CLIENT_IDS": "503268168924-gk8d4c4dfjtkmi2ol3t63usi089h1uvv.apps.googleusercontent.com",
+                // Matches ios/Flutter/prod*.xcconfig's GOOGLE_OAUTH_CALLBACK_SCHEME.
+                "GOOGLE_IOS_OAUTH_CALLBACK_SCHEME": "com.kylebjordahl.igt.oauth",
                 // Fill in your 10-char Apple Team ID: "<TeamID>.com.kylebjordahl.igt".
                 "APPLE_APP_ID_PREFIX": "WG5R9LUU9X.com.kylebjordahl.igt",
             },

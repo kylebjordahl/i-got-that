@@ -61,14 +61,16 @@ authRoutes.post('/magic-link/request', async (c) => {
   }
 
   const rawToken = await requestMagicLink(getDb(c.env.DB), parsed.data.email);
-  await getMailer(c.env.ENVIRONMENT).sendMagicLink({
+  await getMailer(c.env).sendMagicLink({
     to: parsed.data.email,
     token: rawToken,
   });
 
-  // Outside production, return the token so dev + tests can complete the flow
-  // without a live mailbox.
-  const devToken = c.env.ENVIRONMENT === 'production' ? undefined : rawToken;
+  // Explicit opt-in binding, defaulting to off: returning the raw token is
+  // unauthenticated login-as-anyone, so it's for local dev + tests only. Named
+  // wrangler envs don't inherit top-level vars, so deployed envs fail closed
+  // unless someone deliberately sets ALLOW_DEV_TOKENS there.
+  const devToken = c.env.ALLOW_DEV_TOKENS === 'true' ? rawToken : undefined;
   return c.json({ sent: true, ...(devToken ? { devToken } : {}) });
 });
 
@@ -468,6 +470,27 @@ authRoutes.get('/google/callback', async (c) => {
   const token = await createSession(db, userId);
   setSessionCookie(c, token);
   return back(`session=${encodeURIComponent(token)}`);
+});
+
+/**
+ * Native OAuth bounce for the "connect a Google Calendar" wizard
+ * (`accounts.ts`'s plain `authCode`/`redirectUri` exchange — distinct from
+ * Sign in with Google above). Google's Web-application client type only
+ * accepts an HTTPS `redirect_uri`, so the native app can't point Google
+ * straight at a custom URL scheme the way `flutter_web_auth_2` needs; instead
+ * the app passes *this* HTTPS route as its `redirectUri`, and we immediately
+ * 302 the untouched `code`/`state`/`error` query string on to
+ * `<scheme>://google-oauth-callback`, which `ASWebAuthenticationSession`
+ * intercepts on-device and hands back to the app — no server-side state, no
+ * session, nothing sensitive touches this hop. Requires
+ * GOOGLE_IOS_OAUTH_CALLBACK_SCHEME; unset ⇒ 501 (the wizard's manual
+ * copy/paste path still works).
+ */
+authRoutes.get('/google/native-callback', (c) => {
+  const scheme = c.env.GOOGLE_IOS_OAUTH_CALLBACK_SCHEME;
+  if (!scheme) return c.json({ error: 'google_native_callback_not_configured' }, 501);
+  const qs = new URL(c.req.url).search;
+  return c.redirect(`${scheme}://google-oauth-callback${qs}`, 302);
 });
 
 /**

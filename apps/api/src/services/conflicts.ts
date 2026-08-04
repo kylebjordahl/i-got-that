@@ -60,6 +60,39 @@ function participation(
 
 const pairId = (loserKey: string, winnerKey: string) => `${loserKey}|${winnerKey}`;
 
+/** Prefix identifying the current `scheduleStamp` format. */
+const SCHEDULE_STAMP_V1 = 's1';
+
+/**
+ * The part of an event a conflict decision actually rests on: when it starts,
+ * when it ends, and whether it's all-day. Both outcomes — "split the loser
+ * around the winner" and "leave both as they are" — are statements about two
+ * commitments colliding in time, so a decision stays valid for exactly as long
+ * as neither event moves.
+ *
+ * Deliberately narrower than the event's `contentHash`, which also covers
+ * summary / location / geocode / description. For a `bl:` baseline day those
+ * fields are the link's and the feed's *config* (the feed's display name, the
+ * link's location and its geocode), not any feed event's content — so keying
+ * decisions off the content hash meant re-pinning a school's location, or a
+ * sync auto-detecting the feed's timezone, silently reopened every decided
+ * conflict on that member's calendar with nothing about the events changed.
+ * Versioned so a value stored in any older format is recognisable as stale
+ * bookkeeping rather than read as drift.
+ */
+export function scheduleStamp(e: {
+  dtstart: Date;
+  dtend: Date | null;
+  allDay: boolean;
+}): string {
+  return `${SCHEDULE_STAMP_V1}:${e.dtstart.getTime()}:${e.dtend?.getTime() ?? ''}:${e.allDay ? 1 : 0}`;
+}
+
+/** Whether a stored snapshot is a stamp this version knows how to compare. */
+function isCurrentStamp(stamp: string | null): boolean {
+  return stamp != null && stamp.startsWith(`${SCHEDULE_STAMP_V1}:`);
+}
+
 /**
  * Detect and reconcile overlaps on one member's unified calendar, then apply the
  * splits for any the admin has resolved. Runs after synthesis + read-back and
@@ -154,6 +187,49 @@ export async function reconcileMemberConflicts(
     }
   }
 
+  // Reopen decided (resolved/dismissed) conflicts where one of the two events
+  // has since MOVED — a decision made against an event that has been
+  // rescheduled must be re-reviewed, not silently kept in force. An event that
+  // was merely retitled or relocated leaves the collision (and so the decision)
+  // exactly as the admin left it.
+  for (const c of existing) {
+    if (c.status === 'pending') continue;
+    if (!detectedSet.has(pairId(c.loserKey, c.winnerKey))) continue; // deleted above
+    const loser = byKey.get(c.loserKey);
+    const winner = byKey.get(c.winnerKey);
+    if (!loser || !winner) continue; // can't compare without both current rows
+    const stamps = {
+      loserScheduleStamp: scheduleStamp(loser),
+      winnerScheduleStamp: scheduleStamp(winner),
+    };
+    if (
+      !isCurrentStamp(c.loserScheduleStamp) ||
+      !isCurrentStamp(c.winnerScheduleStamp)
+    ) {
+      // Decided before this snapshot existed, or against an older stamp format
+      // — establish a baseline now rather than reopening on a value that was
+      // never a comparable schedule stamp.
+      await db.update(conflicts).set(stamps).where(eq(conflicts.id, c.id));
+      continue;
+    }
+    if (
+      stamps.loserScheduleStamp !== c.loserScheduleStamp ||
+      stamps.winnerScheduleStamp !== c.winnerScheduleStamp
+    ) {
+      await db
+        .update(conflicts)
+        .set({
+          status: 'pending',
+          resolvedByMemberId: null,
+          resolvedAt: null,
+          dismissedAt: null,
+          loserScheduleStamp: null,
+          winnerScheduleStamp: null,
+        })
+        .where(eq(conflicts.id, c.id));
+    }
+  }
+
   // --- Materialise the splits for resolved conflicts. ------------------------
   const surviving = await db
     .select()
@@ -161,29 +237,79 @@ export async function reconcileMemberConflicts(
     .where(eq(conflicts.familyMemberId, familyMemberId));
   result.conflictsOpen = surviving.filter((c) => c.status === 'pending').length;
 
-  // Resolved winners grouped by the loser they displace.
-  const resolvedWinners = new Map<string, string[]>();
+  // Resolved winners grouped by the loser they displace, each carrying its own
+  // resolution parameters (travel buffers + per-side "not needed").
+  interface ResolvedCut {
+    winnerKey: string;
+    travelBeforeMin: number;
+    travelAfterMin: number;
+    beforeNeeded: boolean;
+    afterNeeded: boolean;
+  }
+  const resolvedByLoser = new Map<string, ResolvedCut[]>();
   for (const c of surviving) {
     if (c.status !== 'resolved') continue;
-    const list = resolvedWinners.get(c.loserKey) ?? [];
-    list.push(c.winnerKey);
-    resolvedWinners.set(c.loserKey, list);
+    const list = resolvedByLoser.get(c.loserKey) ?? [];
+    list.push({
+      winnerKey: c.winnerKey,
+      travelBeforeMin: c.travelBeforeMin,
+      travelAfterMin: c.travelAfterMin,
+      beforeNeeded: c.beforeNeeded,
+      afterNeeded: c.afterNeeded,
+    });
+    resolvedByLoser.set(c.loserKey, list);
   }
 
+  const MIN = 60_000;
   const desiredCf = new Map<string, typeof calendarEvents.$inferInsert>();
   const maskedLoserKeys = new Set<string>();
-  for (const [loserKey, winnerKeys] of resolvedWinners) {
+  for (const [loserKey, cutsMeta] of resolvedByLoser) {
     const loser = byKey.get(loserKey);
     if (!loser || loser.dtend == null) continue; // loser gone this pass, or a point
-    const cuts = winnerKeys
-      .map((wk) => byKey.get(wk))
-      .filter((w): w is CalendarEventRow => !!w && w.dtend != null)
-      .map((w) => ({ dtstart: w.dtstart, dtend: w.dtend as Date }));
-    if (cuts.length === 0) continue; // every winner vanished — leave the loser whole
-    const segments = subtractIntervals(
-      { dtstart: loser.dtstart, dtend: loser.dtend },
+    const loserEnd = loser.dtend;
+    // Pair each still-present winner with its resolution params.
+    const resolved = cutsMeta
+      .map((meta) => ({ meta, w: byKey.get(meta.winnerKey) }))
+      .filter(
+        (x): x is { meta: ResolvedCut; w: CalendarEventRow } =>
+          !!x.w && x.w.dtend != null,
+      );
+    if (resolved.length === 0) continue; // every winner vanished — leave the loser whole
+    // Widen each cut by its travel buffers so the trimmed halves pull back,
+    // leaving a gap the pick-up / drop-off task lands in.
+    const cuts = resolved.map(({ meta, w }) => ({
+      dtstart: new Date(w.dtstart.getTime() - meta.travelBeforeMin * MIN),
+      dtend: new Date((w.dtend as Date).getTime() + meta.travelAfterMin * MIN),
+    }));
+    let segments = subtractIntervals(
+      { dtstart: loser.dtstart, dtend: loserEnd },
       cuts,
     );
+    // Per-side "not needed" drops the leading / trailing half of the loser (a
+    // cancel_day for that side). With multiple winners, "before" is governed by
+    // the earliest winner and "after" by the latest.
+    const earliest = resolved.reduce((a, b) =>
+      b.w.dtstart < a.w.dtstart ? b : a,
+    );
+    const latest = resolved.reduce((a, b) =>
+      (b.w.dtend as Date) > (a.w.dtend as Date) ? b : a,
+    );
+    const first = segments[0];
+    if (
+      !earliest.meta.beforeNeeded &&
+      first &&
+      first.dtstart.getTime() === loser.dtstart.getTime()
+    ) {
+      segments = segments.slice(1);
+    }
+    const last = segments[segments.length - 1];
+    if (
+      !latest.meta.afterNeeded &&
+      last &&
+      last.dtend.getTime() === loserEnd.getTime()
+    ) {
+      segments = segments.slice(0, -1);
+    }
     maskedLoserKeys.add(loserKey);
     result.masksApplied++;
     segments.forEach((seg, i) => {
@@ -223,9 +349,14 @@ export async function reconcileMemberConflicts(
         .set({ maskedAt: new Date() })
         .where(eq(calendarEvents.id, e.id));
     } else if (!shouldMask && e.maskedAt != null) {
+      // Un-masking has to clear the build stamp too. Task-gen swept this
+      // event's unowned tasks while it was masked (its cf: segments carried
+      // them), and its content hasn't changed since — so with the stamp still
+      // matching, task-gen's dirty query would skip it forever and the event
+      // would sit back on the calendar with nothing to claim, permanently.
       await db
         .update(calendarEvents)
-        .set({ maskedAt: null })
+        .set({ maskedAt: null, tasksBuiltHash: null })
         .where(eq(calendarEvents.id, e.id));
     }
   }

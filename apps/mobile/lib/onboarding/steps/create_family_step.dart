@@ -87,18 +87,32 @@ class _CreateFamilyStepState extends ConsumerState<CreateFamilyStep> {
       trailingLabel: 'Finish later',
       onTrailing: _busy ? null : () => _submit(exit: true),
       title: 'Create your family',
-      subtitle: 'The shared space everyone coordinates in. You can rename it later.',
+      subtitle:
+          'The shared space everyone coordinates in. You can rename it later.',
       body: [
         const _Label('Family name'),
         const SizedBox(height: 9),
-        _Field(controller: _family, hint: 'Rivera Family', accent: AppColors.indigo, autofocus: true),
+        _Field(
+          controller: _family,
+          hint: 'Rivera Family',
+          accent: AppColors.indigo,
+          autofocus: true,
+        ),
         const SizedBox(height: 20),
         const _Label('What should we call you?'),
         const SizedBox(height: 9),
         _Field(controller: _name, hint: 'Dad'),
         const SizedBox(height: 9),
-        Text("This is how you'll show up to everyone in the family.",
-            style: font(kBodyFont, 12, 500, color: AppColors.textTertiary, height: 1.5)),
+        Text(
+          "This is how you'll show up to everyone in the family.",
+          style: font(
+            kBodyFont,
+            12,
+            500,
+            color: AppColors.textTertiary,
+            height: 1.5,
+          ),
+        ),
         const SizedBox(height: 22),
         const _Label('Your color'),
         const SizedBox(height: 12),
@@ -108,7 +122,10 @@ class _CreateFamilyStepState extends ConsumerState<CreateFamilyStep> {
         ),
         if (_error != null) ...[
           const SizedBox(height: 16),
-          Text(_error!, style: font(kBodyFont, 13, 500, color: AppColors.coral)),
+          Text(
+            _error!,
+            style: font(kBodyFont, 13, 500, color: AppColors.coral),
+          ),
         ],
       ],
       bottom: OnboardingButton(
@@ -125,9 +142,9 @@ class _Label extends StatelessWidget {
   final String text;
   @override
   Widget build(BuildContext context) => Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 2),
-        child: Text(text.toUpperCase(), style: AppText.eyebrow()),
-      );
+    padding: const EdgeInsets.symmetric(horizontal: 2),
+    child: Text(text.toUpperCase(), style: AppText.eyebrow()),
+  );
 }
 
 class _Field extends StatelessWidget {
@@ -153,7 +170,10 @@ class _Field extends StatelessWidget {
         hintStyle: font(kBodyFont, 16, 600, color: AppColors.textMuted),
         filled: true,
         fillColor: AppColors.card,
-        contentPadding: const EdgeInsets.symmetric(horizontal: 15, vertical: 15),
+        contentPadding: const EdgeInsets.symmetric(
+          horizontal: 15,
+          vertical: 15,
+        ),
         enabledBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(14),
           borderSide: const BorderSide(color: AppColors.border),

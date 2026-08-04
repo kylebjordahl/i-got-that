@@ -36,35 +36,52 @@ class AddMembersStep extends ConsumerWidget {
       trailingLabel: 'Finish later',
       onTrailing: onExit,
       title: 'Add your family members',
-      subtitle: 'Add everyone now, or just yourself for now — you can add more '
+      subtitle:
+          'Add everyone now, or just yourself for now — you can add more '
           'anytime.',
       body: [
-        SectionEyebrow('Caretakers',
-            color: AppColors.indigo, trailing: _count(caretakers.length)),
+        SectionEyebrow(
+          'Caretakers',
+          color: AppColors.indigo,
+          trailing: _count(caretakers.length),
+        ),
         const SizedBox(height: 10),
-        GroupedCard(children: [
-          for (final m in caretakers)
-            _memberRow(m, isSelf: m.id == selfId, roleLine: _caretakerRole(m)),
-          GroupAddRow(
-            title: 'Add a caretaker',
-            square: true,
-            onTap: () => showOnboardingAddMemberSheet(context, ref, isChild: false),
-          ),
-        ]),
+        GroupedCard(
+          children: [
+            for (final m in caretakers)
+              _memberRow(
+                m,
+                isSelf: m.id == selfId,
+                roleLine: _caretakerRole(m),
+              ),
+            GroupAddRow(
+              title: 'Add a caretaker',
+              square: true,
+              onTap: () =>
+                  showOnboardingAddMemberSheet(context, ref, isChild: false),
+            ),
+          ],
+        ),
         const SizedBox(height: 20),
-        SectionEyebrow('Children',
-            color: AppColors.textTertiary, trailing: _count(children.length)),
+        SectionEyebrow(
+          'Children',
+          color: AppColors.textTertiary,
+          trailing: _count(children.length),
+        ),
         const SizedBox(height: 10),
-        GroupedCard(children: [
-          for (final m in children)
-            _memberRow(m, isSelf: false, roleLine: 'Child'),
-          GroupAddRow(
-            title: 'Add a child',
-            accent: AppColors.green,
-            square: true,
-            onTap: () => showOnboardingAddMemberSheet(context, ref, isChild: true),
-          ),
-        ]),
+        GroupedCard(
+          children: [
+            for (final m in children)
+              _memberRow(m, isSelf: false, roleLine: 'Child'),
+            GroupAddRow(
+              title: 'Add a child',
+              accent: AppColors.green,
+              square: true,
+              onTap: () =>
+                  showOnboardingAddMemberSheet(context, ref, isChild: true),
+            ),
+          ],
+        ),
       ],
       bottom: OnboardingButton(label: 'Continue', onPressed: onNext),
     );
@@ -78,15 +95,26 @@ class AddMembersStep extends ConsumerWidget {
     return '$role · can claim tasks';
   }
 
-  Widget _memberRow(Member m, {required bool isSelf, required String roleLine}) {
+  Widget _memberRow(
+    Member m, {
+    required bool isSelf,
+    required String roleLine,
+  }) {
     return GroupRow(
       leading: PersonAvatar(
-          initial: initialFor(m.relationName), color: personColor(m), size: 38),
+        initial: initialFor(m.relationName),
+        color: personColor(m),
+        size: 38,
+      ),
       title: m.relationName,
       subtitle: roleLine,
       trailing: isSelf
           ? const MiniPill('You', color: AppColors.indigo)
-          : const Icon(Icons.chevron_right_rounded, size: 18, color: AppColors.textMuted),
+          : const Icon(
+              Icons.chevron_right_rounded,
+              size: 18,
+              color: AppColors.textMuted,
+            ),
     );
   }
 }

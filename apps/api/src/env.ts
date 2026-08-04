@@ -16,8 +16,25 @@ export interface Bindings {
     PUBLIC_ORIGIN?: string;
     /** base64 of 32 random bytes; the key-encryption key for envelope encryption. */
     KEK?: string;
+    /**
+     * Escape hatch for the outbound-URL (SSRF) policy in
+     * `lib/outbound-url.ts`: comma-separated `host` or `host:port` entries that
+     * user-supplied feed / CalDAV URLs may target even though the default
+     * policy would reject them (a self-hosted CalDAV server on an odd port, a
+     * local ICS fixture during development). Unset ⇒ public hosts on 80/443 only.
+     */
+    OUTBOUND_ALLOWED_HOSTS?: string;
     /** ORGANIZER email used on outbound iMIP invites (must be on the sending domain). */
     ORGANIZER_EMAIL?: string;
+    /**
+     * Return the raw magic-link token in the `POST /auth/magic-link/request`
+     * response (`devToken`) so dev + tests can complete the login flow without a
+     * mailbox. **Local development and tests ONLY** — anyone who can reach the
+     * endpoint could then log in as any email address. Set to the string `'true'`
+     * in the top-level `vars` of `wrangler.jsonc`; named envs don't inherit
+     * top-level vars, so `staging`/`production` fail closed by construction.
+     */
+    ALLOW_DEV_TOKENS?: string;
     /** Cloudflare Email Service `send_email` binding (outbound iMIP). */
     EMAIL?: SendEmail;
     /**
@@ -54,6 +71,18 @@ export interface Bindings {
      * disabled (web flow is unaffected).
      */
     GOOGLE_IOS_CLIENT_IDS?: string;
+    /**
+     * Custom URL scheme the native "connect a Google Calendar" wizard
+     * (`accounts.ts`'s `/google/authorize-url` + the plain OAuth code-exchange
+     * flow, distinct from Sign in with Google) registers in `Info.plist`.
+     * Google's Web-application client type can't redirect straight to a
+     * custom scheme, so `GET /auth/google/native-callback` is registered in
+     * the Cloud Console as an ordinary HTTPS redirect URI instead, and just
+     * 302s the `code`/`state` on to `<scheme>://google-oauth-callback`, which
+     * `flutter_web_auth_2`/`ASWebAuthenticationSession` intercepts on-device.
+     * Unset ⇒ that route 501s (the wizard still works via manual copy/paste).
+     */
+    GOOGLE_IOS_OAUTH_CALLBACK_SCHEME?: string;
     /**
      * Comma-separated Apple App ID prefixes (`<TeamID>.<bundleId>`) for iOS
      * Universal Links, served in the apple-app-site-association file at

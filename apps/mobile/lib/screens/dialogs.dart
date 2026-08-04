@@ -19,7 +19,11 @@ Future<bool> showAddMemberDialog(BuildContext context, WidgetRef ref) async {
   return ok == true;
 }
 
-Future<bool> showEditNameDialog(BuildContext context, WidgetRef ref, Member m) async {
+Future<bool> showEditNameDialog(
+  BuildContext context,
+  WidgetRef ref,
+  Member m,
+) async {
   final ok = await showDialog<bool>(
     context: context,
     builder: (_) => _EditNameDialog(member: m),
@@ -48,7 +52,10 @@ Future<bool> showRedeemInviteDialog(BuildContext context, WidgetRef ref) async {
 /// magic-link flow (request → verify with the dev token), but attaches the
 /// email to the signed-in user instead of starting a new account. Returns true
 /// when a method was linked.
-Future<bool> showAddLoginMethodDialog(BuildContext context, WidgetRef ref) async {
+Future<bool> showAddLoginMethodDialog(
+  BuildContext context,
+  WidgetRef ref,
+) async {
   final ok = await showDialog<bool>(
     context: context,
     builder: (_) => const _AddLoginMethodDialog(),
@@ -87,7 +94,9 @@ class _AddMemberDialogState extends ConsumerState<_AddMemberDialog> {
     });
     try {
       final familyId = await ref.read(familyProvider.future);
-      await ref.read(apiClientProvider).createMember(
+      await ref
+          .read(apiClientProvider)
+          .createMember(
             familyId,
             relationName: _name.text.trim(),
             isCaretaker: _caretaker,
@@ -111,9 +120,7 @@ class _AddMemberDialogState extends ConsumerState<_AddMemberDialog> {
           TextField(
             controller: _name,
             autofocus: true,
-            decoration: const InputDecoration(
-              labelText: 'Name / relation',
-            ),
+            decoration: const InputDecoration(labelText: 'Name / relation'),
           ),
           SwitchListTile(
             value: _dependent,
@@ -132,7 +139,10 @@ class _AddMemberDialogState extends ConsumerState<_AddMemberDialog> {
           if (_error != null)
             Padding(
               padding: const EdgeInsets.only(top: 8),
-              child: Text(_error!, style: const TextStyle(color: AppColors.coral)),
+              child: Text(
+                _error!,
+                style: const TextStyle(color: AppColors.coral),
+              ),
             ),
         ],
       ),
@@ -175,7 +185,11 @@ class _EditNameDialogState extends ConsumerState<_EditNameDialog> {
       final familyId = await ref.read(familyProvider.future);
       await ref
           .read(apiClientProvider)
-          .updateMember(familyId, widget.member.id, relationName: _name.text.trim());
+          .updateMember(
+            familyId,
+            widget.member.id,
+            relationName: _name.text.trim(),
+          );
       if (mounted) Navigator.of(context).pop(true);
     } finally {
       if (mounted) setState(() => _busy = false);
@@ -210,7 +224,8 @@ class _EditNameDialogState extends ConsumerState<_EditNameDialog> {
 class _AddLoginMethodDialog extends ConsumerStatefulWidget {
   const _AddLoginMethodDialog();
   @override
-  ConsumerState<_AddLoginMethodDialog> createState() => _AddLoginMethodDialogState();
+  ConsumerState<_AddLoginMethodDialog> createState() =>
+      _AddLoginMethodDialogState();
 }
 
 class _AddLoginMethodDialogState extends ConsumerState<_AddLoginMethodDialog> {
@@ -238,16 +253,19 @@ class _AddLoginMethodDialogState extends ConsumerState<_AddLoginMethodDialog> {
       final api = ref.read(apiClientProvider);
       final devToken = await api.requestMagicLink(email);
       if (devToken == null) {
-        // Production sends the link by email; there's no in-app token to attach.
+        // Only local dev hands the token back; elsewhere it arrives by email,
+        // so there's no in-app token to attach.
         throw Exception('Magic link sent — open it on this device to finish.');
       }
       await api.linkMagicLink(devToken);
       if (mounted) Navigator.of(context).pop(true);
     } on DioException catch (e) {
       final code = (e.response?.data as Map<String, dynamic>?)?['error'];
-      setState(() => _error = code == 'identity_linked_to_other_user'
-          ? 'That email is already linked to a different account.'
-          : '$e');
+      setState(
+        () => _error = code == 'identity_linked_to_other_user'
+            ? 'That email is already linked to a different account.'
+            : '$e',
+      );
     } catch (e) {
       setState(() => _error = '$e');
     } finally {
@@ -282,7 +300,10 @@ class _AddLoginMethodDialogState extends ConsumerState<_AddLoginMethodDialog> {
           if (_error != null)
             Padding(
               padding: const EdgeInsets.only(top: 10),
-              child: Text(_error!, style: const TextStyle(color: AppColors.coral)),
+              child: Text(
+                _error!,
+                style: const TextStyle(color: AppColors.coral),
+              ),
             ),
         ],
       ),
@@ -304,7 +325,8 @@ class _AddLoginMethodDialogState extends ConsumerState<_AddLoginMethodDialog> {
 class _RedeemInviteDialog extends ConsumerStatefulWidget {
   const _RedeemInviteDialog();
   @override
-  ConsumerState<_RedeemInviteDialog> createState() => _RedeemInviteDialogState();
+  ConsumerState<_RedeemInviteDialog> createState() =>
+      _RedeemInviteDialogState();
 }
 
 class _RedeemInviteDialogState extends ConsumerState<_RedeemInviteDialog> {
@@ -325,9 +347,13 @@ class _RedeemInviteDialogState extends ConsumerState<_RedeemInviteDialog> {
       _preview = null;
     });
     try {
-      final p = await ref.read(apiClientProvider).previewInvite(_code.text.trim());
-      setState(() => _preview =
-          'Join "${p['familyName']}" as ${p['relationName'] ?? 'a caretaker'} (${p['status']})');
+      final p = await ref
+          .read(apiClientProvider)
+          .previewInvite(_code.text.trim());
+      setState(
+        () => _preview =
+            'Join "${p['familyName']}" as ${p['relationName'] ?? 'a caretaker'} (${p['status']})',
+      );
     } catch (_) {
       setState(() => _error = 'Code not found');
     }
@@ -343,7 +369,9 @@ class _RedeemInviteDialogState extends ConsumerState<_RedeemInviteDialog> {
       _error = null;
     });
     try {
-      final res = await ref.read(apiClientProvider).acceptInvite(_code.text.trim());
+      final res = await ref
+          .read(apiClientProvider)
+          .acceptInvite(_code.text.trim());
       // Land the user on the family they just joined — without this, the
       // account's already-cached "first family" stays selected and nothing
       // visibly changes even though the claim succeeded.
@@ -373,19 +401,28 @@ class _RedeemInviteDialogState extends ConsumerState<_RedeemInviteDialog> {
             autofocus: true,
             decoration: InputDecoration(
               labelText: 'Invite code',
-              suffixIcon: IconButton(icon: const Icon(Icons.search), onPressed: _check),
+              suffixIcon: IconButton(
+                icon: const Icon(Icons.search),
+                onPressed: _check,
+              ),
             ),
             onSubmitted: (_) => _check(),
           ),
           if (_preview != null)
             Padding(
               padding: const EdgeInsets.only(top: 10),
-              child: Text(_preview!, style: Theme.of(context).textTheme.bodySmall),
+              child: Text(
+                _preview!,
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
             ),
           if (_error != null)
             Padding(
               padding: const EdgeInsets.only(top: 10),
-              child: Text(_error!, style: const TextStyle(color: AppColors.coral)),
+              child: Text(
+                _error!,
+                style: const TextStyle(color: AppColors.coral),
+              ),
             ),
         ],
       ),

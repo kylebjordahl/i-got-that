@@ -31,8 +31,10 @@ class MemberStrip extends StatelessWidget {
           const SizedBox(width: 9),
         ],
         const Spacer(),
-        Text('$noun ${currentIndex + 1} of ${members.length}',
-            style: font(kBodyFont, 12, 600, color: AppColors.textMuted)),
+        Text(
+          '$noun ${currentIndex + 1} of ${members.length}',
+          style: font(kBodyFont, 12, 600, color: AppColors.textMuted),
+        ),
       ],
     );
   }
@@ -54,13 +56,19 @@ class _Avatar extends StatelessWidget {
         ),
         padding: const EdgeInsets.all(2),
         child: PersonAvatar(
-            initial: initialFor(member.relationName), color: color, size: 32),
+          initial: initialFor(member.relationName),
+          color: color,
+          size: 32,
+        ),
       );
     }
     return Opacity(
       opacity: 0.4,
       child: PersonAvatar(
-          initial: initialFor(member.relationName), color: color, size: 30),
+        initial: initialFor(member.relationName),
+        color: color,
+        size: 30,
+      ),
     );
   }
 }

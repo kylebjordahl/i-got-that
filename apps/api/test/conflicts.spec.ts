@@ -9,8 +9,10 @@ import {
   getDb,
   tasks,
 } from '@igt/db';
+import { estimateTravelMinutes } from '@igt/classification';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { reconcileMemberConflicts } from '../src/services/conflicts.js';
+import { synthesizeFeed } from '../src/services/synthesis.js';
 import { authed, bearer, call, setupFamily } from './helpers.js';
 
 type Db = ReturnType<typeof getDb>;
@@ -125,6 +127,63 @@ describe('conflict detection & masking', () => {
     expect(list[0]!.winner.summary).toBe('Doctor appointment');
   });
 
+  it('suggests a travel buffer from the distance between the two places', async () => {
+    const f = await fixture('conflict-suggest@example.com');
+    await schoolAndDoctor(f.db, f);
+    // Both ends pinned: school and a clinic ~5 km away.
+    const school = { lat: 37.7955, lon: -122.3937, title: 'Lincoln Elementary' };
+    const clinic = { lat: 37.7596, lon: -122.4269, title: 'Clinic' };
+    await f.db
+      .update(calendarEvents)
+      .set({ locationGeo: school })
+      .where(
+        and(
+          eq(calendarEvents.familyMemberId, f.childId),
+          eq(calendarEvents.provenance, 'synthesized'),
+        ),
+      );
+    await f.db
+      .update(calendarEvents)
+      .set({ location: 'Clinic', locationGeo: clinic })
+      .where(
+        and(
+          eq(calendarEvents.familyMemberId, f.childId),
+          eq(calendarEvents.provenance, 'human'),
+        ),
+      );
+    await reconcileMemberConflicts(f.db, f.childId);
+
+    const api = await call(`/families/${f.familyId}/conflicts`, bearer(f.admin.token));
+    const { conflicts: list } = (await api.json()) as {
+      conflicts: { suggestedTravelMin: number | null }[];
+    };
+    // Leaving the school for the clinic and coming back is the same trip both
+    // ways, so the sheet gets one number to seed both handles with.
+    expect(list[0]!.suggestedTravelMin).toBe(estimateTravelMinutes(school, clinic));
+  });
+
+  it('suggests nothing when either end has no coordinates', async () => {
+    const f = await fixture('conflict-suggest-none@example.com');
+    await schoolAndDoctor(f.db, f);
+    // Only the school is pinned; the appointment is free text.
+    await f.db
+      .update(calendarEvents)
+      .set({ locationGeo: { lat: 37.7955, lon: -122.3937 } })
+      .where(
+        and(
+          eq(calendarEvents.familyMemberId, f.childId),
+          eq(calendarEvents.provenance, 'synthesized'),
+        ),
+      );
+    await reconcileMemberConflicts(f.db, f.childId);
+
+    const api = await call(`/families/${f.familyId}/conflicts`, bearer(f.admin.token));
+    const { conflicts: list } = (await api.json()) as {
+      conflicts: { suggestedTravelMin: number | null }[];
+    };
+    expect(list[0]!.suggestedTravelMin).toBeNull();
+  });
+
   it('resolving splits the baseline around the appointment and generates the drop-off/pickup', async () => {
     const f = await fixture('conflict-resolve@example.com');
     const { blKey } = await schoolAndDoctor(f.db, f);
@@ -188,6 +247,329 @@ describe('conflict detection & masking', () => {
     const { events } = (await view.json()) as { events: { id: string }[] };
     expect(events.map((e) => e.id)).not.toContain(bl.id);
     expect(events.map((e) => e.id)).toContain(seg0.id);
+  });
+
+  it('resolving with travel buffers pulls the split halves back, leaving a gap', async () => {
+    const f = await fixture('conflict-travel@example.com');
+    const { blKey } = await schoolAndDoctor(f.db, f);
+    await reconcileMemberConflicts(f.db, f.childId);
+    const conflict = (
+      await f.db.select().from(conflicts).where(eq(conflicts.familyMemberId, f.childId))
+    )[0]!;
+
+    // 30 min of travel before the appointment, 15 after — the school-day halves
+    // end/start away from the appointment, leaving the pick-up / drop-off gap.
+    const res = await call(
+      `/families/${f.familyId}/conflicts/${conflict.id}/resolve`,
+      authed(f.admin.token, { travelBeforeMin: 30, travelAfterMin: 15 }),
+    );
+    expect(res.status).toBe(200);
+
+    const seg0 = (
+      await f.db.select().from(calendarEvents).where(eq(calendarEvents.synthKey, `cf:${blKey}:0`))
+    )[0]!;
+    const seg1 = (
+      await f.db.select().from(calendarEvents).where(eq(calendarEvents.synthKey, `cf:${blKey}:1`))
+    )[0]!;
+    // Morning ends 30 min early (9:30), afternoon starts 15 min late (11:15).
+    expect(seg0.dtstart.toISOString()).toBe(futureAt(3, 8, 30).toISOString());
+    expect(seg0.dtend!.toISOString()).toBe(futureAt(3, 9, 30).toISOString());
+    expect(seg1.dtstart.toISOString()).toBe(futureAt(3, 11, 15).toISOString());
+    expect(seg1.dtend!.toISOString()).toBe(futureAt(3, 15, 0).toISOString());
+
+    // The persisted parameters round-trip on the conflict row.
+    const row = (
+      await f.db.select().from(conflicts).where(eq(conflicts.id, conflict.id))
+    )[0]!;
+    expect(row).toMatchObject({ travelBeforeMin: 30, travelAfterMin: 15 });
+  });
+
+  it('resolving with a half marked "not needed" drops that segment (cancel_day for the side)', async () => {
+    const f = await fixture('conflict-notneeded@example.com');
+    const { blKey, docKey } = await schoolAndDoctor(f.db, f);
+    await reconcileMemberConflicts(f.db, f.childId);
+    const conflict = (
+      await f.db.select().from(conflicts).where(eq(conflicts.familyMemberId, f.childId))
+    )[0]!;
+
+    // The child skips the morning entirely — only the afternoon half survives.
+    const res = await call(
+      `/families/${f.familyId}/conflicts/${conflict.id}/resolve`,
+      authed(f.admin.token, { beforeNeeded: false }),
+    );
+    expect(res.status).toBe(200);
+
+    // Only one segment (the afternoon), and it's the surviving half 11:00–15:00.
+    const keys = await eventKeys(f.db, f.childId);
+    expect(keys).toEqual([`cf:${blKey}:0`, docKey]);
+    const seg0 = (
+      await f.db.select().from(calendarEvents).where(eq(calendarEvents.synthKey, `cf:${blKey}:0`))
+    )[0]!;
+    expect(seg0.dtstart.toISOString()).toBe(futureAt(3, 11, 0).toISOString());
+    expect(seg0.dtend!.toISOString()).toBe(futureAt(3, 15, 0).toISOString());
+  });
+
+  it('resolving with both halves "not needed" cancels the loser entirely (masked, no segments)', async () => {
+    const f = await fixture('conflict-bothgone@example.com');
+    const { blKey, docKey } = await schoolAndDoctor(f.db, f);
+    await reconcileMemberConflicts(f.db, f.childId);
+    const conflict = (
+      await f.db.select().from(conflicts).where(eq(conflicts.familyMemberId, f.childId))
+    )[0]!;
+
+    const res = await call(
+      `/families/${f.familyId}/conflicts/${conflict.id}/resolve`,
+      authed(f.admin.token, { beforeNeeded: false, afterNeeded: false }),
+    );
+    expect(res.status).toBe(200);
+
+    // The baseline is masked and no split segments stand in — the whole day is
+    // gone, leaving just the appointment.
+    const bl = (
+      await f.db.select().from(calendarEvents).where(eq(calendarEvents.synthKey, blKey))
+    )[0]!;
+    expect(bl.maskedAt).not.toBeNull();
+    const keys = await eventKeys(f.db, f.childId);
+    expect(keys).toEqual([docKey]);
+  });
+
+  it('rejects out-of-range travel buffers', async () => {
+    const f = await fixture('conflict-badinput@example.com');
+    await schoolAndDoctor(f.db, f);
+    await reconcileMemberConflicts(f.db, f.childId);
+    const conflict = (
+      await f.db.select().from(conflicts).where(eq(conflicts.familyMemberId, f.childId))
+    )[0]!;
+
+    const res = await call(
+      `/families/${f.familyId}/conflicts/${conflict.id}/resolve`,
+      authed(f.admin.token, { travelBeforeMin: -5 }),
+    );
+    expect(res.status).toBe(400);
+    // Nothing was resolved.
+    const row = (
+      await f.db.select().from(conflicts).where(eq(conflicts.id, conflict.id))
+    )[0]!;
+    expect(row.status).toBe('pending');
+  });
+
+  it('reverting undoes the split and re-surfaces the conflict as pending', async () => {
+    const f = await fixture('conflict-revert@example.com');
+    const { blKey, docKey } = await schoolAndDoctor(f.db, f);
+    await reconcileMemberConflicts(f.db, f.childId);
+    const conflict = (
+      await f.db.select().from(conflicts).where(eq(conflicts.familyMemberId, f.childId))
+    )[0]!;
+
+    const resolveRes = await call(
+      `/families/${f.familyId}/conflicts/${conflict.id}/resolve`,
+      authed(f.admin.token, { travelBeforeMin: 20, beforeNeeded: false }),
+    );
+    expect(resolveRes.status).toBe(200);
+    // A resolved conflict shows up as an override in effect for the member.
+    const overridesRes = await call(
+      `/families/${f.familyId}/conflicts?status=resolved&memberId=${f.childId}`,
+      bearer(f.admin.token),
+    );
+    const { conflicts: overrides } = (await overridesRes.json()) as {
+      conflicts: { id: string }[];
+    };
+    expect(overrides.map((o) => o.id)).toEqual([conflict.id]);
+
+    const revertRes = await call(
+      `/families/${f.familyId}/conflicts/${conflict.id}/revert`,
+      authed(f.admin.token),
+    );
+    expect(revertRes.status).toBe(200);
+
+    // The baseline is unmasked and the split segments are gone.
+    const bl = (
+      await f.db.select().from(calendarEvents).where(eq(calendarEvents.synthKey, blKey))
+    )[0]!;
+    expect(bl.maskedAt).toBeNull();
+    const keys = await eventKeys(f.db, f.childId);
+    expect(keys).toEqual([blKey, docKey]);
+
+    // Back in the pending decision queue, and no longer listed as an override.
+    const row = (
+      await f.db.select().from(conflicts).where(eq(conflicts.id, conflict.id))
+    )[0]!;
+    expect(row.status).toBe('pending');
+    expect(row.resolvedAt).toBeNull();
+    // The resolution parameters are discarded so a fresh decision starts clean.
+    expect(row).toMatchObject({ travelBeforeMin: 0, travelAfterMin: 0, beforeNeeded: true, afterNeeded: true });
+    const api = await call(`/families/${f.familyId}/conflicts`, bearer(f.admin.token));
+    const { conflicts: pending } = (await api.json()) as { conflicts: { id: string }[] };
+    expect(pending.map((c) => c.id)).toEqual([conflict.id]);
+    const overridesAfter = await call(
+      `/families/${f.familyId}/conflicts?status=resolved&memberId=${f.childId}`,
+      bearer(f.admin.token),
+    );
+    expect(
+      ((await overridesAfter.json()) as { conflicts: unknown[] }).conflicts,
+    ).toHaveLength(0);
+  });
+
+  it('reopens a resolved conflict when the winner event is later edited, even though the overlap persists', async () => {
+    const f = await fixture('conflict-reopen@example.com');
+    const { blKey, docKey } = await schoolAndDoctor(f.db, f);
+    await reconcileMemberConflicts(f.db, f.childId);
+    const conflict = (
+      await f.db.select().from(conflicts).where(eq(conflicts.familyMemberId, f.childId))
+    )[0]!;
+
+    const res = await call(
+      `/families/${f.familyId}/conflicts/${conflict.id}/resolve`,
+      authed(f.admin.token),
+    );
+    expect(res.status).toBe(200);
+
+    let row = (await f.db.select().from(conflicts).where(eq(conflicts.id, conflict.id)))[0]!;
+    expect(row.status).toBe('resolved');
+    expect(row.loserScheduleStamp).not.toBeNull();
+    expect(row.winnerScheduleStamp).not.toBeNull();
+
+    // The doctor's appointment gets rescheduled by 15 minutes on its source
+    // calendar, but still overlaps the school day the same way (same
+    // loser/winner synthKey pair) — the prior resolution must not silently
+    // keep applying to a decision that's now stale.
+    await f.db
+      .update(calendarEvents)
+      .set({
+        dtstart: futureAt(3, 10, 15),
+        dtend: futureAt(3, 11, 15),
+        contentHash: 'doc-hash-v2',
+      })
+      .where(eq(calendarEvents.synthKey, docKey));
+
+    const reconcileRes = await reconcileMemberConflicts(f.db, f.childId);
+    expect(reconcileRes.conflictsOpen).toBe(1);
+    expect(reconcileRes.masksApplied).toBe(0);
+
+    row = (await f.db.select().from(conflicts).where(eq(conflicts.id, conflict.id)))[0]!;
+    expect(row.status).toBe('pending');
+    expect(row.resolvedByMemberId).toBeNull();
+    expect(row.resolvedAt).toBeNull();
+    expect(row.loserScheduleStamp).toBeNull();
+    expect(row.winnerScheduleStamp).toBeNull();
+
+    // The mask is lifted and the split segments are gone — the baseline is
+    // whole again, awaiting a fresh decision.
+    const bl = (
+      await f.db.select().from(calendarEvents).where(eq(calendarEvents.synthKey, blKey))
+    )[0]!;
+    expect(bl.maskedAt).toBeNull();
+    const keys = await eventKeys(f.db, f.childId);
+    expect(keys).toEqual([blKey, docKey]);
+
+    // And it's surfaced again via the API.
+    const api = await call(`/families/${f.familyId}/conflicts`, bearer(f.admin.token));
+    expect(((await api.json()) as { conflicts: unknown[] }).conflicts).toHaveLength(1);
+  });
+
+  it('keeps a decision when an event is only retitled/relocated (it has not moved)', async () => {
+    const f = await fixture('conflict-retitle@example.com');
+    const { docKey } = await schoolAndDoctor(f.db, f);
+    await reconcileMemberConflicts(f.db, f.childId);
+    const conflict = (
+      await f.db.select().from(conflicts).where(eq(conflicts.familyMemberId, f.childId))
+    )[0]!;
+    expect(
+      (await call(`/families/${f.familyId}/conflicts/${conflict.id}/dismiss`, authed(f.admin.token)))
+        .status,
+    ).toBe(200);
+
+    // The appointment is renamed and moved to a different office, but stays at
+    // 10:00–11:00 — the same two commitments still collide in exactly the way
+    // the admin already ruled on, so the dismissal stands.
+    await f.db
+      .update(calendarEvents)
+      .set({
+        summary: 'Dentist appointment',
+        location: 'Cedar Dental',
+        contentHash: 'doc-hash-relocated',
+      })
+      .where(eq(calendarEvents.synthKey, docKey));
+
+    await reconcileMemberConflicts(f.db, f.childId);
+    const row = (await f.db.select().from(conflicts).where(eq(conflicts.id, conflict.id)))[0]!;
+    expect(row.status).toBe('dismissed');
+  });
+
+  it('keeps every ignored conflict when the school link is re-pinned (regression)', async () => {
+    // Regression: decisions used to be snapshotted against each event's
+    // `contentHash`, but a `bl:` baseline day's content is the *link's* config
+    // (feed name, link location + geocode, day hours in the feed's timezone) —
+    // no feed event of its own. So re-pinning the school's location, or a sync
+    // auto-detecting the feed's timezone, re-hashed every baseline day at once
+    // and reopened every ignored conflict on that member's calendar.
+    const f = await fixture('conflict-linkedit@example.com');
+    // Real synthesis, so the baseline days carry config-derived content.
+    await synthesizeFeed(f.db, f.feed);
+    await f.db.insert(calendarEvents).values({
+      familyId: f.familyId,
+      familyMemberId: f.childId,
+      provenance: 'human',
+      synthKey: 'ext:doctor:',
+      externalUid: 'doctor',
+      dtstart: futureAt(3, 10, 0),
+      dtend: futureAt(3, 11, 0),
+      summary: 'Doctor appointment',
+      contentHash: 'doc-hash',
+    });
+    await reconcileMemberConflicts(f.db, f.childId);
+    const open = await f.db
+      .select()
+      .from(conflicts)
+      .where(eq(conflicts.familyMemberId, f.childId));
+    expect(open.length).toBeGreaterThan(0);
+    for (const c of open) {
+      expect(
+        (await call(`/families/${f.familyId}/conflicts/${c.id}/dismiss`, authed(f.admin.token)))
+          .status,
+      ).toBe(200);
+    }
+
+    // The admin pins the school's address, and a sync detects the feed's
+    // timezone. Every baseline day is rewritten; not one event moved.
+    await f.db
+      .update(familyMemberFeeds)
+      .set({ location: '1 Lincoln Way, Springfield' })
+      .where(eq(familyMemberFeeds.id, f.linkId));
+    await synthesizeFeed(f.db, f.feed);
+    await reconcileMemberConflicts(f.db, f.childId);
+
+    const after = await f.db
+      .select()
+      .from(conflicts)
+      .where(eq(conflicts.familyMemberId, f.childId));
+    expect(after.filter((c) => c.status === 'pending')).toHaveLength(0);
+  });
+
+  it('re-baselines (never reopens) a decision carrying an older snapshot format', async () => {
+    const f = await fixture('conflict-legacystamp@example.com');
+    await schoolAndDoctor(f.db, f);
+    await reconcileMemberConflicts(f.db, f.childId);
+    const conflict = (
+      await f.db.select().from(conflicts).where(eq(conflicts.familyMemberId, f.childId))
+    )[0]!;
+    expect(
+      (await call(`/families/${f.familyId}/conflicts/${conflict.id}/dismiss`, authed(f.admin.token)))
+        .status,
+    ).toBe(200);
+
+    // A row decided against the old content-hash snapshot (or before snapshots
+    // existed at all) must establish a fresh baseline, not read as drift.
+    await f.db
+      .update(conflicts)
+      .set({ loserScheduleStamp: 'bc688a0b', winnerScheduleStamp: null })
+      .where(eq(conflicts.id, conflict.id));
+
+    await reconcileMemberConflicts(f.db, f.childId);
+    const row = (await f.db.select().from(conflicts).where(eq(conflicts.id, conflict.id)))[0]!;
+    expect(row.status).toBe('dismissed');
+    expect(row.loserScheduleStamp).toMatch(/^s1:/);
+    expect(row.winnerScheduleStamp).toMatch(/^s1:/);
   });
 
   it('dismissing leaves the double-book intact and applies no split', async () => {

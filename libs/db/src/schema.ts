@@ -23,6 +23,7 @@ import {
   OverrideMatchField,
   OverrideMatchOp,
   OverrideOutcome,
+  PendingDecisionKind,
   PendingDecisionStatus,
   TaskCreatedVia,
   TaskResultType,
@@ -124,6 +125,12 @@ export const familyMembers = sqliteTable(
       .default(true),
     /** Persistent per-person accent color (hex `#RRGGBB`). Null ⇒ derived client-side. */
     color: text('color'),
+    // Where this person's day starts and ends. Display text plus (when the
+    // client could geocode it) coordinates: the mirror measures travel time
+    // from here whenever a trip has no earlier event to leave from — the first
+    // thing in the morning, or anything after a long unscheduled gap.
+    homeLocation: text('home_location'),
+    homeLocationGeo: text('home_location_geo', { mode: 'json' }).$type<GeoLocation>(),
     // The task-rule terminal default for this member's own unified/direct
     // calendar (events added by hand, not synthesized from a feed).
     unifiedDefaultTaskType: text('unified_default_task_type', {
@@ -197,6 +204,14 @@ export const feeds = sqliteTable(
     sourceCalendarId: text('source_calendar_id'),
     sourceCalendarName: text('source_calendar_name'),
     mode: text('mode', { enum: FeedMode.options }).notNull(),
+    // Shared family calendar: one calendar carrying several members' events, so
+    // each link's rules become a per-member FILTER (`keep`) rather than a
+    // pass-through. Deliberately a property of the FEED, not of a link — the
+    // whole point is that turning it on from any one member's copy of the
+    // calendar puts every linked member on the routed pipeline, and that an
+    // event no link keeps is a single family-level routing decision rather than
+    // one per member. `standard` mode only.
+    routed: integer('routed', { mode: 'boolean' }).notNull().default(false),
     // IANA timezone the calendar's wall-clock times are in — auto-detected from
     // the feed's own X-WR-TIMEZONE/VTIMEZONE on sync, or set manually for feeds
     // that never advertise one (e.g. some booking-software ICS exports). Used
@@ -307,6 +322,11 @@ export const sourceEvents = sqliteTable(
     allDay: integer('all_day', { mode: 'boolean' }).notNull().default(false),
     summary: text('summary'),
     location: text('location'),
+    // Coordinates the source event carried for `location` (its GEO and/or
+    // X-APPLE-STRUCTURED-LOCATION). Synthesis stamps them onto the events it
+    // makes, so a feed whose events are geocoded upstream keeps travel time
+    // all the way out to a claimed drop-off/pickup. Null ⇒ free text only.
+    locationGeo: text('location_geo', { mode: 'json' }).$type<GeoLocation>(),
     raw: text('raw'),
     contentHash: text('content_hash').notNull(),
     // The content_hash synthesis last consumed. Needs (re)processing iff
@@ -330,11 +350,14 @@ export const sourceEvents = sqliteTable(
 // --- Override pipeline (per feed↔member link; schedule only) --------------
 
 /**
- * One rule in a feed link's override pipeline. Rules run in `position` order
- * over each incoming exception-feed event; the first match wins and its
- * `outcome` shapes the covered baseline day's SCHEDULE only —
- * `cancel_day` / `modify_day` / `ignore`. Task typing lives in `taskRules`.
- * `params` (modify_day's new hours) is validated by the domain schemas.
+ * One rule in a feed link's pipeline. Rules run in `position` order over each
+ * incoming feed event; the first match wins and its `outcome` shapes the
+ * SCHEDULE only. On an exception feed that's the covered baseline day
+ * (`cancel_day` / `modify_day` / `ignore`), or `add_event`, which puts the feed
+ * event on the calendar alongside an untouched baseline day; on a routed feed
+ * (a shared family calendar) it's `keep` — the event is routed onto this link's
+ * member calendar. Task typing lives in `taskRules`. `params` (modify_day's new
+ * hours) is validated by the domain schemas.
  */
 export const linkRules = sqliteTable(
   'link_rules',
@@ -468,10 +491,19 @@ export const assignmentRules = sqliteTable(
 // --- Pending decisions -----------------------------------------------------
 
 /**
- * An exception-feed event that matched no override rule — the system never
+ * A feed event the pipeline wouldn't decide for itself — the system never
  * guesses, a human resolves or dismisses it. Rows persist after resolution so
  * synthesis won't re-raise them; `sourceContentHash` reopens the decision when
  * the feed event's content changes.
+ *
+ * Two kinds, both scoped to one feed↔member link:
+ *   `exception` — an exception-feed event that matched no override rule: what
+ *     does it do to this member's baseline day?
+ *   `routing` — an event on a routed shared family calendar that NO link's
+ *     `keep` rules claimed: is it this member's? One row per link of the feed,
+ *     raised and cleared together (they share a `sourceEventId`), so the client
+ *     asks once — "whose is this?" — and one answer resolves the rows for the
+ *     members picked and dismisses the rest.
  */
 export const pendingDecisions = sqliteTable(
   'pending_decisions',
@@ -483,6 +515,9 @@ export const pendingDecisions = sqliteTable(
     feedId: text('feed_id')
       .notNull()
       .references(() => feeds.id, { onDelete: 'cascade' }),
+    kind: text('kind', { enum: PendingDecisionKind.options })
+      .notNull()
+      .default('exception'),
     linkId: text('link_id')
       .notNull()
       .references(() => familyMemberFeeds.id, { onDelete: 'cascade' }),
@@ -553,6 +588,36 @@ export const conflicts = sqliteTable(
     ),
     resolvedAt: integer('resolved_at', { mode: 'timestamp_ms' }),
     dismissedAt: integer('dismissed_at', { mode: 'timestamp_ms' }),
+    // Resolution parameters (design §8b), applied when a resolved conflict's
+    // split is materialised. Defaults reproduce the plain split: flush cut,
+    // both halves kept. `travel_*_min` widen the cut around the winner (the gap
+    // the spawned pick-up / drop-off sits in); `*_needed=false` drops the
+    // leading / trailing half of the loser (a cancel_day for that side).
+    travelBeforeMin: integer('travel_before_min').notNull().default(0),
+    travelAfterMin: integer('travel_after_min').notNull().default(0),
+    beforeNeeded: integer('before_needed', { mode: 'boolean' })
+      .notNull()
+      .default(true),
+    afterNeeded: integer('after_needed', { mode: 'boolean' })
+      .notNull()
+      .default(true),
+    // Snapshot of the loser/winner events' SCHEDULE (start / end / all-day) at
+    // the moment a decision (resolve or dismiss) was made — the only thing the
+    // decision is a function of, since both outcomes are statements about two
+    // commitments colliding in time ("split the loser around it" / "leave both
+    // as they are"). When either event later MOVES the decision is stale, so
+    // the reconciler reopens the conflict back to 'pending' and clears these.
+    //
+    // Deliberately NOT the events' `content_hash`: that also folds in summary /
+    // location / geocode, which for a `bl:` baseline day are the link's and
+    // feed's *config*, not any feed event's content — so watching it reopened
+    // every decided conflict on a member's calendar whenever the school link
+    // was re-pinned or a sync auto-detected the feed's timezone.
+    //
+    // Written as a versioned `s1:` stamp (see `scheduleStamp`) so a value left
+    // by an older format re-baselines instead of reading as drift.
+    loserScheduleStamp: text('loser_schedule_stamp'),
+    winnerScheduleStamp: text('winner_schedule_stamp'),
     createdAt: createdAt(),
   },
   (t) => ({
@@ -600,6 +665,11 @@ export const tasks = sqliteTable(
     // when set, task-gen re-anchors around it instead of recomputing the window.
     durationOverrideMin: integer('duration_override_min'),
     location: text('location'),
+    // Geocoded coordinates for `location`, carried from the event the task was
+    // generated from. Travels on to the claimed event so the caretaker's own
+    // calendar keeps GEO + X-APPLE-STRUCTURED-LOCATION (Apple travel time) —
+    // without it a claimed pickup/drop-off mirrors as free text only.
+    locationGeo: text('location_geo', { mode: 'json' }).$type<GeoLocation>(),
     status: text('status', { enum: TaskStatus.options })
       .notNull()
       .default('unowned'),
@@ -699,6 +769,12 @@ export const calendarEvents = sqliteTable(
     // Geocoded coordinates for `location`, carried from the synthesizing link so
     // the mirror can emit GEO + X-APPLE-STRUCTURED-LOCATION. Null ⇒ text only.
     locationGeo: text('location_geo', { mode: 'json' }).$type<GeoLocation>(),
+    // A human's own answer for how long getting here takes (minutes), set on
+    // the event itself. Overrides everything the mirror would estimate; 0 means
+    // "no travel time on this one". Null ⇒ estimate it (see mirror.ts). Not
+    // part of `contentHash`: it's a property of the trip, not of the event's
+    // schedule, so healing the event never disturbs it.
+    travelTimeOverrideMin: integer('travel_time_override_min'),
     description: text('description'),
     // Task typing is NOT stamped here — task-gen resolves it at build time from
     // the member's task-rule pipeline, keyed by this event's `linkId` (the

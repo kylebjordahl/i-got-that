@@ -1,6 +1,8 @@
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_web_auth_2/flutter_web_auth_2.dart';
+import '../env.dart';
 import '../state/auth.dart';
 import '../state/family.dart';
 import '../theme/app_colors.dart';
@@ -12,7 +14,11 @@ import '../widgets/settings.dart';
 /// provider, sign in / grant access, then pick calendars. Wired to the external-
 /// account API: iCloud/Outlook use CalDAV basic auth, Google uses OAuth.
 class ConnectAccountWizard extends ConsumerStatefulWidget {
-  const ConnectAccountWizard({super.key, this.onConnected, this.skipCalendarStep = false});
+  const ConnectAccountWizard({
+    super.key,
+    this.onConnected,
+    this.skipCalendarStep = false,
+  });
 
   /// Called with the freshly-connected account id once a connection succeeds.
   /// The onboarding wizard uses this to pop straight back into its own flow.
@@ -24,20 +30,19 @@ class ConnectAccountWizard extends ConsumerStatefulWidget {
   final bool skipCalendarStep;
 
   @override
-  ConsumerState<ConnectAccountWizard> createState() => _ConnectAccountWizardState();
+  ConsumerState<ConnectAccountWizard> createState() =>
+      _ConnectAccountWizardState();
 }
 
 class _ConnectAccountWizardState extends ConsumerState<ConnectAccountWizard> {
   int _step = 1;
   String _provider = 'apple'; // apple | google | outlook | ics
 
-  // Step-2 credentials.
+  // Step-2 credentials (CalDAV providers only — Google uses a system-browser
+  // OAuth handoff on both web and native, with no fields of its own).
   final _username = TextEditingController();
   final _password = TextEditingController();
   final _serverUrl = TextEditingController();
-  final _redirectUri = TextEditingController();
-  final _authCode = TextEditingController();
-  String? _googleAuthUrl;
 
   // Step 3.
   String? _accountId;
@@ -49,16 +54,26 @@ class _ConnectAccountWizardState extends ConsumerState<ConnectAccountWizard> {
 
   static const _providers = <(String, String, String, IconData)>[
     ('apple', 'Apple iCloud', 'Calendar & Reminders', Icons.cloud_rounded),
-    ('google', 'Google Calendar', 'Calendar & Tasks', Icons.calendar_month_rounded),
+    (
+      'google',
+      'Google Calendar',
+      'Calendar & Tasks',
+      Icons.calendar_month_rounded,
+    ),
     ('outlook', 'Microsoft Outlook', 'Calendar', Icons.event_note_rounded),
-    ('ics', 'ICS / subscription URL', 'Read-only calendar feed', Icons.rss_feed_rounded),
+    (
+      'ics',
+      'ICS / subscription URL',
+      'Read-only calendar feed',
+      Icons.rss_feed_rounded,
+    ),
   ];
 
   String get _kind => switch (_provider) {
-        'google' => 'google',
-        'apple' => 'icloud',
-        _ => 'caldav', // outlook / generic
-      };
+    'google' => 'google',
+    'apple' => 'icloud',
+    _ => 'caldav', // outlook / generic
+  };
 
   String get _providerLabel =>
       _providers.firstWhere((p) => p.$1 == _provider).$2;
@@ -68,25 +83,10 @@ class _ConnectAccountWizardState extends ConsumerState<ConnectAccountWizard> {
 
   @override
   void dispose() {
-    for (final c in [_username, _password, _serverUrl, _redirectUri, _authCode]) {
+    for (final c in [_username, _password, _serverUrl]) {
       c.dispose();
     }
     super.dispose();
-  }
-
-  Future<void> _getGoogleAuthUrl() async {
-    if (_redirectUri.text.trim().isEmpty) {
-      setState(() => _error = 'Enter your OAuth redirect URI first');
-      return;
-    }
-    setState(() => _error = null);
-    try {
-      final url =
-          await ref.read(apiClientProvider).accountGoogleAuthorizeUrl(_redirectUri.text.trim());
-      setState(() => _googleAuthUrl = url);
-    } catch (e) {
-      setState(() => _error = '$e');
-    }
   }
 
   Future<void> _connect() async {
@@ -95,13 +95,12 @@ class _ConnectAccountWizardState extends ConsumerState<ConnectAccountWizard> {
       _error = null;
     });
     try {
-      final isCalDav = !_isGoogle;
       final serverUrl = switch (_provider) {
         'apple' => 'https://caldav.icloud.com',
         'outlook' => _serverUrl.text.trim(),
         _ => _serverUrl.text.trim(),
       };
-      if (isCalDav && (_username.text.trim().isEmpty || _password.text.isEmpty)) {
+      if (_username.text.trim().isEmpty || _password.text.isEmpty) {
         setState(() => _error = 'Enter your username and password');
         return;
       }
@@ -109,31 +108,16 @@ class _ConnectAccountWizardState extends ConsumerState<ConnectAccountWizard> {
         setState(() => _error = 'Enter the CalDAV server URL');
         return;
       }
-      if (_isGoogle && _authCode.text.trim().isEmpty) {
-        setState(() => _error = 'Authorize with Google and paste the code');
-        return;
-      }
-      final res = await ref.read(apiClientProvider).createExternalAccount(
+      final res = await ref
+          .read(apiClientProvider)
+          .createExternalAccount(
             kind: _kind,
             name: _providerLabel,
-            serverUrl: isCalDav ? serverUrl : null,
-            username: isCalDav ? _username.text.trim() : null,
-            password: isCalDav ? _password.text : null,
-            authCode: _isGoogle ? _authCode.text.trim() : null,
-            redirectUri: _isGoogle ? _redirectUri.text.trim() : null,
+            serverUrl: serverUrl,
+            username: _username.text.trim(),
+            password: _password.text,
           );
-      ref.invalidate(accountsProvider);
-      _accountId = (res['account'] as Map<String, dynamic>?)?['id'] as String? ??
-          (res['id'] as String?);
-      // Reused from onboarding: skip the calendar-selection step and hand the
-      // new account id straight back to the caller.
-      if (widget.skipCalendarStep) {
-        if (_accountId != null) widget.onConnected?.call(_accountId!);
-        if (mounted) Navigator.of(context).maybePop();
-        return;
-      }
-      await _loadCalendars();
-      if (mounted) setState(() => _step = 3);
+      await _finishConnected(res);
     } catch (e) {
       setState(() => _error = '$e');
     } finally {
@@ -141,10 +125,72 @@ class _ConnectAccountWizardState extends ConsumerState<ConnectAccountWizard> {
     }
   }
 
+  /// Native "connect a Google Calendar": opens Google's consent screen in the
+  /// system browser (`ASWebAuthenticationSession` via `flutter_web_auth_2`).
+  /// Google's Web-application client can't redirect straight to our custom
+  /// scheme, so we point it at the API's `/auth/google/native-callback`
+  /// instead, which immediately bounces to `googleOAuthCallbackScheme` — that
+  /// hop is what `flutter_web_auth_2` intercepts, handing the `code` straight
+  /// back here with no manual copy/paste. See docs/AUTH.md's Google section.
+  Future<void> _connectGoogleNative() async {
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      const redirectUri = '$apiBaseUrl/auth/google/native-callback';
+      final authorizeUrl = await ref
+          .read(apiClientProvider)
+          .accountGoogleAuthorizeUrl(redirectUri);
+      final callback = await FlutterWebAuth2.authenticate(
+        url: authorizeUrl,
+        callbackUrlScheme: googleOAuthCallbackScheme,
+      );
+      final code = Uri.parse(callback).queryParameters['code'];
+      if (code == null) {
+        setState(() => _error = 'Google did not return an authorization code.');
+        return;
+      }
+      final res = await ref
+          .read(apiClientProvider)
+          .createExternalAccount(
+            kind: 'google',
+            name: _providerLabel,
+            authCode: code,
+            redirectUri: redirectUri,
+          );
+      await _finishConnected(res);
+    } catch (e) {
+      setState(() => _error = '$e');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  /// Shared post-connect step for both [_connect] (CalDAV) and
+  /// [_connectGoogleNative]: registers the new account, then either hands it
+  /// straight back to the caller (onboarding's skip-calendar-step reuse) or
+  /// advances to the calendar-picker step.
+  Future<void> _finishConnected(Map<String, dynamic> res) async {
+    ref.invalidate(accountsProvider);
+    _accountId =
+        (res['account'] as Map<String, dynamic>?)?['id'] as String? ??
+        (res['id'] as String?);
+    if (widget.skipCalendarStep) {
+      if (_accountId != null) widget.onConnected?.call(_accountId!);
+      if (mounted) Navigator.of(context).maybePop();
+      return;
+    }
+    await _loadCalendars();
+    if (mounted) setState(() => _step = 3);
+  }
+
   Future<void> _loadCalendars() async {
     if (_accountId == null) return;
     try {
-      final cals = await ref.read(apiClientProvider).listAccountCalendars(_accountId!);
+      final cals = await ref
+          .read(apiClientProvider)
+          .listAccountCalendars(_accountId!);
       _calendars = cals.cast<Map<String, dynamic>>();
       _selectedCals
         ..clear()
@@ -174,8 +220,10 @@ class _ConnectAccountWizardState extends ConsumerState<ConnectAccountWizard> {
             const SizedBox(height: 20),
             _ProgressBar(step: _step),
             const SizedBox(height: 10),
-            Text('Step $_step of 3 · ${_stepCaption()}',
-                style: font(kBodyFont, 12.5, 600, color: AppColors.indigo)),
+            Text(
+              'Step $_step of 3 · ${_stepCaption()}',
+              style: font(kBodyFont, 12.5, 600, color: AppColors.indigo),
+            ),
             const SizedBox(height: 20),
             if (_step == 1)
               ..._chooseProvider()
@@ -185,7 +233,10 @@ class _ConnectAccountWizardState extends ConsumerState<ConnectAccountWizard> {
               ..._chooseCalendars(),
             if (_error != null) ...[
               const SizedBox(height: 16),
-              Text(_error!, style: font(kBodyFont, 13, 500, color: AppColors.coral)),
+              Text(
+                _error!,
+                style: font(kBodyFont, 13, 500, color: AppColors.coral),
+              ),
             ],
           ],
         ),
@@ -194,10 +245,10 @@ class _ConnectAccountWizardState extends ConsumerState<ConnectAccountWizard> {
   }
 
   String _stepCaption() => switch (_step) {
-        1 => 'Choose a provider',
-        2 => 'Sign in & grant access',
-        _ => 'Choose calendars',
-      };
+    1 => 'Choose a provider',
+    2 => 'Sign in & grant access',
+    _ => 'Choose calendars',
+  };
 
   // --- Step 1 ------------------------------------------------------------
   List<Widget> _chooseProvider() {
@@ -213,7 +264,11 @@ class _ConnectAccountWizardState extends ConsumerState<ConnectAccountWizard> {
         const SizedBox(height: 12),
       ],
       const SizedBox(height: 12),
-      _PrimaryButton(label: 'Continue', busy: false, onPressed: () => setState(() => _step = 2)),
+      _PrimaryButton(
+        label: 'Continue',
+        busy: false,
+        onPressed: () => setState(() => _step = 2),
+      ),
     ];
   }
 
@@ -221,9 +276,12 @@ class _ConnectAccountWizardState extends ConsumerState<ConnectAccountWizard> {
   List<Widget> _signIn() {
     if (_isIcs) {
       return [
-        _hero(Icons.rss_feed_rounded, 'Add an ICS feed',
-            'Subscription calendars are added as Input feeds, not accounts — they '
-                'generate tasks per child.'),
+        _hero(
+          Icons.rss_feed_rounded,
+          'Add an ICS feed',
+          'Subscription calendars are added as Input feeds, not accounts — they '
+              'generate tasks per child.',
+        ),
         const SizedBox(height: 20),
         _PrimaryButton(
           label: 'Go to Input feeds',
@@ -238,8 +296,11 @@ class _ConnectAccountWizardState extends ConsumerState<ConnectAccountWizard> {
     // there's no in-page calendar step; the account shows up on reload.
     if (_isGoogle && kIsWeb) {
       return [
-        _hero(Icons.calendar_month_rounded, 'Sign in to $_providerLabel',
-            'Authorize I Got That to read your Google calendars and manage handoffs.'),
+        _hero(
+          Icons.calendar_month_rounded,
+          'Sign in to $_providerLabel',
+          'Authorize I Got That to read your Google calendars and manage handoffs.',
+        ),
         const SizedBox(height: 20),
         const _PermissionsCard(),
         const SizedBox(height: 20),
@@ -251,16 +312,35 @@ class _ConnectAccountWizardState extends ConsumerState<ConnectAccountWizard> {
         ),
       ];
     }
-    return [
-      _hero(_isGoogle ? Icons.calendar_month_rounded : Icons.cloud_rounded,
+    // Native Google: same one-tap shape as web, but via a system-browser OAuth
+    // handoff (see _connectGoogleNative) instead of a page redirect.
+    if (_isGoogle) {
+      return [
+        _hero(
+          Icons.calendar_month_rounded,
           'Sign in to $_providerLabel',
-          _isGoogle
-              ? 'Authorize Tasks to read your Google calendars.'
-              : 'Use an app-specific password — we never see your main password.'),
+          'Authorize I Got That to read your Google calendars and manage handoffs.',
+        ),
+        const SizedBox(height: 20),
+        const _PermissionsCard(),
+        const SizedBox(height: 20),
+        _PrimaryButton(
+          label: _busy ? 'Connecting…' : 'Continue with $_providerLabel',
+          busy: _busy,
+          onPressed: _busy ? null : _connectGoogleNative,
+        ),
+      ];
+    }
+    return [
+      _hero(
+        Icons.cloud_rounded,
+        'Sign in to $_providerLabel',
+        'Use an app-specific password — we never see your main password.',
+      ),
       const SizedBox(height: 20),
       const _PermissionsCard(),
       const SizedBox(height: 20),
-      if (_isGoogle) ..._googleFields() else ..._calDavFields(),
+      ..._calDavFields(),
       const SizedBox(height: 20),
       _PrimaryButton(
         label: _busy ? 'Connecting…' : 'Continue with $_providerLabel',
@@ -271,53 +351,28 @@ class _ConnectAccountWizardState extends ConsumerState<ConnectAccountWizard> {
   }
 
   List<Widget> _calDavFields() => [
-        if (_provider == 'outlook')
-          Padding(
-            padding: const EdgeInsets.only(bottom: 14),
-            child: TextField(
-              controller: _serverUrl,
-              decoration: const InputDecoration(
-                  labelText: 'CalDAV server URL', hintText: 'https://…'),
-            ),
-          ),
-        TextField(
-          controller: _username,
-          decoration: const InputDecoration(labelText: 'Username / email'),
-        ),
-        const SizedBox(height: 14),
-        TextField(
-          controller: _password,
-          obscureText: true,
-          decoration: const InputDecoration(labelText: 'App-specific password'),
-        ),
-      ];
-
-  List<Widget> _googleFields() => [
-        TextField(
-          controller: _redirectUri,
+    if (_provider == 'outlook')
+      Padding(
+        padding: const EdgeInsets.only(bottom: 14),
+        child: TextField(
+          controller: _serverUrl,
           decoration: const InputDecoration(
-              labelText: 'OAuth redirect URI', hintText: 'https://…/oauth/callback'),
-        ),
-        const SizedBox(height: 10),
-        Align(
-          alignment: Alignment.centerLeft,
-          child: TextButton.icon(
-            onPressed: _getGoogleAuthUrl,
-            icon: const Icon(Icons.open_in_new_rounded, size: 18),
-            label: const Text('Get authorize link'),
+            labelText: 'CalDAV server URL',
+            hintText: 'https://…',
           ),
         ),
-        if (_googleAuthUrl != null) ...[
-          const SizedBox(height: 4),
-          SelectableText(_googleAuthUrl!,
-              style: font(kBodyFont, 12, 500, color: AppColors.indigo)),
-          const SizedBox(height: 12),
-        ],
-        TextField(
-          controller: _authCode,
-          decoration: const InputDecoration(labelText: 'Paste the authorization code'),
-        ),
-      ];
+      ),
+    TextField(
+      controller: _username,
+      decoration: const InputDecoration(labelText: 'Username / email'),
+    ),
+    const SizedBox(height: 14),
+    TextField(
+      controller: _password,
+      obscureText: true,
+      decoration: const InputDecoration(labelText: 'App-specific password'),
+    ),
+  ];
 
   // --- Step 3 ------------------------------------------------------------
   List<Widget> _chooseCalendars() {
@@ -331,19 +386,27 @@ class _ConnectAccountWizardState extends ConsumerState<ConnectAccountWizard> {
         ),
         child: Row(
           children: [
-            const Icon(Icons.check_circle_rounded, color: AppColors.green, size: 20),
+            const Icon(
+              Icons.check_circle_rounded,
+              color: AppColors.green,
+              size: 20,
+            ),
             const SizedBox(width: 10),
             Expanded(
-              child: Text('Connected via $_providerLabel',
-                  style: font(kBodyFont, 14, 600, color: AppColors.green)),
+              child: Text(
+                'Connected via $_providerLabel',
+                style: font(kBodyFont, 14, 600, color: AppColors.green),
+              ),
             ),
           ],
         ),
       ),
       const SizedBox(height: 16),
-      Text('Pick the calendars Tasks should watch for events. You can change this '
-          'anytime when adding feeds or delivery methods.',
-          style: AppText.subtitle),
+      Text(
+        'Pick the calendars Tasks should watch for events. You can change this '
+        'anytime when adding feeds or delivery methods.',
+        style: AppText.subtitle,
+      ),
       const SizedBox(height: 12),
       if (_calendars.isNotEmpty)
         AppCard(
@@ -445,7 +508,9 @@ class _ProviderTile extends StatelessWidget {
           color: AppColors.card,
           borderRadius: BorderRadius.circular(18),
           border: Border.all(
-              color: selected ? AppColors.indigo : AppColors.border, width: selected ? 1.5 : 1),
+            color: selected ? AppColors.indigo : AppColors.border,
+            width: selected ? 1.5 : 1,
+          ),
         ),
         child: Row(
           children: [
@@ -478,15 +543,15 @@ class _PermissionsCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     Widget row(String text) => Padding(
-          padding: const EdgeInsets.symmetric(vertical: 6),
-          child: Row(
-            children: [
-              const Icon(Icons.check_rounded, color: AppColors.green, size: 18),
-              const SizedBox(width: 10),
-              Expanded(child: Text(text, style: AppText.subtitle)),
-            ],
-          ),
-        );
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Row(
+        children: [
+          const Icon(Icons.check_rounded, color: AppColors.green, size: 18),
+          const SizedBox(width: 10),
+          Expanded(child: Text(text, style: AppText.subtitle)),
+        ],
+      ),
+    );
     return AppCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -503,7 +568,11 @@ class _PermissionsCard extends StatelessWidget {
 }
 
 class _PrimaryButton extends StatelessWidget {
-  const _PrimaryButton({required this.label, required this.busy, required this.onPressed});
+  const _PrimaryButton({
+    required this.label,
+    required this.busy,
+    required this.onPressed,
+  });
   final String label;
   final bool busy;
   final VoidCallback? onPressed;
@@ -523,9 +592,20 @@ class _PrimaryButton extends StatelessWidget {
               ? const SizedBox(
                   height: 20,
                   width: 20,
-                  child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF2A1E05)),
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: Color(0xFF2A1E05),
+                  ),
                 )
-              : Text(label, style: font(kBodyFont, 14.5, 700, color: const Color(0xFF2A1E05))),
+              : Text(
+                  label,
+                  style: font(
+                    kBodyFont,
+                    14.5,
+                    700,
+                    color: const Color(0xFF2A1E05),
+                  ),
+                ),
         ),
       ),
     );

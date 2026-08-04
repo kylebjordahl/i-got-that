@@ -1,5 +1,8 @@
-# Uncomment this line to define a global platform for your project
-# platform :ios, '13.0'
+# Kept in lockstep with IPHONEOS_DEPLOYMENT_TARGET in Runner.xcodeproj: App Store
+# Connect rejects uploads whose MinimumOSVersion is below 15.0 (ITMS-90068) from
+# Spring 2027. Pods that declare a lower target inherit this one (podhelper's
+# flutter_additional_ios_build_settings drops theirs when it's under 13).
+platform :ios, '15.0'
 
 # CocoaPods analytics sends network stats synchronously affecting flutter build latency.
 ENV['COCOAPODS_DISABLE_STATS'] = 'true'

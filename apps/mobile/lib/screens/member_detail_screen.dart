@@ -15,6 +15,7 @@ import '../widgets/settings.dart';
 import 'add_calendar_sheet.dart';
 import 'feed_baseline_screen.dart';
 import 'member_editor_screen.dart';
+import 'member_overrides_sheet.dart';
 import 'task_rules_screen.dart';
 
 /// One detail screen for every family member — child and caretaker alike (6e).
@@ -55,7 +56,10 @@ class MemberDetailScreen extends ConsumerWidget {
                 children: [
                   DetailProfileCard(
                     avatar: PersonAvatar(
-                        initial: initialFor(member.relationName), color: color, size: 54),
+                      initial: initialFor(member.relationName),
+                      color: color,
+                      size: 54,
+                    ),
                     name: member.relationName,
                     subtitle: '$grouping · ● ${_colorName(color)}',
                     onEdit: (isAdmin || isSelf)
@@ -72,17 +76,26 @@ class MemberDetailScreen extends ConsumerWidget {
                   ],
                   _AccentSection(
                     color: AppColors.feedBlue,
-                    child: _SourceCalendarsSection(member: member, canEdit: isAdmin),
+                    child: _SourceCalendarsSection(
+                      member: member,
+                      canEdit: isAdmin,
+                    ),
                   ),
                   const SizedBox(height: 24),
                   _AccentSection(
                     color: AppColors.green,
-                    child: _UnifiedCalendarSection(member: member, canEdit: canEditTarget),
+                    child: _UnifiedCalendarSection(
+                      member: member,
+                      canEdit: canEditTarget,
+                    ),
                   ),
                   const SizedBox(height: 24),
                   _AccentSection(
                     color: AppColors.amber,
-                    child: _FamilyLogisticsSection(member: member, canEdit: isAdmin),
+                    child: _FamilyLogisticsSection(
+                      member: member,
+                      canEdit: isAdmin,
+                    ),
                   ),
                   const SizedBox(height: 28),
                   if (isAdmin && !isSelf)
@@ -112,21 +125,32 @@ class MemberDetailScreen extends ConsumerWidget {
     };
   }
 
-  Future<void> _confirmRemove(BuildContext context, WidgetRef ref, Member m) async {
+  Future<void> _confirmRemove(
+    BuildContext context,
+    WidgetRef ref,
+    Member m,
+  ) async {
     final ok = await showDialog<bool>(
       context: context,
-      builder: (_) => AlertDialog(
+      // `dialogContext`, not this screen's `context` — see the same note on
+      // the unlink dialog in feed_baseline_screen.dart: `context` resolves to
+      // the inner content Navigator, so popping through it would dismiss this
+      // screen and strand the dialog (raised on the outer Navigator) on top.
+      builder: (dialogContext) => AlertDialog(
         title: const Text('Remove from family?'),
-        content: Text('Remove ${m.relationName}? Their unified calendar, feed '
-            'links, and claimed tasks are deleted. This cannot be undone.'),
+        content: Text(
+          'Remove ${m.relationName}? Their unified calendar, feed '
+          'links, and claimed tasks are deleted. This cannot be undone.',
+        ),
         actions: [
           TextButton(
-              onPressed: () => Navigator.of(context).pop(false),
-              child: const Text('Cancel')),
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('Cancel'),
+          ),
           PillButton(
             label: 'Remove',
             variant: PillVariant.white,
-            onPressed: () => Navigator.of(context).pop(true),
+            onPressed: () => Navigator.of(dialogContext).pop(true),
           ),
         ],
       ),
@@ -140,10 +164,12 @@ class MemberDetailScreen extends ConsumerWidget {
       if (context.mounted) Navigator.of(context).pop();
     } catch (e) {
       if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text('Remove failed: $e'),
-          margin: snackBarMarginAboveNav(context),
-        ));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Remove failed: $e'),
+            margin: snackBarMarginAboveNav(context),
+          ),
+        );
       }
     }
   }
@@ -156,13 +182,29 @@ class _SourceCalendarsSection extends ConsumerWidget {
   final Member member;
   final bool canEdit;
 
+  // The reorderable list below is given an explicit (non-intrinsic) height —
+  // see the comment at its Overlay.wrap call site for why. These add up the
+  // fixed pieces of one row so that height stays in sync with the layout:
+  // SettingRow forced to one line (IconTile 44 + its own 6+6 padding), plus
+  // the AppCard's 4+4 vertical padding, plus the 10 bottom margin between
+  // cards.
+  static const double _kFeedRowHeight = 44 + 6 + 6;
+  static const double _kFeedCardPadding = 4 + 4;
+  static const double _kFeedCardSpacing = 10;
+  static const double _kFeedSlotHeight =
+      _kFeedRowHeight + _kFeedCardPadding + _kFeedCardSpacing;
+
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final feeds = ref.watch(feedsProvider).valueOrNull ?? const <FeedItem>[];
     final linked = <(FeedItem, FeedLink)>[];
     for (final feed in feeds) {
-      final links = ref.watch(feedLinksProvider(feed.id)).valueOrNull ?? const <FeedLink>[];
-      final link = links.where((l) => l.familyMemberId == member.id).firstOrNull;
+      final links =
+          ref.watch(feedLinksProvider(feed.id)).valueOrNull ??
+          const <FeedLink>[];
+      final link = links
+          .where((l) => l.familyMemberId == member.id)
+          .firstOrNull;
       if (link != null) linked.add((feed, link));
     }
     // Highest priority first — the order conflict resolution uses on this
@@ -195,23 +237,47 @@ class _SourceCalendarsSection extends ConsumerWidget {
             ),
           )
         else if (canReorder)
-          ReorderableListView(
-            shrinkWrap: true,
-            physics: const NeverScrollableScrollPhysics(),
-            // onReorderItem (not the deprecated onReorder) already adjusts
-            // newIndex for the item removed at oldIndex — see _reorder.
-            onReorderItem: (o, n) => _reorder(ref, linked, o, n),
-            children: [
-              for (final (feed, link) in linked)
-                Padding(
-                  key: ValueKey(link.id),
-                  padding: const EdgeInsets.only(bottom: 10),
-                  child: AppCard(
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-                    child: _feedRow(context, feed, link, draggable: true),
-                  ),
-                ),
-            ],
+          // ReorderableListView drops its dragged item into the nearest
+          // ancestor Overlay (Flutter looks it up via Overlay.of), which by
+          // default is the app-level one from MaterialApp/Navigator — so the
+          // floating card would paint above the whole screen, including the
+          // Unified calendar section below, instead of staying within this
+          // list. Overlay.wrap gives it a local Overlay to float in instead,
+          // clipped to (and sized to) just this list.
+          //
+          // That local Overlay can't be intrinsically sized (the parent
+          // _AccentSection stretches its accent bar via IntrinsicHeight, and
+          // ReorderableListView's shrink-wrapping viewport refuses to report
+          // an intrinsic height), so it's given an explicit height computed
+          // from the fixed per-row height above instead.
+          SizedBox(
+            height: linked.length * _kFeedSlotHeight,
+            child: Overlay.wrap(
+              child: ReorderableListView(
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                // onReorderItem (not the deprecated onReorder) already adjusts
+                // newIndex for the item removed at oldIndex — see _reorder.
+                onReorderItem: (o, n) => _reorder(ref, linked, o, n),
+                children: [
+                  for (final (feed, link) in linked)
+                    Padding(
+                      key: ValueKey(link.id),
+                      padding: const EdgeInsets.only(bottom: _kFeedCardSpacing),
+                      child: AppCard(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 4,
+                        ),
+                        child: SizedBox(
+                          height: _kFeedRowHeight,
+                          child: _feedRow(context, feed, link, draggable: true),
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            ),
           )
         else
           AppCard(
@@ -226,19 +292,27 @@ class _SourceCalendarsSection extends ConsumerWidget {
           ),
         if (canReorder) ...[
           const SizedBox(height: 4),
-          Text('Drag to set priority. When events overlap, the source higher '
-              'in this list wins — the other is trimmed or split around it. '
-              'Events added by hand always win over feeds.',
-              style: AppText.subtitle),
+          Text(
+            'Drag to set priority. When events overlap, the source higher '
+            'in this list wins — the other is trimmed or split around it. '
+            'Events added by hand always win over feeds.',
+            style: AppText.subtitle,
+          ),
           const SizedBox(height: 12),
         ],
         if (canEdit)
           Center(
             child: TextButton.icon(
               onPressed: () => showAddCalendarSheet(context, ref, member),
-              icon: const Icon(Icons.add_rounded, size: 18, color: AppColors.feedBlue),
-              label: Text('Add another calendar',
-                  style: font(kBodyFont, 13, 700, color: AppColors.feedBlue)),
+              icon: const Icon(
+                Icons.add_rounded,
+                size: 18,
+                color: AppColors.feedBlue,
+              ),
+              label: Text(
+                'Add another calendar',
+                style: font(kBodyFont, 13, 700, color: AppColors.feedBlue),
+              ),
             ),
           ),
       ],
@@ -248,25 +322,32 @@ class _SourceCalendarsSection extends ConsumerWidget {
   /// One source-calendar row. In the reorderable layout (`draggable`) the
   /// platform supplies the drag handle, so the trailing nav chevron is dropped;
   /// the card still opens the link editor on tap.
-  Widget _feedRow(BuildContext context, FeedItem feed, FeedLink link,
-      {bool draggable = false}) {
+  Widget _feedRow(
+    BuildContext context,
+    FeedItem feed,
+    FeedLink link, {
+    bool draggable = false,
+  }) {
     return SettingRow(
       icon: feed.isBusy
           ? Icons.lock_clock_rounded
           : feed.kind == 'ics'
-              ? Icons.rss_feed_rounded
-              : Icons.calendar_month_rounded,
+          ? Icons.rss_feed_rounded
+          : Icons.calendar_month_rounded,
       iconColor: feed.isException
           ? AppColors.amber
           : feed.isBusy
-              ? AppColors.purple
-              : AppColors.feedBlue,
+          ? AppColors.purple
+          : AppColors.feedBlue,
       title: feed.displayName,
       subtitle: feed.isException
           ? 'Exception-only · transformed'
           : feed.isBusy
-              ? 'Busy-only · free/busy'
-              : 'Standard · ${feed.sourceLabel}',
+          ? 'Busy-only · free/busy'
+          : 'Standard · ${feed.sourceLabel}',
+      // The draggable list gives each row a fixed height (see _kFeedRowHeight)
+      // instead of measuring it via intrinsics, so content must not wrap.
+      singleLine: draggable,
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -285,13 +366,19 @@ class _SourceCalendarsSection extends ConsumerWidget {
   }
 
   Future<void> _reorder(
-      WidgetRef ref, List<(FeedItem, FeedLink)> linked, int oldIndex, int newIndex) async {
+    WidgetRef ref,
+    List<(FeedItem, FeedLink)> linked,
+    int oldIndex,
+    int newIndex,
+  ) async {
     // onReorderItem already accounts for the removed item, so no newIndex fixup.
     final order = linked.map((e) => e.$2.id).toList();
     final moved = order.removeAt(oldIndex);
     order.insert(newIndex, moved);
     final familyId = await ref.read(familyProvider.future);
-    await ref.read(apiClientProvider).reorderMemberFeedLinks(familyId, member.id, order);
+    await ref
+        .read(apiClientProvider)
+        .reorderMemberFeedLinks(familyId, member.id, order);
     // The member's feeds each carry one of these links; refresh them plus the
     // derived calendar so any re-prioritisation shows immediately.
     for (final (feed, _) in linked) {
@@ -301,10 +388,12 @@ class _SourceCalendarsSection extends ConsumerWidget {
   }
 
   void _openLink(BuildContext context, FeedItem feed, FeedLink link) {
-    Navigator.of(context).push(MaterialPageRoute(
-      builder: (_) =>
-          FeedBaselineScreen(member: member, feed: feed, existingLink: link),
-    ));
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) =>
+            FeedBaselineScreen(member: member, feed: feed, existingLink: link),
+      ),
+    );
   }
 }
 
@@ -338,8 +427,9 @@ class _InviteSectionState extends ConsumerState<_InviteSection> {
     });
     try {
       final familyId = await ref.read(familyProvider.future);
-      final res =
-          await ref.read(apiClientProvider).issueMemberInvite(familyId, widget.member.id);
+      final res = await ref
+          .read(apiClientProvider)
+          .issueMemberInvite(familyId, widget.member.id);
       final expires = res['expiresAt'];
       setState(() {
         _token = res['token'] as String;
@@ -366,10 +456,12 @@ class _InviteSectionState extends ConsumerState<_InviteSection> {
     final link = _shareable;
     if (link == null) return;
     Clipboard.setData(ClipboardData(text: link));
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: const Text('Invite link copied'),
-      margin: snackBarMarginAboveNav(context),
-    ));
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: const Text('Invite link copied'),
+        margin: snackBarMarginAboveNav(context),
+      ),
+    );
   }
 
   @override
@@ -389,10 +481,16 @@ class _InviteSectionState extends ConsumerState<_InviteSection> {
           AppCard(
             child: Row(
               children: [
-                const IconTile(icon: Icons.link_rounded, color: AppColors.indigo),
+                const IconTile(
+                  icon: Icons.link_rounded,
+                  color: AppColors.indigo,
+                ),
                 const SizedBox(width: 14),
                 Expanded(
-                  child: Text('No active invite yet', style: AppText.sectionItemTitle),
+                  child: Text(
+                    'No active invite yet',
+                    style: AppText.sectionItemTitle,
+                  ),
                 ),
                 PillButton(
                   label: _busy ? 'Generating…' : 'Generate',
@@ -413,12 +511,18 @@ class _InviteSectionState extends ConsumerState<_InviteSection> {
                       child: SelectableText(
                         _shareable!,
                         maxLines: 2,
-                        style: const TextStyle(fontFamily: 'monospace', fontSize: 13),
+                        style: const TextStyle(
+                          fontFamily: 'monospace',
+                          fontSize: 13,
+                        ),
                       ),
                     ),
                     IconButton(
                       tooltip: 'Copy',
-                      icon: const Icon(Icons.copy_rounded, color: AppColors.textMuted),
+                      icon: const Icon(
+                        Icons.copy_rounded,
+                        color: AppColors.textMuted,
+                      ),
                       onPressed: _copy,
                     ),
                   ],
@@ -434,10 +538,7 @@ class _InviteSectionState extends ConsumerState<_InviteSection> {
                   ],
                 ),
                 const SizedBox(height: 8),
-                Text(
-                  _shareCopy(),
-                  style: AppText.subtitle,
-                ),
+                Text(_shareCopy(), style: AppText.subtitle),
                 const SizedBox(height: 10),
                 SettingRow(
                   icon: Icons.refresh_rounded,
@@ -450,7 +551,10 @@ class _InviteSectionState extends ConsumerState<_InviteSection> {
           ),
         if (_error != null) ...[
           const SizedBox(height: 8),
-          Text(_error!, style: font(kBodyFont, 13, 500, color: AppColors.coral)),
+          Text(
+            _error!,
+            style: font(kBodyFont, 13, 500, color: AppColors.coral),
+          ),
         ],
       ],
     );
@@ -461,7 +565,9 @@ class _InviteSectionState extends ConsumerState<_InviteSection> {
   /// fall back to the paste-the-code instructions.
   String _shareCopy() {
     final name = widget.member.relationName;
-    final expiry = _expiresAt != null ? ' It expires ${_formatExpiry(_expiresAt!)}.' : '';
+    final expiry = _expiresAt != null
+        ? ' It expires ${_formatExpiry(_expiresAt!)}.'
+        : '';
     if (_url != null) {
       return 'Send this to $name — tapping it opens the app (or the web) and '
           'walks them through joining in one step.$expiry';
@@ -547,11 +653,15 @@ class _FamilyLogisticsSection extends ConsumerWidget {
                   iconColor: AppColors.purple,
                   title: 'Task rules',
                   subtitle: 'What each event generates, per calendar',
-                  trailing:
-                      const Icon(Icons.chevron_right_rounded, color: AppColors.textMuted),
-                  onTap: () => Navigator.of(context).push(MaterialPageRoute(
-                    builder: (_) => TaskRulesScreen(member: member),
-                  )),
+                  trailing: const Icon(
+                    Icons.chevron_right_rounded,
+                    color: AppColors.textMuted,
+                  ),
+                  onTap: () => Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => TaskRulesScreen(member: member),
+                    ),
+                  ),
                 ),
               ],
               const Divider(height: 20),
@@ -561,7 +671,9 @@ class _FamilyLogisticsSection extends ConsumerWidget {
                 title: 'Can claim tasks',
                 subtitle: 'Appears as an owner option when claiming',
                 value: member.isCaretaker,
-                onChanged: canEdit ? (v) => _setFlag(ref, isCaretaker: v) : null,
+                onChanged: canEdit
+                    ? (v) => _setFlag(ref, isCaretaker: v)
+                    : null,
               ),
             ],
           ),
@@ -578,10 +690,15 @@ class _FamilyLogisticsSection extends ConsumerWidget {
     );
   }
 
-  Future<void> _setFlag(WidgetRef ref,
-      {bool? isCaretaker, bool? generatesFamilyTasks}) async {
+  Future<void> _setFlag(
+    WidgetRef ref, {
+    bool? isCaretaker,
+    bool? generatesFamilyTasks,
+  }) async {
     final familyId = await ref.read(familyProvider.future);
-    await ref.read(apiClientProvider).updateMember(
+    await ref
+        .read(apiClientProvider)
+        .updateMember(
           familyId,
           member.id,
           isCaretaker: isCaretaker,
@@ -605,7 +722,12 @@ class _UnifiedCalendarSection extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final target = ref.watch(memberCalendarProvider(member.id)).valueOrNull;
-    final accounts = ref.watch(accountsProvider).valueOrNull ?? const <ExternalAccount>[];
+    final accounts =
+        ref.watch(accountsProvider).valueOrNull ?? const <ExternalAccount>[];
+    final overrides = activeOverrides(
+      ref.watch(memberOverridesProvider(member.id)).valueOrNull ??
+          const <Conflict>[],
+    );
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -624,26 +746,39 @@ class _UnifiedCalendarSection extends ConsumerWidget {
             child: Row(
               children: [
                 const IconTile(
-                    icon: Icons.event_available_rounded, color: AppColors.green, size: 40),
+                  icon: Icons.event_available_rounded,
+                  color: AppColors.green,
+                  size: 40,
+                ),
                 const SizedBox(width: 14),
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text('TARGET CALENDAR', style: AppText.eyebrow(AppColors.green)),
+                      Text(
+                        'TARGET CALENDAR',
+                        style: AppText.eyebrow(AppColors.green),
+                      ),
                       const SizedBox(height: 4),
                       Text(
-                          '${target.methodLabel} · ${target.targetCalendarName ?? target.targetCalendarId}',
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: AppText.sectionItemTitle),
+                        '${target.methodLabel} · ${target.targetCalendarName ?? target.targetCalendarId}',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: AppText.sectionItemTitle,
+                      ),
                       const SizedBox(height: 2),
-                      Text('shared, writable · synced both ways', style: AppText.subtitle),
+                      Text(
+                        'shared, writable · synced both ways',
+                        style: AppText.subtitle,
+                      ),
                     ],
                   ),
                 ),
                 if (canEdit)
-                  const Icon(Icons.chevron_right_rounded, color: AppColors.textMuted),
+                  const Icon(
+                    Icons.chevron_right_rounded,
+                    color: AppColors.textMuted,
+                  ),
               ],
             ),
           )
@@ -652,7 +787,8 @@ class _UnifiedCalendarSection extends ConsumerWidget {
             accent: AppColors.amber,
             icon: Icons.link_off_rounded,
             title: 'No calendar accounts',
-            body: 'The calendar runs in-app. To mirror it out to a real calendar, '
+            body:
+                'The calendar runs in-app. To mirror it out to a real calendar, '
                 'connect an account first.',
             cta: 'Set up an account →',
             enabled: canEdit,
@@ -665,27 +801,65 @@ class _UnifiedCalendarSection extends ConsumerWidget {
             accent: AppColors.green,
             icon: Icons.cloud_off_rounded,
             title: 'Kept in-app only',
-            body: 'No writable target picked, so it stays server-side: synthesis '
+            body:
+                'No writable target picked, so it stays server-side: synthesis '
                 'still runs and feeds Plan & tasks. Pick a target to also mirror it out.',
             cta: 'Choose a target calendar',
             enabled: canEdit,
             onTap: () => _pickTarget(context, ref, null),
           ),
+        // Reviewing the splits is a side errand, not part of setting the
+        // target — so it lives one tap away, and the button only exists while
+        // there's something in effect to review.
+        if (overrides.isNotEmpty) ...[
+          const SizedBox(height: 12),
+          AppCard(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+            child: SettingRow(
+              icon: Icons.content_cut_rounded,
+              iconColor: AppColors.green,
+              title: 'Overrides in effect',
+              subtitle: overrides.length == 1
+                  ? '1 event split by a conflict decision'
+                  : '${overrides.length} events split by a conflict decision',
+              trailing: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  TintBadge('${overrides.length}', color: AppColors.green),
+                  const SizedBox(width: 6),
+                  const Icon(
+                    Icons.chevron_right_rounded,
+                    color: AppColors.textMuted,
+                  ),
+                ],
+              ),
+              onTap: () =>
+                  showMemberOverridesSheet(context, member, canEdit: canEdit),
+            ),
+          ),
+        ],
       ],
     );
   }
 
   Future<void> _pickTarget(
-      BuildContext context, WidgetRef ref, MemberCalendarConfig? current) async {
-    final accounts = ref.read(accountsProvider).valueOrNull ?? const <ExternalAccount>[];
+    BuildContext context,
+    WidgetRef ref,
+    MemberCalendarConfig? current,
+  ) async {
+    final accounts =
+        ref.read(accountsProvider).valueOrNull ?? const <ExternalAccount>[];
     if (accounts.isEmpty) return;
     await showModalBottomSheet<void>(
       context: context,
       useRootNavigator: true,
       showDragHandle: true,
       isScrollControlled: true,
-      builder: (sheetCtx) =>
-          _TargetPickerSheet(member: member, accounts: accounts, current: current),
+      builder: (sheetCtx) => _TargetPickerSheet(
+        member: member,
+        accounts: accounts,
+        current: current,
+      ),
     );
   }
 }
@@ -743,8 +917,15 @@ class _UnconfiguredCard extends StatelessWidget {
                   child: Container(
                     height: 46,
                     alignment: Alignment.center,
-                    child: Text(cta,
-                        style: font(kBodyFont, 14, 700, color: const Color(0xFF14231A))),
+                    child: Text(
+                      cta,
+                      style: font(
+                        kBodyFont,
+                        14,
+                        700,
+                        color: const Color(0xFF14231A),
+                      ),
+                    ),
                   ),
                 ),
               ),
@@ -799,8 +980,9 @@ class _TargetPickerSheetState extends ConsumerState<_TargetPickerSheet> {
       _calendars = const [];
     });
     try {
-      final cals =
-          await ref.read(apiClientProvider).listAccountCalendars(account.id);
+      final cals = await ref
+          .read(apiClientProvider)
+          .listAccountCalendars(account.id);
       setState(() => _calendars = cals.cast<Map<String, dynamic>>());
     } catch (e) {
       setState(() => _error = '$e');
@@ -816,7 +998,9 @@ class _TargetPickerSheetState extends ConsumerState<_TargetPickerSheet> {
     });
     try {
       final familyId = await ref.read(familyProvider.future);
-      await ref.read(apiClientProvider).setMemberCalendarTarget(
+      await ref
+          .read(apiClientProvider)
+          .setMemberCalendarTarget(
             familyId,
             widget.member.id,
             externalAccountId: _account!.id,
@@ -859,7 +1043,11 @@ class _TargetPickerSheetState extends ConsumerState<_TargetPickerSheet> {
     return SafeArea(
       child: SingleChildScrollView(
         padding: EdgeInsets.fromLTRB(
-            22, 4, 22, 28 + MediaQuery.of(context).viewInsets.bottom),
+          22,
+          4,
+          22,
+          28 + MediaQuery.of(context).viewInsets.bottom,
+        ),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -869,7 +1057,7 @@ class _TargetPickerSheetState extends ConsumerState<_TargetPickerSheet> {
             Text(
               _account == null
                   ? 'Choose the account that holds '
-                      "${widget.member.relationName}'s calendar."
+                        "${widget.member.relationName}'s calendar."
                   : 'Pick the writable calendar to merge into.',
               style: AppText.subtitle,
             ),
@@ -880,8 +1068,9 @@ class _TargetPickerSheetState extends ConsumerState<_TargetPickerSheet> {
                   icon: a.kind == 'google'
                       ? Icons.calendar_month_rounded
                       : Icons.cloud_outlined,
-                  iconColor:
-                      a.kind == 'google' ? AppColors.blue : AppColors.indigo,
+                  iconColor: a.kind == 'google'
+                      ? AppColors.blue
+                      : AppColors.indigo,
                   title: a.name,
                   subtitle: a.kindLabel,
                   onTap: () => _loadCalendars(a),
@@ -912,7 +1101,10 @@ class _TargetPickerSheetState extends ConsumerState<_TargetPickerSheet> {
             ],
             if (_error != null) ...[
               const SizedBox(height: 10),
-              Text(_error!, style: font(kBodyFont, 13, 500, color: AppColors.coral)),
+              Text(
+                _error!,
+                style: font(kBodyFont, 13, 500, color: AppColors.coral),
+              ),
             ],
           ],
         ),
@@ -946,7 +1138,10 @@ class _RemoveButton extends StatelessWidget {
             children: [
               const Icon(Icons.close_rounded, color: AppColors.coral, size: 19),
               const SizedBox(width: 8),
-              Text(label, style: font(kBodyFont, 14, 700, color: AppColors.coral)),
+              Text(
+                label,
+                style: font(kBodyFont, 14, 700, color: AppColors.coral),
+              ),
             ],
           ),
         ),

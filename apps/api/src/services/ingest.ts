@@ -1,4 +1,5 @@
-import { and, type Db, eq, feeds, gte, inArray, lt, sourceEvents } from '@igt/db';
+import { startOfUtcDay } from '@igt/classification';
+import { and, type Db, eq, feeds, gt, gte, inArray, lt, or, sourceEvents } from '@igt/db';
 import {
   extractCalendarName,
   extractTimezone,
@@ -33,11 +34,50 @@ type FeedRow = typeof feeds.$inferSelect;
 const DEFAULT_WINDOW_MS = 90 * 24 * 60 * 60 * 1000;
 
 /**
- * Busy feeds read ~35 days ahead: synthesis consumes only 30, and a short
+ * Busy feeds read 35 days ahead: synthesis consumes only 30, and a short
  * window keeps `freebusy.query` calls cheap. The same window bounds the
- * stale-row reconcile below, so it must stay ≥ the synthesis window.
+ * stale-row reconcile below, so it must stay ≥ the synthesis window — both are
+ * measured from the same `startOfUtcDay` anchor, so the 5-day margin is exact.
  */
 const BUSY_WINDOW_MS = 35 * 24 * 60 * 60 * 1000;
+
+/**
+ * The fetch/reconcile window for a busy feed, **anchored to the UTC day** —
+ * never to the instant the sync runs.
+ *
+ * `freebusy.query` clips the intervals it returns to `[timeMin, timeMax]`, so a
+ * block already in progress comes back starting at `timeMin` exactly. Since a
+ * busy interval has no identity of its own — the interval IS the uid
+ * (`fb:<start>/<end>`) — an unanchored `new Date()` timeMin meant every sync
+ * minted a *new* key for the same underlying block: an ongoing all-day
+ * out-of-office arrived as `fb:<the moment the sync ran>/<its end>`, was
+ * synthesized as a fresh busy block starting at that moment, and stacked up one
+ * more copy on every refresh (the previous copy starting just before the new
+ * window, so the stale sweep passed over it as well).
+ *
+ * Flooring makes the clipped bound stable: within a UTC day every sync asks the
+ * same question and gets back the same key, so the upsert dedupes and nothing
+ * churns. At the rollover the key does move forward a day (the block genuinely
+ * starts "today" now) and the overlap sweep in `deleteStaleSourceEvents` drops
+ * the previous day's row. The far bound is floored for the same reason: a block
+ * running past the window end is clipped to `timeMax`.
+ *
+ * The start an in-progress block reports is therefore the window's start, not
+ * its true start — free/busy can't tell us the latter without reading further
+ * into the past than an availability mirror has any business storing. "Busy
+ * from the start of today until it ends" is the honest reading of what Google
+ * returned, and unlike the true start it doesn't move.
+ */
+function busyIngestWindow(opts: IngestOptions): {
+  windowStart: Date;
+  windowEnd: Date;
+} {
+  const windowStart = opts.windowStart ?? startOfUtcDay(new Date());
+  return {
+    windowStart,
+    windowEnd: opts.windowEnd ?? new Date(windowStart.getTime() + BUSY_WINDOW_MS),
+  };
+}
 
 /**
  * Reconcile a feed's `source_events` against the freshly fetched occurrence
@@ -49,10 +89,21 @@ const BUSY_WINDOW_MS = 35 * 24 * 60 * 60 * 1000;
  * Identity is (icalUid, recurrenceId): stable for UID-keyed feeds, and for busy
  * feeds the interval IS the uid (`fb:<start>/<end>`), so a moved/merged/split
  * block still arrives under a fresh key and the old one still reads as stale.
- * Any of this feed's rows starting inside the fetch window whose key isn't in
- * the fresh set is stale; deleting it cascades the synthesized calendar_events
- * rows (FK), and the next mirror reconcile cancels their remote copies. Rows
- * already in the past fall out of the synthesis window naturally.
+ * Any of this feed's rows *overlapping* the fetch window whose key isn't in the
+ * fresh set is stale; deleting it cascades the synthesized calendar_events rows
+ * (FK), and the next mirror reconcile cancels their remote copies. Rows wholly
+ * in the past fall out of the synthesis window naturally.
+ *
+ * Overlap, not `dtstart >= windowStart`: every reader returns spans that began
+ * before the window but are still running at its start (`occurrenceInWindow` in
+ * @igt/ical), so those rows are in the fresh set and have to be sweepable too —
+ * otherwise an ongoing span that changed key or vanished upstream survives
+ * forever, re-synthesized on every run. Same predicate the synthesis query uses
+ * (`dtstart < end AND (dtstart >= start OR dtend > start)`). It is load-bearing
+ * for busy feeds in particular: an ongoing interval is clipped to the window
+ * start (see `busyIngestWindow`), so at each UTC-day rollover the block's key
+ * moves forward a day and yesterday's row — which starts *before* the new
+ * window — is the stale one to drop.
  */
 async function deleteStaleSourceEvents(
   db: Db,
@@ -68,8 +119,11 @@ async function deleteStaleSourceEvents(
     .where(
       and(
         eq(sourceEvents.feedId, feed.id),
-        gte(sourceEvents.dtstart, window.windowStart),
         lt(sourceEvents.dtstart, window.windowEnd),
+        or(
+          gte(sourceEvents.dtstart, window.windowStart),
+          gt(sourceEvents.dtend, window.windowStart),
+        ),
       ),
     );
   const staleIds = rows
@@ -109,6 +163,7 @@ async function upsertOccurrences(
         allDay: occ.allDay,
         summary: occ.summary,
         location: occ.location,
+        locationGeo: occ.locationGeo,
         raw: null,
         contentHash,
       })
@@ -124,6 +179,7 @@ async function upsertOccurrences(
           allDay: occ.allDay,
           summary: occ.summary,
           location: occ.location,
+          locationGeo: occ.locationGeo,
           contentHash,
         },
       });
@@ -152,9 +208,11 @@ async function ingestIcsFeed(
   try {
     res = await fetchImpl(feed.url, { headers });
   } catch (err) {
-    // A connection-level failure (DNS, TLS, timeout) never reaches the
-    // status-code branches below, so it must mark the feed 'error' here too —
-    // otherwise callers gating on feed.status keep retrying it on every call.
+    // A connection-level failure (DNS, TLS, timeout) — or a rejection by the
+    // outbound-URL policy, for a row stored before that policy existed — never
+    // reaches the status-code branches below, so it must mark the feed 'error'
+    // here too; otherwise callers gating on feed.status keep retrying it on
+    // every call.
     await db.update(feeds).set({ status: 'error' }).where(eq(feeds.id, feed.id));
     throw err;
   }
@@ -171,7 +229,16 @@ async function ingestIcsFeed(
     throw new Error(`feed ${feed.id} fetch failed: ${res.status}`);
   }
 
-  const text = await res.text();
+  let text: string;
+  try {
+    // Bounded by the guarded fetch's body cap, which surfaces here (the read,
+    // not the request, is where an oversized "ICS" gets caught) — same
+    // treatment as a connection failure so the feed doesn't retry forever.
+    text = await res.text();
+  } catch (err) {
+    await db.update(feeds).set({ status: 'error' }).where(eq(feeds.id, feed.id));
+    throw err;
+  }
   const etag = res.headers.get('etag');
   const windowStart = opts.windowStart ?? new Date();
   const windowEnd = opts.windowEnd ?? new Date(windowStart.getTime() + DEFAULT_WINDOW_MS);
@@ -259,9 +326,7 @@ async function ingestAccountFeed(
           : undefined);
       if (!accessToken) throw new Error('google feed has no usable access token');
       if (feed.mode === 'busy') {
-        const busyStart = opts.windowStart ?? new Date();
-        const busyEnd = opts.windowEnd ?? new Date(busyStart.getTime() + BUSY_WINDOW_MS);
-        busyWindow = { windowStart: busyStart, windowEnd: busyEnd };
+        busyWindow = busyIngestWindow(opts);
         ({ occurrences, timezone } = await fetchGoogleFreeBusy(
           accessToken,
           feed.sourceCalendarId,

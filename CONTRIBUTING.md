@@ -22,7 +22,8 @@ For dev setup, commands, and architecture, see **[AGENTS.md](AGENTS.md)**.
 
 4. **Verify before pushing** (see AGENTS.md for the exact commands):
    - Backend: `pnpm nx run-many -t typecheck test --projects=tag:language:typescript`
-   - Client: `cd apps/mobile && fvm flutter analyze && fvm flutter test`
+   - Client: `cd apps/mobile && fvm dart format lib test && fvm flutter analyze && fvm flutter test`
+     (CI runs `dart format --set-exit-if-changed`, so unformatted Dart fails it)
    - If you changed `libs/db/src/schema.ts`, run `pnpm db:generate` and commit the
      new `libs/db/migrations/*`.
 
@@ -32,6 +33,11 @@ For dev setup, commands, and architecture, see **[AGENTS.md](AGENTS.md)**.
    gh pr create --base main --fill --body "Closes #39"
    ```
    CI (`.github/workflows/ci.yml`) runs backend + Flutter checks on every PR.
+   **If the change affects the UI** (mobile app screens/widgets or any
+   user-facing web view), include screenshots of the updated UI in the PR
+   description — before/after if it helps reviewers. The screenshots don't
+   need to be committed to the repo; just paste/drag them into the PR
+   description (GitHub hosts them).
 
 6. **Merge** once CI is green and the PR is reviewed. Merging to `main`
    auto-deploys to **staging** (`.github/workflows/deploy-staging.yml`).

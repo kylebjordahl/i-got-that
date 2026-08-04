@@ -9,9 +9,12 @@ import {
   linkRules,
   pendingDecisions,
   sourceEvents,
+  taskRules,
+  tasks,
 } from '@igt/db';
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { synthesizeFeed } from '../src/services/synthesis.js';
+import { buildMemberTasks } from '../src/services/task-gen.js';
 import { authed, call, setupFamily } from './helpers.js';
 
 const EMPTY_ICS = 'BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//test//test//EN\r\nEND:VCALENDAR';
@@ -75,7 +78,7 @@ async function insertRule(
   values: Partial<typeof linkRules.$inferInsert> & {
     matchField: 'summary' | 'location' | 'description' | 'any_text' | 'all_day' | 'duration';
     matchOp: string;
-    outcome: 'cancel_day' | 'modify_day' | 'ignore';
+    outcome: 'cancel_day' | 'modify_day' | 'ignore' | 'add_event';
   },
 ) {
   return (
@@ -248,6 +251,101 @@ describe('synthesis: exception feeds (schedule only)', () => {
     expect(events).toHaveLength(5);
   });
 
+  it('add_event adds the feed event beside an untouched school day, and it types via task rules', async () => {
+    const f = await exceptionFixture('synth-add-event@example.com');
+    await insertRule(f.db, f, {
+      matchField: 'summary',
+      matchOp: 'contains',
+      matchValue: 'Community Dinner',
+      outcome: 'add_event',
+    });
+    // The whole family attends the dinner; the school day itself is a transition.
+    await f.db.insert(taskRules).values({
+      familyId: f.familyId,
+      familyMemberId: f.childId,
+      linkId: f.linkId,
+      scope: 'this_calendar',
+      position: 0,
+      matchField: 'summary',
+      matchOp: 'contains',
+      matchValue: 'Community Dinner',
+      resultType: 'attendance',
+    });
+    const dinner = await insertSource(f.db, f.feed, {
+      icalUid: 'dinner',
+      summary: 'Community Dinner',
+      location: 'Lincoln Cafeteria',
+      allDay: false,
+      dtstart: new Date('2026-07-08T22:30:00Z'),
+      dtend: new Date('2026-07-09T00:30:00Z'),
+    });
+
+    const result = await synthesizeFeed(f.db, f.feed, WINDOW);
+    expect(result.pendingOpen).toBe(0);
+
+    const events = await f.db
+      .select()
+      .from(calendarEvents)
+      .where(eq(calendarEvents.familyMemberId, f.childId));
+    const byKey = new Map(events.map((e) => [e.synthKey, e]));
+    expect(events).toHaveLength(6); // Mon–Fri baseline + the dinner
+
+    const added = byKey.get(`ev:${f.linkId}:${dinner.id}`)!;
+    expect(added.summary).toBe('Community Dinner');
+    expect(added.location).toBe('Lincoln Cafeteria');
+    expect(added.dtstart.toISOString()).toBe('2026-07-08T22:30:00.000Z');
+    expect(added.sourceEventId).toBe(dinner.id);
+    // Wednesday's school day is unchanged — the dinner is in addition to it.
+    const wed = byKey.get(`bl:${f.linkId}:2026-07-08`)!;
+    expect(wed.dtstart.toISOString()).toBe('2026-07-08T08:30:00.000Z');
+    expect(wed.dtend!.toISOString()).toBe('2026-07-08T14:45:00.000Z');
+
+    await buildMemberTasks(f.db, f.childId);
+    const dinnerTasks = await f.db.select().from(tasks).where(eq(tasks.calendarEventId, added.id));
+    expect(dinnerTasks.map((t) => t.type)).toEqual(['attendance']);
+    const schoolTasks = await f.db.select().from(tasks).where(eq(tasks.calendarEventId, wed.id));
+    expect(schoolTasks.map((t) => t.type).sort()).toEqual(['dropoff', 'pickup']);
+  });
+
+  it("add_event doesn't duplicate an occurrence a human already resolved onto the calendar", async () => {
+    const f = await exceptionFixture('synth-add-event-pd@example.com');
+    const dinner = await insertSource(f.db, f.feed, {
+      icalUid: 'dinner-pd',
+      summary: 'Community Dinner',
+      allDay: false,
+      dtstart: new Date('2026-07-08T22:30:00Z'),
+      dtend: new Date('2026-07-09T00:30:00Z'),
+    });
+    expect((await synthesizeFeed(f.db, f.feed, WINDOW)).pendingOpen).toBe(1);
+    const decision = (
+      await f.db
+        .select()
+        .from(pendingDecisions)
+        .where(eq(pendingDecisions.sourceEventId, dinner.id))
+    )[0]!;
+    const res = await call(
+      `/families/${f.familyId}/pending-decisions/${decision.id}/resolve`,
+      authed(f.admin.token, {}),
+    );
+    expect(res.status).toBe(200);
+
+    // A rule written afterwards now matches the same occurrence: the human's
+    // event stands alone — no second copy of the dinner.
+    await insertRule(f.db, f, {
+      matchField: 'summary',
+      matchOp: 'contains',
+      matchValue: 'Community Dinner',
+      outcome: 'add_event',
+    });
+    await synthesizeFeed(f.db, f.feed, WINDOW);
+
+    const forSource = await f.db
+      .select()
+      .from(calendarEvents)
+      .where(eq(calendarEvents.sourceEventId, dinner.id));
+    expect(forSource.map((e) => e.synthKey)).toEqual([`pd:${decision.id}`]);
+  });
+
   it('raises a pending decision for an unmatched occurrence and reopens it when content changes', async () => {
     const f = await exceptionFixture('synth-pending@example.com');
     const source = await insertSource(f.db, f.feed, {
@@ -351,6 +449,55 @@ describe('synthesis: standard feeds', () => {
     ).toHaveLength(0);
   });
 
+  it("carries a source event's geocode through to the tasks it generates", async () => {
+    // The reported gap: a calendar input whose events are geocoded upstream
+    // produced drop-off/pickup tasks with free text only, so the claimed events
+    // mirrored out with nothing for Apple to compute travel time against.
+    const fam = await setupFamily('synth-std-geo@example.com');
+    const db = getDb(env.DB);
+    const feed = (
+      await db
+        .insert(feeds)
+        .values({
+          familyId: fam.familyId,
+          mode: 'standard',
+          url: 'https://feed.example.com/swim.ics',
+        })
+        .returning()
+    )[0]!;
+    await db
+      .insert(familyMemberFeeds)
+      .values({ familyId: fam.familyId, feedId: feed.id, familyMemberId: fam.childId });
+
+    const geo = { lat: 37.331686, lon: -122.030656, title: 'Rec Center' };
+    await insertSource(db, feed, {
+      icalUid: 'swim',
+      summary: 'Swim lesson',
+      location: 'Rec Center',
+      locationGeo: geo,
+      dtstart: new Date('2026-07-08T16:00:00Z'),
+      dtend: new Date('2026-07-08T17:00:00Z'),
+      allDay: false,
+    });
+
+    await synthesizeFeed(db, feed, WINDOW);
+    const events = await db
+      .select()
+      .from(calendarEvents)
+      .where(eq(calendarEvents.familyMemberId, fam.childId));
+    expect(events).toHaveLength(1);
+    expect(events[0]!.locationGeo).toEqual(geo);
+
+    await buildMemberTasks(db, fam.childId);
+    const generated = await db
+      .select()
+      .from(tasks)
+      .where(eq(tasks.familyMemberId, fam.childId));
+    // Default typing is a transition: a drop-off and a pickup, both pinned.
+    expect(generated.map((t) => t.type).sort()).toEqual(['dropoff', 'pickup']);
+    expect(generated.every((t) => t.locationGeo?.lat === geo.lat)).toBe(true);
+  });
+
   it('resynthesizes idempotently when the window boundary lands inside an already-synthesized event', async () => {
     // Regression: production 500 — an evening event in a negative-UTC-offset
     // zone commonly starts before the UTC day rolls over and ends after
@@ -411,7 +558,7 @@ describe('link-rule (override) routes', () => {
     // One implicit ingest per feed (standard + exception), triggered by each
     // feed's first member-link creation below.
     fetchMock
-      .get('https://f')
+      .get('https://f.example.com')
       .intercept({ path: (p: string) => p === '/x.ics' || p === '/e.ics', method: 'GET' })
       .reply(200, EMPTY_ICS, { headers: { 'content-type': 'text/calendar' } })
       .times(2);
@@ -421,7 +568,7 @@ describe('link-rule (override) routes', () => {
     const standard = (
       await db
         .insert(feeds)
-        .values({ familyId: fam.familyId, mode: 'standard', url: 'https://f/x.ics' })
+        .values({ familyId: fam.familyId, mode: 'standard', url: 'https://f.example.com/x.ics' })
         .returning()
     )[0]!;
     const stdLink = await call(
@@ -441,7 +588,7 @@ describe('link-rule (override) routes', () => {
     const feed = (
       await db
         .insert(feeds)
-        .values({ familyId: fam.familyId, mode: 'exception', url: 'https://f/e.ics' })
+        .values({ familyId: fam.familyId, mode: 'exception', url: 'https://f.example.com/e.ics' })
         .returning()
     )[0]!;
     const linkRes = await call(

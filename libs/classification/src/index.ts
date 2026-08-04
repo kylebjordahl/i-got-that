@@ -14,10 +14,13 @@ import {
  * Pure synthesis + task-generation engine. Two decoupled stages, no I/O, and —
  * per the round-6 review — two independent rule pipelines:
  *
- *  Stage A — synthesis: feed occurrences + a link's OVERRIDE pipeline decide
- *  the SCHEDULE of events on the member's unified calendar (cancel / modify /
- *  ignore the covered baseline day). Unmatched exception events become pending
- *  decisions — the system never guesses.
+ *  Stage A — synthesis: feed occurrences + a link's rule pipeline decide the
+ *  SCHEDULE of events on the member's unified calendar (cancel / modify /
+ *  ignore the covered baseline day, or add the event alongside it; on a routed
+ *  shared family calendar, whether to keep the event for that member at all).
+ *  Events the pipeline can't place become pending decisions — an unmatched
+ *  exception event, or an event no member's routing rules claimed. The system
+ *  never guesses.
  *
  *  Stage B — task generation: a member's TASK-RULE pipeline decides what
  *  claimable tasks each event spawns (a transition = drop-off + pickup, or an
@@ -205,6 +208,8 @@ export interface OverrideRuleLike extends MatcherLike {
 export interface SourceOccurrence extends OccurrenceLike {
   id: string;
   contentHash: string;
+  /** Coordinates the source event carried for `location`, if any. */
+  locationGeo?: GeoLocation | null;
 }
 
 /** The link config synthesis needs (a `family_member_feeds` row shape). */
@@ -230,7 +235,11 @@ export interface EventIntent {
   allDay: boolean;
   summary: string | null;
   location: string | null;
-  /** Geocoded coords for `location` (baseline events only); null for feed events. */
+  /**
+   * Geocoded coords for `location`: the link's on a baseline day, the source
+   * event's own on a feed event (see `occurrenceGeo`). Null when nobody had
+   * coordinates — the event still carries its free text.
+   */
   locationGeo: GeoLocation | null;
   description: string | null;
 }
@@ -251,17 +260,51 @@ interface ModifyDayParamsLike {
   dayEnd?: string;
 }
 
-function occurrenceEvent(linkId: string, occ: SourceOccurrence): EventIntent {
+/**
+ * All a feed event needs to know about the link it came through: which link it
+ * is, and the place that link declares (if any). Both the full `LinkConfigLike`
+ * and a routed feed's lighter link satisfy it.
+ */
+interface EventLinkPlace {
+  id: string;
+  location?: string | null;
+  locationGeo?: GeoLocation | null;
+}
+
+const sameText = (a: string | null | undefined, b: string | null | undefined): boolean =>
+  !!a && !!b && a.trim().toLowerCase() === b.trim().toLowerCase();
+
+/**
+ * A feed event's geocode: the coordinates the source event itself carried,
+ * else the link's — but only when the two name the same place in text, so the
+ * displayed location and the coordinates can never disagree. That fallback is
+ * what covers the common case of a feed that writes its venue as plain text
+ * while the family has pinned that same venue on the link.
+ */
+function occurrenceGeo(
+  link: EventLinkPlace,
+  occ: SourceOccurrence,
+): GeoLocation | null {
+  if (occ.locationGeo) return occ.locationGeo;
+  if (link.locationGeo && sameText(occ.location, link.location)) return link.locationGeo;
+  return null;
+}
+
+function occurrenceEvent(
+  link: EventLinkPlace,
+  occ: SourceOccurrence,
+  matchedRuleId: string | null = null,
+): EventIntent {
   return {
-    synthKey: `ev:${linkId}:${occ.id}`,
+    synthKey: `ev:${link.id}:${occ.id}`,
     sourceEventId: occ.id,
-    matchedRuleId: null,
+    matchedRuleId,
     dtstart: occ.dtstart,
     dtend: occ.dtend,
     allDay: occ.allDay,
     summary: occ.summary,
     location: occ.location,
-    locationGeo: null,
+    locationGeo: occurrenceGeo(link, occ),
     description: occ.description ?? null,
   };
 }
@@ -275,12 +318,63 @@ export interface SynthesisWindow {
  * Standard feed: every occurrence lands on the unified calendar as-is. A
  * standard feed's events mean what they say, so there are no schedule overrides
  * to apply and nothing ever pends. Task typing is decided later by task rules.
+ * (A standard feed marked `routed` goes through `synthesizeRouted` instead —
+ * see there for the shared-family-calendar case.)
  */
 export function synthesizeStandard(
   link: LinkConfigLike,
   occurrences: SourceOccurrence[],
 ): SynthesisResult {
-  return { events: occurrences.map((o) => occurrenceEvent(link.id, o)), pending: [] };
+  return { events: occurrences.map((o) => occurrenceEvent(link, o)), pending: [] };
+}
+
+/** One link of a routed feed, with the `keep` pipeline that filters it. */
+export interface RoutedLink extends EventLinkPlace {
+  id: string;
+  rules: OverrideRuleLike[];
+}
+
+export interface RoutedSynthesisResult {
+  /** Link id → the occurrences routed onto that member's calendar. */
+  byLink: Map<string, EventIntent[]>;
+  /** Occurrences no link kept — one routing decision per link of the feed. */
+  unrouted: PendingIntent[];
+}
+
+/**
+ * Routed feed — the shared family calendar: ONE calendar carrying events for
+ * several members, split back out per member. Each link's `keep` rules are a
+ * filter over the same occurrence set (not a schedule override), so unlike
+ * every other mode this runs across all of a feed's links at once: an
+ * occurrence lands on the calendar of every member whose link keeps it, and an
+ * occurrence NO link keeps is unrouted — the system won't guess whose it is, so
+ * it becomes a routing decision instead (raised on each link, answered once).
+ *
+ * Keeping is per link and independent: two siblings' rules can both match the
+ * same "Swim practice" and both get it. Rule order within a link still decides
+ * which rule is credited (`matchedRuleId`), but with one outcome the answer is
+ * binary — kept or not.
+ */
+export function synthesizeRouted(
+  links: RoutedLink[],
+  occurrences: SourceOccurrence[],
+): RoutedSynthesisResult {
+  const byLink = new Map<string, EventIntent[]>(links.map((l) => [l.id, []]));
+  const unrouted: PendingIntent[] = [];
+  for (const occ of occurrences) {
+    let kept = false;
+    for (const link of links) {
+      const rule = firstMatch(
+        occ,
+        link.rules.filter((r) => r.outcome === 'keep'),
+      );
+      if (!rule) continue;
+      byLink.get(link.id)!.push(occurrenceEvent(link, occ, rule.id));
+      kept = true;
+    }
+    if (!kept) unrouted.push({ sourceEventId: occ.id, contentHash: occ.contentHash });
+  }
+  return { byLink, unrouted };
 }
 
 /**
@@ -289,6 +383,13 @@ export function synthesizeStandard(
  * construction. Each lands on the unified calendar as a detail-free block
  * labeled with the link's summary ("Busy" when unnamed). No override rules
  * apply and nothing ever pends; the interval itself is the whole payload.
+ *
+ * The one thing a busy block can say about *place* is what the family declared
+ * on the link — "this calendar's busy time happens at the office". That's their
+ * own annotation, never anything read from the source calendar (nothing of the
+ * sort ever crosses Google's ACL boundary), and it's what lets a busy block
+ * stand in as the place a following drop-off/pickup is driven from. Left unset,
+ * blocks stay exactly as detail-free as before.
  */
 export function synthesizeBusy(
   link: LinkConfigLike,
@@ -303,8 +404,8 @@ export function synthesizeBusy(
       dtend: occ.dtend,
       allDay: occ.allDay,
       summary: link.baselineSummary ?? 'Busy',
-      location: null,
-      locationGeo: null,
+      location: link.location ?? null,
+      locationGeo: link.locationGeo ?? null,
       description: null,
     })),
     pending: [],
@@ -318,6 +419,17 @@ export function synthesizeBusy(
  * event, `modify_day` patches its hours, `ignore` keeps the baseline. An
  * occurrence matching NO rule becomes a pending decision — the baseline still
  * stands until a human resolves it.
+ *
+ * `add_event` is the one outcome that isn't about the baseline day: the
+ * occurrence lands on the calendar as its own event (an `ev:` key, exactly as a
+ * standard feed's events do), *in addition to* whatever the day's baseline
+ * does. A school feed's "Community Dinner" is the case — the family attends the
+ * dinner and the school day is untouched — so these occurrences sit out the
+ * per-day ruling entirely (they neither win a day nor block another
+ * occurrence's cancel/modify), and they're emitted whether or not the day is a
+ * baseline day at all (a Saturday event still shows up). What the added event
+ * generates — an attendance block, or a drop-off/pickup pair — is the task-rule
+ * pipeline's call, like any other event.
  */
 export function synthesizeException(
   link: LinkConfigLike,
@@ -338,6 +450,10 @@ export function synthesizeException(
     const rule = firstMatch(occ, rules);
     if (!rule) {
       pending.push({ sourceEventId: occ.id, contentHash: occ.contentHash });
+      continue;
+    }
+    if (rule.outcome === 'add_event') {
+      events.push(occurrenceEvent(link, occ, rule.id));
       continue;
     }
     for (const day of coveredUtcDays(occ)) {
@@ -547,6 +663,12 @@ export interface TaskIntent {
   dtstart: Date;
   dtend: Date | null;
   location: string | null;
+  /**
+   * Geocoded coords for `location`, carried straight from the event. A task is
+   * always about being *at* the event's place, so the geocode travels with the
+   * text — it's what lets the claimed event drive Apple's travel time.
+   */
+  locationGeo: GeoLocation | null;
 }
 
 /** Pad an anchor instant into a claimable window of `windowMin` minutes. */
@@ -579,10 +701,16 @@ export function transitionWindow(
  * (padded from the event end); `attendance` yields one task spanning the event.
  */
 export function generateTaskIntents(
-  event: { dtstart: Date; dtend: Date | null; location?: string | null },
+  event: {
+    dtstart: Date;
+    dtend: Date | null;
+    location?: string | null;
+    locationGeo?: GeoLocation | null;
+  },
   resolution: TaskResolution,
 ): TaskIntent[] {
   const location = event.location ?? null;
+  const locationGeo = event.locationGeo ?? null;
   if (resolution.resultType === 'attendance') {
     return [
       {
@@ -591,6 +719,7 @@ export function generateTaskIntents(
         dtstart: event.dtstart,
         dtend: event.dtend,
         location,
+        locationGeo,
       },
     ];
   }
@@ -602,6 +731,7 @@ export function generateTaskIntents(
       dtstart: event.dtstart,
       dtend: windowEnd(event.dtstart, resolution.dropoffWindowMin),
       location,
+      locationGeo,
     },
     {
       type: 'pickup',
@@ -609,6 +739,7 @@ export function generateTaskIntents(
       dtstart: pickupAnchor,
       dtend: windowEnd(pickupAnchor, resolution.pickupWindowMin),
       location,
+      locationGeo,
     },
   ];
 }
@@ -714,4 +845,65 @@ export function subtractIntervals(base: Interval, cuts: Interval[]): Interval[] 
   }
   if (cursor < be) out.push({ dtstart: new Date(cursor), dtend: new Date(be) });
   return out;
+}
+
+// --- Stage D: travel estimation (how long the trip there takes) --------------
+
+/**
+ * Distance in kilometres between two points, great-circle (haversine).
+ * Exported for testing; callers want `estimateTravelMinutes`.
+ */
+export function haversineKm(from: GeoLocation, to: GeoLocation): number {
+  const R = 6371;
+  const rad = (d: number) => (d * Math.PI) / 180;
+  const dLat = rad(to.lat - from.lat);
+  const dLon = rad(to.lon - from.lon);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(rad(from.lat)) * Math.cos(rad(to.lat)) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(a)));
+}
+
+/**
+ * Roads aren't straight lines. A 1.3 multiplier on the great-circle distance is
+ * the usual planning-grade approximation of real road distance.
+ */
+const ROAD_FACTOR = 1.3;
+/**
+ * Door-to-door overhead every trip pays regardless of distance: getting to the
+ * car, parking, walking in with a child.
+ */
+const OVERHEAD_MIN = 4;
+/** Rounded to this step, the way Apple's own travel-time picker offers values. */
+const STEP_MIN = 5;
+const MIN_TRAVEL_MIN = 5;
+const MAX_TRAVEL_MIN = 120;
+
+/**
+ * Average door-to-door speed (km/h) for a trip of `km` road kilometres. Short
+ * hops are dominated by stop signs and school zones; long ones are mostly
+ * highway, so the effective speed climbs with distance.
+ */
+function averageSpeedKmh(km: number): number {
+  if (km <= 3) return 24;
+  if (km <= 15) return 40;
+  if (km <= 50) return 65;
+  return 85;
+}
+
+/**
+ * Estimate the minutes it takes to get from one place to another.
+ *
+ * This is deliberately a *seed*, not a routing result: we have no routing
+ * service (and no traffic) server-side, so it's distance, a road factor, a
+ * distance-dependent average speed, and a fixed door-to-door overhead, rounded
+ * to a 5-minute step. Apple re-derives the real leave-by time from live traffic
+ * against the event's coordinates — what it needs from us is a travel block of
+ * roughly the right size, which is what makes it show travel time at all.
+ */
+export function estimateTravelMinutes(from: GeoLocation, to: GeoLocation): number {
+  const km = haversineKm(from, to) * ROAD_FACTOR;
+  const minutes = (km / averageSpeedKmh(km)) * 60 + OVERHEAD_MIN;
+  const rounded = Math.ceil(minutes / STEP_MIN) * STEP_MIN;
+  return Math.min(MAX_TRAVEL_MIN, Math.max(MIN_TRAVEL_MIN, rounded));
 }

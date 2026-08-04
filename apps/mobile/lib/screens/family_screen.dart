@@ -37,23 +37,32 @@ class FamilyScreen extends ConsumerWidget {
         _header(context, ref, info, me?.isAdmin ?? false),
         const SizedBox(height: 24),
         if (caretakers.isNotEmpty) ...[
-          SectionEyebrow('Caretakers',
-              color: AppColors.indigo,
-              trailing: Text('${caretakers.length}', style: AppText.secondary)),
+          SectionEyebrow(
+            'Caretakers',
+            color: AppColors.indigo,
+            trailing: Text('${caretakers.length}', style: AppText.secondary),
+          ),
           const SizedBox(height: 12),
           AppCard(child: Column(children: _rows(context, caretakers))),
           const SizedBox(height: 24),
         ],
         if (children.isNotEmpty) ...[
-          SectionEyebrow('Children',
-              trailing: Text('${children.length}', style: AppText.secondary)),
+          SectionEyebrow(
+            'Children',
+            trailing: Text('${children.length}', style: AppText.secondary),
+          ),
           const SizedBox(height: 12),
           AppCard(child: Column(children: _rows(context, children))),
         ],
         if (members.isEmpty)
           Padding(
             padding: const EdgeInsets.symmetric(vertical: 40),
-            child: Center(child: Text('No members yet — tap + to add one', style: AppText.subtitle)),
+            child: Center(
+              child: Text(
+                'No members yet — tap + to add one',
+                style: AppText.subtitle,
+              ),
+            ),
           ),
         if ((me?.isAdmin ?? false) && caretakers.isNotEmpty) ...[
           const SizedBox(height: 24),
@@ -78,8 +87,15 @@ class FamilyScreen extends ConsumerWidget {
           Center(
             child: TextButton(
               onPressed: () => _confirmLeaveFamily(context, ref, me, members),
-              child: Text('Leave family',
-                  style: font(kBodyFont, 13, 700, color: AppColors.coral.withValues(alpha: 0.75))),
+              child: Text(
+                'Leave family',
+                style: font(
+                  kBodyFont,
+                  13,
+                  700,
+                  color: AppColors.coral.withValues(alpha: 0.75),
+                ),
+              ),
             ),
           ),
         ],
@@ -88,8 +104,15 @@ class FamilyScreen extends ConsumerWidget {
           Center(
             child: TextButton(
               onPressed: () => _confirmDeleteFamily(context, ref),
-              child: Text('Delete family',
-                  style: font(kBodyFont, 13, 700, color: AppColors.coral.withValues(alpha: 0.75))),
+              child: Text(
+                'Delete family',
+                style: font(
+                  kBodyFont,
+                  13,
+                  700,
+                  color: AppColors.coral.withValues(alpha: 0.75),
+                ),
+              ),
             ),
           ),
         ],
@@ -101,7 +124,8 @@ class FamilyScreen extends ConsumerWidget {
     return showSlideToConfirmSheet(
       context,
       title: 'Delete family?',
-      description: 'This permanently deletes every member, feed, task, and '
+      description:
+          'This permanently deletes every member, feed, task, and '
           "calendar event in this family. This can't be undone.",
       slideLabel: 'Slide to delete family',
       onConfirmed: () async {
@@ -115,7 +139,8 @@ class FamilyScreen extends ConsumerWidget {
         ref.invalidate(familiesListProvider);
         ref.invalidate(familyProvider);
       },
-      errorMessage: (e) => e is DioException ? 'Failed: ${e.message}' : 'Failed: $e',
+      errorMessage: (e) =>
+          e is DioException ? 'Failed: ${e.message}' : 'Failed: $e',
     );
   }
 
@@ -129,7 +154,8 @@ class FamilyScreen extends ConsumerWidget {
     // members — computed from state already loaded for this screen, so (like
     // account deletion) the block shows up front rather than as a toast after
     // a failed slide.
-    final isSoleAdmin = me.isAdmin &&
+    final isSoleAdmin =
+        me.isAdmin &&
         members.length > 1 &&
         !members.any((m) => m.id != me.id && m.isAdmin);
     return showSlideToConfirmSheet(
@@ -137,10 +163,10 @@ class FamilyScreen extends ConsumerWidget {
       title: isSoleAdmin ? "Can't leave yet" : 'Leave family?',
       description: isSoleAdmin
           ? "You're the only admin here — promote a co-admin first, or "
-              'delete the family instead.'
+                'delete the family instead.'
           : "You'll lose access to this family's feeds, tasks, and "
-              "calendar. Your history stays, and you can rejoin if invited "
-              'again.',
+                "calendar. Your history stays, and you can rejoin if invited "
+                'again.',
       slideLabel: 'Slide to leave family',
       blocked: isSoleAdmin,
       onConfirmed: () async {
@@ -159,7 +185,7 @@ class FamilyScreen extends ConsumerWidget {
         final code = (data as Map<String, dynamic>?)?['error'];
         return code == 'last_admin'
             ? "You're the only admin here — promote a co-admin first, or "
-                'delete the family instead.'
+                  'delete the family instead.'
             : 'Failed: $e';
       },
     );
@@ -168,18 +194,27 @@ class FamilyScreen extends ConsumerWidget {
   List<Widget> _rows(BuildContext context, List<Member> people) {
     final rows = <Widget>[];
     for (var i = 0; i < people.length; i++) {
-      rows.add(_PersonRow(
-        member: people[i],
-        onTap: () => Navigator.of(context).push(
-          MaterialPageRoute(builder: (_) => MemberDetailScreen(memberId: people[i].id)),
+      rows.add(
+        _PersonRow(
+          member: people[i],
+          onTap: () => Navigator.of(context).push(
+            MaterialPageRoute(
+              builder: (_) => MemberDetailScreen(memberId: people[i].id),
+            ),
+          ),
         ),
-      ));
+      );
       if (i < people.length - 1) rows.add(const Divider(height: 18));
     }
     return rows;
   }
 
-  Widget _header(BuildContext context, WidgetRef ref, ({String name, int count})? info, bool isAdmin) {
+  Widget _header(
+    BuildContext context,
+    WidgetRef ref,
+    ({String name, int count})? info,
+    bool isAdmin,
+  ) {
     final name = info?.name ?? 'Family';
     final multipleFamilies = (info?.count ?? 1) > 1;
     return Row(
@@ -190,19 +225,25 @@ class FamilyScreen extends ConsumerWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               multipleFamilies
-                  ? _FamilySelect(name: name, onTap: () => _openSwitcher(context, ref))
+                  ? _FamilySelect(
+                      name: name,
+                      onTap: () => _openSwitcher(context, ref),
+                    )
                   : Text(name, style: AppText.screenTitleAlt),
               const SizedBox(height: 3),
-              Text.rich(TextSpan(
-                style: AppText.subtitle,
-                children: [
-                  TextSpan(text: isAdmin ? "You're admin · " : 'Member · '),
-                  TextSpan(
-                    text: '${info?.count ?? 1} famil${(info?.count ?? 1) == 1 ? 'y' : 'ies'}',
-                    style: font(kBodyFont, 13, 600, color: AppColors.indigo),
-                  ),
-                ],
-              )),
+              Text.rich(
+                TextSpan(
+                  style: AppText.subtitle,
+                  children: [
+                    TextSpan(text: isAdmin ? "You're admin · " : 'Member · '),
+                    TextSpan(
+                      text:
+                          '${info?.count ?? 1} famil${(info?.count ?? 1) == 1 ? 'y' : 'ies'}',
+                      style: font(kBodyFont, 13, 600, color: AppColors.indigo),
+                    ),
+                  ],
+                ),
+              ),
             ],
           ),
         ),
@@ -236,7 +277,9 @@ class FamilyScreen extends ConsumerWidget {
             for (final f in families)
               SettingRow(
                 icon: Icons.home_rounded,
-                iconColor: f.id == current ? AppColors.indigo : AppColors.textMuted,
+                iconColor: f.id == current
+                    ? AppColors.indigo
+                    : AppColors.textMuted,
                 title: f.name,
                 trailing: f.id == current
                     ? const Icon(Icons.check_rounded, color: AppColors.indigo)
@@ -295,12 +338,21 @@ Future<void> showAddMemberSheet(BuildContext context, WidgetRef ref) {
   );
 }
 
-Future<void> _createAndOpen(BuildContext context, WidgetRef ref, {required bool isChild}) async {
-  final name = await _promptName(context, isChild ? 'Add a child' : 'Add a caretaker');
+Future<void> _createAndOpen(
+  BuildContext context,
+  WidgetRef ref, {
+  required bool isChild,
+}) async {
+  final name = await _promptName(
+    context,
+    isChild ? 'Add a child' : 'Add a caretaker',
+  );
   if (name == null || name.trim().isEmpty) return;
   try {
     final familyId = await ref.read(familyProvider.future);
-    final res = await ref.read(apiClientProvider).createMember(
+    final res = await ref
+        .read(apiClientProvider)
+        .createMember(
           familyId,
           relationName: name.trim(),
           isCaretaker: !isChild,
@@ -319,10 +371,12 @@ Future<void> _createAndOpen(BuildContext context, WidgetRef ref, {required bool 
     );
   } catch (e) {
     if (context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text('Failed: $e'),
-        margin: snackBarMarginAboveNav(context),
-      ));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Failed: $e'),
+          margin: snackBarMarginAboveNav(context),
+        ),
+      );
     }
   }
 }
@@ -348,7 +402,9 @@ Future<String?> _promptName(BuildContext context, String title) {
       ),
       actions: [
         TextButton(
-            onPressed: () => Navigator.of(dialogContext).pop(), child: const Text('Cancel')),
+          onPressed: () => Navigator.of(dialogContext).pop(),
+          child: const Text('Cancel'),
+        ),
         PillButton(
           label: 'Continue',
           variant: PillVariant.amber,
@@ -376,7 +432,11 @@ class _PersonRow extends StatelessWidget {
         padding: const EdgeInsets.symmetric(vertical: 8),
         child: Row(
           children: [
-            PersonAvatar(initial: initialFor(member.relationName), color: personColor(member), size: 40),
+            PersonAvatar(
+              initial: initialFor(member.relationName),
+              color: personColor(member),
+              size: 40,
+            ),
             const SizedBox(width: 14),
             Expanded(
               child: Column(
@@ -391,7 +451,11 @@ class _PersonRow extends StatelessWidget {
             if (member.hasLogin)
               const Padding(
                 padding: EdgeInsets.only(right: 6),
-                child: Icon(Icons.link_rounded, size: 16, color: AppColors.textMuted),
+                child: Icon(
+                  Icons.link_rounded,
+                  size: 16,
+                  color: AppColors.textMuted,
+                ),
               ),
             const Icon(Icons.chevron_right_rounded, color: AppColors.textMuted),
           ],
@@ -422,13 +486,19 @@ class _FamilySelect extends StatelessWidget {
             mainAxisSize: MainAxisSize.min,
             children: [
               Flexible(
-                child: Text(name,
-                    style: AppText.screenTitleAlt,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis),
+                child: Text(
+                  name,
+                  style: AppText.screenTitleAlt,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
               ),
               const SizedBox(width: 6),
-              const Icon(Icons.unfold_more_rounded, size: 22, color: AppColors.textMuted),
+              const Icon(
+                Icons.unfold_more_rounded,
+                size: 22,
+                color: AppColors.textMuted,
+              ),
             ],
           ),
         ),

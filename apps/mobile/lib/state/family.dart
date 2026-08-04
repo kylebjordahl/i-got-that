@@ -33,7 +33,9 @@ class DefaultFamilyController extends StateNotifier<AsyncValue<String?>> {
 
   Future<void> _load() async {
     try {
-      state = AsyncValue.data(await _defaultFamilyStorage.read(key: _defaultFamilyStorageKey));
+      state = AsyncValue.data(
+        await _defaultFamilyStorage.read(key: _defaultFamilyStorageKey),
+      );
     } catch (_) {
       // Keychain unavailable/unreadable — treat as no persisted default.
       state = const AsyncValue.data(null);
@@ -44,7 +46,10 @@ class DefaultFamilyController extends StateNotifier<AsyncValue<String?>> {
     if (familyId == null) {
       await _defaultFamilyStorage.delete(key: _defaultFamilyStorageKey);
     } else {
-      await _defaultFamilyStorage.write(key: _defaultFamilyStorageKey, value: familyId);
+      await _defaultFamilyStorage.write(
+        key: _defaultFamilyStorageKey,
+        value: familyId,
+      );
     }
     state = AsyncValue.data(familyId);
   }
@@ -52,8 +57,8 @@ class DefaultFamilyController extends StateNotifier<AsyncValue<String?>> {
 
 final defaultFamilyIdProvider =
     StateNotifierProvider<DefaultFamilyController, AsyncValue<String?>>(
-  (ref) => DefaultFamilyController(),
-);
+      (ref) => DefaultFamilyController(),
+    );
 
 /// The current family id: the session-switched family, else the persisted
 /// per-device default (if still one of the account's families), else the
@@ -66,8 +71,12 @@ final familyProvider = FutureProvider<String>((ref) async {
   final families = me['families'] as List<dynamic>;
   final defaultId = ref.watch(defaultFamilyIdProvider).valueOrNull;
   if (defaultId != null &&
-      families.any((f) =>
-          ((f as Map<String, dynamic>)['family'] as Map<String, dynamic>)['id'] == defaultId)) {
+      families.any(
+        (f) =>
+            ((f as Map<String, dynamic>)['family']
+                as Map<String, dynamic>)['id'] ==
+            defaultId,
+      )) {
     return defaultId;
   }
   if (families.isNotEmpty) {
@@ -79,23 +88,32 @@ final familyProvider = FutureProvider<String>((ref) async {
 });
 
 /// All families the user belongs to (id + name) — for the family switcher.
-final familiesListProvider = FutureProvider<List<({String id, String name})>>((ref) async {
+final familiesListProvider = FutureProvider<List<({String id, String name})>>((
+  ref,
+) async {
   final api = ref.watch(apiClientProvider);
   final me = await api.me();
   return [
     for (final f in me['families'] as List<dynamic>)
       (
-        id: ((f as Map<String, dynamic>)['family'] as Map<String, dynamic>)['id'] as String,
+        id:
+            ((f as Map<String, dynamic>)['family']
+                    as Map<String, dynamic>)['id']
+                as String,
         name: (f['family'] as Map<String, dynamic>)['name'] as String,
       ),
   ];
 });
 
 /// The active family's display name + total family count (Family header).
-final familyInfoProvider = FutureProvider<({String name, int count})>((ref) async {
+final familyInfoProvider = FutureProvider<({String name, int count})>((
+  ref,
+) async {
   final familyId = await ref.watch(familyProvider.future);
   final families = await ref.watch(familiesListProvider.future);
-  final name = families.where((f) => f.id == familyId).map((f) => f.name).firstOrNull ?? 'Family';
+  final name =
+      families.where((f) => f.id == familyId).map((f) => f.name).firstOrNull ??
+      'Family';
   return (name: name, count: families.length);
 });
 
@@ -152,7 +170,9 @@ final sourceEventsProvider = FutureProvider<List<SourceEventItem>>((ref) async {
   final api = ref.watch(apiClientProvider);
   final familyId = await ref.watch(familyProvider.future);
   final rows = await api.listSourceEvents(familyId);
-  return rows.map((e) => SourceEventItem.fromJson(e as Map<String, dynamic>)).toList();
+  return rows
+      .map((e) => SourceEventItem.fromJson(e as Map<String, dynamic>))
+      .toList();
 });
 
 final feedsProvider = FutureProvider<List<FeedItem>>((ref) async {
@@ -164,15 +184,19 @@ final feedsProvider = FutureProvider<List<FeedItem>>((ref) async {
 
 /// The feeds linked to one member (child) — powers the onboarding per-child
 /// sources step (1e). Derived by scanning each feed's member links.
-final memberFeedsProvider =
-    FutureProvider.family<List<FeedItem>, String>((ref, memberId) async {
+final memberFeedsProvider = FutureProvider.family<List<FeedItem>, String>((
+  ref,
+  memberId,
+) async {
   final api = ref.watch(apiClientProvider);
   final familyId = await ref.watch(familyProvider.future);
   final feeds = await ref.watch(feedsProvider.future);
   final out = <FeedItem>[];
   for (final f in feeds) {
     final links = await api.listMemberLinks(familyId, f.id);
-    if (links.any((l) => (l as Map<String, dynamic>)['familyMemberId'] == memberId)) {
+    if (links.any(
+      (l) => (l as Map<String, dynamic>)['familyMemberId'] == memberId,
+    )) {
       out.add(f);
     }
   }
@@ -180,8 +204,10 @@ final memberFeedsProvider =
 });
 
 /// Member links (with baselines) for a specific feed.
-final feedLinksProvider =
-    FutureProvider.family<List<FeedLink>, String>((ref, feedId) async {
+final feedLinksProvider = FutureProvider.family<List<FeedLink>, String>((
+  ref,
+  feedId,
+) async {
   final api = ref.watch(apiClientProvider);
   final familyId = await ref.watch(familyProvider.future);
   final rows = await api.listMemberLinks(familyId, feedId);
@@ -189,20 +215,28 @@ final feedLinksProvider =
 });
 
 /// A link's override pipeline, in position order.
-final linkRulesProvider = FutureProvider.family<List<OverrideRule>,
-    ({String feedId, String linkId})>((ref, key) async {
-  final api = ref.watch(apiClientProvider);
-  final familyId = await ref.watch(familyProvider.future);
-  final rows = await api.listLinkRules(familyId, key.feedId, key.linkId);
-  return rows.map((e) => OverrideRule.fromJson(e as Map<String, dynamic>)).toList();
-});
+final linkRulesProvider =
+    FutureProvider.family<List<OverrideRule>, ({String feedId, String linkId})>(
+      (ref, key) async {
+        final api = ref.watch(apiClientProvider);
+        final familyId = await ref.watch(familyProvider.future);
+        final rows = await api.listLinkRules(familyId, key.feedId, key.linkId);
+        return rows
+            .map((e) => OverrideRule.fromJson(e as Map<String, dynamic>))
+            .toList();
+      },
+    );
 
 /// Open pending decisions — ranked above unclaimed tasks on Home.
-final pendingDecisionsProvider = FutureProvider<List<PendingDecision>>((ref) async {
+final pendingDecisionsProvider = FutureProvider<List<PendingDecision>>((
+  ref,
+) async {
   final api = ref.watch(apiClientProvider);
   final familyId = await ref.watch(familyProvider.future);
   final rows = await api.listPendingDecisions(familyId);
-  return rows.map((e) => PendingDecision.fromJson(e as Map<String, dynamic>)).toList();
+  return rows
+      .map((e) => PendingDecision.fromJson(e as Map<String, dynamic>))
+      .toList();
 });
 
 /// Open agenda conflicts (overlaps) awaiting an admin's resolution.
@@ -213,8 +247,27 @@ final conflictsProvider = FutureProvider<List<Conflict>>((ref) async {
   return rows.map((e) => Conflict.fromJson(e as Map<String, dynamic>)).toList();
 });
 
+/// Overrides currently in effect for one member — resolved conflicts, i.e.
+/// events that have been split/masked around a higher-priority one. Backs the
+/// review-and-revert list on the member detail screen.
+final memberOverridesProvider = FutureProvider.family<List<Conflict>, String>((
+  ref,
+  memberId,
+) async {
+  final api = ref.watch(apiClientProvider);
+  final familyId = await ref.watch(familyProvider.future);
+  final rows = await api.listConflicts(
+    familyId,
+    status: 'resolved',
+    memberId: memberId,
+  );
+  return rows.map((e) => Conflict.fromJson(e as Map<String, dynamic>)).toList();
+});
+
 /// Every unified-calendar event in the family (Plan's data source).
-final calendarEventsProvider = FutureProvider<List<CalendarEventItem>>((ref) async {
+final calendarEventsProvider = FutureProvider<List<CalendarEventItem>>((
+  ref,
+) async {
   final api = ref.watch(apiClientProvider);
   final familyId = await ref.watch(familyProvider.future);
   final rows = await api.listCalendarEvents(familyId);
@@ -224,8 +277,10 @@ final calendarEventsProvider = FutureProvider<List<CalendarEventItem>>((ref) asy
 });
 
 /// A member's task-rule pipeline + per-calendar defaults (6k).
-final taskRulesProvider =
-    FutureProvider.family<TaskRuleSet, String>((ref, memberId) async {
+final taskRulesProvider = FutureProvider.family<TaskRuleSet, String>((
+  ref,
+  memberId,
+) async {
   final api = ref.watch(apiClientProvider);
   final familyId = await ref.watch(familyProvider.future);
   return TaskRuleSet.fromJson(await api.getTaskRules(familyId, memberId));
@@ -241,11 +296,11 @@ final assignmentRulesProvider = FutureProvider<AssignmentRuleSet>((ref) async {
 /// A member's unified-calendar target config (null ⇒ DB-only calendar).
 final memberCalendarProvider =
     FutureProvider.family<MemberCalendarConfig?, String>((ref, memberId) async {
-  final api = ref.watch(apiClientProvider);
-  final familyId = await ref.watch(familyProvider.future);
-  final row = await api.getMemberCalendarTarget(familyId, memberId);
-  return row == null ? null : MemberCalendarConfig.fromJson(row);
-});
+      final api = ref.watch(apiClientProvider);
+      final familyId = await ref.watch(familyProvider.future);
+      final row = await api.getMemberCalendarTarget(familyId, memberId);
+      return row == null ? null : MemberCalendarConfig.fromJson(row);
+    });
 
 /// The family-level threading threshold (minutes) for stitching task chains.
 final threadingThresholdProvider = FutureProvider<int>((ref) async {
@@ -260,14 +315,20 @@ final threadingThresholdProvider = FutureProvider<int>((ref) async {
 final accountsProvider = FutureProvider<List<ExternalAccount>>((ref) async {
   final api = ref.watch(apiClientProvider);
   final rows = await api.listAccounts();
-  return rows.map((e) => ExternalAccount.fromJson(e as Map<String, dynamic>)).toList();
+  return rows
+      .map((e) => ExternalAccount.fromJson(e as Map<String, dynamic>))
+      .toList();
 });
 
 /// The login methods threaded to the current user (Apple + magic-link emails).
-final loginIdentitiesProvider = FutureProvider<List<LoginIdentity>>((ref) async {
+final loginIdentitiesProvider = FutureProvider<List<LoginIdentity>>((
+  ref,
+) async {
   final api = ref.watch(apiClientProvider);
   final rows = await api.listIdentities();
-  return rows.map((e) => LoginIdentity.fromJson(e as Map<String, dynamic>)).toList();
+  return rows
+      .map((e) => LoginIdentity.fromJson(e as Map<String, dynamic>))
+      .toList();
 });
 
 /// Whether the signed-in user is currently free to delete their account (not

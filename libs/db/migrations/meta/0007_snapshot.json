@@ -1,160 +1,9 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "da70361e-4683-4dd6-9c4a-8aac9588789e",
+  "id": "7b7537da-ba82-47a2-b9ca-e46275c6e7be",
   "prevId": "ac68979a-f343-4c61-bf26-7596564af55e",
   "tables": {
-    "assignment_rules": {
-      "name": "assignment_rules",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "family_id": {
-          "name": "family_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "owner_member_id": {
-          "name": "owner_member_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "about_member_id": {
-          "name": "about_member_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "link_id": {
-          "name": "link_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "task_type": {
-          "name": "task_type",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "position": {
-          "name": "position",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "weekday_mask": {
-          "name": "weekday_mask",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": 0
-        },
-        "cadence_weeks": {
-          "name": "cadence_weeks",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": 1
-        },
-        "anchor_date": {
-          "name": "anchor_date",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        }
-      },
-      "indexes": {
-        "assignment_rules_family_position_idx": {
-          "name": "assignment_rules_family_position_idx",
-          "columns": [
-            "family_id",
-            "position"
-          ],
-          "isUnique": false
-        }
-      },
-      "foreignKeys": {
-        "assignment_rules_family_id_families_id_fk": {
-          "name": "assignment_rules_family_id_families_id_fk",
-          "tableFrom": "assignment_rules",
-          "tableTo": "families",
-          "columnsFrom": [
-            "family_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "assignment_rules_owner_member_id_family_members_id_fk": {
-          "name": "assignment_rules_owner_member_id_family_members_id_fk",
-          "tableFrom": "assignment_rules",
-          "tableTo": "family_members",
-          "columnsFrom": [
-            "owner_member_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "assignment_rules_about_member_id_family_members_id_fk": {
-          "name": "assignment_rules_about_member_id_family_members_id_fk",
-          "tableFrom": "assignment_rules",
-          "tableTo": "family_members",
-          "columnsFrom": [
-            "about_member_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "assignment_rules_link_id_family_member_feeds_id_fk": {
-          "name": "assignment_rules_link_id_family_member_feeds_id_fk",
-          "tableFrom": "assignment_rules",
-          "tableTo": "family_member_feeds",
-          "columnsFrom": [
-            "link_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "checkConstraints": {}
-    },
     "auth_tokens": {
       "name": "auth_tokens",
       "columns": {
@@ -588,6 +437,20 @@
         "dismissed_at": {
           "name": "dismissed_at",
           "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "loser_content_hash": {
+          "name": "loser_content_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "winner_content_hash": {
+          "name": "winner_content_hash",
+          "type": "text",
           "primaryKey": false,
           "notNull": false,
           "autoincrement": false
@@ -2668,21 +2531,6 @@
           "primaryKey": false,
           "notNull": false,
           "autoincrement": false
-        },
-        "auto_assigned_rule_id": {
-          "name": "auto_assigned_rule_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "manual_owner_override": {
-          "name": "manual_owner_override",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": false
         },
         "created_via": {
           "name": "created_via",

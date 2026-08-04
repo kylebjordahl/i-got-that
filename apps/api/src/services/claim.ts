@@ -11,12 +11,8 @@ import { hashCalendarEvent } from './synthesis.js';
 type TaskRow = typeof tasks.$inferSelect;
 
 export function taskSummary(task: TaskRow, aboutName: string): string {
-  const label =
-    task.type === 'pickup'
-      ? 'Pickup'
-      : task.type === 'dropoff'
-        ? 'Drop-off'
-        : 'Attendance';
+  if (task.type === 'attendance') return `Attend: ${aboutName}`;
+  const label = task.type === 'pickup' ? 'Pickup' : 'Drop-off';
   return `${label} — ${aboutName}`;
 }
 
@@ -58,7 +54,9 @@ async function sourceEvent(
  * otherwise the caretaker's calendar loses the metadata (e.g. LOCATION) that
  * drives client features like Apple's travel time. A `dropoff`/`pickup` task
  * is only a windowed slice of the event, so it keeps its synthesized
- * "Pickup — <name>"-style summary and the task's own location.
+ * "Pickup — <name>"-style summary and the task's own location — including its
+ * geocode, which is what makes travel time work on a transition claim too
+ * (free text alone leaves Apple nothing reliable to route to).
  *
  * Callers do DB writes first, then `enqueueReconcile` for every affected
  * member (never awaiting the reconcile in a request path).
@@ -76,6 +74,7 @@ export async function upsertClaimEvent(db: Db, task: TaskRow): Promise<void> {
     allDay: source?.allDay ?? false,
     summary,
     location: source?.location ?? task.location,
+    locationGeo: source?.locationGeo ?? task.locationGeo,
     description: source?.description ?? null,
   };
   const contentHash = hashCalendarEvent(payload);

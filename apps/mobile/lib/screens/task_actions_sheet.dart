@@ -44,25 +44,30 @@ Future<void> showTaskActions(
 
   // Tasks the assign/unassign/dismiss actions operate on (the event's whole
   // group for a block tap; just this task otherwise).
-  final scope = (scopeTasks == null || scopeTasks.isEmpty) ? [task] : scopeTasks;
+  final scope = (scopeTasks == null || scopeTasks.isEmpty)
+      ? [task]
+      : scopeTasks;
   final anyUnowned = scope.any((t) => t.status == 'unowned');
   final anyOwned = scope.any((t) => t.status == 'owned');
   final allUnowned = scope.every((t) => t.status == 'unowned');
 
   // Derive the current change-type segment from the whole event group.
   final all = ref.read(allTasksProvider).valueOrNull ?? const <TaskItem>[];
-  final group =
-      all.where((t) => t.calendarEventId == task.calendarEventId).toList();
+  final group = all
+      .where((t) => t.calendarEventId == task.calendarEventId)
+      .toList();
   final types = (group.isEmpty ? [task] : group).map((t) => t.type).toSet();
   final hasAtt = types.contains('attendance');
   final hasTrans = types.contains('pickup') || types.contains('dropoff');
-  final currentSeg = hasAtt && hasTrans ? 'both' : (hasAtt ? 'attendance' : 'transition');
+  final currentSeg = hasAtt && hasTrans
+      ? 'both'
+      : (hasAtt ? 'attendance' : 'transition');
 
   List<String> targetOf(String seg) => switch (seg) {
-        'attendance' => ['attendance'],
-        'both' => const ['dropoff', 'pickup', 'attendance'],
-        _ => const ['dropoff', 'pickup'],
-      };
+    'attendance' => ['attendance'],
+    'both' => const ['dropoff', 'pickup', 'attendance'],
+    _ => const ['dropoff', 'pickup'],
+  };
 
   final owners = scope
       .where((t) => t.status == 'owned')
@@ -80,7 +85,10 @@ Future<void> showTaskActions(
 
   // The event's own time range when it has one, else just the task's start.
   final eventEnd = sourceEvent?.end;
-  final eventTime = sourceEvent != null && eventEnd != null && eventEnd.isAfter(sourceEvent.start)
+  final eventTime =
+      sourceEvent != null &&
+          eventEnd != null &&
+          eventEnd.isAfter(sourceEvent.start)
       ? friendlyRange(sourceEvent.start, eventEnd)
       : friendlyTime(sourceEvent?.start ?? task.start);
 
@@ -96,7 +104,11 @@ Future<void> showTaskActions(
     isScrollControlled: true,
     builder: (sheetCtx) => SingleChildScrollView(
       padding: EdgeInsets.fromLTRB(
-          22, 4, 22, 28 + MediaQuery.of(sheetCtx).viewInsets.bottom),
+        22,
+        4,
+        22,
+        28 + MediaQuery.of(sheetCtx).viewInsets.bottom,
+      ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -109,11 +121,15 @@ Future<void> showTaskActions(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text('${sourceEvent?.displaySummary ?? taskTypeLabel(task.type)} · ${child?.relationName ?? 'child'}',
-                        style: AppText.sectionItemTitle),
+                    Text(
+                      '${sourceEvent?.displaySummary ?? taskTypeLabel(task.type)} · ${child?.relationName ?? 'child'}',
+                      style: AppText.sectionItemTitle,
+                    ),
                     const SizedBox(height: 2),
-                    Text('${taskCategory(task.type)} · $eventTime · $statusText',
-                        style: AppText.subtitle),
+                    Text(
+                      '${taskCategory(task.type)} · $eventTime · $statusText',
+                      style: AppText.subtitle,
+                    ),
                   ],
                 ),
               ),
@@ -121,9 +137,11 @@ Future<void> showTaskActions(
           ),
           if (hasLocation || hasDescription) ...[
             const SizedBox(height: 14),
-            if (hasLocation) _DetailRow(icon: Icons.location_on_outlined, text: location),
+            if (hasLocation)
+              _DetailRow(icon: Icons.location_on_outlined, text: location),
             if (hasLocation && hasDescription) const SizedBox(height: 8),
-            if (hasDescription) _DetailRow(icon: Icons.notes_rounded, text: description),
+            if (hasDescription)
+              _DetailRow(icon: Icons.notes_rounded, text: description),
           ],
           if (isFeedTask) ...[
             const SizedBox(height: 20),
@@ -145,9 +163,16 @@ Future<void> showTaskActions(
                           ? null
                           : () {
                               Navigator.of(sheetCtx).pop();
-                              _run(context, ref,
-                                  (api, fid) => api.convertTask(fid, task.id, targetOf(seg)),
-                                  'Type updated');
+                              _run(
+                                context,
+                                ref,
+                                (api, fid) => api.convertTask(
+                                  fid,
+                                  task.id,
+                                  targetOf(seg),
+                                ),
+                                'Type updated',
+                              );
                             },
                     ),
                   ),
@@ -171,10 +196,11 @@ Future<void> showTaskActions(
                   onSubmit: (minutes) {
                     Navigator.of(sheetCtx).pop();
                     _run(
-                        context,
-                        ref,
-                        (api, fid) => api.setTaskDuration(fid, t.id, minutes),
-                        'Duration updated');
+                      context,
+                      ref,
+                      (api, fid) => api.setTaskDuration(fid, t.id, minutes),
+                      'Duration updated',
+                    );
                   },
                 ),
               ),
@@ -192,11 +218,12 @@ Future<void> showTaskActions(
                     onTap: () {
                       Navigator.of(sheetCtx).pop();
                       _runScope(
-                          context,
-                          ref,
-                          scope.where((t) => t.status == 'unowned'),
-                          (api, fid, t) => api.assignTask(fid, t.id),
-                          'Claimed');
+                        context,
+                        ref,
+                        scope.where((t) => t.status == 'unowned'),
+                        (api, fid, t) => api.assignTask(fid, t.id),
+                        'Claimed',
+                      );
                     },
                   ),
                   const Divider(height: 18),
@@ -205,7 +232,9 @@ Future<void> showTaskActions(
                   _ActionRow(
                     icon: Icons.person_add_alt_1_rounded,
                     iconColor: AppColors.blue,
-                    label: allUnowned ? 'Assign to someone…' : 'Reassign to someone…',
+                    label: allUnowned
+                        ? 'Assign to someone…'
+                        : 'Reassign to someone…',
                     onTap: () {
                       Navigator.of(sheetCtx).pop();
                       _pickAndAssign(context, ref, scope, caretakers);
@@ -221,11 +250,12 @@ Future<void> showTaskActions(
                     onTap: () {
                       Navigator.of(sheetCtx).pop();
                       _runScope(
-                          context,
-                          ref,
-                          scope.where((t) => t.status == 'owned'),
-                          (api, fid, t) => api.unassignTask(fid, t.id),
-                          'Returned to the queue');
+                        context,
+                        ref,
+                        scope.where((t) => t.status == 'owned'),
+                        (api, fid, t) => api.unassignTask(fid, t.id),
+                        'Returned to the queue',
+                      );
                     },
                   ),
                   const Divider(height: 18),
@@ -237,14 +267,182 @@ Future<void> showTaskActions(
                   destructive: true,
                   onTap: () {
                     Navigator.of(sheetCtx).pop();
-                    _runScope(context, ref, scope,
-                        (api, fid, t) => api.dismissTask(fid, t.id),
-                        'Marked not needed');
+                    _runScope(
+                      context,
+                      ref,
+                      scope,
+                      (api, fid, t) => api.dismissTask(fid, t.id),
+                      'Marked not needed',
+                    );
                   },
                 ),
               ],
             ),
           ),
+        ],
+      ),
+    ),
+  );
+}
+
+/// Details for a Plan event that has no live task to manage. Every block on the
+/// grid answers a tap; this is what the ones with nothing to claim open.
+///
+/// Shows the event exactly as the unified calendar holds it (title, whose
+/// calendar, time, location, notes) and says *why* it carries nothing to claim,
+/// which is one of two very different situations:
+///
+///  * A rule — the event can't have tasks at all. The member's generation is
+///    paused, it's a free/busy firewall block, or it already *is* a claim
+///    ([CalendarEventItem.taskIneligibleReason]). Nothing to offer here; the
+///    fix, where there is one, lives in that member's or feed's settings.
+///  * A mishap — the event is eligible, so its tasks were marked not needed
+///    (which is sticky: task-gen heals a dismissed row but never resurrects it)
+///    or never got built. Rebuilding is offered, which restores the dismissed
+///    ones and re-runs the member's task-rule pipeline over the event.
+Future<void> showEventDetails(
+  BuildContext context,
+  WidgetRef ref,
+  CalendarEventItem event, {
+  Member? member,
+  List<TaskItem> dismissedTasks = const [],
+}) async {
+  final color = member != null ? personColor(member) : AppColors.textSecondary;
+  final end = event.end;
+  final timeText = event.allDay
+      ? 'All day'
+      : (end != null && end.isAfter(event.start)
+            ? friendlyRange(event.start, end)
+            : friendlyTime(event.start));
+
+  final location = event.location;
+  final description = event.description;
+  final hasLocation = location != null && location.isNotEmpty;
+  final hasDescription = description != null && description.isNotEmpty;
+  // Only events we mirror out can carry a travel block, and only if they have
+  // somewhere to go. A human event already lives on the target calendar with
+  // whatever travel time its owner gave it there.
+  final canSetTravel = !event.isHuman && hasLocation;
+
+  final name = member?.relationName ?? 'This member';
+  final dismissed = dismissedTasks.length;
+  final reason = switch (event.taskIneligibleReason) {
+    'paused' =>
+      "$name's events don't generate family tasks, so there's nothing to claim "
+          'here. An admin can turn that back on from $name in Family.',
+    'busy_calendar' =>
+      "This came from a calendar linked as free/busy, so it's only blocking "
+          "$name's availability — those blocks never generate tasks. Switch "
+          'that feed off "busy" mode to have its events typed.',
+    'claimed' => 'This event is already a claimed task.',
+    // Eligible, so the tasks were dismissed or never built — both rebuildable.
+    _ =>
+      dismissed > 0
+          ? 'Its ${dismissed == 1 ? 'task is' : '$dismissed tasks are'} marked not '
+                'needed. Marking one not needed sticks, so rebuild to put this '
+                'event back in the claim queue.'
+          : 'This event has no tasks right now, though it should generate them. '
+                'Rebuild to run it back through '
+                '${member == null ? 'the' : "$name's"} task rules.',
+  };
+
+  await showModalBottomSheet<void>(
+    context: context,
+    useRootNavigator: true,
+    showDragHandle: true,
+    isScrollControlled: true,
+    builder: (sheetCtx) => SingleChildScrollView(
+      // Keyboard-aware: the travel-time field lifts the sheet above it.
+      padding: EdgeInsets.fromLTRB(
+        22,
+        4,
+        22,
+        28 + MediaQuery.of(sheetCtx).viewInsets.bottom,
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              IconTile(icon: Icons.event_rounded, color: color, size: 44),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      member == null
+                          ? event.displaySummary
+                          : '${event.displaySummary} · ${member.relationName}',
+                      style: AppText.sectionItemTitle,
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      '$timeText${event.isHuman ? ' · manual' : ''}',
+                      style: AppText.subtitle,
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          if (hasLocation || hasDescription) ...[
+            const SizedBox(height: 14),
+            if (hasLocation)
+              _DetailRow(icon: Icons.location_on_outlined, text: location),
+            if (hasLocation && hasDescription) const SizedBox(height: 8),
+            if (hasDescription)
+              _DetailRow(icon: Icons.notes_rounded, text: description),
+          ],
+          // Travel time is a property of the trip *out to the target calendar*,
+          // so it's offered on the events we mirror — above all a claim, which
+          // is somebody's actual journey.
+          if (canSetTravel) ...[
+            const SizedBox(height: 20),
+            Text('TRAVEL TIME', style: AppText.eyebrow()),
+            const SizedBox(height: 10),
+            _TravelTimeField(
+              event: event,
+              onSubmit: (minutes) {
+                Navigator.of(sheetCtx).pop();
+                _run(
+                  context,
+                  ref,
+                  (api, fid) => api.setEventTravelTime(fid, event.id, minutes),
+                  minutes == null
+                      ? 'Back to the estimate'
+                      : 'Travel time updated',
+                );
+              },
+            ),
+          ],
+          const SizedBox(height: 18),
+          _DetailRow(icon: Icons.info_outline_rounded, text: reason),
+          // Only an eligible event can be rebuilt — for the three rule cases
+          // there's nothing this sheet could do that wouldn't be a lie.
+          if (event.canHaveTasks) ...[
+            const SizedBox(height: 18),
+            AppCard(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
+              child: _ActionRow(
+                icon: Icons.restore_rounded,
+                iconColor: AppColors.indigo,
+                label: dismissed > 0
+                    ? 'Restore ${dismissed == 1 ? 'its task' : 'its $dismissed tasks'}'
+                    : "Rebuild this event's tasks",
+                onTap: () {
+                  Navigator.of(sheetCtx).pop();
+                  _run(
+                    context,
+                    ref,
+                    (api, fid) => api.rebuildEventTasks(fid, event.id),
+                    dismissed > 0 ? 'Back in the claim queue' : 'Tasks rebuilt',
+                  );
+                },
+              ),
+            ),
+          ],
         ],
       ),
     ),
@@ -278,9 +476,13 @@ Future<void> _pickAndAssign(
             InkWell(
               onTap: () {
                 Navigator.of(sheetCtx).pop();
-                _runScope(context, ref, scope,
-                    (api, fid, t) => api.assignTask(fid, t.id, memberId: m.id),
-                    'Assigned to ${m.relationName}');
+                _runScope(
+                  context,
+                  ref,
+                  scope,
+                  (api, fid, t) => api.assignTask(fid, t.id, memberId: m.id),
+                  'Assigned to ${m.relationName}',
+                );
               },
               borderRadius: BorderRadius.circular(14),
               child: Padding(
@@ -288,7 +490,10 @@ Future<void> _pickAndAssign(
                 child: Row(
                   children: [
                     PersonAvatar(
-                        initial: initialFor(m.relationName), color: personColor(m), size: 40),
+                      initial: initialFor(m.relationName),
+                      color: personColor(m),
+                      size: 40,
+                    ),
                     const SizedBox(width: 14),
                     Text(m.relationName, style: AppText.sectionItemTitle),
                   ],
@@ -315,17 +520,21 @@ Future<void> _run(
     // Claims move events between calendars (the recursion) — refresh Plan too.
     ref.invalidate(calendarEventsProvider);
     if (context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text(success),
-        margin: snackBarMarginAboveNav(context),
-      ));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(success),
+          margin: snackBarMarginAboveNav(context),
+        ),
+      );
     }
   } catch (e) {
     if (context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text('Failed: $e'),
-        margin: snackBarMarginAboveNav(context),
-      ));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Failed: $e'),
+          margin: snackBarMarginAboveNav(context),
+        ),
+      );
     }
   }
 }
@@ -350,17 +559,21 @@ Future<void> _runScope(
     // Claims move events between calendars (the recursion) — refresh Plan too.
     ref.invalidate(calendarEventsProvider);
     if (context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text(success),
-        margin: snackBarMarginAboveNav(context),
-      ));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(success),
+          margin: snackBarMarginAboveNav(context),
+        ),
+      );
     }
   } catch (e) {
     if (context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text('Failed: $e'),
-        margin: snackBarMarginAboveNav(context),
-      ));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Failed: $e'),
+          margin: snackBarMarginAboveNav(context),
+        ),
+      );
     }
   }
 }
@@ -392,16 +605,29 @@ class _SegTile extends StatelessWidget {
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(15),
             border: Border.all(
-                color: selected ? AppColors.indigo : AppColors.border, width: selected ? 1.5 : 1),
+              color: selected ? AppColors.indigo : AppColors.border,
+              width: selected ? 1.5 : 1,
+            ),
           ),
           child: Column(
             children: [
-              Icon(icon,
-                  size: 22, color: selected ? AppColors.indigo : AppColors.textSecondary),
+              Icon(
+                icon,
+                size: 22,
+                color: selected ? AppColors.indigo : AppColors.textSecondary,
+              ),
               const SizedBox(height: 7),
-              Text(label,
-                  style: font(kBodyFont, 12.5, 600,
-                      color: selected ? AppColors.textPrimary : AppColors.textSecondary)),
+              Text(
+                label,
+                style: font(
+                  kBodyFont,
+                  12.5,
+                  600,
+                  color: selected
+                      ? AppColors.textPrimary
+                      : AppColors.textSecondary,
+                ),
+              ),
             ],
           ),
         ),
@@ -430,8 +656,9 @@ class _DurationField extends StatefulWidget {
 }
 
 class _DurationFieldState extends State<_DurationField> {
-  late final TextEditingController _controller =
-      TextEditingController(text: widget.task.signedDurationMin.toString());
+  late final TextEditingController _controller = TextEditingController(
+    text: widget.task.signedDurationMin.toString(),
+  );
 
   @override
   void dispose() {
@@ -463,8 +690,9 @@ class _DurationFieldState extends State<_DurationField> {
             Expanded(
               child: TextField(
                 controller: _controller,
-                keyboardType:
-                    const TextInputType.numberWithOptions(signed: true),
+                keyboardType: const TextInputType.numberWithOptions(
+                  signed: true,
+                ),
                 inputFormatters: [
                   FilteringTextInputFormatter.allow(RegExp(r'^-?\d*')),
                 ],
@@ -483,7 +711,10 @@ class _DurationFieldState extends State<_DurationField> {
                 backgroundColor: AppColors.tint(AppColors.indigo, 0.22),
                 foregroundColor: AppColors.indigo,
                 elevation: 0,
-                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 20,
+                  vertical: 14,
+                ),
               ),
               child: const Text('Set'),
             ),
@@ -493,6 +724,101 @@ class _DurationFieldState extends State<_DurationField> {
         Text(
           'Minutes from the event $_anchorWord. '
           'Use a negative value to run it the opposite direction.',
+          style: AppText.subtitle,
+        ),
+      ],
+    );
+  }
+}
+
+/// The travel-time override on an event: how long getting there takes, in
+/// minutes, written straight onto the event that mirrors out.
+///
+/// The backend estimates this from where the caretaker is coming from — the
+/// last place their calendar accounts for, or their home address — which is a
+/// guess about distance and traffic made without a routing service. Someone who
+/// knows the run takes 25 minutes says so here and that stands. An empty field
+/// hands it back to the estimate; `0` says this trip needs no travel time.
+class _TravelTimeField extends StatefulWidget {
+  const _TravelTimeField({required this.event, required this.onSubmit});
+
+  final CalendarEventItem event;
+
+  /// Minutes, or null to drop the override and go back to the estimate.
+  final ValueChanged<int?> onSubmit;
+
+  @override
+  State<_TravelTimeField> createState() => _TravelTimeFieldState();
+}
+
+class _TravelTimeFieldState extends State<_TravelTimeField> {
+  late final TextEditingController _controller = TextEditingController(
+    text: widget.event.travelTimeOverrideMin?.toString() ?? '',
+  );
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    final text = _controller.text.trim();
+    if (text.isEmpty) {
+      widget.onSubmit(null);
+      return;
+    }
+    final minutes = int.tryParse(text);
+    if (minutes == null || minutes < 0) return;
+    widget.onSubmit(minutes);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final overridden = widget.event.travelTimeOverrideMin != null;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Expanded(
+              child: TextField(
+                controller: _controller,
+                keyboardType: TextInputType.number,
+                inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                onSubmitted: (_) => _submit(),
+                style: font(kBodyFont, 15, 600, color: AppColors.textPrimary),
+                decoration: InputDecoration(
+                  hintText: overridden ? null : 'Estimated',
+                  suffixText: 'min',
+                  isDense: true,
+                ),
+              ),
+            ),
+            const SizedBox(width: 10),
+            FilledButton(
+              onPressed: _submit,
+              style: FilledButton.styleFrom(
+                backgroundColor: AppColors.tint(AppColors.indigo, 0.22),
+                foregroundColor: AppColors.indigo,
+                elevation: 0,
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 20,
+                  vertical: 14,
+                ),
+              ),
+              child: const Text('Set'),
+            ),
+          ],
+        ),
+        const SizedBox(height: 6),
+        Text(
+          overridden
+              ? 'Your own number, used as-is. Clear the field to go back to the '
+                    'estimate; 0 means no travel time on this one.'
+              : 'Estimated from wherever you\'re coming from. Enter minutes to '
+                    'override it; 0 means no travel time on this one.',
           style: AppText.subtitle,
         ),
       ],
@@ -547,9 +873,15 @@ class _ActionRow extends StatelessWidget {
           children: [
             Icon(icon, color: iconColor, size: 22),
             const SizedBox(width: 14),
-            Text(label,
-                style: font(kBodyFont, 14.5, 600,
-                    color: destructive ? AppColors.coral : AppColors.textPrimary)),
+            Text(
+              label,
+              style: font(
+                kBodyFont,
+                14.5,
+                600,
+                color: destructive ? AppColors.coral : AppColors.textPrimary,
+              ),
+            ),
           ],
         ),
       ),

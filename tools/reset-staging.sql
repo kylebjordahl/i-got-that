@@ -2,7 +2,7 @@
 -- every application table AND Wrangler's migration bookkeeping table, so
 -- `wrangler d1 migrations apply` re-applies the fresh single baseline from
 -- scratch. There are no real customers; do NOT run against production. Driven
--- by tools/reset-staging.zsh (and reusable locally via tools/reset-local.zsh).
+-- by tools/reset-staging.zsh.
 --
 -- DROP TABLE performs no foreign-key checks, so table order is irrelevant.
 

@@ -40,7 +40,11 @@ exactly this and nothing more.
 **What the platform stores:** the intervals (`source_events` rows keyed
 `fb:<start>/<end>`, all text fields null) and a user-chosen label for the
 blocks (e.g. "Busy (work)", stored as the feed's `sourceCalendarName`). Nothing
-else exists to store.
+else exists to store. The member may additionally *declare* where this
+calendar's busy time is spent — a location (optionally geocoded) on their feed
+link, e.g. "the office" — which is their own annotation, typed into this app;
+it neither comes from nor is checked against the work calendar, and nothing new
+crosses the Workspace boundary to obtain it.
 
 **Kill switch:** unshare the calendar at work (or have the admin do it). The
 next sync's `freebusy.query` fails per-calendar (`notFound` — Google
@@ -72,24 +76,46 @@ the existing cron/refresh machinery. The differences, end to end:
 
 - **Read** — `fetchGoogleFreeBusy` (libs/ical) POSTs `freebusy.query` over a
   ~35-day window (synthesis consumes 30) instead of `events.list`.
+- **Window anchoring** (`busyIngestWindow` in `apps/api/src/services/ingest.ts`)
+  — the window is floored to the **UTC day**, never taken from the clock.
+  `freebusy.query` clips its intervals to `[timeMin, timeMax]`, so a block
+  already in progress — an ongoing all-day "out of office" is the case that
+  bit us — comes back starting at `timeMin` exactly. With the interval as the
+  identity (below), a `new Date()` timeMin minted a *new* key on every sync:
+  each refresh added another busy block starting at the moment that sync ran,
+  and they stacked up. Anchoring makes the clipped bound stable, so repeated
+  syncs within a day produce the identical key and simply upsert. The trade-off
+  is that an in-progress block reports the window's start rather than its true
+  start — free/busy can't reveal the latter without reading further into the
+  past than an availability mirror should store.
 - **Ingest** (`apps/api/src/services/ingest.ts`) — intervals upsert into
   `source_events` with `icalUid = 'fb:<startISO>/<endISO>'`. Free/busy carries
-  no event identity, so the interval *is* the identity — and therefore ingest
-  also **delete-reconciles** the fetched window: any row whose key isn't in
-  the fresh set is stale (a moved/merged/split block) and is removed, which
-  cascades its synthesized event. Other feed kinds are upsert-only; busy feeds
-  cannot be, or every moved meeting would leave a ghost block.
-- **Synthesis** — `synthesizeBusy` (libs/classification) emits detail-free
-  intents keyed `fb:<linkId>:<sourceEventId>`, labeled with the feed's name
-  (`'Busy'` fallback), location/description always null. No override rules, no
-  pending decisions.
+  no event identity, so the interval *is* the identity — a moved/merged/split
+  block simply arrives under a fresh key, and the old key reads as stale.
+  Ingest **delete-reconciles** the fetched window (all feed kinds do, but busy
+  feeds depend on it): any row *overlapping* the window whose key isn't in the
+  fresh set is removed, which cascades its synthesized event. Overlap rather
+  than "starts inside the window" is what catches the ongoing block at a UTC-day
+  rollover, when its clipped start moves forward a day and the previous row —
+  which begins *before* the new window — becomes the stale one.
+- **Synthesis** — `synthesizeBusy` (libs/classification) emits intents keyed
+  `fb:<linkId>:<sourceEventId>`, labeled with the feed's name (`'Busy'`
+  fallback), description always null. Location comes solely from the link's
+  declared place (null when unset, which is the default and leaves blocks
+  exactly as detail-free as before) — never from the source, which has none to
+  give. No override rules, no pending decisions.
 - **Task-gen** — `fb:` events are explicitly skipped: availability is not
   family logistics, so busy blocks never spawn claimable tasks, even for
   members with `generatesFamilyTasks` on.
 - **Mirror** — busy blocks are `provenance: 'synthesized'` like any other
   generated event, so they mirror to the member's target calendar (the point:
   a spouse sees the opaque block). Mirrored copies use `igt-` UIDs, which
-  read-back skips, so there is no echo loop.
+  read-back skips, so there is no echo loop. A geocoded block also serves as
+  the **origin** for a drop-off/pickup claimed straight after it: the mirror
+  measures that trip's travel time from the declared place rather than from
+  home (see the travel-time note in AGENTS.md). Declaring a place does put that
+  place on the mirrored block for anyone who can see that calendar — that's the
+  trade, and it's opt-in per link.
 - **Immutability** — a feed cannot change mode into or out of `busy`
   (`busy_mode_immutable`): the interval-derived keyspace is incompatible with
   the UID-keyed pipelines. Recreate the feed instead.
