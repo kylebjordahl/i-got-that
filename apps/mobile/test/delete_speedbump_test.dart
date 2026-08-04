@@ -213,46 +213,61 @@ void main() {
   );
 
   testWidgets(
-      'disconnecting a calendar account still in use by a feed shows the in_use message, not the raw error',
-      (tester) async {
-    final api = _FakeApiClient()..deleteAccountErrorCode = 'in_use';
-    final me = Member(
-      id: 'me',
-      relationName: 'Me',
-      isCaretaker: true,
-      isAdmin: false,
-      requiresCaretaker: false,
-    );
-    final account = ExternalAccount(id: 'acc-1', kind: 'google', name: 'Google', username: 'you@gmail.com');
+    'disconnecting a calendar account still in use by a feed shows the in_use message, not the raw error',
+    (tester) async {
+      final api = _FakeApiClient()..deleteAccountErrorCode = 'in_use';
+      final me = Member(
+        id: 'me',
+        relationName: 'Me',
+        isCaretaker: true,
+        isAdmin: false,
+        requiresCaretaker: false,
+      );
+      final account = ExternalAccount(
+        id: 'acc-1',
+        kind: 'google',
+        name: 'Google',
+        username: 'you@gmail.com',
+      );
 
-    await tester.pumpWidget(
-      ProviderScope(
-        overrides: [
-          apiClientProvider.overrideWithValue(api),
-          currentMemberProvider.overrideWith((ref) async => me),
-          familyInfoProvider.overrideWith((ref) async => (name: 'Test Family', count: 1)),
-          accountsProvider.overrideWith((ref) async => [account]),
-          loginIdentitiesProvider.overrideWith((ref) async => const <LoginIdentity>[]),
-        ],
-        child: MaterialApp(theme: buildAppTheme(), home: const Scaffold(body: MeScreen())),
-      ),
-    );
-    await tester.pumpAndSettle();
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            apiClientProvider.overrideWithValue(api),
+            currentMemberProvider.overrideWith((ref) async => me),
+            familyInfoProvider.overrideWith(
+              (ref) async => (name: 'Test Family', count: 1),
+            ),
+            accountsProvider.overrideWith((ref) async => [account]),
+            loginIdentitiesProvider.overrideWith(
+              (ref) async => const <LoginIdentity>[],
+            ),
+          ],
+          child: MaterialApp(
+            theme: buildAppTheme(),
+            home: const Scaffold(body: MeScreen()),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
 
-    await tester.scrollUntilVisible(find.text('Google'), 300);
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Google'));
-    await tester.pumpAndSettle();
+      await tester.scrollUntilVisible(find.text('Google'), 300);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Google'));
+      await tester.pumpAndSettle();
 
-    await tester.tap(find.text('Disconnect'));
-    await tester.pumpAndSettle();
+      await tester.tap(find.text('Disconnect'));
+      await tester.pumpAndSettle();
 
-    expect(api.deletedAccount, isFalse);
-    expect(
-      find.text('Still in use by a feed or delivery method — remove those first.'),
-      findsOneWidget,
-    );
-  });
+      expect(api.deletedAccount, isFalse);
+      expect(
+        find.text(
+          'Still in use by a feed or delivery method — remove those first.',
+        ),
+        findsOneWidget,
+      );
+    },
+  );
 
   final admin = Member(
     id: 'dad',
