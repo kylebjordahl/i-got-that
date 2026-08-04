@@ -23,6 +23,7 @@ import {
   OverrideMatchField,
   OverrideMatchOp,
   OverrideOutcome,
+  PendingDecisionKind,
   PendingDecisionStatus,
   TaskCreatedVia,
   TaskResultType,
@@ -203,6 +204,14 @@ export const feeds = sqliteTable(
     sourceCalendarId: text('source_calendar_id'),
     sourceCalendarName: text('source_calendar_name'),
     mode: text('mode', { enum: FeedMode.options }).notNull(),
+    // Shared family calendar: one calendar carrying several members' events, so
+    // each link's rules become a per-member FILTER (`keep`) rather than a
+    // pass-through. Deliberately a property of the FEED, not of a link — the
+    // whole point is that turning it on from any one member's copy of the
+    // calendar puts every linked member on the routed pipeline, and that an
+    // event no link keeps is a single family-level routing decision rather than
+    // one per member. `standard` mode only.
+    routed: integer('routed', { mode: 'boolean' }).notNull().default(false),
     // IANA timezone the calendar's wall-clock times are in — auto-detected from
     // the feed's own X-WR-TIMEZONE/VTIMEZONE on sync, or set manually for feeds
     // that never advertise one (e.g. some booking-software ICS exports). Used
@@ -341,13 +350,14 @@ export const sourceEvents = sqliteTable(
 // --- Override pipeline (per feed↔member link; schedule only) --------------
 
 /**
- * One rule in a feed link's override pipeline. Rules run in `position` order
- * over each incoming exception-feed event; the first match wins and its
- * `outcome` shapes the SCHEDULE only — the covered baseline day
+ * One rule in a feed link's pipeline. Rules run in `position` order over each
+ * incoming feed event; the first match wins and its `outcome` shapes the
+ * SCHEDULE only. On an exception feed that's the covered baseline day
  * (`cancel_day` / `modify_day` / `ignore`), or `add_event`, which puts the feed
- * event on the calendar alongside an untouched baseline day. Task typing lives
- * in `taskRules`. `params` (modify_day's new hours) is validated by the domain
- * schemas.
+ * event on the calendar alongside an untouched baseline day; on a routed feed
+ * (a shared family calendar) it's `keep` — the event is routed onto this link's
+ * member calendar. Task typing lives in `taskRules`. `params` (modify_day's new
+ * hours) is validated by the domain schemas.
  */
 export const linkRules = sqliteTable(
   'link_rules',
@@ -432,10 +442,19 @@ export const taskRules = sqliteTable(
 // --- Pending decisions -----------------------------------------------------
 
 /**
- * An exception-feed event that matched no override rule — the system never
+ * A feed event the pipeline wouldn't decide for itself — the system never
  * guesses, a human resolves or dismisses it. Rows persist after resolution so
  * synthesis won't re-raise them; `sourceContentHash` reopens the decision when
  * the feed event's content changes.
+ *
+ * Two kinds, both scoped to one feed↔member link:
+ *   `exception` — an exception-feed event that matched no override rule: what
+ *     does it do to this member's baseline day?
+ *   `routing` — an event on a routed shared family calendar that NO link's
+ *     `keep` rules claimed: is it this member's? One row per link of the feed,
+ *     raised and cleared together (they share a `sourceEventId`), so the client
+ *     asks once — "whose is this?" — and one answer resolves the rows for the
+ *     members picked and dismisses the rest.
  */
 export const pendingDecisions = sqliteTable(
   'pending_decisions',
@@ -447,6 +466,9 @@ export const pendingDecisions = sqliteTable(
     feedId: text('feed_id')
       .notNull()
       .references(() => feeds.id, { onDelete: 'cascade' }),
+    kind: text('kind', { enum: PendingDecisionKind.options })
+      .notNull()
+      .default('exception'),
     linkId: text('link_id')
       .notNull()
       .references(() => familyMemberFeeds.id, { onDelete: 'cascade' }),

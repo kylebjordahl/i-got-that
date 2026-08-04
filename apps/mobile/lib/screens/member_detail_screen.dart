@@ -116,18 +116,22 @@ class MemberDetailScreen extends ConsumerWidget {
   Future<void> _confirmRemove(BuildContext context, WidgetRef ref, Member m) async {
     final ok = await showDialog<bool>(
       context: context,
-      builder: (_) => AlertDialog(
+      // `dialogContext`, not this screen's `context` — see the same note on
+      // the unlink dialog in feed_baseline_screen.dart: `context` resolves to
+      // the inner content Navigator, so popping through it would dismiss this
+      // screen and strand the dialog (raised on the outer Navigator) on top.
+      builder: (dialogContext) => AlertDialog(
         title: const Text('Remove from family?'),
         content: Text('Remove ${m.relationName}? Their unified calendar, feed '
             'links, and claimed tasks are deleted. This cannot be undone.'),
         actions: [
           TextButton(
-              onPressed: () => Navigator.of(context).pop(false),
+              onPressed: () => Navigator.of(dialogContext).pop(false),
               child: const Text('Cancel')),
           PillButton(
             label: 'Remove',
             variant: PillVariant.white,
-            onPressed: () => Navigator.of(context).pop(true),
+            onPressed: () => Navigator.of(dialogContext).pop(true),
           ),
         ],
       ),

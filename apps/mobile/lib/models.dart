@@ -219,6 +219,7 @@ class FeedItem {
     required this.id,
     required this.kind,
     required this.mode,
+    this.routed = false,
     this.url,
     this.sourceCalendarName,
     this.timezone,
@@ -229,6 +230,11 @@ class FeedItem {
   final String id;
   final String kind; // 'ics' | 'caldav' | 'google'
   final String mode; // 'standard' | 'exception' | 'busy'
+
+  /// Shared family calendar: one calendar carrying several members' events,
+  /// split per member by each link's `keep` rules. A property of the feed —
+  /// turning it on from any member's copy routes it for everyone linked.
+  final bool routed;
   final String? url;
   final String? sourceCalendarName;
   final String? timezone;
@@ -242,6 +248,21 @@ class FeedItem {
 
   /// Free/busy firewall feed: opaque availability blocks, google-kind only.
   bool get isBusy => mode == 'busy';
+
+  /// A routed shared family calendar (routing only applies to standard feeds).
+  bool get isRouted => mode == 'standard' && routed;
+
+  FeedItem copyWith({String? mode, bool? routed}) => FeedItem(
+        id: id,
+        kind: kind,
+        mode: mode ?? this.mode,
+        routed: routed ?? this.routed,
+        url: url,
+        sourceCalendarName: sourceCalendarName,
+        timezone: timezone,
+        status: status,
+        accountKind: accountKind,
+      );
 
   String get displayName =>
       sourceCalendarName ?? (url != null ? Uri.tryParse(url!)?.host ?? url! : 'Feed');
@@ -258,6 +279,7 @@ class FeedItem {
         id: j['id'] as String,
         kind: j['kind'] as String? ?? 'ics',
         mode: j['mode'] as String,
+        routed: j['routed'] as bool? ?? false,
         url: j['url'] as String?,
         sourceCalendarName: j['sourceCalendarName'] as String?,
         timezone: j['timezone'] as String?,
@@ -375,13 +397,14 @@ class OverrideRule {
   final String matchField; // summary|location|description|any_text|all_day|duration
   final String matchOp; // contains|starts_with|equals|regex|is_true|is_false|gte|lte
   final String? matchValue;
-  final String outcome; // cancel_day|modify_day|ignore|add_event
+  final String outcome; // cancel_day|modify_day|ignore|add_event|keep
   final Map<String, dynamic>? params;
 
   String get outcomeLabel => switch (outcome) {
         'cancel_day' => 'Cancel day',
         'modify_day' => 'Modify day',
         'add_event' => 'Add event',
+        'keep' => 'Route here',
         _ => 'Ignore',
       };
 
@@ -629,6 +652,8 @@ class PendingDecision {
     required this.familyMemberId,
     required this.start,
     required this.allDay,
+    this.kind = 'exception',
+    this.sourceEventId,
     this.end,
     this.summary,
     this.location,
@@ -637,8 +662,18 @@ class PendingDecision {
   final String id;
   final String feedId;
 
-  /// The member-feed link whose override pipeline the event fell through —
-  /// where a new rule to resolve it would need to live.
+  /// What's being asked. `exception` — an unmatched exception-feed event: what
+  /// does it do to this member's day? `routing` — an event on a shared family
+  /// calendar nobody's rules claimed: whose is it? A routing question comes as
+  /// one row per member of the feed, all sharing a [sourceEventId], and is
+  /// asked (and answered) as a single card — see [groupDecisions].
+  final String kind;
+
+  /// The feed event behind the decision; the grouping key for routing rows.
+  final String? sourceEventId;
+
+  /// The member-feed link whose pipeline the event fell through — where a new
+  /// rule to resolve it would need to live.
   final String linkId;
 
   /// The member whose calendar the event would land on.
@@ -649,11 +684,15 @@ class PendingDecision {
   final String? summary;
   final String? location;
 
+  bool get isRouting => kind == 'routing';
+
   factory PendingDecision.fromJson(Map<String, dynamic> j) {
     final allDay = j['allDay'] as bool? ?? false;
     return PendingDecision(
       id: j['id'] as String,
       feedId: j['feedId'] as String,
+      kind: j['kind'] as String? ?? 'exception',
+      sourceEventId: j['sourceEventId'] as String?,
       linkId: j['linkId'] as String,
       familyMemberId: j['familyMemberId'] as String,
       allDay: allDay,
@@ -663,6 +702,41 @@ class PendingDecision {
       location: j['location'] as String?,
     );
   }
+}
+
+/// One card's worth of decision: an exception decision is its own card, while a
+/// routing decision's per-member rows collapse into one — the API asks each
+/// member of the shared calendar separately so each answer is its own row, but
+/// the user is only ever asked "whose is this?" once.
+class DecisionGroup {
+  DecisionGroup(this.rows);
+
+  final List<PendingDecision> rows;
+
+  PendingDecision get first => rows.first;
+  bool get isRouting => first.isRouting;
+
+  /// The links (one per member of the shared calendar) the event can route to.
+  List<String> get candidateLinkIds => [for (final r in rows) r.linkId];
+}
+
+/// Collapse a decision list into cards, preserving the API's ordering (by the
+/// event's start). Routing rows for the same feed event group together.
+List<DecisionGroup> groupDecisions(List<PendingDecision> decisions) {
+  final groups = <DecisionGroup>[];
+  final byKey = <String, DecisionGroup>{};
+  for (final d in decisions) {
+    final key = d.isRouting ? '${d.feedId}:${d.sourceEventId}' : d.id;
+    final existing = byKey[key];
+    if (existing != null) {
+      existing.rows.add(d);
+      continue;
+    }
+    final group = DecisionGroup([d]);
+    byKey[key] = group;
+    groups.add(group);
+  }
+  return groups;
 }
 
 /// One of the two overlapping events in a [Conflict] (for the card copy).

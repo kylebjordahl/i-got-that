@@ -10,6 +10,7 @@ import {
   gte,
   inArray,
   isNull,
+  linkRules,
   lt,
   pendingDecisions,
   sourceEvents,
@@ -26,9 +27,10 @@ import {
 } from '@igt/domain';
 import {
   estimateTravelMinutes,
+  ruleMatches,
+  startOfUtcDay,
   transitionWindow,
   wallTimeToUtc,
-  startOfUtcDay,
 } from '@igt/classification';
 import { Hono } from 'hono';
 import type { HonoEnv } from '../env.js';
@@ -36,6 +38,7 @@ import { requireFamilyMember } from '../middleware/auth.js';
 import { removeClaimEvent, upsertClaimEvent } from '../services/claim.js';
 import { reconcileMemberConflicts, scheduleStamp } from '../services/conflicts.js';
 import { enqueueReconcile, getProductionRegistry, syncFamilyMirror } from '../services/mirror.js';
+import { resynthesizeFeed } from '../services/pipeline.js';
 import { hashCalendarEvent } from '../services/synthesis.js';
 import { buildMemberTasks } from '../services/task-gen.js';
 
@@ -379,7 +382,14 @@ taskRoutes.post('/tasks/:taskId/duration', async (c) => {
 
 // --- Pending decisions -----------------------------------------------------
 
-/** Open pending decisions, with the source event's payload for the card copy. */
+/**
+ * Open pending decisions, with the source event's payload for the card copy.
+ *
+ * `routing` decisions come one per link of the shared calendar — the same
+ * occurrence asked of every member — so they're returned flat and grouped by
+ * `sourceEventId` into one card: "whose is this?", answered once for all of
+ * them (see the resolve route).
+ */
 taskRoutes.get('/pending-decisions', async (c) => {
   const db = getDb(c.env.DB);
   const familyId = c.get('member').familyId;
@@ -387,6 +397,7 @@ taskRoutes.get('/pending-decisions', async (c) => {
     .select({
       id: pendingDecisions.id,
       feedId: pendingDecisions.feedId,
+      kind: pendingDecisions.kind,
       linkId: pendingDecisions.linkId,
       familyMemberId: pendingDecisions.familyMemberId,
       sourceEventId: pendingDecisions.sourceEventId,
@@ -411,10 +422,52 @@ taskRoutes.get('/pending-decisions', async (c) => {
 });
 
 /**
- * Resolve a pending decision: the unmatched event becomes a synthesized event
- * (`pd:` key) on the member's unified calendar with the chosen task types, its
- * tasks are generated immediately, and the member's mirror reconciles. Optional
- * start-time/duration adjustments override the source event's own times.
+ * The event a resolved decision puts on a member's calendar: the source event's
+ * payload, with the optional wall-clock adjustments applied. Times are read in
+ * the feed's zone, exactly as exception baselines are.
+ */
+function resolvedPayload(
+  source: typeof sourceEvents.$inferSelect,
+  d: { startTime?: string; endTime?: string },
+  tz: string,
+) {
+  let dtstart = source.dtstart;
+  let dtend = source.dtend;
+  let allDay = source.allDay;
+  if (d.startTime) {
+    dtstart = wallTimeToUtc(startOfUtcDay(source.dtstart), d.startTime, 8, tz);
+    allDay = false;
+    dtend = dtend && dtend.getTime() > dtstart.getTime() ? dtend : null;
+  }
+  if (d.endTime) {
+    dtend = wallTimeToUtc(startOfUtcDay(dtstart), d.endTime, 15, tz);
+    allDay = false;
+  }
+  return {
+    dtstart,
+    dtend,
+    allDay,
+    summary: source.summary,
+    location: source.location,
+    description: null,
+  };
+}
+
+/**
+ * Resolve a pending decision.
+ *
+ * `exception`: the unmatched event becomes a synthesized event (`pd:` key) on
+ * the member's unified calendar, its tasks are generated immediately, and the
+ * member's mirror reconciles. Optional start/end adjustments override the
+ * source event's own times.
+ *
+ * `routing` (a shared family calendar): `routeToLinkIds` says whose the event
+ * is. The sibling decisions — the same occurrence asked of every other member
+ * of the feed — are answered by the same call: the links picked get the event,
+ * the rest are dismissed, so the question is never asked twice. Without `rule`
+ * that's this event only; with `rule` a `keep` rule is appended to each picked
+ * link so events like it route themselves from here on, and the feed
+ * resynthesizes so the rule takes effect immediately.
  */
 taskRoutes.post('/pending-decisions/:decisionId/resolve', async (c) => {
   const parsed = ResolvePendingDecisionInput.safeParse(
@@ -455,60 +508,140 @@ taskRoutes.post('/pending-decisions/:decisionId/resolve', async (c) => {
     await db.select().from(feeds).where(eq(feeds.id, decision.feedId)).limit(1)
   )[0];
   const tz = feed?.timezone ?? 'UTC';
+  const d = parsed.data;
+  const resolvedAt = new Date();
+
+  /** Accept the occurrence onto one member's calendar as a `pd:` event. */
+  const acceptOnto = async (row: typeof pendingDecisions.$inferSelect) => {
+    const payload = resolvedPayload(source, d, tz);
+    await db.insert(calendarEvents).values({
+      familyId: me.familyId,
+      familyMemberId: row.familyMemberId,
+      provenance: 'synthesized',
+      synthKey: `pd:${row.id}`,
+      linkId: row.linkId,
+      sourceEventId: row.sourceEventId,
+      pendingDecisionId: row.id,
+      contentHash: hashCalendarEvent(payload),
+      ...payload,
+    });
+    await db
+      .update(pendingDecisions)
+      .set({ status: 'resolved', resolvedByMemberId: me.id, resolvedAt })
+      .where(eq(pendingDecisions.id, row.id));
+  };
+
+  if (decision.kind === 'routing') {
+    if (!d.routeToLinkIds) return c.json({ error: 'route_targets_required' }, 400);
+    // Writing a rule is a feed-config change, so it's admin-only — the one-off
+    // routing beside it stays open to any member, like every other decision.
+    if (d.rule && !me.isAdmin) return c.json({ error: 'forbidden' }, 403);
+
+    // The same occurrence, asked of every member of this shared calendar.
+    const siblings = (
+      await db
+        .select()
+        .from(pendingDecisions)
+        .where(
+          and(
+            eq(pendingDecisions.feedId, decision.feedId),
+            eq(pendingDecisions.sourceEventId, decision.sourceEventId),
+            eq(pendingDecisions.kind, 'routing'),
+            eq(pendingDecisions.status, 'pending'),
+          ),
+        )
+    ).filter((row) => row.familyId === me.familyId);
+    const byLink = new Map(siblings.map((row) => [row.linkId, row]));
+    const chosen = [...new Set(d.routeToLinkIds)].map((linkId) => byLink.get(linkId));
+    if (chosen.some((row) => !row)) return c.json({ error: 'link_not_found' }, 404);
+    const targets = chosen as (typeof pendingDecisions.$inferSelect)[];
+
+    if (d.rule) {
+      // A rule that doesn't match the event it was created from would route
+      // nothing and leave the decision to be re-raised — refuse rather than
+      // silently no-op. (Future events still have to match on their own.)
+      const matcher = {
+        matchField: d.rule.matchField,
+        matchOp: d.rule.matchOp,
+        matchValue: d.rule.matchValue ?? null,
+      };
+      const occurrence = {
+        summary: source.summary,
+        location: source.location,
+        description: null,
+        allDay: source.allDay,
+        dtstart: source.dtstart,
+        dtend: source.dtend,
+      };
+      if (!ruleMatches(occurrence, matcher)) {
+        return c.json({ error: 'rule_does_not_match' }, 400);
+      }
+      for (const row of targets) {
+        const existing = await db
+          .select({ id: linkRules.id })
+          .from(linkRules)
+          .where(eq(linkRules.linkId, row.linkId));
+        await db.insert(linkRules).values({
+          familyId: me.familyId,
+          linkId: row.linkId,
+          position: existing.length,
+          ...matcher,
+          outcome: 'keep',
+        });
+      }
+    }
+
+    for (const row of siblings) {
+      if (targets.some((t) => t.id === row.id)) {
+        // A rule already puts the event on this calendar (as an `ev:` event on
+        // the next synthesis) — a `pd:` copy on top would double-book the day.
+        if (d.rule) {
+          await db
+            .update(pendingDecisions)
+            .set({ status: 'resolved', resolvedByMemberId: me.id, resolvedAt })
+            .where(eq(pendingDecisions.id, row.id));
+        } else {
+          await acceptOnto(row);
+        }
+        continue;
+      }
+      // Not this member's event: close the question so it isn't asked again.
+      await db
+        .update(pendingDecisions)
+        .set({ status: 'dismissed', dismissedAt: resolvedAt })
+        .where(eq(pendingDecisions.id, row.id));
+    }
+
+    if (d.rule && feed) {
+      await resynthesizeFeed(c, db, feed);
+    } else {
+      for (const row of targets) {
+        await reconcileMemberConflicts(db, row.familyMemberId);
+        await buildMemberTasks(db, row.familyMemberId);
+      }
+      enqueueReconcile(c, { kind: 'family', familyId: me.familyId });
+    }
+    return c.json({ ok: true, routedTo: targets.map((t) => t.familyMemberId) });
+  }
+
+  if (d.routeToLinkIds || d.rule) {
+    return c.json({ error: 'not_a_routing_decision' }, 400);
+  }
 
   // Resolving accepts the event onto the calendar as a normal scheduled day;
   // task typing then flows through the member's task rules like any event.
-  // Optional adjustments override the source event's own times (wall-clock in
-  // the feed's zone, matching baseline times).
-  const d = parsed.data;
-  let dtstart = source.dtstart;
-  let dtend = source.dtend;
-  let allDay = source.allDay;
-  if (d.startTime) {
-    dtstart = wallTimeToUtc(startOfUtcDay(source.dtstart), d.startTime, 8, tz);
-    allDay = false;
-    dtend = dtend && dtend.getTime() > dtstart.getTime() ? dtend : null;
-  }
-  if (d.endTime) {
-    dtend = wallTimeToUtc(startOfUtcDay(dtstart), d.endTime, 15, tz);
-    allDay = false;
-  }
-
-  const payload = {
-    dtstart,
-    dtend,
-    allDay,
-    summary: source.summary,
-    location: source.location,
-    description: null,
-  };
-  await db.insert(calendarEvents).values({
-    familyId: me.familyId,
-    familyMemberId: decision.familyMemberId,
-    provenance: 'synthesized',
-    synthKey: `pd:${decision.id}`,
-    linkId: decision.linkId,
-    sourceEventId: decision.sourceEventId,
-    pendingDecisionId: decision.id,
-    contentHash: hashCalendarEvent(payload),
-    ...payload,
-  });
-  await db
-    .update(pendingDecisions)
-    .set({
-      status: 'resolved',
-      resolvedByMemberId: me.id,
-      resolvedAt: new Date(),
-    })
-    .where(eq(pendingDecisions.id, decision.id));
-
+  await acceptOnto(decision);
   await reconcileMemberConflicts(db, decision.familyMemberId);
   await buildMemberTasks(db, decision.familyMemberId);
   enqueueReconcile(c, { kind: 'member', memberId: decision.familyMemberId });
   return c.json({ ok: true });
 });
 
-/** Dismiss a pending decision — the event stays off the unified calendar. */
+/**
+ * Dismiss a pending decision — the event stays off the unified calendar. For a
+ * `routing` decision that's the whole card's answer ("nobody's"), so the sibling
+ * rows asking about the same occurrence go with it.
+ */
 taskRoutes.post('/pending-decisions/:decisionId/dismiss', async (c) => {
   const db = getDb(c.env.DB);
   const me = c.get('member');
@@ -527,10 +660,21 @@ taskRoutes.post('/pending-decisions/:decisionId/dismiss', async (c) => {
   if (!decision) return c.json({ error: 'not_found' }, 404);
   if (decision.status !== 'pending') return c.json({ error: 'not_pending' }, 409);
 
+  const dismissedAt = new Date();
+  const scope =
+    decision.kind === 'routing'
+      ? and(
+          eq(pendingDecisions.familyId, me.familyId),
+          eq(pendingDecisions.feedId, decision.feedId),
+          eq(pendingDecisions.sourceEventId, decision.sourceEventId),
+          eq(pendingDecisions.kind, 'routing'),
+          eq(pendingDecisions.status, 'pending'),
+        )
+      : eq(pendingDecisions.id, decision.id);
   await db
     .update(pendingDecisions)
-    .set({ status: 'dismissed', dismissedAt: new Date() })
-    .where(eq(pendingDecisions.id, decision.id));
+    .set({ status: 'dismissed', dismissedAt })
+    .where(scope);
   return c.json({ ok: true });
 });
 

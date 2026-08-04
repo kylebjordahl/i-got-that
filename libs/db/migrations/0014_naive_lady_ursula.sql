@@ -1,1 +1,0 @@
-ALTER TABLE `calendar_events` ADD `travel_time_override_min` integer;

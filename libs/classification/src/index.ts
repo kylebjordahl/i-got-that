@@ -14,10 +14,13 @@ import {
  * Pure synthesis + task-generation engine. Two decoupled stages, no I/O, and —
  * per the round-6 review — two independent rule pipelines:
  *
- *  Stage A — synthesis: feed occurrences + a link's OVERRIDE pipeline decide
- *  the SCHEDULE of events on the member's unified calendar (cancel / modify /
- *  ignore the covered baseline day, or add the event alongside it). Unmatched
- *  exception events become pending decisions — the system never guesses.
+ *  Stage A — synthesis: feed occurrences + a link's rule pipeline decide the
+ *  SCHEDULE of events on the member's unified calendar (cancel / modify /
+ *  ignore the covered baseline day, or add the event alongside it; on a routed
+ *  shared family calendar, whether to keep the event for that member at all).
+ *  Events the pipeline can't place become pending decisions — an unmatched
+ *  exception event, or an event no member's routing rules claimed. The system
+ *  never guesses.
  *
  *  Stage B — task generation: a member's TASK-RULE pipeline decides what
  *  claimable tasks each event spawns (a transition = drop-off + pickup, or an
@@ -257,7 +260,18 @@ interface ModifyDayParamsLike {
   dayEnd?: string;
 }
 
-const sameText = (a: string | null, b: string | null): boolean =>
+/**
+ * All a feed event needs to know about the link it came through: which link it
+ * is, and the place that link declares (if any). Both the full `LinkConfigLike`
+ * and a routed feed's lighter link satisfy it.
+ */
+interface EventLinkPlace {
+  id: string;
+  location?: string | null;
+  locationGeo?: GeoLocation | null;
+}
+
+const sameText = (a: string | null | undefined, b: string | null | undefined): boolean =>
   !!a && !!b && a.trim().toLowerCase() === b.trim().toLowerCase();
 
 /**
@@ -268,7 +282,7 @@ const sameText = (a: string | null, b: string | null): boolean =>
  * while the family has pinned that same venue on the link.
  */
 function occurrenceGeo(
-  link: LinkConfigLike,
+  link: EventLinkPlace,
   occ: SourceOccurrence,
 ): GeoLocation | null {
   if (occ.locationGeo) return occ.locationGeo;
@@ -277,7 +291,7 @@ function occurrenceGeo(
 }
 
 function occurrenceEvent(
-  link: LinkConfigLike,
+  link: EventLinkPlace,
   occ: SourceOccurrence,
   matchedRuleId: string | null = null,
 ): EventIntent {
@@ -304,12 +318,63 @@ export interface SynthesisWindow {
  * Standard feed: every occurrence lands on the unified calendar as-is. A
  * standard feed's events mean what they say, so there are no schedule overrides
  * to apply and nothing ever pends. Task typing is decided later by task rules.
+ * (A standard feed marked `routed` goes through `synthesizeRouted` instead —
+ * see there for the shared-family-calendar case.)
  */
 export function synthesizeStandard(
   link: LinkConfigLike,
   occurrences: SourceOccurrence[],
 ): SynthesisResult {
   return { events: occurrences.map((o) => occurrenceEvent(link, o)), pending: [] };
+}
+
+/** One link of a routed feed, with the `keep` pipeline that filters it. */
+export interface RoutedLink extends EventLinkPlace {
+  id: string;
+  rules: OverrideRuleLike[];
+}
+
+export interface RoutedSynthesisResult {
+  /** Link id → the occurrences routed onto that member's calendar. */
+  byLink: Map<string, EventIntent[]>;
+  /** Occurrences no link kept — one routing decision per link of the feed. */
+  unrouted: PendingIntent[];
+}
+
+/**
+ * Routed feed — the shared family calendar: ONE calendar carrying events for
+ * several members, split back out per member. Each link's `keep` rules are a
+ * filter over the same occurrence set (not a schedule override), so unlike
+ * every other mode this runs across all of a feed's links at once: an
+ * occurrence lands on the calendar of every member whose link keeps it, and an
+ * occurrence NO link keeps is unrouted — the system won't guess whose it is, so
+ * it becomes a routing decision instead (raised on each link, answered once).
+ *
+ * Keeping is per link and independent: two siblings' rules can both match the
+ * same "Swim practice" and both get it. Rule order within a link still decides
+ * which rule is credited (`matchedRuleId`), but with one outcome the answer is
+ * binary — kept or not.
+ */
+export function synthesizeRouted(
+  links: RoutedLink[],
+  occurrences: SourceOccurrence[],
+): RoutedSynthesisResult {
+  const byLink = new Map<string, EventIntent[]>(links.map((l) => [l.id, []]));
+  const unrouted: PendingIntent[] = [];
+  for (const occ of occurrences) {
+    let kept = false;
+    for (const link of links) {
+      const rule = firstMatch(
+        occ,
+        link.rules.filter((r) => r.outcome === 'keep'),
+      );
+      if (!rule) continue;
+      byLink.get(link.id)!.push(occurrenceEvent(link, occ, rule.id));
+      kept = true;
+    }
+    if (!kept) unrouted.push({ sourceEventId: occ.id, contentHash: occ.contentHash });
+  }
+  return { byLink, unrouted };
 }
 
 /**

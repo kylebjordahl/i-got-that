@@ -20,13 +20,19 @@ import {
   startOfUtcDay,
   synthesizeBusy,
   synthesizeException,
+  synthesizeRouted,
   synthesizeStandard,
   type EventIntent,
   type OverrideRuleLike,
+  type RoutedSynthesisResult,
   type SourceOccurrence,
   type SynthesisResult as EngineResult,
 } from '@igt/classification';
-import { geoKey, type GeoLocation } from '@igt/domain';
+import {
+  geoKey,
+  type GeoLocation,
+  type PendingDecisionKind,
+} from '@igt/domain';
 
 type FeedRow = typeof feeds.$inferSelect;
 type LinkRow = typeof familyMemberFeeds.$inferSelect;
@@ -79,6 +85,18 @@ export function hashCalendarEvent(e: {
   let h = 5381;
   for (let i = 0; i < parts.length; i++) h = ((h << 5) + h) ^ parts.charCodeAt(i);
   return (h >>> 0).toString(16);
+}
+
+/**
+ * Is this feed a routed shared family calendar? Routing is a property of the
+ * feed (flip it once, from any member's copy, and every linked member routes),
+ * and only meaningful where events mean what they say — an exception feed's are
+ * already schedule overrides, a busy feed's are opaque intervals. The `mode`
+ * guard is belt-and-braces for a row whose mode moved without the flag being
+ * cleared.
+ */
+export function isRouted(feed: Pick<FeedRow, 'mode' | 'routed'>): boolean {
+  return feed.mode === 'standard' && feed.routed;
 }
 
 function toOccurrence(e: EventRow): SourceOccurrence {
@@ -151,24 +169,39 @@ async function upsertIntent(
 }
 
 /**
- * Reconcile one link's pending decisions with what the engine reported.
- * Resolved/dismissed rows persist (so we don't re-raise them) unless the source
- * event's content changed — then the decision reopens and any event created by
- * the stale resolution is removed. Pending rows whose occurrence is now handled
- * by a rule are cleaned up.
+ * Reconcile one link's pending decisions of a given kind with what the engine
+ * reported. Resolved/dismissed rows persist (so we don't re-raise them) unless
+ * the source event's content changed — then the decision reopens and any event
+ * created by the stale resolution is removed. Pending rows whose occurrence is
+ * now handled by a rule are cleaned up.
  */
 async function reconcilePending(
   db: Db,
   feed: FeedRow,
   link: LinkRow,
   engineResult: EngineResult,
+  kind: PendingDecisionKind = 'exception',
 ): Promise<number> {
-  const existing = await db
+  const all = await db
     .select()
     .from(pendingDecisions)
     .where(eq(pendingDecisions.linkId, link.id));
-  const existingBySource = new Map(existing.map((p) => [p.sourceEventId, p]));
   const reportedSourceIds = new Set(engineResult.pending.map((p) => p.sourceEventId));
+
+  // A feed that changed shape (exception ⇄ routed) leaves rows asking a
+  // question that no longer exists. Drop this link's rows of the other kind
+  // when they'd either sit in the queue forever (still pending) or collide with
+  // a row we're about to raise for the same occurrence — the (link, source)
+  // unique index means the old row would block the new one outright.
+  for (const prior of all) {
+    if (prior.kind === kind) continue;
+    if (prior.status === 'pending' || reportedSourceIds.has(prior.sourceEventId)) {
+      await db.delete(pendingDecisions).where(eq(pendingDecisions.id, prior.id));
+    }
+  }
+
+  const existing = all.filter((p) => p.kind === kind);
+  const existingBySource = new Map(existing.map((p) => [p.sourceEventId, p]));
 
   let open = 0;
   for (const intent of engineResult.pending) {
@@ -177,6 +210,7 @@ async function reconcilePending(
       await db.insert(pendingDecisions).values({
         familyId: feed.familyId,
         feedId: feed.id,
+        kind,
         linkId: link.id,
         familyMemberId: link.familyMemberId,
         sourceEventId: intent.sourceEventId,
@@ -218,7 +252,8 @@ async function reconcilePending(
   }
 
   // A pending row whose occurrence the engine no longer reports is now handled
-  // (a rule matched after a config change) or its source vanished (cascade).
+  // (a rule matched after a config change — for routing, someone's rules now
+  // claim the event) or its source vanished (cascade).
   for (const prior of existing) {
     if (prior.status === 'pending' && !reportedSourceIds.has(prior.sourceEventId)) {
       await db.delete(pendingDecisions).where(eq(pendingDecisions.id, prior.id));
@@ -235,6 +270,11 @@ async function reconcilePending(
  * resynthesize without duplicating), and keeps pending decisions in step.
  * Task typing is decided later, by the task-rule pipeline. Events from resolved
  * decisions (`pd:` keys) are owned by the resolution flow, not by this reconcile.
+ *
+ * A routed feed (shared family calendar) is the one mode whose engine pass runs
+ * across all the links at once — routing an occurrence is a question about the
+ * whole feed ("whose is this?"), not about one member's baseline — so it's
+ * computed up front and then handed to each link in turn.
  */
 export async function synthesizeFeed(
   db: Db,
@@ -285,9 +325,27 @@ export async function synthesizeFeed(
         links.map((l) => l.id),
       ),
     );
+  const rulesFor = (linkId: string) =>
+    allRules.filter((r) => r.linkId === linkId).map(toRuleLike);
+
+  // Routed feeds are decided feed-wide before the per-link pass: every link's
+  // `keep` pipeline sees the same occurrences, and an occurrence no link keeps
+  // is unrouted — one routing decision per link, answered once.
+  const routing: RoutedSynthesisResult | null =
+    isRouted(feed)
+      ? synthesizeRouted(
+          links.map((l) => ({
+            id: l.id,
+            rules: rulesFor(l.id),
+            location: l.location,
+            locationGeo: l.locationGeo,
+          })),
+          occurrences,
+        )
+      : null;
 
   for (const link of links) {
-    const rules = allRules.filter((r) => r.linkId === link.id).map(toRuleLike);
+    const rules = rulesFor(link.id);
     const linkConfig = {
       id: link.id,
       weekdayMask: link.weekdayMask,
@@ -298,8 +356,12 @@ export async function synthesizeFeed(
       baselineSummary: baselineSummaryFor(feed),
     };
 
-    const engineResult =
-      feed.mode === 'busy'
+    const engineResult: EngineResult = routing
+      ? {
+          events: routing.byLink.get(link.id) ?? [],
+          pending: routing.unrouted,
+        }
+      : feed.mode === 'busy'
         ? synthesizeBusy(linkConfig, occurrences)
         : feed.mode === 'exception'
           ? synthesizeException(linkConfig, occurrences, rules, window, tz)
@@ -341,8 +403,9 @@ export async function synthesizeFeed(
     // Occurrences a human already accepted onto the calendar (a `pd:` event from
     // a resolved decision, possibly with adjusted times). If a rule written
     // *afterwards* now matches one — an `add_event` rule for the same community
-    // dinner someone resolved by hand last week — the human's event stands and
-    // the engine's `ev:` copy is skipped, so the day doesn't show it twice. Only
+    // dinner someone resolved by hand last week, or a `keep` rule for the swim
+    // practice someone routed here one-off — the human's event stands and the
+    // engine's `ev:` copy is skipped, so the day doesn't show it twice. Only
     // `ev:` intents are skipped: a `bl:` baseline day carries the matched
     // occurrence's id too, and the day itself must still be synthesized.
     const humanAccepted = new Set(
@@ -370,7 +433,13 @@ export async function synthesizeFeed(
       }
     }
 
-    result.pendingOpen += await reconcilePending(db, feed, link, engineResult);
+    result.pendingOpen += await reconcilePending(
+      db,
+      feed,
+      link,
+      engineResult,
+      routing ? 'routing' : 'exception',
+    );
   }
 
   // Stamp every processed occurrence so "needs synthesis" queries stay cheap.

@@ -19,12 +19,19 @@ import 'task_actions_sheet.dart';
 // see `_hourPx`, `_zoom` — so nothing that positions against the clock may use
 // this constant directly.
 const _baseHourPx = 42.0;
-// How far the pinch goes: a whole 24-hour day in one screen at the bottom end,
-// room for a 15-minute appointment to show its own label at the top.
-const _minZoom = 0.6;
+// How far the pinch goes *in*: room for a 15-minute appointment to show its own
+// label. How far out isn't a constant — the widest zoom is whatever fits the
+// day's 24 hours between the top of the grid and the floating nav, so it
+// depends on the viewport (see `_minZoom`).
 const _maxZoom = 3.0;
-// Below this hour height the hour labels would collide, so only every other one
-// is drawn (the gridlines all stay).
+// The zoom floor to use before the grid's viewport has been measured (the first
+// frame). Low enough that it never clamps the default 1x.
+const _unmeasuredMinZoom = 0.5;
+// The grid always draws a whole day, midnight to midnight, whatever the day
+// holds — zoomed all the way out, that day is exactly what fits above the nav.
+const _dayHours = 24;
+// Below this hour height the hour labels would collide, so only every second
+// (or third…) one is drawn — see `_labelStep`. The gridlines all stay.
 const _sparseLabelsBelow = 34.0;
 const _labelWidth = 46.0;
 // Edge-tab (drop-off / pick-up) height — snug around the compact label + owner
@@ -51,11 +58,20 @@ const _nestIndent = 0.045;
 const _nestHeaderPx = 20.0;
 // How deep the cascade goes before a contained event takes a column instead.
 const _maxNestDepth = 3;
-// The grid always shows at least this window, then expands to fit the day's
-// events (and the now-line) so nothing is clipped — the page scrolls to reveal
-// the extra hours.
+// The grid runs midnight to midnight, but it *opens* scrolled to this hour —
+// the rest of the day is a scroll (or a pinch) away.
 const _defaultStartHour = 7;
-const _defaultEndHour = 19; // 7 PM
+// A safe margin between the closing midnight and the top of the floating nav
+// pill, so the day's last gridline never sits under it.
+const _midnightMargin = 12.0;
+// Slack below the last thing on the grid when something runs past midnight, so
+// its block doesn't end flush with the bottom of the scroll.
+const _overrunPad = 12.0;
+// ...and how far past that midnight the grid will grow to hold it. A late
+// night out ending at 2 AM draws whole; something still running six hours into
+// the next day is that day's business, so its block stops at the tail's end
+// rather than stretching this day's grid over two.
+const _maxOverrunHours = 6;
 // A block is only ever as tall as its real duration — short segments are no
 // longer inflated to a fixed height (which overlapped their neighbours on the
 // split calendars from #98). The only floor left is one label line, so even a
@@ -133,16 +149,72 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
   bool _onlyMyKids = false;
   bool _refreshingFeeds = false;
 
-  // The visible hour window for the current day (computed each build).
-  int _gridStart = _defaultStartHour;
-  int _gridEnd = _defaultEndHour;
-  double get _gridHeight => (_gridEnd - _gridStart) * _hourPx;
+  // --- The time axis ------------------------------------------------------
+  //
+  // The grid always draws the whole day, midnight (top) to midnight, then keeps
+  // going past that closing midnight — far enough to reach the bottom of the
+  // screen under the floating nav, and further still when something on the day
+  // runs into the next one (a block never stops at the nav; it draws behind it).
+  //
+  //   0 ─── the day's opening midnight, the top of the scroll
+  //   │
+  //   │ _dayPx = 24 hours at the current zoom
+  //   │
+  //   24 ── the closing midnight, pinned `_navClearance` above the bottom of
+  //   │     the viewport once the grid is scrolled all the way down
+  //   └──── _tailPx: the same grid, carrying on behind the nav
+
+  // How much of the grid's viewport the floating nav pill covers, plus the
+  // margin the closing midnight keeps above it. Measured from the MediaQuery
+  // each build (it moves with the device's home-indicator inset).
+  double _navClearance = kBottomNavClearance + _midnightMargin;
+  // The grid's own viewport height (the box below the day strip), captured in
+  // layout: the zoom floor is "the whole day fits in here", so it can't be a
+  // constant.
+  double _viewportH = 0;
+  // How far the grid carries on past the closing midnight (computed each build).
+  double _tailPx = _midnightMargin;
+
+  double get _dayPx => _dayHours * _hourPx;
+  double get _gridHeight => _dayPx + _tailPx;
 
   // Pinch-to-zoom on the time axis. Kept in this State, which the shell's
   // IndexedStack holds for the whole session, so the zoom you set survives
   // switching tabs and changing days.
   double _zoom = 1.0;
-  double get _hourPx => _baseHourPx * _zoom;
+  double get _hourPx => _baseHourPx * _effectiveZoom;
+  double get _effectiveZoom => _zoom.clamp(_minZoom, _maxZoom);
+
+  /// The widest the time axis ever goes: the zoom at which all 24 hours fit
+  /// between the top of the grid and the safe line above the nav. Zooming out
+  /// past it would both hide part of the day *and* lift the grid's bottom off
+  /// the screen, so it's the floor — on a tall screen, where a whole day fits
+  /// at more than 1x, it's the floor that stretches the grid to fill the page.
+  double get _minZoom {
+    if (_viewportH <= 0) return _unmeasuredMinZoom;
+    final fit = (_viewportH - _navClearance) / (_dayHours * _baseHourPx);
+    if (!fit.isFinite || fit <= 0) return _unmeasuredMinZoom;
+    return fit > _maxZoom ? _maxZoom : fit;
+  }
+
+  /// How many hours apart the gridline labels are drawn: every hour while
+  /// they'd fit, then every second / third as the zoom takes the lines closer
+  /// together than a label is tall.
+  int get _labelStep {
+    var step = 1;
+    while (step < 6 && _hourPx * step < _sparseLabelsBelow) {
+      step++;
+    }
+    return step;
+  }
+
+  /// Where a local time lands on the grid, measured from the selected day's
+  /// opening midnight. Times on the next day keep going past the closing
+  /// midnight (into the tail) rather than wrapping back to the top.
+  double _yFor(DateTime local) {
+    final days = _dateOnly(local).difference(_selected).inDays;
+    return (days * _dayHours + local.hour + local.minute / 60) * _hourPx;
+  }
 
   // Live pinch: the zoom it started from, plus the hour under the pinch's focal
   // point and where that point was on screen — the grid is re-scrolled after
@@ -153,23 +225,28 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
 
   void _onPinchStart(ScaleStartDetails d) {
     if (d.pointerCount < 2) return;
-    _pinchStartZoom = _zoom;
-    _pinchAnchorY = d.localFocalPoint.dy;
+    _pinchStartZoom = _effectiveZoom;
+    // The recognizer lives inside the scroll view, so its local focal point is
+    // measured from the top of the *grid*, not of the window: that's the hour
+    // under the fingers directly, and taking the scroll offset back off it says
+    // where on screen that hour was.
+    final gridY = d.localFocalPoint.dy;
     final offset = _gridScroll.hasClients ? _gridScroll.offset : 0.0;
-    _pinchAnchorHour = _gridStart + (offset + _pinchAnchorY) / _hourPx;
+    _pinchAnchorHour = gridY / _hourPx;
+    _pinchAnchorY = gridY - offset;
   }
 
   void _onPinchUpdate(ScaleUpdateDetails d) {
     final from = _pinchStartZoom;
     if (from == null || d.pointerCount < 2) return;
     final next = (from * d.verticalScale).clamp(_minZoom, _maxZoom);
-    if (next == _zoom) return;
+    if (next == _effectiveZoom) return;
     setState(() => _zoom = next);
     // The grid's extent only exists after this frame's layout, so the
     // correcting scroll has to wait for it.
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted || !_gridScroll.hasClients) return;
-      final target = (_pinchAnchorHour - _gridStart) * _hourPx - _pinchAnchorY;
+      final target = _pinchAnchorHour * _hourPx - _pinchAnchorY;
       _gridScroll
           .jumpTo(target.clamp(0.0, _gridScroll.position.maxScrollExtent));
     });
@@ -178,43 +255,39 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
   void _onPinchEnd(ScaleEndDetails d) => _pinchStartZoom = null;
 
   // The time grid scrolls internally (the day chips stay put). It opens showing
-  // the default 7 AM–6 PM window even when the grid has expanded to earlier hours.
+  // the 7 AM window; from there the scroll (like the zoom) is the user's.
   final ScrollController _gridScroll = ScrollController();
-  String? _scrolledKey;
+  bool _needsDefaultScroll = true;
 
-  /// Scroll the grid so [_defaultStartHour] (7 AM) sits at the top of the window.
-  /// Keyed on the day *and* the computed range so it re-defaults once the day's
-  /// tasks finish loading (the first, empty build has no early hours yet).
+  /// Scroll the grid so [_defaultStartHour] (7 AM) sits at the top of the
+  /// window. Only on the first build and when "Today" asks for it again:
+  /// changing day — by swipe or by chip — keeps whatever part of the timeline
+  /// you were looking at, the same way it keeps your zoom.
   void _scheduleDefaultScroll() {
-    final key = '$_selected|$_gridStart';
-    if (_scrolledKey == key) return;
-    _scrolledKey = key;
-    final target = ((_defaultStartHour - _gridStart).clamp(0, 24)) * _hourPx;
+    if (!_needsDefaultScroll) return;
+    _needsDefaultScroll = false;
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!_gridScroll.hasClients) return;
+      if (!mounted || !_gridScroll.hasClients) return;
+      // Read the hour height inside the callback: the zoom floor depends on a
+      // viewport this frame's layout is what measures.
+      final target = _defaultStartHour * _hourPx;
       _gridScroll.jumpTo(target.clamp(0.0, _gridScroll.position.maxScrollExtent));
     });
   }
 
-  /// Expand the default window to fit every item on the day (+ the now-line),
-  /// so nothing is clipped and the whole day is reachable by scrolling.
-  void _computeRange(List<_PlanItem> dayItems) {
-    var start = _defaultStartHour;
-    var end = _defaultEndHour;
+  /// How far the grid keeps drawing past the closing midnight: always enough to
+  /// reach the bottom of the screen behind the nav, and more when something on
+  /// the day runs into the next one so its block is drawn whole.
+  void _computeTail(List<_PlanItem> dayItems) {
+    final cap = _maxOverrunHours * _hourPx;
+    var overrun = 0.0;
     for (final it in dayItems) {
-      final l = it.start.toLocal();
-      if (l.hour < start) start = l.hour;
-      final endL = it.end?.toLocal();
-      final endH = endL != null && endL.isAfter(l) ? endL.hour + 1 : l.hour + 1;
-      if (endH > end) end = endH;
+      final end = it.end?.toLocal();
+      if (end == null || !end.isAfter(it.start)) continue;
+      final past = _yFor(end) + _overrunPad - _dayPx;
+      if (past > overrun) overrun = past > cap ? cap : past;
     }
-    final now = DateTime.now();
-    if (_selected == _dateOnly(now)) {
-      if (now.hour < start) start = now.hour;
-      if (now.hour + 1 > end) end = now.hour + 1;
-    }
-    _gridStart = start.clamp(0, 23);
-    _gridEnd = end.clamp(_gridStart + 1, 24);
+    _tailPx = overrun > _navClearance ? overrun : _navClearance;
   }
 
   // The day scroller is an effectively-infinite lazy list centred on [_today]:
@@ -387,14 +460,13 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
         if (!blockEventIds.contains(entry.key)) ...entry.value
     ];
 
-    // Range must cover the tab times too, not just the block times.
-    _computeRange([
+    // The tail must clear the tab times too, not just the block times.
+    final spanItems = [
       ...dayItems,
       for (final t in looseTransitions) _PlanItem.task(t),
       for (final list in tabsByEvent.values)
         for (final t in list) _PlanItem.task(t),
-    ]);
-    final placed = _layout(dayItems);
+    ];
 
     // Double-booked indicators (§8a): a coral collision seam + pulsing chip over
     // each pending conflict whose overlap lands on the selected day. Hidden for a
@@ -423,8 +495,14 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
       ));
     }
 
-    // Default the grid's scroll to the 7 AM–6 PM window (once per day change).
-    _scheduleDefaultScroll();
+    // The nav pill floats over the bottom of the grid: the closing midnight is
+    // pinned above it, and the grid carries on behind it. Measured here because
+    // the device's home-indicator inset is part of how high the pill sits (the
+    // nav is inside a SafeArea and adds 40% of that inset again — see
+    // [AppBottomNav]).
+    _navClearance = MediaQuery.of(context).padding.bottom * 1.4 +
+        kBottomNavClearance +
+        _midnightMargin;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -449,67 +527,91 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
         // the vertical drag the ScrollView already claims for its own axis, and
         // a two-finger pinch zooms the time axis.
         Expanded(
-          child: GestureDetector(
-            behavior: HitTestBehavior.translucent,
-            onHorizontalDragEnd: (details) {
-              final v = details.primaryVelocity ?? 0.0;
-              if (v.abs() < _swipeVelocityThreshold) return;
-              _shiftDay(v < 0 ? 1 : -1);
-            },
-            child: RawGestureDetector(
+          child: LayoutBuilder(builder: (context, viewport) {
+            // Everything on the time axis is measured against this box: the
+            // zoom floor fits the day inside it, and the grid's tail runs from
+            // the closing midnight to its bottom edge. So the viewport has to
+            // be known before a single block is positioned — hence the layout,
+            // the tail and the opening scroll all being resolved in here.
+            _viewportH = viewport.maxHeight;
+            _computeTail(spanItems);
+            final placed = _layout(dayItems);
+            _scheduleDefaultScroll();
+            return GestureDetector(
               behavior: HitTestBehavior.translucent,
-              gestures: {
-                // A raw recognizer, not `GestureDetector.onScale*`: the stock
-                // scale recognizer claims the arena on a *one*-finger drag once
-                // it passes the pan slop, which would take every scroll and
-                // day-swipe away from the widgets that own them.
-                _PinchRecognizer:
-                    GestureRecognizerFactoryWithHandlers<_PinchRecognizer>(
-                  _PinchRecognizer.new,
-                  (r) => r
-                    ..onStart = _onPinchStart
-                    ..onUpdate = _onPinchUpdate
-                    ..onEnd = _onPinchEnd,
-                ),
+              onHorizontalDragEnd: (details) {
+                final v = details.primaryVelocity ?? 0.0;
+                if (v.abs() < _swipeVelocityThreshold) return;
+                _shiftDay(v < 0 ? 1 : -1);
               },
               child: Stack(
-              children: [
-                SingleChildScrollView(
-                  controller: _gridScroll,
-                  padding: const EdgeInsets.fromLTRB(22, 0, 22, 130),
-                  child: AnimatedSwitcher(
-                    duration: const Duration(milliseconds: 260),
-                    switchInCurve: Curves.easeOutCubic,
-                    switchOutCurve: Curves.easeOutCubic,
-                    transitionBuilder: (child, animation) {
-                      final incoming = child.key == ValueKey(_selected);
-                      final dx = (incoming ? _slideDirection : -_slideDirection).toDouble();
-                      return SlideTransition(
-                        position: Tween<Offset>(begin: Offset(dx, 0), end: Offset.zero)
-                            .animate(animation),
-                        child: child,
-                      );
-                    },
-                    layoutBuilder: (currentChild, previousChildren) => Stack(
-                      alignment: Alignment.topCenter,
-                      children: [
-                        ...previousChildren,
-                        if (currentChild != null) currentChild,
-                      ],
-                    ),
-                    child: KeyedSubtree(
-                      key: ValueKey(_selected),
-                      child: _grid(placed, byId, tabsByEvent, ownersByEvent,
-                          orphanTabs, eventsById, conflictOverlays),
+                children: [
+                  SingleChildScrollView(
+                    controller: _gridScroll,
+                    // No bottom padding to clear the nav: the grid itself
+                    // carries on past the closing midnight and is drawn behind
+                    // the pill, which is what pins that midnight above it (see
+                    // `_tailPx`).
+                    padding: const EdgeInsets.symmetric(horizontal: 22),
+                    // The pinch recognizer sits *inside* the scroll view, so
+                    // its focal point is an hour on the grid rather than a
+                    // point on the window — and so a two-finger gesture is
+                    // claimed by the zoom before the Scrollable's own drag can
+                    // take it (see [_PinchRecognizer]).
+                    child: RawGestureDetector(
+                      behavior: HitTestBehavior.translucent,
+                      gestures: {
+                        // A raw recognizer, not `GestureDetector.onScale*`: the
+                        // stock scale recognizer claims the arena on a *one*-
+                        // finger drag once it passes the pan slop, which would
+                        // take every scroll and day-swipe away from the widgets
+                        // that own them.
+                        _PinchRecognizer:
+                            GestureRecognizerFactoryWithHandlers<_PinchRecognizer>(
+                          _PinchRecognizer.new,
+                          (r) => r
+                            ..onStart = _onPinchStart
+                            ..onUpdate = _onPinchUpdate
+                            ..onEnd = _onPinchEnd,
+                        ),
+                      },
+                      child: AnimatedSwitcher(
+                        duration: const Duration(milliseconds: 260),
+                        switchInCurve: Curves.easeOutCubic,
+                        switchOutCurve: Curves.easeOutCubic,
+                        transitionBuilder: (child, animation) {
+                          final incoming = child.key == ValueKey(_selected);
+                          final dx =
+                              (incoming ? _slideDirection : -_slideDirection)
+                                  .toDouble();
+                          return SlideTransition(
+                            position: Tween<Offset>(
+                                    begin: Offset(dx, 0), end: Offset.zero)
+                                .animate(animation),
+                            child: child,
+                          );
+                        },
+                        layoutBuilder: (currentChild, previousChildren) => Stack(
+                          alignment: Alignment.topCenter,
+                          children: [
+                            ...previousChildren,
+                            if (currentChild != null) currentChild,
+                          ],
+                        ),
+                        child: KeyedSubtree(
+                          key: ValueKey(_selected),
+                          child: _grid(placed, byId, tabsByEvent, ownersByEvent,
+                              orphanTabs, eventsById, conflictOverlays),
+                        ),
+                      ),
                     ),
                   ),
-                ),
-                _EdgeGlow(controller: _gridScroll, placed: placed, top: true),
-                _EdgeGlow(controller: _gridScroll, placed: placed, top: false),
-              ],
+                  _EdgeGlow(controller: _gridScroll, placed: placed, top: true),
+                  _EdgeGlow(controller: _gridScroll, placed: placed, top: false),
+                ],
               ),
-            ),
-          ),
+            );
+          }),
         ),
       ],
     );
@@ -519,7 +621,7 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
     setState(() {
       _slideDirection = _dirTo(_today);
       _selected = _today;
-      _scrolledKey = null; // re-default the grid scroll to 7 AM
+      _needsDefaultScroll = true; // re-default the grid scroll to 7 AM
     });
     if (_dayScroll.hasClients) {
       _dayScroll.animateTo(
@@ -769,13 +871,11 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
     List<_ConflictOverlay> conflictOverlays,
   ) {
     final now = DateTime.now();
-    final showNow = _selected == _dateOnly(now) &&
-        now.hour >= _gridStart &&
-        now.hour < _gridEnd;
-    final nowY = ((now.hour + now.minute / 60) - _gridStart) * _hourPx;
+    // The grid covers the whole day, so today's now-line is always on it.
+    final showNow = _selected == _dateOnly(now);
+    final nowY = _yFor(now);
 
-    double taskTop(DateTime t) =>
-        ((t.toLocal().hour + t.toLocal().minute / 60) - _gridStart) * _hourPx;
+    double taskTop(DateTime t) => _yFor(t.toLocal());
 
     Widget tab(TaskItem t, double left, double width, double top) => Positioned(
           top: top,
@@ -917,9 +1017,8 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
       for (final ov in conflictOverlays) {
         final s = ov.start.toLocal();
         final e = ov.end.toLocal();
-        final top = ((s.hour + s.minute / 60) - _gridStart) * _hourPx;
-        final height = (e.difference(s).inMinutes / 60 * _hourPx)
-            .clamp(_tabHeight, _gridHeight);
+        final top = _yFor(s);
+        final height = (_yFor(e) - top).clamp(_tabHeight, _gridHeight);
         seams.add(Positioned(
           top: top,
           left: laneLeft - 4,
@@ -950,23 +1049,27 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
         ));
       }
 
+      // Gridlines run from the opening midnight to the end of the tail, so the
+      // hours past the closing midnight (the ones drawn behind the nav) are
+      // ruled and labelled like any other — an event that runs into the next
+      // day still lands on a line.
+      final lastHour = (_gridHeight / _hourPx).floor();
+      final step = _labelStep;
       return SizedBox(
-        height: _gridHeight + 12,
+        height: _gridHeight,
         child: Stack(
           clipBehavior: Clip.none,
           children: [
             // Hour gridlines, every hour at every zoom; their labels thin out
-            // to every second hour once zoomed out far enough that they'd
-            // otherwise collide.
-            for (var h = _gridStart; h <= _gridEnd; h++)
+            // to every second (or third) hour once zoomed out far enough that
+            // they'd otherwise collide.
+            for (var h = 0; h <= lastHour; h++)
               Positioned(
-                top: (h - _gridStart) * _hourPx,
+                top: h * _hourPx,
                 left: 0,
                 right: 0,
                 child: _HourLine(
-                  label: _hourPx >= _sparseLabelsBelow || h.isEven
-                      ? _hourLabel(h)
-                      : '',
+                  label: h % step == 0 ? _hourLabel(h) : '',
                 ),
               ),
             ...blocks,
@@ -1292,13 +1395,15 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
       final l = left + col * colWidth;
       final r = l + span * colWidth;
       final ev = n.ev;
-      final top = (((ev.start.hour + ev.start.minute / 60) - _gridStart) * _hourPx)
-          .clamp(0.0, _gridHeight);
+      final top = _yFor(ev.start).clamp(0.0, _gridHeight);
+      // What's left of the grid under this block — an event running past
+      // midnight keeps its full height (the tail was grown to hold it, nav pill
+      // or no nav pill), one running days past it stops at the tail's end.
+      final room = (_gridHeight - top).clamp(_minBlockHeight, _gridHeight);
       final height = _isBlock(ev.item)
           // As tall as the event's real duration (never below the floor one
           // label line needs); _ItemBlock fits its content to whatever it gets.
-          ? (ev.end.difference(ev.start).inMinutes / 60 * _hourPx)
-              .clamp(_minBlockHeight, _gridHeight)
+          ? (_yFor(ev.end) - top).clamp(_minBlockHeight, room)
           : 34.0;
       out.add(_Placed(
         item: ev.item,
@@ -1467,7 +1572,24 @@ class _Ev {
 /// to resolve while a single pointer is down leaves those gestures to the
 /// widgets that own them, and a real pinch still wins the moment the second
 /// finger lands.
+///
+/// It claims that gesture as the finger *lands*, rather than racing the scroll
+/// view's vertical drag for it once the fingers move. Left to the usual slop
+/// race the drag wins every time — one pointer's movement clears its threshold
+/// before that same movement, averaged over two, clears the scale's — so on a
+/// grid long enough to scroll (which, now that it always draws a whole day, is
+/// every grid) the zoom would simply never start.
 class _PinchRecognizer extends ScaleGestureRecognizer {
+  @override
+  void handleEvent(PointerEvent event) {
+    super.handleEvent(event);
+    // `pointerCount` only counts a finger once its down event is handled, so
+    // this is the earliest the second one can be seen.
+    if (event is PointerDownEvent && pointerCount >= 2) {
+      resolve(GestureDisposition.accepted);
+    }
+  }
+
   @override
   void resolve(GestureDisposition disposition) {
     if (disposition == GestureDisposition.accepted && pointerCount < 2) return;

@@ -1,1 +1,0 @@
-ALTER TABLE `source_events` ADD `location_geo` text;
