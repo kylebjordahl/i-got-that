@@ -134,13 +134,25 @@ class _FeedBaselineScreenState extends ConsumerState<FeedBaselineScreen> {
   Future<void> _unlink() async {
     final ok = await showDialog<bool>(
       context: context,
-      builder: (_) => AlertDialog(
+      // `dialogContext`, not this screen's `context`: the dialog is raised on
+      // MaterialApp's outer Navigator (showDialog's default), while `context`
+      // resolves to the inner content Navigator this screen was pushed onto
+      // (see `_AuthedRoot` in main.dart). Popping through it would pop *this
+      // screen* — back to the member detail — while the dialog stayed stuck on
+      // top and the awaited future never completed, so the unlink never ran.
+      builder: (dialogContext) => AlertDialog(
         title: const Text('Unlink feed?'),
         content: Text('Stop synthesizing ${widget.member.relationName}\'s events '
             'from this feed? Its events, rules, and generated tasks are removed.'),
         actions: [
-          TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Cancel')),
-          PillButton(label: 'Unlink', variant: PillVariant.white, onPressed: () => Navigator.of(context).pop(true)),
+          TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: const Text('Cancel')),
+          PillButton(
+            label: 'Unlink',
+            variant: PillVariant.white,
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+          ),
         ],
       ),
     );
