@@ -33,7 +33,13 @@ const _dayHours = 24;
 // Below this hour height the hour labels would collide, so only every second
 // (or third…) one is drawn — see `_labelStep`. The gridlines all stay.
 const _sparseLabelsBelow = 34.0;
+// The spacings the labels thin out to. All divisors of 24, so however far the
+// grid is zoomed out, midnight always lands on a *labelled* line.
+const _labelSteps = [1, 2, 3, 4, 6];
 const _labelWidth = 46.0;
+// Midnight is the day's boundary, so its line is ruled heavier than the hours
+// in between (and in a brighter ink — see `_HourLine`).
+const _midnightLinePx = 2.0;
 // Edge-tab (drop-off / pick-up) height — snug around the compact label + owner
 // avatar; tabs straddle their block's edge by half this and stack by the full.
 const _tabHeight = 24.0;
@@ -201,11 +207,10 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
   /// they'd fit, then every second / third as the zoom takes the lines closer
   /// together than a label is tall.
   int get _labelStep {
-    var step = 1;
-    while (step < 6 && _hourPx * step < _sparseLabelsBelow) {
-      step++;
+    for (final step in _labelSteps) {
+      if (_hourPx * step >= _sparseLabelsBelow) return step;
     }
-    return step;
+    return _labelSteps.last;
   }
 
   /// Where a local time lands on the grid, measured from the selected day's
@@ -1062,7 +1067,10 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
           children: [
             // Hour gridlines, every hour at every zoom; their labels thin out
             // to every second (or third) hour once zoomed out far enough that
-            // they'd otherwise collide.
+            // they'd otherwise collide. Every midnight the grid draws is ruled
+            // heavier than the hours inside the day, so the day's boundaries
+            // read at a glance — zoomed all the way out that's both of them,
+            // the opening one and the closing one, accented at once.
             for (var h = 0; h <= lastHour; h++)
               Positioned(
                 top: h * _hourPx,
@@ -1070,6 +1078,7 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
                 right: 0,
                 child: _HourLine(
                   label: h % step == 0 ? _hourLabel(h) : '',
+                  midnight: h % _dayHours == 0,
                 ),
               ),
             ...blocks,
@@ -1776,8 +1785,14 @@ class _DayChip extends StatelessWidget {
 }
 
 class _HourLine extends StatelessWidget {
-  const _HourLine({required this.label});
+  const _HourLine({required this.label, this.midnight = false});
   final String label;
+
+  /// A day boundary rather than an hour inside the day: drawn as a thicker rule
+  /// in a brighter ink, with its label in the same brighter text, so you can
+  /// tell at a glance where the day starts and ends. Zoomed all the way out
+  /// both midnights are on screen and both are accented.
+  final bool midnight;
 
   @override
   Widget build(BuildContext context) {
@@ -1787,9 +1802,16 @@ class _HourLine extends StatelessWidget {
         SizedBox(
           width: _labelWidth,
           child: Text(label,
-              style: font(kBodyFont, 11, 600, color: AppColors.textMuted)),
+              style: font(kBodyFont, 11, midnight ? 700 : 600,
+                  color:
+                      midnight ? AppColors.textSecondary : AppColors.textMuted)),
         ),
-        Expanded(child: Container(height: 1, color: AppColors.divider)),
+        Expanded(
+          child: Container(
+            height: midnight ? _midnightLinePx : 1,
+            color: midnight ? AppColors.dividerStrong : AppColors.divider,
+          ),
+        ),
       ],
     );
   }
