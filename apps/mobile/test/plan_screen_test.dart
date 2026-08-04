@@ -5,6 +5,7 @@ import 'package:caretaker_app/state/auth.dart';
 import 'package:caretaker_app/state/family.dart';
 import 'package:caretaker_app/theme/app_theme.dart';
 import 'package:caretaker_app/util/format.dart';
+import 'package:caretaker_app/widgets/app_bottom_nav.dart' show kBottomNavClearance;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -305,13 +306,13 @@ void main() {
     ));
     await tester.pumpAndSettle();
 
-    // It's in the pinned row above the grid's first hour...
+    // It's in the pinned row above the grid, not a block down it — the pill is
+    // the only copy of it anywhere on the page.
     expect(find.text('all-day'), findsOneWidget);
     final pill = tester.getRect(find.textContaining('Initial parental leave'));
     final firstHour = tester.getRect(find.text('7 AM'));
     expect(pill.bottom, lessThanOrEqualTo(firstHour.top));
-    // ...so the grid never stretched back to midnight to fit it.
-    expect(find.text('12 AM'), findsNothing);
+    expect(find.textContaining('Initial parental leave'), findsOneWidget);
     // The timed event keeps the whole lane to itself.
     expect(find.textContaining('Dentist'), findsOneWidget);
     // And the all-day event's transition still lands on the grid at 8:00.
@@ -1296,7 +1297,8 @@ void main() {
     /// something late at night, so the grid runs the whole 24 hours: tall
     /// enough to pinch on, and longer than any viewport so it really scrolls.
     Future<void> pumpDay(WidgetTester tester,
-        {Size size = const Size(800, 1400)}) async {
+        {Size size = const Size(800, 1400),
+        List<CalendarEventItem> extra = const []}) async {
       tester.view.physicalSize = size;
       tester.view.devicePixelRatio = 1.0;
       addTearDown(() {
@@ -1308,6 +1310,7 @@ void main() {
         CalendarEventItem(id: 'e', familyMemberId: 'theo', provenance: 'human', start: DateTime(now.year, now.month, now.day, 9), end: DateTime(now.year, now.month, now.day, 10), allDay: false, summary: 'Dentist'),
         CalendarEventItem(id: 'late', familyMemberId: 'theo', provenance: 'human', start: DateTime(now.year, now.month, now.day, 22), end: DateTime(now.year, now.month, now.day, 23), allDay: false, summary: 'Late thing'),
         CalendarEventItem(id: 'early', familyMemberId: 'theo', provenance: 'human', start: DateTime(now.year, now.month, now.day, 0, 30), end: DateTime(now.year, now.month, now.day, 1), allDay: false, summary: 'Early thing'),
+        ...extra,
       ];
       await tester.pumpWidget(ProviderScope(
         overrides: [
@@ -1375,7 +1378,9 @@ void main() {
 
     testWidgets('pinching in compresses the day and thins the hour labels',
         (tester) async {
-      await pumpDay(tester);
+      // Short enough that the whole day doesn't already fit — there is room to
+      // compress before the zoom hits its floor.
+      await pumpDay(tester, size: const Size(800, 700));
       final before = hourHeight(tester);
 
       await pinch(tester, 300, 100);
@@ -1383,11 +1388,102 @@ void main() {
       // Clamped at the minimum zoom rather than collapsing to nothing.
       final after = hourHeight(tester);
       expect(after, lessThan(before));
-      expect(after, greaterThan(before * 0.5));
+      expect(after, greaterThan(0));
       // Too tight for a label on every line, so the odd hours go quiet — the
       // gridlines all stay, which is what the 10 AM/8 AM measurement rides on.
       expect(find.text('9 AM'), findsNothing);
       expect(find.text('8 AM'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('pinching all the way out shows one whole day, midnight to '
+        'midnight, with the grid still filling the screen', (tester) async {
+      await pumpDay(tester, size: const Size(800, 700));
+
+      await pinch(tester, 300, 100);
+      // ...and again, to prove it's already at the floor.
+      final atFloor = hourHeight(tester);
+      await pinch(tester, 300, 100);
+      expect(hourHeight(tester), closeTo(atFloor, 0.01));
+
+      // Both midnights are drawn — the day's opening one at the top of the
+      // grid, its closing one a safe margin above where the nav pill floats.
+      expect(find.text('12 AM'), findsNWidgets(2));
+      final grid = tester.getRect(find.byType(SingleChildScrollView));
+      final opening = tester.getRect(find.text('12 AM').first);
+      final closing = tester.getRect(find.text('12 AM').at(1));
+      expect(opening.top, closeTo(grid.top, 8));
+      expect(grid.bottom - closing.top, closeTo(kBottomNavClearance + 12, 8));
+      // The whole day is on screen at once: 24 hours between the two.
+      expect(closing.top - opening.top, closeTo(atFloor / 2 * 24, 1));
+
+      // And the grid is the full height of its viewport — zooming out can't
+      // lift its bottom edge off the screen, so there is nothing left to
+      // scroll and the hours past midnight fill the space behind the nav.
+      final position = Scrollable.of(tester.element(find.text('8 AM'))).position;
+      expect(position.maxScrollExtent, closeTo(0, 1));
+      // ...ruled like any other hour (2 AM shows twice: today's and the one
+      // past the closing midnight, down in the space behind the nav).
+      expect(find.text('2 AM'), findsNWidgets(2));
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('changing day keeps the zoom and the timeline where they were',
+        (tester) async {
+      await pumpDay(tester, size: const Size(800, 700));
+      await pinch(tester, 100, 160); // zoom in a little
+      final hour = hourHeight(tester);
+
+      final position = Scrollable.of(tester.element(find.text('8 AM'))).position;
+      position.jumpTo(position.maxScrollExtent / 2);
+      await tester.pumpAndSettle();
+      final offset = position.pixels;
+      expect(offset, greaterThan(0));
+
+      // A swipe to tomorrow changes the day and nothing else: the hours keep
+      // the height you pinched them to, at the time you had scrolled to.
+      await tester.fling(find.byType(SingleChildScrollView), const Offset(-400, 0), 1000);
+      await tester.pumpAndSettle();
+      expect(hourHeight(tester), closeTo(hour, 0.01));
+      expect(
+          Scrollable.of(tester.element(find.text('8 AM'))).position.pixels,
+          closeTo(offset, 1));
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('an event running past midnight is drawn past the closing one',
+        (tester) async {
+      final now = DateTime.now();
+      final today = DateTime(now.year, now.month, now.day);
+      await pumpDay(tester,
+          size: const Size(800, 900),
+          extra: [
+            CalendarEventItem(
+                id: 'shift',
+                familyMemberId: 'theo',
+                provenance: 'human',
+                start: today.add(const Duration(hours: 23)),
+                end: today.add(const Duration(hours: 26)), // 2 AM tomorrow
+                allDay: false,
+                summary: 'Night shift'),
+          ]);
+
+      final position = Scrollable.of(tester.element(find.text('8 AM'))).position;
+      position.jumpTo(position.maxScrollExtent);
+      await tester.pumpAndSettle();
+
+      // The grid grew a tail past the closing midnight to hold it, and the
+      // block runs its full three hours into it rather than being cut off at
+      // the nav (which floats over the grid, it doesn't end it).
+      final hour = hourHeight(tester) / 2;
+      final closing = tester.getRect(find.text('12 AM').at(1));
+      final block = tester.getRect(find
+          .ancestor(
+              of: find.textContaining('Night shift'),
+              matching: find.byType(GestureDetector))
+          .first);
+      expect(block.top, closeTo(closing.top - hour, 2));
+      expect(block.bottom, closeTo(closing.top + 2 * hour, 2));
       expect(tester.takeException(), isNull);
     });
 
