@@ -1,4 +1,4 @@
-import type { GeoLocation } from '@igt/domain';
+import { geoKey, type GeoLocation } from '@igt/domain';
 import ICAL from 'ical.js';
 import ical, {
   ICalAlarmType,
@@ -52,12 +52,55 @@ export interface Occurrence {
   summary: string | null;
   location: string | null;
   /**
+   * Coordinates the source event carried for `location` (its `GEO` and/or
+   * Apple's `X-APPLE-STRUCTURED-LOCATION`). Null when the source only gave
+   * free text — most feeds do, but anything authored in Apple Calendar or a
+   * mapped Google place carries coords, and they're what let the events (and
+   * the tasks they generate) drive travel time on the way back out.
+   */
+  locationGeo: GeoLocation | null;
+  /**
    * True for `VALUE=DATE` (all-day) events, which carry no time. Their `start`/
    * `end` are anchored to UTC midnight of the calendar date (see
    * `icalTimeToDate`) so the day is tz-independent; consumers must render them
    * as a bare date and must NOT convert through a local timezone.
    */
   allDay: boolean;
+}
+
+/**
+ * Read a VEVENT's geocode: Apple's `X-APPLE-STRUCTURED-LOCATION` when present
+ * (it carries the place's title/address/radius alongside the coords), else the
+ * bare RFC 5545 `GEO`. Both are optional in the wild — a feed whose events give
+ * only free-text `LOCATION` yields null, which is the pre-existing behaviour.
+ */
+function occurrenceGeo(component: ICAL.Component): GeoLocation | null {
+  const structured = component.getFirstProperty('x-apple-structured-location');
+  if (structured) {
+    // VALUE=URI of the form `geo:<lat>,<lon>`; the human-readable parts ride
+    // along as parameters.
+    const uri = String(structured.getFirstValue() ?? '');
+    const match = /^geo:(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)$/.exec(uri.trim());
+    if (match) {
+      const radius = Number(structured.getParameter('x-apple-radius'));
+      const title = structured.getParameter('x-title');
+      const address = structured.getParameter('x-address');
+      return {
+        lat: Number(match[1]),
+        lon: Number(match[2]),
+        ...(typeof title === 'string' && title ? { title } : {}),
+        ...(typeof address === 'string' && address ? { address } : {}),
+        ...(Number.isFinite(radius) && radius > 0 ? { radius } : {}),
+      };
+    }
+  }
+  // ical.js parses GEO's `lat;lon` into a two-number array.
+  const geo = component.getFirstPropertyValue('geo');
+  if (Array.isArray(geo) && geo.length === 2) {
+    const [lat, lon] = geo.map(Number);
+    if (Number.isFinite(lat) && Number.isFinite(lon)) return { lat: lat!, lon: lon! };
+  }
+  return null;
 }
 
 /**
@@ -227,6 +270,7 @@ export function parseAndExpand(
       end,
       summary: event.summary ?? null,
       location: event.location ?? null,
+      locationGeo: occurrenceGeo(ve),
       allDay: event.startDate.isDate,
     });
   }
@@ -260,6 +304,9 @@ export function parseAndExpand(
         end,
         summary: details.item.summary ?? null,
         location: details.item.location ?? null,
+        // `details.item` is the master, or the RECURRENCE-ID override when one
+        // covers this date — either way, that occurrence's own VEVENT.
+        locationGeo: occurrenceGeo(details.item.component),
         allDay: details.startDate.isDate,
       });
     }
@@ -282,6 +329,7 @@ export function parseAndExpand(
         end,
         summary: event.summary ?? null,
         location: event.location ?? null,
+        locationGeo: occurrenceGeo(ve),
         allDay: event.startDate.isDate,
       });
     }
@@ -338,6 +386,9 @@ export function hashOccurrence(o: Occurrence): string {
     o.end ? o.end.toISOString() : '',
     o.summary ?? '',
     o.location ?? '',
+    // A place re-pinned upstream (same text, new/changed coords) has to count
+    // as a change, or synthesis never carries the geocode down to the events.
+    geoKey(o.locationGeo),
     o.allDay ? 'AD' : '',
   ].join(' ');
   let h = 5381;
@@ -345,6 +396,30 @@ export function hashOccurrence(o: Occurrence): string {
     h = ((h << 5) + h) ^ parts.charCodeAt(i);
   }
   return (h >>> 0).toString(16);
+}
+
+/**
+ * Turn on Apple Calendar's travel time for a located event.
+ *
+ * Two properties are needed, and they do different jobs:
+ *  - `X-APPLE-TRAVEL-ADVISORY-BEHAVIOR:AUTOMATIC` opts the event into the
+ *    "time to leave" advisory, which Apple recomputes from live traffic.
+ *  - `X-APPLE-TRAVEL-DURATION` is the travel block itself — the reserved time
+ *    Calendar draws *before* the event. Without it Apple shows no travel time
+ *    at all until a human opens the event and picks one by hand, which is
+ *    exactly what a mirrored drop-off/pickup must not require.
+ *
+ * The duration rides on the property *name* because ical-generator's `x()`
+ * emits `KEY:value` verbatim and has no parameter support; Apple (and the
+ * RFC 5545 grammar) want `;VALUE=DURATION` on this one. Travel time is
+ * meaningless without coordinates to route to, so callers only pass minutes
+ * for events that carry a geocode.
+ */
+function addTravelTime(event: ICalEvent, minutes: number | null | undefined): void {
+  event.x('X-APPLE-TRAVEL-ADVISORY-BEHAVIOR', 'AUTOMATIC');
+  if (minutes != null && minutes > 0) {
+    event.x('X-APPLE-TRAVEL-DURATION;VALUE=DURATION', `PT${Math.round(minutes)}M`);
+  }
 }
 
 /** Add display VALARMs that fire `n` minutes before the event start. */
@@ -412,6 +487,8 @@ export interface InviteEventInput {
   location?: string;
   /** Geocoded coords for `location` (emits GEO + X-APPLE-STRUCTURED-LOCATION). */
   locationGeo?: GeoLocation | null;
+  /** Travel-time block (minutes) Apple should reserve before the event start. */
+  travelTimeMinutes?: number | null;
   /** Minutes before start for display alarms (VALARM). */
   alertMinutes?: number[];
   /** IANA timezone (from the source feed) to render DTSTART/DTEND in; UTC if absent. */
@@ -454,7 +531,7 @@ function buildICalendar(
   const inviteLocation = resolveIcalLocation(input.location, input.locationGeo);
   if (inviteLocation) {
     event.location(inviteLocation);
-    if (input.locationGeo) event.x('X-APPLE-TRAVEL-ADVISORY-BEHAVIOR', 'AUTOMATIC');
+    addTravelTime(event, input.travelTimeMinutes);
   }
   if (method === ICalCalendarMethod.REQUEST) addAlarms(event, input.alertMinutes);
   event.organizer({
@@ -483,6 +560,8 @@ export function buildStoredEventICalendar(input: {
   location?: string;
   /** Geocoded coords for `location` (emits GEO + X-APPLE-STRUCTURED-LOCATION). */
   locationGeo?: GeoLocation | null;
+  /** Travel-time block (minutes) Apple should reserve before the event start. */
+  travelTimeMinutes?: number | null;
   /** Minutes before start for display alarms (VALARM). */
   alertMinutes?: number[];
   /** IANA timezone (from the source feed) to render DTSTART/DTEND in; UTC if absent. */
@@ -503,13 +582,13 @@ export function buildStoredEventICalendar(input: {
   if (input.description) event.description(input.description);
   const storedLocation = resolveIcalLocation(input.location, input.locationGeo);
   if (storedLocation) {
-    event.location(storedLocation);
-    // Opt the event into Apple Calendar's automatic travel time. Apple only
-    // computes it once it can geocode the location; a structured location
-    // (GEO + X-APPLE-STRUCTURED-LOCATION) gives it the coordinates directly, so
-    // travel time works reliably. Without this flag Apple never tries at all.
+    // Opt the event into Apple Calendar's travel time, and reserve the block
+    // when the caller sized one, so it shows up without anyone having to open
+    // the event. Whether a given event deserves minutes — and how many — is the
+    // caller's call (see the mirror); this just emits what it's handed.
     // Harmless on Google/other clients, which ignore X-APPLE-* props.
-    event.x('X-APPLE-TRAVEL-ADVISORY-BEHAVIOR', 'AUTOMATIC');
+    event.location(storedLocation);
+    addTravelTime(event, input.travelTimeMinutes);
   }
   addAlarms(event, input.alertMinutes);
   return cal.toString();
@@ -656,6 +735,8 @@ function googleEventToOccurrence(ev: GoogleApiEvent): Occurrence | null {
     end: end?.date ?? null,
     summary: ev.summary ?? null,
     location: ev.location ?? null,
+    // events.list gives `location` as free text only — no coordinates.
+    locationGeo: null,
     allDay: start.allDay,
   };
 }
@@ -775,6 +856,8 @@ export async function fetchGoogleFreeBusy(
       recurrenceId: null,
       start,
       end,
+      // Free/busy intervals are opaque availability: no title, no place.
+      locationGeo: null,
       summary: null,
       location: null,
       allDay: false,

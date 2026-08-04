@@ -273,6 +273,59 @@ describe('member editing & permissions', () => {
     expect(bad.status).toBe(400);
   });
 
+  it('lets a member set (and clear) their own home address', async () => {
+    const alice = await login('home-alice@example.com');
+    const bob = await login('home-bob@example.com');
+
+    const fam = await call('/families', authed(alice.token, { name: 'Home Fam' }));
+    const familyId = ((await fam.json()) as { family: { id: string } }).family.id;
+    const addBob = await call(
+      `/families/${familyId}/members`,
+      authed(alice.token, { relationName: 'uncle', isCaretaker: true, userId: bob.userId }),
+    );
+    const bobMemberId = ((await addBob.json()) as { member: { id: string } }).member.id;
+
+    type HomeMember = {
+      member: { homeLocation: string | null; homeLocationGeo: { lat: number } | null };
+    };
+    const geo = { lat: 37.4419, lon: -122.143, title: 'Home', address: '1 Elm St' };
+
+    // Home isn't a role flag: Bob sets his own, coordinates and all.
+    const set = await call(
+      `/families/${familyId}/members/${bobMemberId}`,
+      patch(bob.token, { homeLocation: '1 Elm St', homeLocationGeo: geo }),
+    );
+    expect(set.status).toBe(200);
+    const saved = (await set.json()) as HomeMember;
+    expect(saved.member.homeLocation).toBe('1 Elm St');
+    expect(saved.member.homeLocationGeo).toEqual(geo);
+
+    // An explicit null clears it (address edited back to nothing).
+    const cleared = await call(
+      `/families/${familyId}/members/${bobMemberId}`,
+      patch(bob.token, { homeLocation: null, homeLocationGeo: null }),
+    );
+    expect(((await cleared.json()) as HomeMember).member.homeLocationGeo).toBeNull();
+
+    // Out-of-range coordinates are rejected outright.
+    const bad = await call(
+      `/families/${familyId}/members/${bobMemberId}`,
+      patch(bob.token, { homeLocationGeo: { lat: 999, lon: 0 } }),
+    );
+    expect(bad.status).toBe(400);
+
+    // Still someone else's member: Bob can't set Alice's home.
+    const aliceMe = await call('/me', { headers: { Authorization: `Bearer ${alice.token}` } });
+    const aliceMemberId = ((await aliceMe.json()) as {
+      families: { member: { id: string } }[];
+    }).families[0]!.member.id;
+    const other = await call(
+      `/families/${familyId}/members/${aliceMemberId}`,
+      patch(bob.token, { homeLocation: 'not yours' }),
+    );
+    expect(other.status).toBe(403);
+  });
+
   it('removes a member (admin), but not self or the last admin', async () => {
     const alice = await login('rm-alice@example.com');
     const bob = await login('rm-bob@example.com');

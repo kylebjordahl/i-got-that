@@ -416,6 +416,15 @@ export const UpdateFamilyMemberInput = z.object({
   requiresCaretaker: z.boolean().optional(),
   generatesFamilyTasks: z.boolean().optional(),
   color: HexColor.optional(),
+  /** Where this person's day starts and ends. Pass `null` to clear it. */
+  homeLocation: z.string().max(256).nullable().optional(),
+  /**
+   * Home's coordinates, geocoded client-side like a feed's location. This is
+   * the origin travel time is measured from when a trip has no earlier event to
+   * leave from — without it we can only fall back to a nominal allowance.
+   * Pass `null` to clear (e.g. the address was edited back to free text).
+   */
+  homeLocationGeo: GeoLocation.nullable().optional(),
 });
 export type UpdateFamilyMemberInput = z.infer<typeof UpdateFamilyMemberInput>;
 
@@ -489,6 +498,17 @@ export const SetTaskDurationInput = z.object({
   durationMinutes: z.number().int().gte(-1440).lte(1440),
 });
 export type SetTaskDurationInput = z.infer<typeof SetTaskDurationInput>;
+
+/**
+ * Set (or clear) how much travel time a calendar event carries out to the
+ * member's target calendar — Apple's travel block. An explicit value wins over
+ * everything the mirror would work out on its own, `0` says this trip needs no
+ * travel time at all, and `null` hands it back to the estimate. Capped at 4h.
+ */
+export const SetEventTravelTimeInput = z.object({
+  travelMinutes: z.number().int().min(0).max(240).nullable(),
+});
+export type SetEventTravelTimeInput = z.infer<typeof SetEventTravelTimeInput>;
 
 /**
  * How to resolve a conflict's split (design §8b). Every field is optional — an

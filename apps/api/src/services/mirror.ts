@@ -20,7 +20,8 @@ import {
   type DeliveryTarget,
   GoogleCalendarProvider,
 } from '@igt/delivery';
-import { geoKey } from '@igt/domain';
+import { estimateTravelMinutes } from '@igt/classification';
+import { geoKey, type GeoLocation } from '@igt/domain';
 import type { Bindings } from '../env.js';
 import { googleRefresherFor } from '../lib/google-oauth.js';
 import { createGuardedFetch } from '../lib/outbound-url.js';
@@ -129,12 +130,107 @@ export function mirroredSummary(event: CalendarEventRow): string {
   return event.summary ?? 'Event';
 }
 
+/**
+ * A gap this long before the trip means the caretaker isn't coming from
+ * whatever was last on their calendar any more — the school run at 08:30 isn't
+ * launched from last night's dinner. Past it we measure from home instead,
+ * which also covers the first thing in the morning (nothing precedes it).
+ */
+const HOME_GAP_MIN = 90;
+/**
+ * Last-resort travel block when we can't measure a trip at all — no home on
+ * file and nothing geocoded to leave from. Same shape as before this estimate
+ * existed: the family's own transition window, or this when that's a point in
+ * time. Deliberately kept, so travel time doesn't vanish for anyone who hasn't
+ * set a home address.
+ */
+const DEFAULT_TRAVEL_MIN = 15;
+/** Ceiling on the window-derived fallback, so an odd window can't reserve a whole day. */
+const MAX_WINDOW_TRAVEL_MIN = 120;
+
+/**
+ * Where the caretaker is coming *from* for a trip starting at `tripStart`: the
+ * last place they're accounted for beforehand, else home.
+ *
+ * `events` is the member's own calendar, ascending by start. The candidate is
+ * the latest event that has already ended when the trip starts — the meeting
+ * they're driving from. All-day events are skipped: they say what the day is
+ * about, not where the person physically is at 3pm. A candidate close enough in
+ * time but with no coordinates means we genuinely don't know where they'll be,
+ * and guessing "home" would be worse than not estimating at all.
+ */
+function tripOrigin(
+  events: CalendarEventRow[],
+  trip: CalendarEventRow,
+  home: GeoLocation | null,
+): GeoLocation | null {
+  const tripStart = trip.dtstart.getTime();
+  let preceding: CalendarEventRow | null = null;
+  for (const e of events) {
+    if (e.id === trip.id || e.allDay) continue;
+    const end = (e.dtend ?? e.dtstart).getTime();
+    if (end > tripStart) continue;
+    if (!preceding || end > (preceding.dtend ?? preceding.dtstart).getTime()) preceding = e;
+  }
+  if (preceding) {
+    const gapMin =
+      (tripStart - (preceding.dtend ?? preceding.dtstart).getTime()) / 60_000;
+    if (gapMin < HOME_GAP_MIN) return preceding.locationGeo ?? null;
+  }
+  return home;
+}
+
+/**
+ * The travel-time block (minutes) to mirror out with an event, 0 for none.
+ *
+ * A human's own answer wins outright. Someone who knows the run takes 25
+ * minutes has better information than any estimate we can make without a
+ * routing service, and `0` is them saying this trip needs no block at all. It
+ * still needs somewhere to be going — travel time on an event with no location
+ * would be a block to nowhere — but free text is enough here, because the
+ * duration no longer has to be computed from coordinates.
+ *
+ * Failing that, only claimed drop-off/pickup events get one: a transition is a
+ * trip to a place at a fixed moment, which is exactly what Apple's travel time
+ * is for (an attendance claim spans its event, and a synthesized event is the
+ * child's own day, not a caretaker's journey). The estimate needs coordinates
+ * on the destination — free text gives Apple nothing dependable to route to —
+ * and can't apply to an all-day block.
+ *
+ * With an origin (see `tripOrigin`) the length is an actual distance estimate.
+ * Without one it falls back to the family's own transition window, which is at
+ * least their answer to "how much slack does this handoff need". Either way
+ * it's a seed: Apple recomputes the leave-by time from live traffic against the
+ * destination's coordinates.
+ */
+function travelTimeMinutes(
+  event: CalendarEventRow,
+  taskType: string | undefined,
+  resolveOrigin: () => GeoLocation | null,
+): number {
+  const hasSomewhereToGo = !!event.location || !!event.locationGeo;
+  if (event.travelTimeOverrideMin != null) {
+    return hasSomewhereToGo ? event.travelTimeOverrideMin : 0;
+  }
+  if (event.provenance !== 'claimed_task') return 0;
+  if (taskType !== 'dropoff' && taskType !== 'pickup') return 0;
+  if (!event.locationGeo || event.allDay) return 0;
+  // Only now is the calendar worth scanning for where they're coming from.
+  const origin = resolveOrigin();
+  if (origin) return estimateTravelMinutes(origin, event.locationGeo);
+  const windowMin = event.dtend
+    ? Math.round((event.dtend.getTime() - event.dtstart.getTime()) / 60_000)
+    : 0;
+  return Math.min(windowMin > 0 ? windowMin : DEFAULT_TRAVEL_MIN, MAX_WINDOW_TRAVEL_MIN);
+}
+
 /** djb2 over the meaningful mirrored fields; cheap + synchronous. */
 function hashMirrorPayload(
   summary: string,
   event: CalendarEventRow,
   alertMinutes: number[],
   timezone: string | undefined,
+  travelMinutes: number,
 ): string {
   const parts = [
     summary,
@@ -147,6 +243,7 @@ function hashMirrorPayload(
     event.description ?? '',
     alertMinutes.join(','),
     timezone ?? '',
+    String(travelMinutes),
   ].join('|');
   let h = 5381;
   for (let i = 0; i < parts.length; i++) h = ((h << 5) + h) ^ parts.charCodeAt(i);
@@ -186,25 +283,35 @@ async function linkTimezones(db: Db, familyId: string): Promise<Map<string, stri
   return map;
 }
 
-/**
- * IANA timezone per task id, for `claimed_task` events — those have no
- * `linkId` of their own (they're on the CLAIMER's calendar, not the source
- * calendar's), so they'd otherwise always mirror in bare UTC. Resolved via
- * the task's originating event (`tasks.calendarEventId` is deliberately not
- * an FK, so a vanished source just means the task is absent from this map —
- * no worse than the UTC fallback it'd otherwise get).
- */
-async function claimedTaskTimezones(db: Db, familyId: string): Promise<Map<string, string>> {
+/** What a `claimed_task` event needs from the task behind it. */
+interface ClaimedTaskMeta {
+  /** 'dropoff' | 'pickup' | 'attendance' — decides whether travel time applies. */
+  type: string;
+  /**
+   * IANA timezone, for `claimed_task` events — those have no `linkId` of their
+   * own (they're on the CLAIMER's calendar, not the source calendar's), so
+   * they'd otherwise always mirror in bare UTC. Undefined when the task's
+   * originating event is gone or isn't feed-derived (`tasks.calendarEventId` is
+   * deliberately not an FK), which is no worse than the UTC fallback.
+   */
+  timezone?: string;
+}
+
+/** Task type + source timezone per task id, for the family's claimed events. */
+async function claimedTaskMeta(
+  db: Db,
+  familyId: string,
+): Promise<Map<string, ClaimedTaskMeta>> {
   const rows = await db
-    .select({ taskId: tasks.id, timezone: feeds.timezone })
+    .select({ taskId: tasks.id, type: tasks.type, timezone: feeds.timezone })
     .from(tasks)
-    .innerJoin(calendarEvents, eq(calendarEvents.id, tasks.calendarEventId))
-    .innerJoin(familyMemberFeeds, eq(familyMemberFeeds.id, calendarEvents.linkId))
-    .innerJoin(feeds, eq(feeds.id, familyMemberFeeds.feedId))
+    .leftJoin(calendarEvents, eq(calendarEvents.id, tasks.calendarEventId))
+    .leftJoin(familyMemberFeeds, eq(familyMemberFeeds.id, calendarEvents.linkId))
+    .leftJoin(feeds, eq(feeds.id, familyMemberFeeds.feedId))
     .where(eq(tasks.familyId, familyId));
-  const map = new Map<string, string>();
+  const map = new Map<string, ClaimedTaskMeta>();
   for (const r of rows) {
-    if (r.timezone) map.set(r.taskId, r.timezone);
+    map.set(r.taskId, { type: r.type, ...(r.timezone ? { timezone: r.timezone } : {}) });
   }
   return map;
 }
@@ -254,7 +361,25 @@ export async function syncMemberMirror(
     : [];
   const desiredById = new Map(desired.map((e) => [e.id, e]));
   const timezones = await linkTimezones(db, cal.familyId);
-  const claimedTimezones = await claimedTaskTimezones(db, cal.familyId);
+  const claimedTasks = await claimedTaskMeta(db, cal.familyId);
+
+  // Everything on this member's own calendar — human read-back events included,
+  // since a meeting they added by hand is exactly the kind of thing a school
+  // run leaves from. Only used to place the caretaker before each trip.
+  const ownCalendar = await db
+    .select()
+    .from(calendarEvents)
+    .where(
+      and(eq(calendarEvents.familyMemberId, memberId), isNull(calendarEvents.maskedAt)),
+    );
+  const home =
+    (
+      await db
+        .select({ homeLocationGeo: familyMembers.homeLocationGeo })
+        .from(familyMembers)
+        .where(eq(familyMembers.id, memberId))
+        .limit(1)
+    )[0]?.homeLocationGeo ?? null;
 
   const existing = await db
     .select()
@@ -291,12 +416,12 @@ export async function syncMemberMirror(
   const alertMinutes = cal.alertMinutes ?? [];
   for (const event of desired) {
     const summary = mirroredSummary(event);
-    const timezone = event.linkId
-      ? timezones.get(event.linkId)
-      : event.taskId
-        ? claimedTimezones.get(event.taskId)
-        : undefined;
-    const hash = hashMirrorPayload(summary, event, alertMinutes, timezone);
+    const taskMeta = event.taskId ? claimedTasks.get(event.taskId) : undefined;
+    const timezone = event.linkId ? timezones.get(event.linkId) : taskMeta?.timezone;
+    const travelMinutes = travelTimeMinutes(event, taskMeta?.type, () =>
+      tripOrigin(ownCalendar, event, home),
+    );
+    const hash = hashMirrorPayload(summary, event, alertMinutes, timezone, travelMinutes);
     const prior = existingByEvent.get(event.id);
     if (prior && prior.payloadHash === hash) continue;
 
@@ -311,6 +436,7 @@ export async function syncMemberMirror(
       description: event.description ?? undefined,
       location: event.location ?? undefined,
       locationGeo: event.locationGeo ?? undefined,
+      travelTimeMinutes: travelMinutes > 0 ? travelMinutes : undefined,
       alertMinutes: alertMinutes.length > 0 ? alertMinutes : undefined,
       timezone,
     };

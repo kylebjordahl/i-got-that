@@ -40,7 +40,11 @@ exactly this and nothing more.
 **What the platform stores:** the intervals (`source_events` rows keyed
 `fb:<start>/<end>`, all text fields null) and a user-chosen label for the
 blocks (e.g. "Busy (work)", stored as the feed's `sourceCalendarName`). Nothing
-else exists to store.
+else exists to store. The member may additionally *declare* where this
+calendar's busy time is spent — a location (optionally geocoded) on their feed
+link, e.g. "the office" — which is their own annotation, typed into this app;
+it neither comes from nor is checked against the work calendar, and nothing new
+crosses the Workspace boundary to obtain it.
 
 **Kill switch:** unshare the calendar at work (or have the admin do it). The
 next sync's `freebusy.query` fails per-calendar (`notFound` — Google
@@ -94,17 +98,24 @@ the existing cron/refresh machinery. The differences, end to end:
   than "starts inside the window" is what catches the ongoing block at a UTC-day
   rollover, when its clipped start moves forward a day and the previous row —
   which begins *before* the new window — becomes the stale one.
-- **Synthesis** — `synthesizeBusy` (libs/classification) emits detail-free
-  intents keyed `fb:<linkId>:<sourceEventId>`, labeled with the feed's name
-  (`'Busy'` fallback), location/description always null. No override rules, no
-  pending decisions.
+- **Synthesis** — `synthesizeBusy` (libs/classification) emits intents keyed
+  `fb:<linkId>:<sourceEventId>`, labeled with the feed's name (`'Busy'`
+  fallback), description always null. Location comes solely from the link's
+  declared place (null when unset, which is the default and leaves blocks
+  exactly as detail-free as before) — never from the source, which has none to
+  give. No override rules, no pending decisions.
 - **Task-gen** — `fb:` events are explicitly skipped: availability is not
   family logistics, so busy blocks never spawn claimable tasks, even for
   members with `generatesFamilyTasks` on.
 - **Mirror** — busy blocks are `provenance: 'synthesized'` like any other
   generated event, so they mirror to the member's target calendar (the point:
   a spouse sees the opaque block). Mirrored copies use `igt-` UIDs, which
-  read-back skips, so there is no echo loop.
+  read-back skips, so there is no echo loop. A geocoded block also serves as
+  the **origin** for a drop-off/pickup claimed straight after it: the mirror
+  measures that trip's travel time from the declared place rather than from
+  home (see the travel-time note in AGENTS.md). Declaring a place does put that
+  place on the mirrored block for anyone who can see that calendar — that's the
+  trade, and it's opt-in per link.
 - **Immutability** — a feed cannot change mode into or out of `busy`
   (`busy_mode_immutable`): the interval-derived keyspace is incompatible with
   the UID-keyed pipelines. Recreate the feed instead.

@@ -208,6 +208,8 @@ export interface OverrideRuleLike extends MatcherLike {
 export interface SourceOccurrence extends OccurrenceLike {
   id: string;
   contentHash: string;
+  /** Coordinates the source event carried for `location`, if any. */
+  locationGeo?: GeoLocation | null;
 }
 
 /** The link config synthesis needs (a `family_member_feeds` row shape). */
@@ -233,7 +235,11 @@ export interface EventIntent {
   allDay: boolean;
   summary: string | null;
   location: string | null;
-  /** Geocoded coords for `location` (baseline events only); null for feed events. */
+  /**
+   * Geocoded coords for `location`: the link's on a baseline day, the source
+   * event's own on a feed event (see `occurrenceGeo`). Null when nobody had
+   * coordinates — the event still carries its free text.
+   */
   locationGeo: GeoLocation | null;
   description: string | null;
 }
@@ -254,13 +260,43 @@ interface ModifyDayParamsLike {
   dayEnd?: string;
 }
 
+/**
+ * All a feed event needs to know about the link it came through: which link it
+ * is, and the place that link declares (if any). Both the full `LinkConfigLike`
+ * and a routed feed's lighter link satisfy it.
+ */
+interface EventLinkPlace {
+  id: string;
+  location?: string | null;
+  locationGeo?: GeoLocation | null;
+}
+
+const sameText = (a: string | null | undefined, b: string | null | undefined): boolean =>
+  !!a && !!b && a.trim().toLowerCase() === b.trim().toLowerCase();
+
+/**
+ * A feed event's geocode: the coordinates the source event itself carried,
+ * else the link's — but only when the two name the same place in text, so the
+ * displayed location and the coordinates can never disagree. That fallback is
+ * what covers the common case of a feed that writes its venue as plain text
+ * while the family has pinned that same venue on the link.
+ */
+function occurrenceGeo(
+  link: EventLinkPlace,
+  occ: SourceOccurrence,
+): GeoLocation | null {
+  if (occ.locationGeo) return occ.locationGeo;
+  if (link.locationGeo && sameText(occ.location, link.location)) return link.locationGeo;
+  return null;
+}
+
 function occurrenceEvent(
-  linkId: string,
+  link: EventLinkPlace,
   occ: SourceOccurrence,
   matchedRuleId: string | null = null,
 ): EventIntent {
   return {
-    synthKey: `ev:${linkId}:${occ.id}`,
+    synthKey: `ev:${link.id}:${occ.id}`,
     sourceEventId: occ.id,
     matchedRuleId,
     dtstart: occ.dtstart,
@@ -268,7 +304,7 @@ function occurrenceEvent(
     allDay: occ.allDay,
     summary: occ.summary,
     location: occ.location,
-    locationGeo: null,
+    locationGeo: occurrenceGeo(link, occ),
     description: occ.description ?? null,
   };
 }
@@ -289,11 +325,11 @@ export function synthesizeStandard(
   link: LinkConfigLike,
   occurrences: SourceOccurrence[],
 ): SynthesisResult {
-  return { events: occurrences.map((o) => occurrenceEvent(link.id, o)), pending: [] };
+  return { events: occurrences.map((o) => occurrenceEvent(link, o)), pending: [] };
 }
 
 /** One link of a routed feed, with the `keep` pipeline that filters it. */
-export interface RoutedLink {
+export interface RoutedLink extends EventLinkPlace {
   id: string;
   rules: OverrideRuleLike[];
 }
@@ -333,7 +369,7 @@ export function synthesizeRouted(
         link.rules.filter((r) => r.outcome === 'keep'),
       );
       if (!rule) continue;
-      byLink.get(link.id)!.push(occurrenceEvent(link.id, occ, rule.id));
+      byLink.get(link.id)!.push(occurrenceEvent(link, occ, rule.id));
       kept = true;
     }
     if (!kept) unrouted.push({ sourceEventId: occ.id, contentHash: occ.contentHash });
@@ -347,6 +383,13 @@ export function synthesizeRouted(
  * construction. Each lands on the unified calendar as a detail-free block
  * labeled with the link's summary ("Busy" when unnamed). No override rules
  * apply and nothing ever pends; the interval itself is the whole payload.
+ *
+ * The one thing a busy block can say about *place* is what the family declared
+ * on the link — "this calendar's busy time happens at the office". That's their
+ * own annotation, never anything read from the source calendar (nothing of the
+ * sort ever crosses Google's ACL boundary), and it's what lets a busy block
+ * stand in as the place a following drop-off/pickup is driven from. Left unset,
+ * blocks stay exactly as detail-free as before.
  */
 export function synthesizeBusy(
   link: LinkConfigLike,
@@ -361,8 +404,8 @@ export function synthesizeBusy(
       dtend: occ.dtend,
       allDay: occ.allDay,
       summary: link.baselineSummary ?? 'Busy',
-      location: null,
-      locationGeo: null,
+      location: link.location ?? null,
+      locationGeo: link.locationGeo ?? null,
       description: null,
     })),
     pending: [],
@@ -410,7 +453,7 @@ export function synthesizeException(
       continue;
     }
     if (rule.outcome === 'add_event') {
-      events.push(occurrenceEvent(link.id, occ, rule.id));
+      events.push(occurrenceEvent(link, occ, rule.id));
       continue;
     }
     for (const day of coveredUtcDays(occ)) {
@@ -719,4 +762,65 @@ export function subtractIntervals(base: Interval, cuts: Interval[]): Interval[] 
   }
   if (cursor < be) out.push({ dtstart: new Date(cursor), dtend: new Date(be) });
   return out;
+}
+
+// --- Stage D: travel estimation (how long the trip there takes) --------------
+
+/**
+ * Distance in kilometres between two points, great-circle (haversine).
+ * Exported for testing; callers want `estimateTravelMinutes`.
+ */
+export function haversineKm(from: GeoLocation, to: GeoLocation): number {
+  const R = 6371;
+  const rad = (d: number) => (d * Math.PI) / 180;
+  const dLat = rad(to.lat - from.lat);
+  const dLon = rad(to.lon - from.lon);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(rad(from.lat)) * Math.cos(rad(to.lat)) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(a)));
+}
+
+/**
+ * Roads aren't straight lines. A 1.3 multiplier on the great-circle distance is
+ * the usual planning-grade approximation of real road distance.
+ */
+const ROAD_FACTOR = 1.3;
+/**
+ * Door-to-door overhead every trip pays regardless of distance: getting to the
+ * car, parking, walking in with a child.
+ */
+const OVERHEAD_MIN = 4;
+/** Rounded to this step, the way Apple's own travel-time picker offers values. */
+const STEP_MIN = 5;
+const MIN_TRAVEL_MIN = 5;
+const MAX_TRAVEL_MIN = 120;
+
+/**
+ * Average door-to-door speed (km/h) for a trip of `km` road kilometres. Short
+ * hops are dominated by stop signs and school zones; long ones are mostly
+ * highway, so the effective speed climbs with distance.
+ */
+function averageSpeedKmh(km: number): number {
+  if (km <= 3) return 24;
+  if (km <= 15) return 40;
+  if (km <= 50) return 65;
+  return 85;
+}
+
+/**
+ * Estimate the minutes it takes to get from one place to another.
+ *
+ * This is deliberately a *seed*, not a routing result: we have no routing
+ * service (and no traffic) server-side, so it's distance, a road factor, a
+ * distance-dependent average speed, and a fixed door-to-door overhead, rounded
+ * to a 5-minute step. Apple re-derives the real leave-by time from live traffic
+ * against the event's coordinates — what it needs from us is a travel block of
+ * roughly the right size, which is what makes it show travel time at all.
+ */
+export function estimateTravelMinutes(from: GeoLocation, to: GeoLocation): number {
+  const km = haversineKm(from, to) * ROAD_FACTOR;
+  const minutes = (km / averageSpeedKmh(km)) * 60 + OVERHEAD_MIN;
+  const rounded = Math.ceil(minutes / STEP_MIN) * STEP_MIN;
+  return Math.min(MAX_TRAVEL_MIN, Math.max(MIN_TRAVEL_MIN, rounded));
 }

@@ -4,6 +4,7 @@ import {
   eq,
   eventMirrors,
   familyMemberFeeds,
+  familyMembers,
   feeds,
   getDb,
   memberCalendars,
@@ -15,6 +16,7 @@ import {
   DeliveryProviderRegistry,
   type DeliveryTarget,
 } from '@igt/delivery';
+import { estimateTravelMinutes } from '@igt/classification';
 import type { DeliveryMethod } from '@igt/domain';
 import { describe, expect, it } from 'vitest';
 import { decryptSecret, encryptSecret } from '../src/lib/secrets.js';
@@ -102,6 +104,8 @@ async function insertEvent(
         taskId: values.taskId ?? null,
         contentHash: hashCalendarEvent(payload as never),
         ...payload,
+        // Deliberately outside the hashed payload, like the column itself.
+        travelTimeOverrideMin: values.travelTimeOverrideMin ?? null,
         synthKey: values.synthKey,
       })
       .returning()
@@ -293,6 +297,255 @@ describe('mirror reconcile (syncMemberMirror)', () => {
     const r = await syncMemberMirror(db, registry, env.KEK, fam.adminMemberId);
     expect(r.created).toBe(1);
     expect(fake.upserts[0]!.event.timezone).toBe('America/Denver');
+  });
+
+  it('measures a claim\'s travel block from wherever the caretaker is coming from', async () => {
+    const fam = await setupFamily('mirror-travel-origin@example.com');
+    const db = getDb(env.DB);
+    await connectTarget(db, fam, fam.adminMemberId);
+
+    // Home is ~50 km out; the school is in the city, a short hop from the
+    // caretaker's own morning meeting. The two origins therefore produce
+    // obviously different blocks, which is what these assertions turn on.
+    const home = { lat: 37.4419, lon: -122.143, title: 'Home' };
+    const school = { lat: 37.7955, lon: -122.3937, title: 'Lincoln Elementary' };
+    const meeting = { lat: 37.7896, lon: -122.4, title: 'Office' };
+    await db
+      .update(familyMembers)
+      .set({ homeLocation: 'Home', homeLocationGeo: home })
+      .where(eq(familyMembers.id, fam.adminMemberId));
+
+    const dropoff = async (dtstart: Date) => {
+      const task = (
+        await db
+          .insert(tasks)
+          .values({
+            familyId: fam.familyId,
+            familyMemberId: fam.childId,
+            type: 'dropoff',
+            dtstart,
+            dtend: new Date(dtstart.getTime() + 15 * 60_000),
+            status: 'owned',
+            ownerMemberId: fam.adminMemberId,
+            createdVia: 'generated',
+          })
+          .returning()
+      )[0]!;
+      return insertEvent(db, fam.familyId, fam.adminMemberId, {
+        synthKey: `task:${task.id}`,
+        provenance: 'claimed_task',
+        summary: 'Drop-off — child',
+        taskId: task.id,
+        dtstart,
+        dtend: new Date(dtstart.getTime() + 15 * 60_000),
+        location: 'Lincoln Elementary',
+        locationGeo: school,
+      });
+    };
+
+    // Monday: nothing precedes the 08:30 run, so it starts from home.
+    const fromHome = await dropoff(new Date('2026-07-06T15:30:00Z'));
+
+    // Tuesday: a meeting of the caretaker's own ends 20 minutes before the run
+    // — they're leaving from there, not from home. It's a human read-back
+    // event, the kind that only exists because we can see the target calendar.
+    await insertEvent(db, fam.familyId, fam.adminMemberId, {
+      synthKey: 'ext:standup:',
+      provenance: 'human',
+      summary: 'Standup',
+      dtstart: new Date('2026-07-07T14:30:00Z'),
+      dtend: new Date('2026-07-07T15:10:00Z'),
+      location: 'Office',
+      locationGeo: meeting,
+    });
+    const fromMeeting = await dropoff(new Date('2026-07-07T15:30:00Z'));
+
+    // Wednesday: the preceding thing is 3 hours earlier — long enough that
+    // they've plainly been elsewhere since, so home is the better guess.
+    await insertEvent(db, fam.familyId, fam.adminMemberId, {
+      synthKey: 'ext:early-call:',
+      provenance: 'human',
+      summary: 'Early call',
+      dtstart: new Date('2026-07-08T11:30:00Z'),
+      dtend: new Date('2026-07-08T12:30:00Z'),
+      location: 'Office',
+      locationGeo: meeting,
+    });
+    const afterLongGap = await dropoff(new Date('2026-07-08T15:30:00Z'));
+
+    // Thursday: the last thing before the run is an opaque free/busy block —
+    // it can still say where it happens, because the family declared that on
+    // the link. That's the point of geocoding a busy input.
+    await insertEvent(db, fam.familyId, fam.adminMemberId, {
+      synthKey: 'fb:work:2026-07-09',
+      summary: 'Busy (work)',
+      dtstart: new Date('2026-07-09T13:00:00Z'),
+      dtend: new Date('2026-07-09T15:10:00Z'),
+      location: 'Acme HQ',
+      locationGeo: meeting,
+    });
+    const fromBusyBlock = await dropoff(new Date('2026-07-09T15:30:00Z'));
+
+    const fake = new FakeProvider('caldav');
+    const registry = new DeliveryProviderRegistry().register(fake);
+    await syncMemberMirror(db, registry, env.KEK, fam.adminMemberId);
+    const travelFor = (eventId: string) =>
+      fake.upserts.find((u) => u.event.uid === `igt-${eventId}`)?.event.travelTimeMinutes;
+
+    expect(travelFor(fromHome.id)).toBe(estimateTravelMinutes(home, school));
+    expect(travelFor(fromMeeting.id)).toBe(estimateTravelMinutes(meeting, school));
+    expect(travelFor(afterLongGap.id)).toBe(estimateTravelMinutes(home, school));
+    expect(travelFor(fromBusyBlock.id)).toBe(estimateTravelMinutes(meeting, school));
+    // Sanity: the long haul from home really is the bigger block, so the three
+    // assertions above aren't all quietly agreeing on the same number.
+    expect(travelFor(fromHome.id)!).toBeGreaterThan(travelFor(fromMeeting.id)!);
+  });
+
+  it("falls back to the claim's own window when there's nowhere to measure from", async () => {
+    const fam = await setupFamily('mirror-travel@example.com');
+    const db = getDb(env.DB);
+    await connectTarget(db, fam, fam.adminMemberId);
+    const geo = { lat: 37.331686, lon: -122.030656, title: 'Lincoln Elementary' };
+
+    const claim = async (
+      type: 'dropoff' | 'attendance',
+      values: {
+        dtstart: Date;
+        dtend: Date | null;
+        locationGeo?: typeof geo | null;
+      },
+    ) => {
+      const task = (
+        await db
+          .insert(tasks)
+          .values({
+            familyId: fam.familyId,
+            familyMemberId: fam.childId,
+            type,
+            dtstart: values.dtstart,
+            dtend: values.dtend,
+            status: 'owned',
+            ownerMemberId: fam.adminMemberId,
+            createdVia: 'generated',
+          })
+          .returning()
+      )[0]!;
+      return insertEvent(db, fam.familyId, fam.adminMemberId, {
+        synthKey: `task:${task.id}`,
+        provenance: 'claimed_task',
+        summary: `${type} — child`,
+        taskId: task.id,
+        location: 'Lincoln Elementary',
+        locationGeo: values.locationGeo === undefined ? geo : values.locationGeo,
+        ...values,
+      });
+    };
+
+    // A 20-minute drop-off window ⇒ a 20-minute travel block.
+    const windowed = await claim('dropoff', {
+      dtstart: new Date('2026-07-06T15:30:00Z'),
+      dtend: new Date('2026-07-06T15:50:00Z'),
+    });
+    // A point-in-time transition has no window to borrow → the 15-min default.
+    const instant = await claim('dropoff', {
+      dtstart: new Date('2026-07-07T15:30:00Z'),
+      dtend: null,
+    });
+    // Free text gives Apple nothing to route to.
+    const textOnly = await claim('dropoff', {
+      dtstart: new Date('2026-07-08T15:30:00Z'),
+      dtend: new Date('2026-07-08T15:50:00Z'),
+      locationGeo: null,
+    });
+    // An attendance claim spans its event; it isn't a trip to a fixed moment.
+    const attendance = await claim('attendance', {
+      dtstart: new Date('2026-07-09T15:30:00Z'),
+      dtend: new Date('2026-07-09T21:45:00Z'),
+    });
+
+    const fake = new FakeProvider('caldav');
+    const registry = new DeliveryProviderRegistry().register(fake);
+    await syncMemberMirror(db, registry, env.KEK, fam.adminMemberId);
+
+    const travelFor = (eventId: string) =>
+      fake.upserts.find((u) => u.event.uid === `igt-${eventId}`)?.event.travelTimeMinutes;
+    expect(travelFor(windowed.id)).toBe(20);
+    expect(travelFor(instant.id)).toBe(15);
+    expect(travelFor(textOnly.id)).toBeUndefined();
+    expect(travelFor(attendance.id)).toBeUndefined();
+  });
+
+  it('lets an explicit travel-time override beat every estimate', async () => {
+    const fam = await setupFamily('mirror-travel-override@example.com');
+    const db = getDb(env.DB);
+    await connectTarget(db, fam, fam.adminMemberId);
+    const geo = { lat: 37.331686, lon: -122.030656, title: 'Lincoln Elementary' };
+
+    const claimed = async (dtstart: Date, values: Partial<typeof calendarEvents.$inferInsert>) => {
+      const task = (
+        await db
+          .insert(tasks)
+          .values({
+            familyId: fam.familyId,
+            familyMemberId: fam.childId,
+            type: 'dropoff',
+            dtstart,
+            dtend: new Date(dtstart.getTime() + 15 * 60_000),
+            status: 'owned',
+            ownerMemberId: fam.adminMemberId,
+            createdVia: 'generated',
+          })
+          .returning()
+      )[0]!;
+      return insertEvent(db, fam.familyId, fam.adminMemberId, {
+        synthKey: `task:${task.id}`,
+        provenance: 'claimed_task',
+        summary: 'Drop-off — child',
+        taskId: task.id,
+        dtstart,
+        dtend: new Date(dtstart.getTime() + 15 * 60_000),
+        location: 'Lincoln Elementary',
+        ...values,
+      });
+    };
+
+    // "It takes me 40 minutes, whatever you think" — beats the estimate.
+    const overridden = await claimed(new Date('2026-07-06T15:30:00Z'), {
+      locationGeo: geo,
+      travelTimeOverrideMin: 40,
+    });
+    // Zero is a real answer: this one needs no travel block at all.
+    const suppressed = await claimed(new Date('2026-07-07T15:30:00Z'), {
+      locationGeo: geo,
+      travelTimeOverrideMin: 0,
+    });
+    // No coordinates is no obstacle to an override — the human supplied the
+    // number, so nothing had to be routed.
+    const textOnly = await claimed(new Date('2026-07-08T15:30:00Z'), {
+      travelTimeOverrideMin: 20,
+    });
+    // An override is honoured on an ordinary synthesized event too, which the
+    // estimate never touches.
+    const synthesized = await insertEvent(db, fam.familyId, fam.adminMemberId, {
+      synthKey: 'bl:l1:2026-07-09',
+      summary: 'School day',
+      dtstart: new Date('2026-07-09T15:30:00Z'),
+      dtend: new Date('2026-07-09T21:45:00Z'),
+      location: 'Lincoln Elementary',
+      locationGeo: geo,
+      travelTimeOverrideMin: 35,
+    });
+
+    const fake = new FakeProvider('caldav');
+    const registry = new DeliveryProviderRegistry().register(fake);
+    await syncMemberMirror(db, registry, env.KEK, fam.adminMemberId);
+    const travelFor = (eventId: string) =>
+      fake.upserts.find((u) => u.event.uid === `igt-${eventId}`)?.event.travelTimeMinutes;
+
+    expect(travelFor(overridden.id)).toBe(40);
+    expect(travelFor(suppressed.id)).toBeUndefined();
+    expect(travelFor(textOnly.id)).toBe(20);
+    expect(travelFor(synthesized.id)).toBe(35);
   });
 
   it('a member without a target is a clean no-op', async () => {

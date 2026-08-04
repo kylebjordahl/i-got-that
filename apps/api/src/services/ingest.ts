@@ -163,6 +163,7 @@ async function upsertOccurrences(
         allDay: occ.allDay,
         summary: occ.summary,
         location: occ.location,
+        locationGeo: occ.locationGeo,
         raw: null,
         contentHash,
       })
@@ -178,6 +179,7 @@ async function upsertOccurrences(
           allDay: occ.allDay,
           summary: occ.summary,
           location: occ.location,
+          locationGeo: occ.locationGeo,
           contentHash,
         },
       });

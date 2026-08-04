@@ -28,6 +28,12 @@ export interface DeliveryEvent {
    * REST location is text-only and Google geocodes server-side).
    */
   locationGeo?: GeoLocation | null;
+  /**
+   * Travel-time block (minutes) to reserve before the event start, for targets
+   * that support one. Only meaningful alongside `locationGeo` — Apple needs
+   * coordinates to route to. Google has no equivalent and ignores it.
+   */
+  travelTimeMinutes?: number | null;
   /** Default reminders: minutes before start, from the target config. */
   alertMinutes?: number[];
   /** IANA timezone of the source event so the delivered event isn't shown in GMT. */

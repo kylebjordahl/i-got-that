@@ -105,6 +105,7 @@ function toOccurrence(e: EventRow): SourceOccurrence {
     contentHash: e.contentHash,
     summary: e.summary,
     location: e.location,
+    locationGeo: e.locationGeo,
     description: null,
     allDay: e.allDay,
     dtstart: e.dtstart,
@@ -333,7 +334,12 @@ export async function synthesizeFeed(
   const routing: RoutedSynthesisResult | null =
     isRouted(feed)
       ? synthesizeRouted(
-          links.map((l) => ({ id: l.id, rules: rulesFor(l.id) })),
+          links.map((l) => ({
+            id: l.id,
+            rules: rulesFor(l.id),
+            location: l.location,
+            locationGeo: l.locationGeo,
+          })),
           occurrences,
         )
       : null;

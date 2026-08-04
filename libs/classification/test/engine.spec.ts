@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 import {
   coveredUtcDays,
   detectConflicts,
+  estimateTravelMinutes,
   firstMatch,
+  haversineKm,
   generateTaskIntents,
   intervalsOverlap,
   resolveTaskResult,
@@ -58,6 +60,7 @@ function occ(partial: Partial<SourceOccurrence>): SourceOccurrence {
     contentHash: partial.contentHash ?? 'hash',
     summary: partial.summary ?? null,
     location: partial.location ?? null,
+    locationGeo: partial.locationGeo ?? null,
     description: partial.description ?? null,
     allDay: partial.allDay ?? false,
     dtstart: partial.dtstart ?? new Date('2026-07-06T10:00:00Z'),
@@ -139,20 +142,47 @@ describe('synthesizeStandard', () => {
       sourceEventId: soccer.id,
       summary: 'Soccer practice',
       location: 'Field 3',
+      locationGeo: null,
     });
+  });
+
+  it("keeps the source event's own geocode (what carries travel time out)", () => {
+    const geo = { lat: 37.331686, lon: -122.030656, title: 'Field 3' };
+    const soccer = occ({ summary: 'Soccer practice', location: 'Field 3', locationGeo: geo });
+    const { events } = synthesizeStandard(schoolLink, [soccer]);
+    expect(events[0]?.locationGeo).toEqual(geo);
+  });
+
+  it("falls back to the link's geocode when both name the same place", () => {
+    const linkGeo = { lat: 42.36, lon: -71.06, title: 'Lincoln Elementary' };
+    const link = { ...schoolLink, locationGeo: linkGeo };
+    // Same place, spelled the same, only the link has it pinned.
+    const assembly = occ({ summary: 'Assembly', location: 'lincoln elementary  ' });
+    expect(synthesizeStandard(link, [assembly]).events[0]?.locationGeo).toEqual(linkGeo);
+
+    // A different place must never inherit the link's coordinates — the map pin
+    // would then contradict the text the event displays.
+    const away = occ({ summary: 'Away game', location: 'Field 3' });
+    expect(synthesizeStandard(link, [away]).events[0]?.locationGeo).toBeNull();
+
+    // Nor may an event with no location of its own borrow one.
+    const tbd = occ({ summary: 'Practice' });
+    expect(synthesizeStandard(link, [tbd]).events[0]?.locationGeo).toBeNull();
   });
 });
 
 // --- Stage A: busy feeds ------------------------------------------------------
 
 describe('synthesizeBusy', () => {
+  // A busy link says nothing about place unless the family fills one in.
+  const busyLink = { ...schoolLink, location: null, baselineSummary: 'Busy (work)' };
+
   it('emits detail-free fb: blocks labeled with the link summary, never pends', () => {
     const interval = occ({
       dtstart: new Date('2026-07-06T15:00:00Z'),
       dtend: new Date('2026-07-06T16:30:00Z'),
     });
-    const link = { ...schoolLink, baselineSummary: 'Busy (work)' };
-    const { events, pending } = synthesizeBusy(link, [interval]);
+    const { events, pending } = synthesizeBusy(busyLink, [interval]);
     expect(pending).toEqual([]);
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({
@@ -160,6 +190,7 @@ describe('synthesizeBusy', () => {
       sourceEventId: interval.id,
       summary: 'Busy (work)',
       location: null,
+      locationGeo: null,
       description: null,
       allDay: false,
     });
@@ -170,9 +201,24 @@ describe('synthesizeBusy', () => {
   it('defaults the label to "Busy" and never leaks source text fields', () => {
     // Even if a source row somehow carried text, busy synthesis drops it.
     const interval = occ({ summary: 'should never appear', location: 'nor this' });
-    const { events } = synthesizeBusy({ ...schoolLink, baselineSummary: null }, [interval]);
+    const { events } = synthesizeBusy({ ...busyLink, baselineSummary: null }, [interval]);
     expect(events[0]!.summary).toBe('Busy');
     expect(events[0]!.location).toBeNull();
+  });
+
+  it("stamps the family's declared place on the block, source text still dropped", () => {
+    // "My work calendar's busy time happens at the office" — declared on the
+    // link, so a following school run can be measured from there.
+    const office = { lat: 37.7896, lon: -122.4, title: 'Acme HQ' };
+    const link = { ...busyLink, location: 'Acme HQ', locationGeo: office };
+    const interval = occ({ summary: 'should never appear', location: 'nor this' });
+    const { events } = synthesizeBusy(link, [interval]);
+    expect(events[0]).toMatchObject({
+      summary: 'Busy (work)',
+      location: 'Acme HQ',
+      locationGeo: office,
+      description: null,
+    });
   });
 });
 
@@ -553,5 +599,45 @@ describe('subtractIntervals', () => {
       ['2026-07-06T08:30:00.000Z', '2026-07-06T10:00:00.000Z'],
       ['2026-07-06T12:00:00.000Z', '2026-07-06T15:00:00.000Z'],
     ]);
+  });
+});
+
+// --- Stage D: travel estimation ---------------------------------------------
+
+describe('estimateTravelMinutes', () => {
+  // Well-known reference pair: ~3.9 km apart in San Francisco.
+  const ferryBuilding = { lat: 37.7955, lon: -122.3937 };
+  const missionDolores = { lat: 37.7596, lon: -122.4269 };
+
+  it('measures the great-circle distance between two places', () => {
+    expect(haversineKm(ferryBuilding, missionDolores)).toBeCloseTo(4.9, 0);
+    expect(haversineKm(ferryBuilding, ferryBuilding)).toBe(0);
+  });
+
+  it('scales with distance, in 5-minute steps', () => {
+    const acrossTown = estimateTravelMinutes(ferryBuilding, missionDolores);
+    // ~6.4 road km at 40 km/h + overhead ⇒ a quarter hour, give or take a step.
+    expect(acrossTown).toBeGreaterThanOrEqual(10);
+    expect(acrossTown).toBeLessThanOrEqual(20);
+    expect(acrossTown % 5).toBe(0);
+
+    // Palo Alto — ~50 km south, mostly highway, so it must come out longer but
+    // not proportionally so.
+    const downThePeninsula = estimateTravelMinutes(ferryBuilding, { lat: 37.4419, lon: -122.143 });
+    expect(downThePeninsula).toBeGreaterThan(acrossTown);
+    expect(downThePeninsula).toBeLessThan(90);
+  });
+
+  it('floors a next-door trip and caps a transcontinental one', () => {
+    // Same building: still 5 minutes — you don't teleport into the classroom.
+    expect(estimateTravelMinutes(ferryBuilding, ferryBuilding)).toBe(5);
+    // New York: nobody is driving this, but the block stays sane.
+    expect(estimateTravelMinutes(ferryBuilding, { lat: 40.7128, lon: -74.006 })).toBe(120);
+  });
+
+  it('is symmetric', () => {
+    expect(estimateTravelMinutes(ferryBuilding, missionDolores)).toBe(
+      estimateTravelMinutes(missionDolores, ferryBuilding),
+    );
   });
 });

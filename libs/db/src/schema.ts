@@ -125,6 +125,12 @@ export const familyMembers = sqliteTable(
       .default(true),
     /** Persistent per-person accent color (hex `#RRGGBB`). Null ⇒ derived client-side. */
     color: text('color'),
+    // Where this person's day starts and ends. Display text plus (when the
+    // client could geocode it) coordinates: the mirror measures travel time
+    // from here whenever a trip has no earlier event to leave from — the first
+    // thing in the morning, or anything after a long unscheduled gap.
+    homeLocation: text('home_location'),
+    homeLocationGeo: text('home_location_geo', { mode: 'json' }).$type<GeoLocation>(),
     // The task-rule terminal default for this member's own unified/direct
     // calendar (events added by hand, not synthesized from a feed).
     unifiedDefaultTaskType: text('unified_default_task_type', {
@@ -316,6 +322,11 @@ export const sourceEvents = sqliteTable(
     allDay: integer('all_day', { mode: 'boolean' }).notNull().default(false),
     summary: text('summary'),
     location: text('location'),
+    // Coordinates the source event carried for `location` (its GEO and/or
+    // X-APPLE-STRUCTURED-LOCATION). Synthesis stamps them onto the events it
+    // makes, so a feed whose events are geocoded upstream keeps travel time
+    // all the way out to a claimed drop-off/pickup. Null ⇒ free text only.
+    locationGeo: text('location_geo', { mode: 'json' }).$type<GeoLocation>(),
     raw: text('raw'),
     contentHash: text('content_hash').notNull(),
     // The content_hash synthesis last consumed. Needs (re)processing iff
@@ -698,6 +709,12 @@ export const calendarEvents = sqliteTable(
     // Geocoded coordinates for `location`, carried from the synthesizing link so
     // the mirror can emit GEO + X-APPLE-STRUCTURED-LOCATION. Null ⇒ text only.
     locationGeo: text('location_geo', { mode: 'json' }).$type<GeoLocation>(),
+    // A human's own answer for how long getting here takes (minutes), set on
+    // the event itself. Overrides everything the mirror would estimate; 0 means
+    // "no travel time on this one". Null ⇒ estimate it (see mirror.ts). Not
+    // part of `contentHash`: it's a property of the trip, not of the event's
+    // schedule, so healing the event never disturbs it.
+    travelTimeOverrideMin: integer('travel_time_override_min'),
     description: text('description'),
     // Task typing is NOT stamped here — task-gen resolves it at build time from
     // the member's task-rule pipeline, keyed by this event's `linkId` (the

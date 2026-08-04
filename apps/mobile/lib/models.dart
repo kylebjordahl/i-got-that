@@ -29,6 +29,8 @@ class Member {
     this.generatesFamilyTasks = true,
     this.userId,
     this.color,
+    this.homeLocation,
+    this.homeLocationGeo,
   });
 
   final String id;
@@ -47,6 +49,13 @@ class Member {
   /// (see `theme/person_colors.dart`).
   final String? color;
 
+  /// Where this person's day starts and ends, as displayed.
+  final String? homeLocation;
+
+  /// Home's coordinates. The backend measures travel time from here when a
+  /// drop-off/pickup has no earlier event to leave from; free text alone can't.
+  final GeoLocation? homeLocationGeo;
+
   bool get hasLogin => userId != null;
 
   factory Member.fromJson(Map<String, dynamic> j) => Member(
@@ -58,6 +67,11 @@ class Member {
         generatesFamilyTasks: j['generatesFamilyTasks'] as bool? ?? true,
         userId: j['userId'] as String?,
         color: j['color'] as String?,
+        homeLocation: j['homeLocation'] as String?,
+        homeLocationGeo: j['homeLocationGeo'] == null
+            ? null
+            : GeoLocation.fromJson(
+                (j['homeLocationGeo'] as Map).cast<String, dynamic>()),
       );
 }
 
@@ -543,6 +557,7 @@ class CalendarEventItem {
     this.summary,
     this.description,
     this.location,
+    this.travelTimeOverrideMin,
     this.taskId,
     this.taskIneligibleReason,
   });
@@ -558,6 +573,11 @@ class CalendarEventItem {
   final String? summary;
   final String? description;
   final String? location;
+
+  /// A human's own answer for how long getting here takes (minutes), which
+  /// overrides whatever the backend would estimate; 0 means no travel time at
+  /// all. Null ⇒ estimated from where the caretaker is coming from.
+  final int? travelTimeOverrideMin;
 
   /// For claimed_task events: the task this event reflects (the recursion).
   final String? taskId;
@@ -616,6 +636,7 @@ class CalendarEventItem {
       summary: j['summary'] as String?,
       description: j['description'] as String?,
       location: j['location'] as String?,
+      travelTimeOverrideMin: j['travelTimeOverrideMin'] as int?,
       taskId: j['taskId'] as String?,
       taskIneligibleReason: j['taskIneligibleReason'] as String?,
     );
@@ -755,6 +776,7 @@ class Conflict {
     required this.familyMemberId,
     required this.loser,
     required this.winner,
+    this.suggestedTravelMin,
   });
 
   final String id;
@@ -762,11 +784,17 @@ class Conflict {
   final ConflictEventRef loser;
   final ConflictEventRef winner;
 
+  /// Minutes between the two places, estimated server-side from their
+  /// coordinates — the resolution sheet's starting travel buffer. Null when
+  /// either end isn't geocoded, in which case the handles start at zero.
+  final int? suggestedTravelMin;
+
   factory Conflict.fromJson(Map<String, dynamic> j) => Conflict(
         id: j['id'] as String,
         familyMemberId: j['familyMemberId'] as String,
         loser: ConflictEventRef.fromJson(j['loser'] as Map<String, dynamic>),
         winner: ConflictEventRef.fromJson(j['winner'] as Map<String, dynamic>),
+        suggestedTravelMin: j['suggestedTravelMin'] as int?,
       );
 }
 

@@ -285,6 +285,10 @@ Future<void> showEventDetails(
   final description = event.description;
   final hasLocation = location != null && location.isNotEmpty;
   final hasDescription = description != null && description.isNotEmpty;
+  // Only events we mirror out can carry a travel block, and only if they have
+  // somewhere to go. A human event already lives on the target calendar with
+  // whatever travel time its owner gave it there.
+  final canSetTravel = !event.isHuman && hasLocation;
 
   final name = member?.relationName ?? 'This member';
   final dismissed = dismissedTasks.length;
@@ -313,7 +317,9 @@ Future<void> showEventDetails(
     showDragHandle: true,
     isScrollControlled: true,
     builder: (sheetCtx) => SingleChildScrollView(
-      padding: const EdgeInsets.fromLTRB(22, 4, 22, 28),
+      // Keyboard-aware: the travel-time field lifts the sheet above it.
+      padding: EdgeInsets.fromLTRB(
+          22, 4, 22, 28 + MediaQuery.of(sheetCtx).viewInsets.bottom),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -344,6 +350,27 @@ Future<void> showEventDetails(
             if (hasLocation) _DetailRow(icon: Icons.location_on_outlined, text: location),
             if (hasLocation && hasDescription) const SizedBox(height: 8),
             if (hasDescription) _DetailRow(icon: Icons.notes_rounded, text: description),
+          ],
+          // Travel time is a property of the trip *out to the target calendar*,
+          // so it's offered on the events we mirror — above all a claim, which
+          // is somebody's actual journey.
+          if (canSetTravel) ...[
+            const SizedBox(height: 20),
+            Text('TRAVEL TIME', style: AppText.eyebrow()),
+            const SizedBox(height: 10),
+            _TravelTimeField(
+              event: event,
+              onSubmit: (minutes) {
+                Navigator.of(sheetCtx).pop();
+                _run(
+                    context,
+                    ref,
+                    (api, fid) => api.setEventTravelTime(fid, event.id, minutes),
+                    minutes == null
+                        ? 'Back to the estimate'
+                        : 'Travel time updated');
+              },
+            ),
           ],
           const SizedBox(height: 18),
           _DetailRow(icon: Icons.info_outline_rounded, text: reason),
@@ -620,6 +647,97 @@ class _DurationFieldState extends State<_DurationField> {
         Text(
           'Minutes from the event $_anchorWord. '
           'Use a negative value to run it the opposite direction.',
+          style: AppText.subtitle,
+        ),
+      ],
+    );
+  }
+}
+
+/// The travel-time override on an event: how long getting there takes, in
+/// minutes, written straight onto the event that mirrors out.
+///
+/// The backend estimates this from where the caretaker is coming from — the
+/// last place their calendar accounts for, or their home address — which is a
+/// guess about distance and traffic made without a routing service. Someone who
+/// knows the run takes 25 minutes says so here and that stands. An empty field
+/// hands it back to the estimate; `0` says this trip needs no travel time.
+class _TravelTimeField extends StatefulWidget {
+  const _TravelTimeField({required this.event, required this.onSubmit});
+
+  final CalendarEventItem event;
+
+  /// Minutes, or null to drop the override and go back to the estimate.
+  final ValueChanged<int?> onSubmit;
+
+  @override
+  State<_TravelTimeField> createState() => _TravelTimeFieldState();
+}
+
+class _TravelTimeFieldState extends State<_TravelTimeField> {
+  late final TextEditingController _controller = TextEditingController(
+      text: widget.event.travelTimeOverrideMin?.toString() ?? '');
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    final text = _controller.text.trim();
+    if (text.isEmpty) {
+      widget.onSubmit(null);
+      return;
+    }
+    final minutes = int.tryParse(text);
+    if (minutes == null || minutes < 0) return;
+    widget.onSubmit(minutes);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final overridden = widget.event.travelTimeOverrideMin != null;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Expanded(
+              child: TextField(
+                controller: _controller,
+                keyboardType: TextInputType.number,
+                inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                onSubmitted: (_) => _submit(),
+                style: font(kBodyFont, 15, 600, color: AppColors.textPrimary),
+                decoration: InputDecoration(
+                  hintText: overridden ? null : 'Estimated',
+                  suffixText: 'min',
+                  isDense: true,
+                ),
+              ),
+            ),
+            const SizedBox(width: 10),
+            FilledButton(
+              onPressed: _submit,
+              style: FilledButton.styleFrom(
+                backgroundColor: AppColors.tint(AppColors.indigo, 0.22),
+                foregroundColor: AppColors.indigo,
+                elevation: 0,
+                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+              ),
+              child: const Text('Set'),
+            ),
+          ],
+        ),
+        const SizedBox(height: 6),
+        Text(
+          overridden
+              ? 'Your own number, used as-is. Clear the field to go back to the '
+                  'estimate; 0 means no travel time on this one.'
+              : 'Estimated from wherever you\'re coming from. Enter minutes to '
+                  'override it; 0 means no travel time on this one.',
           style: AppText.subtitle,
         ),
       ],

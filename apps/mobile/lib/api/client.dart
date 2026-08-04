@@ -203,6 +203,9 @@ class ApiClient {
     bool? requiresCaretaker,
     bool? generatesFamilyTasks,
     String? color,
+    // Pass a value to set, or `null` to clear; omit to leave unchanged.
+    Object? homeLocation = _unset,
+    Object? homeLocationGeo = _unset,
   }) async {
     await _dio.patch(
       '/families/$familyId/members/$memberId',
@@ -213,6 +216,9 @@ class ApiClient {
         if (requiresCaretaker != null) 'requiresCaretaker': requiresCaretaker,
         if (generatesFamilyTasks != null) 'generatesFamilyTasks': generatesFamilyTasks,
         if (color != null) 'color': color,
+        if (!identical(homeLocation, _unset)) 'homeLocation': homeLocation as String?,
+        if (!identical(homeLocationGeo, _unset))
+          'homeLocationGeo': (homeLocationGeo as GeoLocation?)?.toJson(),
       },
       options: _auth,
     );
@@ -538,6 +544,16 @@ class ApiClient {
   Future<void> rebuildEventTasks(String familyId, String eventId) async {
     await _dio.post('/families/$familyId/calendar-events/$eventId/tasks',
         data: <String, dynamic>{}, options: _auth);
+  }
+
+  /// Set how much travel time an event carries out to the target calendar
+  /// (Apple's travel block). An explicit value beats the backend's estimate,
+  /// `0` means no travel time on this one, and `null` hands it back to the
+  /// estimate.
+  Future<void> setEventTravelTime(
+      String familyId, String eventId, int? travelMinutes) async {
+    await _dio.post('/families/$familyId/calendar-events/$eventId/travel-time',
+        data: {'travelMinutes': travelMinutes}, options: _auth);
   }
 
   /// Convert a feed-generated task into a chosen set of types (attendance /
