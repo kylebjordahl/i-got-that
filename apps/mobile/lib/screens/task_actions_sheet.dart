@@ -251,6 +251,133 @@ Future<void> showTaskActions(
   );
 }
 
+/// Details for a Plan event that has no live task to manage. Every block on the
+/// grid answers a tap; this is what the ones with nothing to claim open.
+///
+/// Shows the event exactly as the unified calendar holds it (title, whose
+/// calendar, time, location, notes) and says *why* it carries nothing to claim,
+/// which is one of two very different situations:
+///
+///  * A rule — the event can't have tasks at all. The member's generation is
+///    paused, it's a free/busy firewall block, or it already *is* a claim
+///    ([CalendarEventItem.taskIneligibleReason]). Nothing to offer here; the
+///    fix, where there is one, lives in that member's or feed's settings.
+///  * A mishap — the event is eligible, so its tasks were marked not needed
+///    (which is sticky: task-gen heals a dismissed row but never resurrects it)
+///    or never got built. Rebuilding is offered, which restores the dismissed
+///    ones and re-runs the member's task-rule pipeline over the event.
+Future<void> showEventDetails(
+  BuildContext context,
+  WidgetRef ref,
+  CalendarEventItem event, {
+  Member? member,
+  List<TaskItem> dismissedTasks = const [],
+}) async {
+  final color = member != null ? personColor(member) : AppColors.textSecondary;
+  final end = event.end;
+  final timeText = event.allDay
+      ? 'All day'
+      : (end != null && end.isAfter(event.start)
+          ? friendlyRange(event.start, end)
+          : friendlyTime(event.start));
+
+  final location = event.location;
+  final description = event.description;
+  final hasLocation = location != null && location.isNotEmpty;
+  final hasDescription = description != null && description.isNotEmpty;
+
+  final name = member?.relationName ?? 'This member';
+  final dismissed = dismissedTasks.length;
+  final reason = switch (event.taskIneligibleReason) {
+    'paused' =>
+      "$name's events don't generate family tasks, so there's nothing to claim "
+          'here. An admin can turn that back on from $name in Family.',
+    'busy_calendar' =>
+      "This came from a calendar linked as free/busy, so it's only blocking "
+          "$name's availability — those blocks never generate tasks. Switch "
+          'that feed off "busy" mode to have its events typed.',
+    'claimed' => 'This event is already a claimed task.',
+    // Eligible, so the tasks were dismissed or never built — both rebuildable.
+    _ => dismissed > 0
+        ? 'Its ${dismissed == 1 ? 'task is' : '$dismissed tasks are'} marked not '
+            'needed. Marking one not needed sticks, so rebuild to put this '
+            'event back in the claim queue.'
+        : 'This event has no tasks right now, though it should generate them. '
+            'Rebuild to run it back through '
+            '${member == null ? 'the' : "$name's"} task rules.',
+  };
+
+  await showModalBottomSheet<void>(
+    context: context,
+    useRootNavigator: true,
+    showDragHandle: true,
+    isScrollControlled: true,
+    builder: (sheetCtx) => SingleChildScrollView(
+      padding: const EdgeInsets.fromLTRB(22, 4, 22, 28),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              IconTile(icon: Icons.event_rounded, color: color, size: 44),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                        member == null
+                            ? event.displaySummary
+                            : '${event.displaySummary} · ${member.relationName}',
+                        style: AppText.sectionItemTitle),
+                    const SizedBox(height: 2),
+                    Text('$timeText${event.isHuman ? ' · manual' : ''}',
+                        style: AppText.subtitle),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          if (hasLocation || hasDescription) ...[
+            const SizedBox(height: 14),
+            if (hasLocation) _DetailRow(icon: Icons.location_on_outlined, text: location),
+            if (hasLocation && hasDescription) const SizedBox(height: 8),
+            if (hasDescription) _DetailRow(icon: Icons.notes_rounded, text: description),
+          ],
+          const SizedBox(height: 18),
+          _DetailRow(icon: Icons.info_outline_rounded, text: reason),
+          // Only an eligible event can be rebuilt — for the three rule cases
+          // there's nothing this sheet could do that wouldn't be a lie.
+          if (event.canHaveTasks) ...[
+            const SizedBox(height: 18),
+            AppCard(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
+              child: _ActionRow(
+                icon: Icons.restore_rounded,
+                iconColor: AppColors.indigo,
+                label: dismissed > 0
+                    ? 'Restore ${dismissed == 1 ? 'its task' : 'its $dismissed tasks'}'
+                    : "Rebuild this event's tasks",
+                onTap: () {
+                  Navigator.of(sheetCtx).pop();
+                  _run(
+                      context,
+                      ref,
+                      (api, fid) => api.rebuildEventTasks(fid, event.id),
+                      dismissed > 0
+                          ? 'Back in the claim queue'
+                          : 'Tasks rebuilt');
+                },
+              ),
+            ),
+          ],
+        ],
+      ),
+    ),
+  );
+}
+
 /// Pick a caretaker to (re)assign the scope's tasks to. Hides a caretaker only
 /// when they already own every task in the scope (nothing to move to them).
 Future<void> _pickAndAssign(

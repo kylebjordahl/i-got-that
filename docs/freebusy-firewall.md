@@ -72,13 +72,28 @@ the existing cron/refresh machinery. The differences, end to end:
 
 - **Read** — `fetchGoogleFreeBusy` (libs/ical) POSTs `freebusy.query` over a
   ~35-day window (synthesis consumes 30) instead of `events.list`.
+- **Window anchoring** (`busyIngestWindow` in `apps/api/src/services/ingest.ts`)
+  — the window is floored to the **UTC day**, never taken from the clock.
+  `freebusy.query` clips its intervals to `[timeMin, timeMax]`, so a block
+  already in progress — an ongoing all-day "out of office" is the case that
+  bit us — comes back starting at `timeMin` exactly. With the interval as the
+  identity (below), a `new Date()` timeMin minted a *new* key on every sync:
+  each refresh added another busy block starting at the moment that sync ran,
+  and they stacked up. Anchoring makes the clipped bound stable, so repeated
+  syncs within a day produce the identical key and simply upsert. The trade-off
+  is that an in-progress block reports the window's start rather than its true
+  start — free/busy can't reveal the latter without reading further into the
+  past than an availability mirror should store.
 - **Ingest** (`apps/api/src/services/ingest.ts`) — intervals upsert into
   `source_events` with `icalUid = 'fb:<startISO>/<endISO>'`. Free/busy carries
-  no event identity, so the interval *is* the identity — and therefore ingest
-  also **delete-reconciles** the fetched window: any row whose key isn't in
-  the fresh set is stale (a moved/merged/split block) and is removed, which
-  cascades its synthesized event. Other feed kinds are upsert-only; busy feeds
-  cannot be, or every moved meeting would leave a ghost block.
+  no event identity, so the interval *is* the identity — a moved/merged/split
+  block simply arrives under a fresh key, and the old key reads as stale.
+  Ingest **delete-reconciles** the fetched window (all feed kinds do, but busy
+  feeds depend on it): any row *overlapping* the window whose key isn't in the
+  fresh set is removed, which cascades its synthesized event. Overlap rather
+  than "starts inside the window" is what catches the ongoing block at a UTC-day
+  rollover, when its clipped start moves forward a day and the previous row —
+  which begins *before* the new window — becomes the stale one.
 - **Synthesis** — `synthesizeBusy` (libs/classification) emits detail-free
   intents keyed `fb:<linkId>:<sourceEventId>`, labeled with the feed's name
   (`'Busy'` fallback), location/description always null. No override rules, no

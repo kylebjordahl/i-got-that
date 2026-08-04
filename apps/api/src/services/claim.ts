@@ -11,12 +11,8 @@ import { hashCalendarEvent } from './synthesis.js';
 type TaskRow = typeof tasks.$inferSelect;
 
 export function taskSummary(task: TaskRow, aboutName: string): string {
-  const label =
-    task.type === 'pickup'
-      ? 'Pickup'
-      : task.type === 'dropoff'
-        ? 'Drop-off'
-        : 'Attendance';
+  if (task.type === 'attendance') return `Attend: ${aboutName}`;
+  const label = task.type === 'pickup' ? 'Pickup' : 'Drop-off';
   return `${label} — ${aboutName}`;
 }
 

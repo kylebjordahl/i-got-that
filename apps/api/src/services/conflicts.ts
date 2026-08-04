@@ -349,9 +349,14 @@ export async function reconcileMemberConflicts(
         .set({ maskedAt: new Date() })
         .where(eq(calendarEvents.id, e.id));
     } else if (!shouldMask && e.maskedAt != null) {
+      // Un-masking has to clear the build stamp too. Task-gen swept this
+      // event's unowned tasks while it was masked (its cf: segments carried
+      // them), and its content hasn't changed since — so with the stamp still
+      // matching, task-gen's dirty query would skip it forever and the event
+      // would sit back on the calendar with nothing to claim, permanently.
       await db
         .update(calendarEvents)
-        .set({ maskedAt: null })
+        .set({ maskedAt: null, tasksBuiltHash: null })
         .where(eq(calendarEvents.id, e.id));
     }
   }

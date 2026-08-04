@@ -156,6 +156,37 @@ describe('claiming (the recursion)', () => {
     });
   });
 
+  it('an attendance task with no resolvable source event falls back to "Attend: <name>"', async () => {
+    const fam = await setupFamily('claim-attendance-fallback@example.com');
+    const db = getDb(env.DB);
+    const task = (
+      await db
+        .insert(tasks)
+        .values({
+          familyId: fam.familyId,
+          familyMemberId: fam.childId,
+          calendarEventId: null,
+          type: 'attendance',
+          attendanceRequirement: 'any',
+          dtstart: new Date('2026-07-06T15:30:00Z'),
+          dtend: new Date('2026-07-06T17:00:00Z'),
+          status: 'unowned',
+          createdVia: 'generated',
+        })
+        .returning()
+    )[0]!;
+
+    const claim = await call(
+      `/families/${fam.familyId}/tasks/${task.id}/assign`,
+      authed(fam.admin.token, {}),
+    );
+    expect(claim.status).toBe(200);
+
+    const events = await claimEventsFor(db, task.id);
+    expect(events).toHaveLength(1);
+    expect(events[0]!.summary).toBe('Attend: child');
+  });
+
   it("a claimed transition keeps the task's geocode (Apple travel time)", async () => {
     const fam = await setupFamily('claim-geo@example.com');
     const db = getDb(env.DB);

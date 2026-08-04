@@ -1,5 +1,7 @@
+import 'package:caretaker_app/api/client.dart';
 import 'package:caretaker_app/models.dart';
 import 'package:caretaker_app/screens/plan_screen.dart';
+import 'package:caretaker_app/state/auth.dart';
 import 'package:caretaker_app/state/family.dart';
 import 'package:caretaker_app/theme/app_theme.dart';
 import 'package:caretaker_app/util/format.dart';
@@ -7,12 +9,28 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-Member _m(String id, String name, {bool caretaker = false, bool child = false}) => Member(
+/// Records the event ids a rebuild was requested for, so a sheet action can be
+/// asserted on without a real network call.
+class _RecordingApiClient extends ApiClient {
+  _RecordingApiClient() : super(baseUrl: 'http://test');
+
+  final List<String> rebuiltEventIds = [];
+
+  @override
+  Future<void> rebuildEventTasks(String familyId, String eventId) async {
+    rebuiltEventIds.add(eventId);
+  }
+}
+
+Member _m(String id, String name,
+        {bool caretaker = false, bool child = false, bool generatesTasks = true}) =>
+    Member(
       id: id,
       relationName: name,
       isCaretaker: caretaker,
       requiresCaretaker: child,
       isAdmin: false,
+      generatesFamilyTasks: generatesTasks,
     );
 
 void main() {
@@ -251,6 +269,253 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('an all-day event rides the pinned row, not a block down the grid',
+      (tester) async {
+    final now = DateTime.now();
+    DateTime at(int h, int m) => DateTime(now.year, now.month, now.day, h, m);
+    final today = DateTime(now.year, now.month, now.day);
+    // An all-day event spans midnight to midnight, so as a block it stretched
+    // the grid over the whole 24 hours and squeezed the real appointment into
+    // the lane beside it.
+    final events = [
+      CalendarEventItem(id: 'leave', familyMemberId: 'theo', provenance: 'synthesized', start: today, end: today.add(const Duration(days: 1)), allDay: true, summary: 'Initial parental leave'),
+      CalendarEventItem(id: 'dentist', familyMemberId: 'theo', provenance: 'human', start: at(10, 0), end: at(11, 0), allDay: false, summary: 'Dentist'),
+    ];
+    // ...and its own drop-off still belongs on the grid, at the time it happens.
+    final tasks = [
+      TaskItem(id: 'd', familyMemberId: 'theo', type: 'dropoff', start: at(8, 0), status: 'unowned', createdVia: 'generated', calendarEventId: 'leave'),
+    ];
+    await tester.pumpWidget(ProviderScope(
+      overrides: [
+        membersProvider.overrideWith((ref) async => [
+              _m('dad', 'Dad', caretaker: true),
+              _m('theo', 'Theo', child: true),
+            ]),
+        currentMemberProvider.overrideWith((ref) async => _m('dad', 'Dad', caretaker: true)),
+        allTasksProvider.overrideWith((ref) async => tasks),
+        calendarEventsProvider.overrideWith((ref) async => events),
+        pendingDecisionsProvider.overrideWith((ref) async => const []),
+        threadingThresholdProvider.overrideWith((ref) async => 30),
+      ],
+      child: MaterialApp(
+        theme: buildAppTheme(),
+        themeMode: ThemeMode.dark,
+        home: const Scaffold(body: SafeArea(child: PlanScreen())),
+      ),
+    ));
+    await tester.pumpAndSettle();
+
+    // It's in the pinned row above the grid's first hour...
+    expect(find.text('all-day'), findsOneWidget);
+    final pill = tester.getRect(find.textContaining('Initial parental leave'));
+    final firstHour = tester.getRect(find.text('7 AM'));
+    expect(pill.bottom, lessThanOrEqualTo(firstHour.top));
+    // ...so the grid never stretched back to midnight to fit it.
+    expect(find.text('12 AM'), findsNothing);
+    // The timed event keeps the whole lane to itself.
+    expect(find.textContaining('Dentist'), findsOneWidget);
+    // And the all-day event's transition still lands on the grid at 8:00.
+    final tag = tester.getRect(find.text('Drop-off · 8:00'));
+    expect(tag.top, greaterThan(firstHour.top));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('a multi-day all-day event shows on every day it covers',
+      (tester) async {
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    // Started yesterday, runs through tomorrow: today is in the middle of it,
+    // so it belongs on today's row even though it doesn't start today.
+    final events = [
+      CalendarEventItem(id: 'trip', familyMemberId: 'theo', provenance: 'synthesized', start: today.subtract(const Duration(days: 1)), end: today.add(const Duration(days: 2)), allDay: true, summary: 'Grandma visit'),
+    ];
+    await tester.pumpWidget(ProviderScope(
+      overrides: [
+        membersProvider.overrideWith((ref) async => [
+              _m('dad', 'Dad', caretaker: true),
+              _m('theo', 'Theo', child: true),
+            ]),
+        currentMemberProvider.overrideWith((ref) async => _m('dad', 'Dad', caretaker: true)),
+        allTasksProvider.overrideWith((ref) async => const <TaskItem>[]),
+        calendarEventsProvider.overrideWith((ref) async => events),
+        pendingDecisionsProvider.overrideWith((ref) async => const []),
+        threadingThresholdProvider.overrideWith((ref) async => 30),
+      ],
+      child: MaterialApp(
+        theme: buildAppTheme(),
+        themeMode: ThemeMode.dark,
+        home: const Scaffold(body: SafeArea(child: PlanScreen())),
+      ),
+    ));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('Grandma visit'), findsOneWidget);
+
+    // Swipe to tomorrow — the last day it covers — and it's still there.
+    await tester.fling(find.text('7 AM'), const Offset(-400, 0), 1000);
+    await tester.pumpAndSettle();
+    expect(find.textContaining('Grandma visit'), findsOneWidget);
+
+    // One more day and it's over, so the row goes away entirely.
+    await tester.fling(find.text('7 AM'), const Offset(-400, 0), 1000);
+    await tester.pumpAndSettle();
+    expect(find.textContaining('Grandma visit'), findsNothing);
+    expect(find.text('all-day'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('tapping an all-day pill opens what tapping its block would',
+      (tester) async {
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final events = [
+      CalendarEventItem(id: 'holiday', familyMemberId: 'theo', provenance: 'synthesized', start: today, end: today.add(const Duration(days: 1)), allDay: true, summary: 'MCH closed', location: 'Home', description: 'US holiday'),
+    ];
+    await tester.pumpWidget(ProviderScope(
+      overrides: [
+        membersProvider.overrideWith((ref) async => [
+              _m('dad', 'Dad', caretaker: true),
+              _m('theo', 'Theo', child: true),
+            ]),
+        currentMemberProvider.overrideWith((ref) async => _m('dad', 'Dad', caretaker: true)),
+        allTasksProvider.overrideWith((ref) async => const <TaskItem>[]),
+        calendarEventsProvider.overrideWith((ref) async => events),
+        pendingDecisionsProvider.overrideWith((ref) async => const []),
+        threadingThresholdProvider.overrideWith((ref) async => 30),
+      ],
+      child: MaterialApp(
+        theme: buildAppTheme(),
+        themeMode: ThemeMode.dark,
+        home: const Scaffold(body: SafeArea(child: PlanScreen())),
+      ),
+    ));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.textContaining('MCH closed'));
+    await tester.pumpAndSettle();
+
+    // The event's own details sheet, reading "All day" rather than a time.
+    expect(find.text('Home'), findsOneWidget);
+    expect(find.text('US holiday'), findsOneWidget);
+    expect(find.text('All day'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('a contained appointment cascades over its host, tags and all',
+      (tester) async {
+    tester.view.physicalSize = const Size(800, 1400);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+
+    final now = DateTime.now();
+    DateTime at(int h, int m) => DateTime(now.year, now.month, now.day, h, m);
+    // The shape the day view used to make a mess of: a midday appointment
+    // wholly inside the school day. Splitting the lane in half squeezed a
+    // 6-hour block into a sliver over an appointment that only needed an hour;
+    // now the appointment cascades on top of it, iOS-Calendar style.
+    final events = [
+      CalendarEventItem(id: 'school', familyMemberId: 'theo', provenance: 'synthesized', start: at(8, 30), end: at(15, 0), allDay: false, summary: 'School day'),
+      CalendarEventItem(id: 'ortho', familyMemberId: 'theo', provenance: 'human', start: at(10, 0), end: at(11, 0), allDay: false, summary: 'Orthodontist'),
+    ];
+    final tasks = [
+      TaskItem(id: 'sd', familyMemberId: 'theo', type: 'dropoff', start: at(8, 30), status: 'unowned', createdVia: 'generated', calendarEventId: 'school'),
+      TaskItem(id: 'sp', familyMemberId: 'theo', type: 'pickup', start: at(15, 0), status: 'unowned', createdVia: 'generated', calendarEventId: 'school'),
+      TaskItem(id: 'od', familyMemberId: 'theo', type: 'dropoff', start: at(10, 0), status: 'unowned', createdVia: 'generated', calendarEventId: 'ortho'),
+      TaskItem(id: 'op', familyMemberId: 'theo', type: 'pickup', start: at(11, 0), status: 'unowned', createdVia: 'generated', calendarEventId: 'ortho'),
+    ];
+    await tester.pumpWidget(ProviderScope(
+      overrides: [
+        membersProvider.overrideWith((ref) async => [
+              _m('dad', 'Dad', caretaker: true),
+              _m('theo', 'Theo', child: true),
+            ]),
+        currentMemberProvider.overrideWith((ref) async => _m('dad', 'Dad', caretaker: true)),
+        allTasksProvider.overrideWith((ref) async => tasks),
+        calendarEventsProvider.overrideWith((ref) async => events),
+        pendingDecisionsProvider.overrideWith((ref) async => const []),
+        threadingThresholdProvider.overrideWith((ref) async => 30),
+      ],
+      child: MaterialApp(
+        theme: buildAppTheme(),
+        themeMode: ThemeMode.dark,
+        home: const Scaffold(body: SafeArea(child: PlanScreen())),
+      ),
+    ));
+    await tester.pumpAndSettle();
+
+    final school = tester.getRect(find.textContaining('School day'));
+    final ortho = tester.getRect(find.textContaining('Orthodontist'));
+    // The appointment is inset from the school day's left edge and ends flush
+    // with it — on top of it, not beside it (side by side, it would start past
+    // the school day's right edge instead).
+    expect(ortho.left, greaterThan(school.left));
+    expect(ortho.right, closeTo(school.right, 1));
+    // ...and the host keeps its own label strip clear above the cascade.
+    expect(school.bottom, lessThanOrEqualTo(ortho.top));
+
+    // Most important of all: every transition tag survives the cascade — both
+    // the host's and the appointment's.
+    expect(find.text('Drop-off · 8:30'), findsOneWidget);
+    expect(find.text('Pick-up · 3:00'), findsOneWidget);
+    expect(find.text('Drop-off · 10:00'), findsOneWidget);
+    expect(find.text('Pick-up · 11:00'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('a block widens over the columns nothing collides with it in',
+      (tester) async {
+    tester.view.physicalSize = const Size(800, 1400);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+
+    final now = DateTime.now();
+    DateTime at(int h, int m) => DateTime(now.year, now.month, now.day, h, m);
+    // Three columns' worth of morning, but only for its first 45 minutes:
+    // 'Playdate' starts once the 9 o'clock pair is over, so it takes their two
+    // columns back instead of sitting in a third of a lane it has to itself.
+    final events = [
+      CalendarEventItem(id: 'swim', familyMemberId: 'theo', provenance: 'synthesized', start: at(9, 0), end: at(9, 45), allDay: false, summary: 'Swim'),
+      CalendarEventItem(id: 'camp', familyMemberId: 'mia', provenance: 'synthesized', start: at(9, 0), end: at(9, 45), allDay: false, summary: 'Camp'),
+      CalendarEventItem(id: 'recital', familyMemberId: 'theo', provenance: 'synthesized', start: at(9, 15), end: at(11, 0), allDay: false, summary: 'Recital'),
+      CalendarEventItem(id: 'play', familyMemberId: 'mia', provenance: 'synthesized', start: at(10, 0), end: at(11, 30), allDay: false, summary: 'Playdate'),
+    ];
+    await tester.pumpWidget(ProviderScope(
+      overrides: [
+        membersProvider.overrideWith((ref) async => [
+              _m('dad', 'Dad', caretaker: true),
+              _m('theo', 'Theo', child: true),
+              _m('mia', 'Mia', child: true),
+            ]),
+        currentMemberProvider.overrideWith((ref) async => _m('dad', 'Dad', caretaker: true)),
+        allTasksProvider.overrideWith((ref) async => const <TaskItem>[]),
+        calendarEventsProvider.overrideWith((ref) async => events),
+        pendingDecisionsProvider.overrideWith((ref) async => const []),
+        threadingThresholdProvider.overrideWith((ref) async => 30),
+      ],
+      child: MaterialApp(
+        theme: buildAppTheme(),
+        themeMode: ThemeMode.dark,
+        home: const Scaffold(body: SafeArea(child: PlanScreen())),
+      ),
+    ));
+    await tester.pumpAndSettle();
+
+    final swim = tester.getRect(find.textContaining('Swim'));
+    final play = tester.getRect(find.textContaining('Playdate'));
+    final recital = tester.getRect(find.textContaining('Recital'));
+    // Playdate spreads over the two columns the 9 o'clock pair vacated...
+    expect(play.left, closeTo(swim.left, 1));
+    expect(play.width, greaterThan(swim.width * 1.5));
+    // ...but stops at the recital, which is still going.
+    expect(play.right, lessThan(recital.left));
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets(
       'a claimed drop-off does not add the claimant as an attendee avatar on the block',
       (tester) async {
@@ -465,6 +730,241 @@ void main() {
     expect(find.textContaining('8:30 AM – 3:00 PM'), findsWidgets);
   });
 
+  testWidgets(
+      'the winner of a resolved conflict is tappable between the split halves',
+      (tester) async {
+    tester.view.physicalSize = const Size(800, 1000);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+
+    final now = DateTime.now();
+    DateTime at(int h, int m) => DateTime(now.year, now.month, now.day, h, m);
+    final me = _m('dad', 'Dad', caretaker: true);
+    // What a resolved conflict leaves behind: the school day split into two
+    // halves with the winning appointment flush between them. The halves'
+    // pick-up (10:00) and drop-off (10:30) straddle exactly the appointment's
+    // two edges — and used to swallow every tap meant for it.
+    final events = [
+      CalendarEventItem(id: 'seg0', familyMemberId: 'theo', provenance: 'synthesized', start: at(8, 30), end: at(10, 0), allDay: false, summary: 'School day'),
+      CalendarEventItem(id: 'appt', familyMemberId: 'theo', provenance: 'human', start: at(10, 0), end: at(10, 30), allDay: false, summary: 'Orthodontist'),
+      CalendarEventItem(id: 'seg1', familyMemberId: 'theo', provenance: 'synthesized', start: at(10, 30), end: at(15, 0), allDay: false, summary: 'School day'),
+    ];
+    final tasks = [
+      TaskItem(id: 'd0', familyMemberId: 'theo', type: 'dropoff', start: at(8, 30), status: 'unowned', createdVia: 'generated', calendarEventId: 'seg0'),
+      TaskItem(id: 'p0', familyMemberId: 'theo', type: 'pickup', start: at(10, 0), status: 'unowned', createdVia: 'generated', calendarEventId: 'seg0'),
+      TaskItem(id: 'd1', familyMemberId: 'theo', type: 'dropoff', start: at(10, 30), status: 'unowned', createdVia: 'generated', calendarEventId: 'seg1'),
+      TaskItem(id: 'p1', familyMemberId: 'theo', type: 'pickup', start: at(15, 0), status: 'unowned', createdVia: 'generated', calendarEventId: 'seg1'),
+      TaskItem(id: 'att', familyMemberId: 'theo', type: 'attendance', start: at(10, 0), end: at(10, 30), status: 'unowned', createdVia: 'generated', calendarEventId: 'appt'),
+    ];
+    await tester.pumpWidget(ProviderScope(
+      overrides: [
+        membersProvider.overrideWith((ref) async => [me, _m('theo', 'Theo', child: true)]),
+        currentMemberProvider.overrideWith((ref) async => me),
+        allTasksProvider.overrideWith((ref) async => tasks),
+        calendarEventsProvider.overrideWith((ref) async => events),
+        pendingDecisionsProvider.overrideWith((ref) async => const []),
+        threadingThresholdProvider.overrideWith((ref) async => 30),
+      ],
+      child: MaterialApp(
+        theme: buildAppTheme(),
+        themeMode: ThemeMode.dark,
+        home: const Scaffold(body: SafeArea(child: PlanScreen())),
+      ),
+    ));
+    await tester.pumpAndSettle();
+
+    // The appointment is only half an hour: too short for its time, but its
+    // description is the one line a block never gives up.
+    expect(find.textContaining('Orthodontist'), findsOneWidget);
+    expect(find.text('10:00 – 10:30 AM'), findsNothing);
+
+    // Tap just inside the appointment's top edge, in the horizontal band the
+    // half's pick-up tab occupies: the 10 AM gridline is that edge.
+    final top = tester.getRect(find.text('10 AM')).top;
+    final tabX = tester.getRect(find.text('Pick-up · 10:00')).center.dx;
+    await tester.tapAt(Offset(tabX, top + 6));
+    await tester.pumpAndSettle();
+
+    // The appointment's own sheet opened — not the neighbouring half's pick-up —
+    // and it's claimable.
+    expect(find.textContaining('Orthodontist'), findsWidgets);
+    expect(find.text('Claim for myself'), findsOneWidget);
+    // The half's pick-up would have brought its own DURATION field along; the
+    // appointment's attendance-only group has none.
+    expect(find.text('DURATION'), findsNothing);
+  });
+
+  testWidgets('an event with no tasks still opens its details sheet',
+      (tester) async {
+    final now = DateTime.now();
+    DateTime at(int h, int m) => DateTime(now.year, now.month, now.day, h, m);
+    final me = _m('mom', 'Mom', caretaker: true);
+    // A caretaker's own calendar generates no family tasks by design, so its
+    // events have nothing to claim — they must still answer a tap. The API
+    // stamps that as the event's ineligibility reason.
+    final dad = _m('dad', 'Dad', caretaker: true, generatesTasks: false);
+    final events = [
+      CalendarEventItem(
+        id: 'dentist',
+        familyMemberId: 'dad',
+        provenance: 'human',
+        start: at(9, 0),
+        end: at(11, 0),
+        allDay: false,
+        summary: 'Dentist',
+        location: 'Maple Dental',
+        description: 'Bring the insurance card',
+        taskIneligibleReason: 'paused',
+      ),
+    ];
+    await tester.pumpWidget(ProviderScope(
+      overrides: [
+        membersProvider.overrideWith((ref) async => [me, dad]),
+        currentMemberProvider.overrideWith((ref) async => me),
+        allTasksProvider.overrideWith((ref) async => const <TaskItem>[]),
+        calendarEventsProvider.overrideWith((ref) async => events),
+        pendingDecisionsProvider.overrideWith((ref) async => const []),
+        threadingThresholdProvider.overrideWith((ref) async => 30),
+      ],
+      child: MaterialApp(
+        theme: buildAppTheme(),
+        themeMode: ThemeMode.dark,
+        home: const Scaffold(body: SafeArea(child: PlanScreen())),
+      ),
+    ));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.textContaining('Dentist'));
+    await tester.pumpAndSettle();
+
+    // The details sheet carries the event as the calendar holds it, and says
+    // why there's nothing to claim on it.
+    expect(find.text('Maple Dental'), findsOneWidget);
+    expect(find.text('Bring the insurance card'), findsOneWidget);
+    expect(find.textContaining("don't generate family tasks"), findsOneWidget);
+    // Nothing a rebuild could do here — the block is a member setting.
+    expect(find.textContaining('Rebuild'), findsNothing);
+  });
+
+  testWidgets('a free/busy block says why it can never carry a task',
+      (tester) async {
+    final now = DateTime.now();
+    DateTime at(int h, int m) => DateTime(now.year, now.month, now.day, h, m);
+    final me = _m('dad', 'Dad', caretaker: true);
+    // An `fb:` block from a busy-mode feed: opaque availability, never typed.
+    final events = [
+      CalendarEventItem(id: 'busy', familyMemberId: 'theo', provenance: 'synthesized', start: at(13, 0), end: at(15, 0), allDay: false, summary: 'Busy', taskIneligibleReason: 'busy_calendar'),
+    ];
+    await tester.pumpWidget(ProviderScope(
+      overrides: [
+        membersProvider.overrideWith((ref) async => [me, _m('theo', 'Theo', child: true)]),
+        currentMemberProvider.overrideWith((ref) async => me),
+        allTasksProvider.overrideWith((ref) async => const <TaskItem>[]),
+        calendarEventsProvider.overrideWith((ref) async => events),
+        pendingDecisionsProvider.overrideWith((ref) async => const []),
+        threadingThresholdProvider.overrideWith((ref) async => 30),
+      ],
+      child: MaterialApp(
+        theme: buildAppTheme(),
+        themeMode: ThemeMode.dark,
+        home: const Scaffold(body: SafeArea(child: PlanScreen())),
+      ),
+    ));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.textContaining('Busy'));
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('linked as free/busy'), findsOneWidget);
+    expect(find.textContaining('Rebuild'), findsNothing);
+  });
+
+  testWidgets('an eligible event with no tasks at all offers a rebuild',
+      (tester) async {
+    final now = DateTime.now();
+    DateTime at(int h, int m) => DateTime(now.year, now.month, now.day, h, m);
+    final me = _m('dad', 'Dad', caretaker: true);
+    // What the reporter hit: an event that should generate an attendance task,
+    // sitting on the calendar with no task row of any status behind it.
+    final events = [
+      CalendarEventItem(id: 'ortho', familyMemberId: 'theo', provenance: 'human', start: at(10, 0), end: at(11, 30), allDay: false, summary: 'Orthodontist'),
+    ];
+    await tester.pumpWidget(ProviderScope(
+      overrides: [
+        membersProvider.overrideWith((ref) async => [me, _m('theo', 'Theo', child: true)]),
+        currentMemberProvider.overrideWith((ref) async => me),
+        allTasksProvider.overrideWith((ref) async => const <TaskItem>[]),
+        calendarEventsProvider.overrideWith((ref) async => events),
+        pendingDecisionsProvider.overrideWith((ref) async => const []),
+        threadingThresholdProvider.overrideWith((ref) async => 30),
+      ],
+      child: MaterialApp(
+        theme: buildAppTheme(),
+        themeMode: ThemeMode.dark,
+        home: const Scaffold(body: SafeArea(child: PlanScreen())),
+      ),
+    ));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.textContaining('Orthodontist'));
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('should generate them'), findsOneWidget);
+    expect(find.text("Rebuild this event's tasks"), findsOneWidget);
+  });
+
+  testWidgets('an event whose tasks were all dismissed offers to restore them',
+      (tester) async {
+    final now = DateTime.now();
+    DateTime at(int h, int m) => DateTime(now.year, now.month, now.day, h, m);
+    final me = _m('dad', 'Dad', caretaker: true);
+    final events = [
+      CalendarEventItem(id: 'practice', familyMemberId: 'theo', provenance: 'synthesized', start: at(16, 0), end: at(18, 0), allDay: false, summary: 'Fiddle practice'),
+    ];
+    // Both of the event's tasks were marked not needed, so the block has
+    // nothing live to manage — the details sheet is the way back.
+    final tasks = [
+      TaskItem(id: 'd', familyMemberId: 'theo', type: 'dropoff', start: at(16, 0), status: 'dismissed', createdVia: 'generated', calendarEventId: 'practice'),
+      TaskItem(id: 'p', familyMemberId: 'theo', type: 'pickup', start: at(18, 0), status: 'dismissed', createdVia: 'generated', calendarEventId: 'practice'),
+    ];
+    final api = _RecordingApiClient();
+    await tester.pumpWidget(ProviderScope(
+      overrides: [
+        apiClientProvider.overrideWithValue(api),
+        familyProvider.overrideWith((ref) async => 'fam-1'),
+        membersProvider.overrideWith((ref) async => [me, _m('theo', 'Theo', child: true)]),
+        currentMemberProvider.overrideWith((ref) async => me),
+        allTasksProvider.overrideWith((ref) async => tasks),
+        calendarEventsProvider.overrideWith((ref) async => events),
+        pendingDecisionsProvider.overrideWith((ref) async => const []),
+        threadingThresholdProvider.overrideWith((ref) async => 30),
+      ],
+      child: MaterialApp(
+        theme: buildAppTheme(),
+        themeMode: ThemeMode.dark,
+        home: const Scaffold(body: SafeArea(child: PlanScreen())),
+      ),
+    ));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.textContaining('Fiddle practice'));
+    await tester.pumpAndSettle();
+
+    // The sheet names the sticky dismissal and offers the way back.
+    expect(find.textContaining('marked not needed'), findsOneWidget);
+    expect(find.text('Restore its 2 tasks'), findsOneWidget);
+
+    await tester.tap(find.text('Restore its 2 tasks'));
+    await tester.pumpAndSettle();
+
+    // One rebuild call for the event — it restores the dismissed rows and
+    // re-runs task-gen server-side, rather than the client un-dismissing each.
+    expect(api.rebuiltEventIds, ['practice']);
+  });
+
   testWidgets('a wide manual block keeps the "· manual" tag beside its time',
       (tester) async {
     final now = DateTime.now();
@@ -534,12 +1034,12 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('a short event collapses to just its time, without overflow',
+  testWidgets('a short event keeps its description and drops its time',
       (tester) async {
     final now = DateTime.now();
     DateTime at(int h, int m) => DateTime(now.year, now.month, now.day, h, m);
     // A 20-minute segment (once inflated to a fixed 76px, now its true height)
-    // is too short for the title line — it shows the start–end time alone.
+    // only has room for one line — and that line is always the description.
     final events = [
       CalendarEventItem(id: 'q', familyMemberId: 'theo', provenance: 'synthesized', start: at(9, 0), end: at(9, 20), allDay: false, summary: 'Quick errand'),
     ];
@@ -566,9 +1066,9 @@ void main() {
     ));
     await tester.pumpAndSettle();
 
-    // The time shows; the summary is dropped for the compact block.
-    expect(find.text('9:00 – 9:20 AM'), findsOneWidget);
-    expect(find.textContaining('Quick errand'), findsNothing);
+    // The description shows; the time is what a compact block drops.
+    expect(find.textContaining('Quick errand'), findsOneWidget);
+    expect(find.text('9:00 – 9:20 AM'), findsNothing);
     expect(tester.takeException(), isNull);
   });
 
@@ -789,5 +1289,126 @@ void main() {
 
     // The grid's own vertical scroll still works — a swipe doesn't swallow it.
     expect(tester.takeException(), isNull);
+  });
+
+  group('pinch to zoom the time axis', () {
+    /// A day with a 1-hour appointment plus something just after midnight and
+    /// something late at night, so the grid runs the whole 24 hours: tall
+    /// enough to pinch on, and longer than any viewport so it really scrolls.
+    Future<void> pumpDay(WidgetTester tester,
+        {Size size = const Size(800, 1400)}) async {
+      tester.view.physicalSize = size;
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(() {
+        tester.view.resetPhysicalSize();
+        tester.view.resetDevicePixelRatio();
+      });
+      final now = DateTime.now();
+      final events = [
+        CalendarEventItem(id: 'e', familyMemberId: 'theo', provenance: 'human', start: DateTime(now.year, now.month, now.day, 9), end: DateTime(now.year, now.month, now.day, 10), allDay: false, summary: 'Dentist'),
+        CalendarEventItem(id: 'late', familyMemberId: 'theo', provenance: 'human', start: DateTime(now.year, now.month, now.day, 22), end: DateTime(now.year, now.month, now.day, 23), allDay: false, summary: 'Late thing'),
+        CalendarEventItem(id: 'early', familyMemberId: 'theo', provenance: 'human', start: DateTime(now.year, now.month, now.day, 0, 30), end: DateTime(now.year, now.month, now.day, 1), allDay: false, summary: 'Early thing'),
+      ];
+      await tester.pumpWidget(ProviderScope(
+        overrides: [
+          membersProvider.overrideWith((ref) async => [
+                _m('dad', 'Dad', caretaker: true),
+                _m('theo', 'Theo', child: true),
+              ]),
+          currentMemberProvider.overrideWith((ref) async => _m('dad', 'Dad', caretaker: true)),
+          allTasksProvider.overrideWith((ref) async => const <TaskItem>[]),
+          calendarEventsProvider.overrideWith((ref) async => events),
+          pendingDecisionsProvider.overrideWith((ref) async => const []),
+          threadingThresholdProvider.overrideWith((ref) async => 30),
+        ],
+        child: MaterialApp(
+          theme: buildAppTheme(),
+          themeMode: ThemeMode.dark,
+          home: const Scaffold(body: SafeArea(child: PlanScreen())),
+        ),
+      ));
+      await tester.pumpAndSettle();
+    }
+
+    /// The rendered height of one hour: the gap between two hour gridlines.
+    double hourHeight(WidgetTester tester) =>
+        tester.getRect(find.text('10 AM')).top -
+        tester.getRect(find.text('8 AM')).top;
+
+    /// Pinch vertically on the grid, taking the two fingers from [from] apart
+    /// to [to] apart around the same centre. Centred on the grid's own viewport
+    /// so both fingers land inside it however far apart they start.
+    Future<void> pinch(WidgetTester tester, double from, double to) async {
+      final centre = tester.getRect(find.byType(SingleChildScrollView)).center;
+      final a = await tester.startGesture(centre.translate(0, -from / 2));
+      final b = await tester.startGesture(centre.translate(0, from / 2));
+      // In steps, so the recognizer sees a gesture rather than a teleport.
+      for (var i = 0; i < 5; i++) {
+        final step = (to - from) / 10;
+        await a.moveBy(Offset(0, -step));
+        await b.moveBy(Offset(0, step));
+        await tester.pump();
+      }
+      await a.up();
+      await b.up();
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('spreading two fingers stretches the hours apart',
+        (tester) async {
+      await pumpDay(tester);
+      final before = hourHeight(tester);
+      final block = tester.getRect(find.textContaining('Dentist'));
+
+      await pinch(tester, 100, 200);
+
+      // Two hours of grid take twice the room they did...
+      expect(hourHeight(tester), closeTo(before * 2, 2));
+      // ...the appointment's block stretched with them (it starts at 9 and ends
+      // at 10, so it spans exactly that gap)...
+      expect(tester.getRect(find.textContaining('Dentist')).left,
+          closeTo(block.left, 1));
+      // ...and it still says what it is and when.
+      expect(find.textContaining('9:00 – 10:00 AM'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('pinching in compresses the day and thins the hour labels',
+        (tester) async {
+      await pumpDay(tester);
+      final before = hourHeight(tester);
+
+      await pinch(tester, 300, 100);
+
+      // Clamped at the minimum zoom rather than collapsing to nothing.
+      final after = hourHeight(tester);
+      expect(after, lessThan(before));
+      expect(after, greaterThan(before * 0.5));
+      // Too tight for a label on every line, so the odd hours go quiet — the
+      // gridlines all stay, which is what the 10 AM/8 AM measurement rides on.
+      expect(find.text('9 AM'), findsNothing);
+      expect(find.text('8 AM'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('a one-finger drag still scrolls the grid, not zooms it',
+        (tester) async {
+      // A short viewport, so the day is longer than the grid can show and there
+      // is something to scroll in the first place.
+      await pumpDay(tester, size: const Size(800, 700));
+      final hour = hourHeight(tester);
+      final before = tester.getRect(find.text('9 AM')).top;
+
+      // (The scrollable eats the touch slop, so the grid moves a little less
+      // far than the finger does.)
+      await tester.drag(find.text('9 AM'), const Offset(0, -120));
+      await tester.pumpAndSettle();
+
+      // The grid scrolled under the finger, and the zoom is untouched — the
+      // pinch recognizer must never claim a single-pointer gesture.
+      expect(tester.getRect(find.text('9 AM')).top, lessThan(before - 80));
+      expect(hourHeight(tester), closeTo(hour, 0.01));
+      expect(tester.takeException(), isNull);
+    });
   });
 }
