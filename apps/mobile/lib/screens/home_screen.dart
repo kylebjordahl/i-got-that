@@ -15,6 +15,7 @@ import '../widgets/settings.dart';
 import '../widgets/task_row.dart';
 import 'conflict_resolution_sheet.dart';
 import 'feed_baseline_screen.dart';
+import 'route_event_sheet.dart';
 import 'task_actions_sheet.dart';
 
 /// Home — the claim hub. A multi-day list grouped under sticky day headers;
@@ -98,6 +99,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final me = ref.watch(currentMemberProvider).valueOrNull;
     final decisions =
         ref.watch(pendingDecisionsProvider).valueOrNull ?? const <PendingDecision>[];
+    // A routing decision is asked of every member of the shared calendar, but
+    // it's one question — the rows collapse into a single card.
+    final decisionCards = groupDecisions(decisions);
     final conflicts =
         ref.watch(conflictsProvider).valueOrNull ?? const <Conflict>[];
     final threshold = ref.watch(threadingThresholdProvider).valueOrNull ?? 30;
@@ -184,19 +188,22 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                   ],
                   // Pending decisions rank ABOVE unclaimed tasks — they block
                   // the pipeline until a human decides.
-                  if (decisions.isNotEmpty) ...[
+                  if (decisionCards.isNotEmpty) ...[
                     SectionEyebrow(
                       'Needs a decision',
                       color: AppColors.amber,
-                      trailing: TintBadge('${decisions.length}', color: AppColors.amber),
+                      trailing:
+                          TintBadge('${decisionCards.length}', color: AppColors.amber),
                     ),
                     const SizedBox(height: 10),
-                    for (final d in decisions) ...[
+                    for (final g in decisionCards) ...[
                       _DecisionCard(
-                        decision: d,
-                        member: byId[d.familyMemberId],
-                        onResolve: () => _openRuleEditor(d),
-                        onDismiss: () => _dismissDecision(d),
+                        group: g,
+                        members: byId,
+                        onResolve: () => g.isRouting
+                            ? _openRoutingSheet(g)
+                            : _openRuleEditor(g.first),
+                        onDismiss: () => _dismissDecision(g.first),
                       ),
                       const SizedBox(height: 10),
                     ],
@@ -420,6 +427,13 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         ));
       }
     }
+  }
+
+  /// Routing decisions are answered by picking who the event belongs to, not by
+  /// writing a rule first — the sheet offers "every time" as a second step.
+  Future<void> _openRoutingSheet(DecisionGroup group) async {
+    final resolved = await showRouteEventSheet(context, group: group);
+    if (resolved == true) _refresh();
   }
 
   Future<void> _dismissDecision(PendingDecision d) async {
@@ -668,24 +682,37 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       );
 }
 
-/// An unmatched exception-feed event awaiting a human decision (6b): amber
-/// dashed card with Resolve / Dismiss. The system never guesses.
+/// A feed event awaiting a human decision (6b): amber card with Resolve /
+/// Dismiss. The system never guesses. Either an unmatched exception-feed event
+/// ("what does this do to Theo's day?") or — grouped from its per-member rows —
+/// an unrouted event on a shared family calendar ("whose is this?").
 class _DecisionCard extends StatelessWidget {
   const _DecisionCard({
-    required this.decision,
-    required this.member,
+    required this.group,
+    required this.members,
     required this.onResolve,
     required this.onDismiss,
   });
-  final PendingDecision decision;
-  final Member? member;
+  final DecisionGroup group;
+  final Map<String, Member> members;
   final VoidCallback onResolve;
   final VoidCallback onDismiss;
 
+  PendingDecision get decision => group.first;
+
+  /// Who the card names: one member for an exception decision, the candidates
+  /// on the shared calendar for a routing one.
+  String get _who => group.isRouting
+      ? [
+          for (final r in group.rows) members[r.familyMemberId]?.relationName ?? 'member'
+        ].join(' / ')
+      : members[decision.familyMemberId]?.relationName ?? 'member';
+
   @override
   Widget build(BuildContext context) {
+    final member = group.isRouting ? null : members[decision.familyMemberId];
     final memberColor =
-        member != null ? personColor(member!) : AppColors.textSecondary;
+        member != null ? personColor(member) : AppColors.textSecondary;
     final when = decision.allDay
         ? homeDayHeader(dayKey(decision.start), DateTime.now())
         : friendlyTime(decision.start);
@@ -701,7 +728,12 @@ class _DecisionCard extends StatelessWidget {
         children: [
           Row(
             children: [
-              const IconTile(icon: Icons.help_outline_rounded, color: AppColors.amber, size: 38),
+              IconTile(
+                  icon: group.isRouting
+                      ? Icons.call_split_rounded
+                      : Icons.help_outline_rounded,
+                  color: AppColors.amber,
+                  size: 38),
               const SizedBox(width: 12),
               Expanded(
                 child: Column(
@@ -713,7 +745,7 @@ class _DecisionCard extends StatelessWidget {
                             text: decision.summary ?? 'Unmatched event',
                             style: AppText.sectionItemTitle),
                         TextSpan(
-                            text: ' · ${member?.relationName ?? 'member'}',
+                            text: ' · $_who',
                             style: font(kBodyFont, 14, 700, color: memberColor)),
                       ]),
                       maxLines: 2,
@@ -721,7 +753,9 @@ class _DecisionCard extends StatelessWidget {
                     ),
                     const SizedBox(height: 3),
                     Text(
-                      'No rule matched · $when — what should this generate?',
+                      group.isRouting
+                          ? 'On the shared calendar · $when — who is this for?'
+                          : 'No rule matched · $when — what should this generate?',
                       style: font(kBodyFont, 12, 500, color: AppColors.amber),
                     ),
                   ],

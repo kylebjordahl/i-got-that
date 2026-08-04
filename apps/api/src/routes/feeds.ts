@@ -58,21 +58,10 @@ import {
 } from '../services/conflicts.js';
 import { ingestFamilyFeeds, ingestFeed } from '../services/ingest.js';
 import { enqueueReconcile } from '../services/mirror.js';
+import { ingestSecrets, resynthesizeFeed } from '../services/pipeline.js';
 import { readBackFamily } from '../services/readback.js';
-import { synthesizeFeed } from '../services/synthesis.js';
+import { isRouted, synthesizeFeed } from '../services/synthesis.js';
 import { buildFamilyTasks, buildMemberTasks } from '../services/task-gen.js';
-
-/**
- * Ingest secrets (KEK + Google refresher) needed to read account-backed feeds,
- * plus the SSRF-guarded fetch every user-supplied URL must go through.
- */
-function ingestSecrets(env: Bindings) {
-  return {
-    kek: env.KEK,
-    googleRefresh: googleRefresherFor(env),
-    fetchImpl: createGuardedFetch(env),
-  };
-}
 
 /**
  * Creation-time probe for busy feeds: verify the target calendar actually
@@ -131,6 +120,7 @@ feedRoutes.post('/', requireAdmin, async (c) => {
     familyId,
     kind: d.kind,
     mode: d.mode,
+    routed: d.routed,
     refreshMinutes: d.refreshMinutes,
     url: null,
     externalAccountId: null,
@@ -199,50 +189,14 @@ feedRoutes.post('/', requireAdmin, async (c) => {
   return c.json({ feed }, 201);
 });
 
-/** Resynthesize a feed and regenerate its linked members' tasks, then mirror. */
-async function resynthesize(
-  c: { env: Bindings; executionCtx: { waitUntil(p: Promise<unknown>): void } },
-  db: ReturnType<typeof getDb>,
-  feed: typeof feeds.$inferSelect,
-): Promise<void> {
-  // A brand-new feed has never been ingested (lastSyncedAt is null), so
-  // source_events is empty — a rule created right after setup (e.g. one meant
-  // to override a near-term occurrence) would otherwise have nothing to match
-  // until the next cron tick or a manual "Refresh feeds" tap. Ingest once,
-  // synchronously, before the first synthesis. Best-effort: a failed ingest
-  // here shouldn't block the mutation that already committed (the rule/link/
-  // etc. row); it also isn't retried on every subsequent edit, since a failed
-  // ingest marks the feed 'error' and cron only re-ingests 'active' feeds — an
-  // 'error' feed already requires a manual "Refresh feeds" tap to recover, so
-  // there's nothing this call could usefully retry once that's happened.
-  if (!feed.lastSyncedAt && feed.status !== 'error') {
-    try {
-      await ingestFeed(db, feed, ingestSecrets(c.env));
-    } catch {
-      // swallow — ingestFeed already marked the feed 'error'.
-    }
-  }
-  await synthesizeFeed(db, feed);
-  const links = await db
-    .select({ familyMemberId: familyMemberFeeds.familyMemberId })
-    .from(familyMemberFeeds)
-    .where(eq(familyMemberFeeds.feedId, feed.id));
-  for (const familyMemberId of new Set(links.map((l) => l.familyMemberId))) {
-    // Re-resolve overlaps before task-gen so a config change re-applies (or
-    // clears) any splits on this member's agenda.
-    await reconcileMemberConflicts(db, familyMemberId);
-    await buildMemberTasks(db, familyMemberId);
-  }
-  enqueueReconcile(c, { kind: 'family', familyId: feed.familyId });
-}
-
 /**
- * Update an input feed's config (admin). Only `mode` / `refreshMinutes` /
- * `status` / `timezone` are editable — the source (ICS url or the account's
- * target calendar) is immutable; change it by deleting and recreating the
- * feed. A mode change resynthesizes the feed (mode drives the whole pipeline
- * shape); a timezone change re-ingests it (source_events' own dtstart/dtend
- * may need reinterpreting, not just resynthesizing).
+ * Update an input feed's config (admin). Only `mode` / `routed` /
+ * `refreshMinutes` / `status` / `timezone` are editable — the source (ICS url
+ * or the account's target calendar) is immutable; change it by deleting and
+ * recreating the feed. A mode or routing change resynthesizes the feed (both
+ * drive the whole pipeline shape); a timezone change re-ingests it
+ * (source_events' own dtstart/dtend may need reinterpreting, not just
+ * resynthesizing).
  */
 feedRoutes.patch('/:feedId', requireAdmin, async (c) => {
   const parsed = UpdateFeedInput.safeParse(await c.req.json().catch(() => null));
@@ -272,9 +226,21 @@ feedRoutes.patch('/:feedId', requireAdmin, async (c) => {
   ) {
     return c.json({ error: 'busy_mode_immutable' }, 400);
   }
+  // Routing only means anything on a standard feed. Asking for both at once is
+  // a contradiction and gets a 400; moving an already-routed feed off standard
+  // just clears the flag (its `keep` rules stay, so switching back restores the
+  // routing rather than making the admin rebuild it).
+  const mode = d.mode ?? feed.mode;
+  if (d.routed === true && mode !== 'standard') {
+    return c.json({ error: 'routing_requires_standard_feed' }, 400);
+  }
+  const routed = mode === 'standard' ? (d.routed ?? feed.routed) : false;
+  const routingChanged = routed !== feed.routed;
+
   const timezoneChanged = d.timezone !== undefined && d.timezone !== feed.timezone;
   const set: Partial<typeof feeds.$inferInsert> = {};
   if (d.mode !== undefined) set.mode = d.mode;
+  if (routingChanged) set.routed = routed;
   if (d.refreshMinutes !== undefined) set.refreshMinutes = d.refreshMinutes;
   if (d.status !== undefined) set.status = d.status;
   if (d.timezone !== undefined) set.timezone = d.timezone;
@@ -298,12 +264,12 @@ feedRoutes.patch('/:feedId', requireAdmin, async (c) => {
     }
     updated = (await db.select().from(feeds).where(eq(feeds.id, feed.id)).limit(1))[0]!;
   }
-  if ((d.mode !== undefined && d.mode !== feed.mode) || timezoneChanged) {
+  if ((d.mode !== undefined && d.mode !== feed.mode) || routingChanged || timezoneChanged) {
     await db
       .update(sourceEvents)
       .set({ synthesizedHash: null })
       .where(eq(sourceEvents.feedId, feed.id));
-    await resynthesize(c, db, updated);
+    await resynthesizeFeed(c, db, updated);
   }
   return c.json({ feed: updated });
 });
@@ -320,6 +286,7 @@ feedRoutes.get('/', async (c) => {
       sourceCalendarId: feeds.sourceCalendarId,
       sourceCalendarName: feeds.sourceCalendarName,
       mode: feeds.mode,
+      routed: feeds.routed,
       timezone: feeds.timezone,
       refreshMinutes: feeds.refreshMinutes,
       etag: feeds.etag,
@@ -458,7 +425,7 @@ feedRoutes.post('/:feedId/member-links', requireAdmin, async (c) => {
   )[0]!;
 
   // Synthesize the new link's events right away (its rules can refine later).
-  await resynthesize(c, db, feed);
+  await resynthesizeFeed(c, db, feed);
   return c.json({ link }, 201);
 });
 
@@ -551,7 +518,7 @@ feedRoutes.patch('/:feedId/member-links/:linkId', requireAdmin, async (c) => {
   }
 
   const feed = (await db.select().from(feeds).where(eq(feeds.id, feedId)).limit(1))[0];
-  if (feed) await resynthesize(c, db, feed);
+  if (feed) await resynthesizeFeed(c, db, feed);
 
   const updated = await loadLink(db, familyId, feedId, link.id);
   return c.json({ link: updated });
@@ -589,11 +556,23 @@ feedRoutes.delete('/:feedId/member-links/:linkId', requireAdmin, async (c) => {
 // --- Override rules (the link's event pipeline) ------------------------------
 
 /**
- * Override rules only shape an exception feed's schedule (its baseline day, or
- * an `add_event` alongside it); standard feeds pass through unchanged.
+ * Which outcomes a feed's links accept. An exception feed's rules shape its
+ * baseline day (or add an event alongside it); a routed feed's rules only
+ * `keep` — they decide which member a shared calendar's event belongs to. A
+ * plain standard feed passes everything through and has no rules at all.
  */
-function outcomeAllowed(feedMode: string, _outcome: string): boolean {
-  return feedMode === 'exception';
+function outcomeAllowed(
+  feed: Pick<typeof feeds.$inferSelect, 'mode' | 'routed'>,
+  outcome: OverrideOutcome,
+): boolean {
+  return outcome === 'keep' ? isRouted(feed) : feed.mode === 'exception';
+}
+
+/** The 400 for a rule whose outcome doesn't belong on this feed. */
+function outcomeRejection(outcome: OverrideOutcome) {
+  return outcome === 'keep'
+    ? ({ error: 'outcome_requires_routed_feed' } as const)
+    : ({ error: 'outcome_requires_exception_feed' } as const);
 }
 
 /** List a link's rules in pipeline order. */
@@ -628,8 +607,8 @@ feedRoutes.post('/:feedId/member-links/:linkId/rules', requireAdmin, async (c) =
   const feed = (await db.select().from(feeds).where(eq(feeds.id, feedId)).limit(1))[0]!;
 
   const d = parsed.data;
-  if (!outcomeAllowed(feed.mode, d.outcome)) {
-    return c.json({ error: 'outcome_requires_exception_feed' }, 400);
+  if (!outcomeAllowed(feed, d.outcome)) {
+    return c.json(outcomeRejection(d.outcome), 400);
   }
 
   const existing = await db
@@ -662,7 +641,7 @@ feedRoutes.post('/:feedId/member-links/:linkId/rules', requireAdmin, async (c) =
       .returning()
   )[0]!;
 
-  await resynthesize(c, db, feed);
+  await resynthesizeFeed(c, db, feed);
   return c.json({ rule }, 201);
 });
 
@@ -698,8 +677,8 @@ feedRoutes.patch('/:feedId/member-links/:linkId/rules/:ruleId', requireAdmin, as
     outcome: d.outcome ?? rule.outcome,
     params: 'params' in d ? (d.params ?? undefined) : (rule.params ?? undefined),
   };
-  if (!outcomeAllowed(feed.mode, merged.outcome)) {
-    return c.json({ error: 'outcome_requires_exception_feed' }, 400);
+  if (!outcomeAllowed(feed, merged.outcome)) {
+    return c.json(outcomeRejection(merged.outcome), 400);
   }
   // Re-run the cross-field checks against the merged rule shape.
   const mergedCheck = MergedRuleShape.safeParse(merged);
@@ -717,7 +696,7 @@ feedRoutes.patch('/:feedId/member-links/:linkId/rules/:ruleId', requireAdmin, as
     await db.update(linkRules).set(set).where(eq(linkRules.id, rule.id)).returning()
   )[0]!;
 
-  await resynthesize(c, db, feed);
+  await resynthesizeFeed(c, db, feed);
   return c.json({ rule: updated });
 });
 
@@ -751,7 +730,7 @@ feedRoutes.delete('/:feedId/member-links/:linkId/rules/:ruleId', requireAdmin, a
   }
 
   const feed = (await db.select().from(feeds).where(eq(feeds.id, feedId)).limit(1))[0];
-  if (feed) await resynthesize(c, db, feed);
+  if (feed) await resynthesizeFeed(c, db, feed);
   return c.json({ ok: true });
 });
 
@@ -786,7 +765,7 @@ feedRoutes.put('/:feedId/member-links/:linkId/rules/order', requireAdmin, async 
   }
 
   const feed = (await db.select().from(feeds).where(eq(feeds.id, feedId)).limit(1))[0];
-  if (feed) await resynthesize(c, db, feed);
+  if (feed) await resynthesizeFeed(c, db, feed);
 
   const rules = await db
     .select()
@@ -836,7 +815,7 @@ feedRoutes.post('/:feedId/events/:eventId/dismiss', requireAdmin, async (c) => {
   await db.update(sourceEvents).set({ dismissedAt: new Date() }).where(eq(sourceEvents.id, eventId));
 
   const feed = (await db.select().from(feeds).where(eq(feeds.id, feedId)).limit(1))[0];
-  if (feed) await resynthesize(c, db, feed);
+  if (feed) await resynthesizeFeed(c, db, feed);
   return c.json({ ok: true });
 });
 
@@ -855,7 +834,7 @@ feedRoutes.post('/:feedId/events/:eventId/restore', requireAdmin, async (c) => {
     .where(eq(sourceEvents.id, eventId));
 
   const feed = (await db.select().from(feeds).where(eq(feeds.id, feedId)).limit(1))[0];
-  if (feed) await resynthesize(c, db, feed);
+  if (feed) await resynthesizeFeed(c, db, feed);
   return c.json({ ok: true });
 });
 
