@@ -11,5 +11,6 @@ const isStagingBuild = appEnv == 'staging';
 /// `GOOGLE_OAUTH_CALLBACK_SCHEME` (`ios/Flutter/{staging,prod}*.xcconfig`) and
 /// the API's `GOOGLE_IOS_OAUTH_CALLBACK_SCHEME` (`wrangler.jsonc`) for this
 /// flavor. See docs/AUTH.md's Google section.
-const googleOAuthCallbackScheme =
-    isStagingBuild ? 'com.kylebjordahl.igt.staging.oauth' : 'com.kylebjordahl.igt.oauth';
+const googleOAuthCallbackScheme = isStagingBuild
+    ? 'com.kylebjordahl.igt.staging.oauth'
+    : 'com.kylebjordahl.igt.oauth';

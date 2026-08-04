@@ -18,7 +18,11 @@
     "format": {
       "executor": "nx:run-commands",
       "options": { "command": "fvm dart format lib test", "cwd": "apps/mobile" },
-      "configurations": { "ci": { "command": "dart format --set-exit-if-changed lib test" } }
+      "configurations": {
+        "ci": {
+          "command": "dart format --output=none --set-exit-if-changed lib test"
+        }
+      }
     },
     "test": {
       "executor": "nx:run-commands",

@@ -68,7 +68,8 @@ class _AddMemberSheetState extends ConsumerState<_AddMemberSheet> {
     final members = ref.read(membersProvider).valueOrNull ?? const <Member>[];
     return {
       for (final m in members)
-        if (m.color != null && m.color!.isNotEmpty) hexFromColor(colorFromHex(m.color!)),
+        if (m.color != null && m.color!.isNotEmpty)
+          hexFromColor(colorFromHex(m.color!)),
     };
   }
 
@@ -111,7 +112,9 @@ class _AddMemberSheetState extends ConsumerState<_AddMemberSheet> {
             await Clipboard.setData(ClipboardData(text: token));
             if (mounted) {
               ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(content: Text('Invite code for $name copied to clipboard')),
+                SnackBar(
+                  content: Text('Invite code for $name copied to clipboard'),
+                ),
               );
             }
           }
@@ -131,14 +134,18 @@ class _AddMemberSheetState extends ConsumerState<_AddMemberSheet> {
   Widget build(BuildContext context) {
     final name = _name.text.trim();
     return Container(
-      constraints: BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.9),
+      constraints: BoxConstraints(
+        maxHeight: MediaQuery.of(context).size.height * 0.9,
+      ),
       decoration: const BoxDecoration(
         color: Color(0xFF1B1622),
         borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
         border: Border(top: BorderSide(color: AppColors.border)),
       ),
       child: Padding(
-        padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
+        padding: EdgeInsets.only(
+          bottom: MediaQuery.of(context).viewInsets.bottom,
+        ),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -147,7 +154,9 @@ class _AddMemberSheetState extends ConsumerState<_AddMemberSheet> {
               width: 38,
               height: 4,
               decoration: BoxDecoration(
-                  color: const Color(0x33FFFFFF), borderRadius: BorderRadius.circular(2)),
+                color: const Color(0x33FFFFFF),
+                borderRadius: BorderRadius.circular(2),
+              ),
             ),
             Padding(
               padding: const EdgeInsets.fromLTRB(20, 8, 20, 2),
@@ -155,17 +164,28 @@ class _AddMemberSheetState extends ConsumerState<_AddMemberSheet> {
                 children: [
                   TextButton(
                     onPressed: () => Navigator.of(context).pop(false),
-                    child: Text('Cancel',
-                        style: font(kBodyFont, 14, 600, color: AppColors.textTertiary)),
+                    child: Text(
+                      'Cancel',
+                      style: font(
+                        kBodyFont,
+                        14,
+                        600,
+                        color: AppColors.textTertiary,
+                      ),
+                    ),
                   ),
                   const Spacer(),
-                  Text(widget.isChild ? 'New child' : 'New caretaker',
-                      style: font(kBodyFont, 15, 700)),
+                  Text(
+                    widget.isChild ? 'New child' : 'New caretaker',
+                    style: font(kBodyFont, 15, 700),
+                  ),
                   const Spacer(),
                   TextButton(
                     onPressed: _busy ? null : _save,
-                    child: Text('Save',
-                        style: font(kBodyFont, 14, 700, color: _accent)),
+                    child: Text(
+                      'Save',
+                      style: font(kBodyFont, 14, 700, color: _accent),
+                    ),
                   ),
                 ],
               ),
@@ -179,9 +199,12 @@ class _AddMemberSheetState extends ConsumerState<_AddMemberSheet> {
                     child: Column(
                       children: [
                         PersonAvatar(
-                            initial: name.isEmpty ? '?' : name.substring(0, 1).toUpperCase(),
-                            color: _color,
-                            size: 72),
+                          initial: name.isEmpty
+                              ? '?'
+                              : name.substring(0, 1).toUpperCase(),
+                          color: _color,
+                          size: 72,
+                        ),
                         const SizedBox(height: 14),
                         ColorSwatchPicker(
                           selected: _color,
@@ -194,7 +217,10 @@ class _AddMemberSheetState extends ConsumerState<_AddMemberSheet> {
                   const SizedBox(height: 20),
                   _eyebrow('Name'),
                   const SizedBox(height: 8),
-                  _field(hint: widget.isChild ? 'Theo' : 'Aunt Ray', autofocus: true),
+                  _field(
+                    hint: widget.isChild ? 'Theo' : 'Aunt Ray',
+                    autofocus: true,
+                  ),
                   if (!widget.isChild) ...[
                     const SizedBox(height: 18),
                     _eyebrow('Role'),
@@ -205,10 +231,17 @@ class _AddMemberSheetState extends ConsumerState<_AddMemberSheet> {
                       onChanged: (v) => setState(() => _isAdmin = v),
                     ),
                     const SizedBox(height: 8),
-                    Text('Caretakers can claim and complete handoffs. Admins can '
-                        'also edit the family and members.',
-                        style: font(kBodyFont, 12, 500,
-                            color: AppColors.textTertiary, height: 1.5)),
+                    Text(
+                      'Caretakers can claim and complete handoffs. Admins can '
+                      'also edit the family and members.',
+                      style: font(
+                        kBodyFont,
+                        12,
+                        500,
+                        color: AppColors.textTertiary,
+                        height: 1.5,
+                      ),
+                    ),
                     const SizedBox(height: 18),
                     _eyebrow('How they get tasks'),
                     const SizedBox(height: 10),
@@ -232,7 +265,10 @@ class _AddMemberSheetState extends ConsumerState<_AddMemberSheet> {
                   ],
                   if (_error != null) ...[
                     const SizedBox(height: 14),
-                    Text(_error!, style: font(kBodyFont, 13, 500, color: AppColors.coral)),
+                    Text(
+                      _error!,
+                      style: font(kBodyFont, 13, 500, color: AppColors.coral),
+                    ),
                   ],
                 ],
               ),
@@ -243,7 +279,9 @@ class _AddMemberSheetState extends ConsumerState<_AddMemberSheet> {
                 label: name.isEmpty
                     ? (widget.isChild ? 'Add child' : 'Add caretaker')
                     : 'Add $name',
-                variant: widget.isChild ? OnbButtonVariant.green : OnbButtonVariant.indigo,
+                variant: widget.isChild
+                    ? OnbButtonVariant.green
+                    : OnbButtonVariant.indigo,
                 busy: _busy,
                 onPressed: _save,
               ),
@@ -255,9 +293,9 @@ class _AddMemberSheetState extends ConsumerState<_AddMemberSheet> {
   }
 
   Widget _eyebrow(String s) => Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 2),
-        child: Text(s.toUpperCase(), style: AppText.eyebrow()),
-      );
+    padding: const EdgeInsets.symmetric(horizontal: 2),
+    child: Text(s.toUpperCase(), style: AppText.eyebrow()),
+  );
 
   Widget _field({required String hint, bool autofocus = false}) {
     return TextField(
@@ -269,7 +307,10 @@ class _AddMemberSheetState extends ConsumerState<_AddMemberSheet> {
         hintStyle: font(kBodyFont, 16, 600, color: AppColors.textMuted),
         filled: true,
         fillColor: AppColors.card,
-        contentPadding: const EdgeInsets.symmetric(horizontal: 15, vertical: 14),
+        contentPadding: const EdgeInsets.symmetric(
+          horizontal: 15,
+          vertical: 14,
+        ),
         enabledBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(14),
           borderSide: const BorderSide(color: AppColors.border),
@@ -284,7 +325,11 @@ class _AddMemberSheetState extends ConsumerState<_AddMemberSheet> {
 }
 
 class _RoleToggle extends StatelessWidget {
-  const _RoleToggle({required this.isAdmin, required this.accent, required this.onChanged});
+  const _RoleToggle({
+    required this.isAdmin,
+    required this.accent,
+    required this.onChanged,
+  });
   final bool isAdmin;
   final Color accent;
   final ValueChanged<bool> onChanged;
@@ -292,28 +337,38 @@ class _RoleToggle extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     Widget seg(String label, bool selected, VoidCallback onTap) => Expanded(
-          child: GestureDetector(
-            onTap: onTap,
-            child: Container(
-              alignment: Alignment.center,
-              padding: const EdgeInsets.symmetric(vertical: 11),
-              decoration: BoxDecoration(
-                color: AppColors.card,
-                borderRadius: BorderRadius.circular(13),
-                border: Border.all(
-                    color: selected ? accent : AppColors.border, width: selected ? 1.5 : 1),
-              ),
-              child: Text(label,
-                  style: font(kBodyFont, 13, selected ? 700 : 600,
-                      color: selected ? AppColors.textPrimary : AppColors.textTertiary)),
+      child: GestureDetector(
+        onTap: onTap,
+        child: Container(
+          alignment: Alignment.center,
+          padding: const EdgeInsets.symmetric(vertical: 11),
+          decoration: BoxDecoration(
+            color: AppColors.card,
+            borderRadius: BorderRadius.circular(13),
+            border: Border.all(
+              color: selected ? accent : AppColors.border,
+              width: selected ? 1.5 : 1,
             ),
           ),
-        );
-    return Row(children: [
-      seg('Caretaker', !isAdmin, () => onChanged(false)),
-      const SizedBox(width: 9),
-      seg('Admin', isAdmin, () => onChanged(true)),
-    ]);
+          child: Text(
+            label,
+            style: font(
+              kBodyFont,
+              13,
+              selected ? 700 : 600,
+              color: selected ? AppColors.textPrimary : AppColors.textTertiary,
+            ),
+          ),
+        ),
+      ),
+    );
+    return Row(
+      children: [
+        seg('Caretaker', !isAdmin, () => onChanged(false)),
+        const SizedBox(width: 9),
+        seg('Admin', isAdmin, () => onChanged(true)),
+      ],
+    );
   }
 }
 
@@ -343,7 +398,9 @@ class _DeliveryOption extends StatelessWidget {
           color: AppColors.card,
           borderRadius: BorderRadius.circular(14),
           border: Border.all(
-              color: selected ? accent : AppColors.borderSubtle, width: selected ? 1.5 : 1),
+            color: selected ? accent : AppColors.borderSubtle,
+            width: selected ? 1.5 : 1,
+          ),
         ),
         child: Row(
           children: [
@@ -351,7 +408,10 @@ class _DeliveryOption extends StatelessWidget {
               width: 26,
               height: 26,
               alignment: Alignment.center,
-              decoration: BoxDecoration(color: AppColors.tint(accent), shape: BoxShape.circle),
+              decoration: BoxDecoration(
+                color: AppColors.tint(accent),
+                shape: BoxShape.circle,
+              ),
               child: Icon(icon, size: 15, color: accent),
             ),
             const SizedBox(width: 12),
@@ -362,8 +422,15 @@ class _DeliveryOption extends StatelessWidget {
                 children: [
                   Text(title, style: font(kBodyFont, 14, 600)),
                   const SizedBox(height: 1),
-                  Text(subtitle,
-                      style: font(kBodyFont, 12, 500, color: AppColors.textTertiary)),
+                  Text(
+                    subtitle,
+                    style: font(
+                      kBodyFont,
+                      12,
+                      500,
+                      color: AppColors.textTertiary,
+                    ),
+                  ),
                 ],
               ),
             ),
@@ -372,8 +439,15 @@ class _DeliveryOption extends StatelessWidget {
                 width: 22,
                 height: 22,
                 alignment: Alignment.center,
-                decoration: BoxDecoration(color: accent, shape: BoxShape.circle),
-                child: const Icon(Icons.check_rounded, size: 13, color: Color(0xFF15121B)),
+                decoration: BoxDecoration(
+                  color: accent,
+                  shape: BoxShape.circle,
+                ),
+                child: const Icon(
+                  Icons.check_rounded,
+                  size: 13,
+                  color: Color(0xFF15121B),
+                ),
               )
             else
               Container(

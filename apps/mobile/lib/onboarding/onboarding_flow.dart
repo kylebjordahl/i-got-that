@@ -44,7 +44,15 @@ final wizardAdultsProvider = FutureProvider<List<Member>>((ref) async {
   return [self, ...all.where((m) => m.id != self.id)];
 });
 
-enum _Step { connect, family, addMembers, childSources, childUnified, parentUnified, complete }
+enum _Step {
+  connect,
+  family,
+  addMembers,
+  childSources,
+  childUnified,
+  parentUnified,
+  complete,
+}
 
 class _OnboardingFlowState extends ConsumerState<OnboardingFlow> {
   _Step _step = _Step.connect;
@@ -108,7 +116,10 @@ class _OnboardingFlowState extends ConsumerState<OnboardingFlow> {
 
   void _afterAdultUnified(bool done) {
     final adults = _adults;
-    final outcomes = _outcomes.withAdultCalendar(adults[_adultIndex].id, done: done);
+    final outcomes = _outcomes.withAdultCalendar(
+      adults[_adultIndex].id,
+      done: done,
+    );
     if (_adultIndex + 1 < adults.length) {
       setState(() {
         _outcomes = outcomes;
@@ -166,39 +177,45 @@ class _OnboardingFlowState extends ConsumerState<OnboardingFlow> {
           onExit: _exit,
         );
       case _Step.childSources:
-        return _childGuarded((children, child) => ChildSourcesStep(
-              child: child,
-              children: children,
-              childIndex: _childIndex,
-              onNext: () => _go(_Step.childUnified),
-              onBack: _backFromChildSources,
-              onExit: _exit,
-            ));
+        return _childGuarded(
+          (children, child) => ChildSourcesStep(
+            child: child,
+            children: children,
+            childIndex: _childIndex,
+            onNext: () => _go(_Step.childUnified),
+            onBack: _backFromChildSources,
+            onExit: _exit,
+          ),
+        );
       case _Step.childUnified:
-        return _childGuarded((children, child) => ChildUnifiedStep(
-              child: child,
-              children: children,
-              childIndex: _childIndex,
-              nextChildName: _childIndex + 1 < children.length
-                  ? children[_childIndex + 1].relationName
-                  : null,
-              onNext: _afterChildUnified,
-              onBack: () => _go(_Step.childSources),
-              onExit: _exit,
-            ));
+        return _childGuarded(
+          (children, child) => ChildUnifiedStep(
+            child: child,
+            children: children,
+            childIndex: _childIndex,
+            nextChildName: _childIndex + 1 < children.length
+                ? children[_childIndex + 1].relationName
+                : null,
+            onNext: _afterChildUnified,
+            onBack: () => _go(_Step.childSources),
+            onExit: _exit,
+          ),
+        );
       case _Step.parentUnified:
-        return _adultGuarded((adults, adult, isSelf) => ParentUnifiedStep(
-              adult: adult,
-              adults: adults,
-              adultIndex: _adultIndex,
-              isSelf: isSelf,
-              nextAdultName: _adultIndex + 1 < adults.length
-                  ? adults[_adultIndex + 1].relationName
-                  : null,
-              onNext: _afterAdultUnified,
-              onBack: _backFromParent,
-              onExit: _exit,
-            ));
+        return _adultGuarded(
+          (adults, adult, isSelf) => ParentUnifiedStep(
+            adult: adult,
+            adults: adults,
+            adultIndex: _adultIndex,
+            isSelf: isSelf,
+            nextAdultName: _adultIndex + 1 < adults.length
+                ? adults[_adultIndex + 1].relationName
+                : null,
+            onNext: _afterAdultUnified,
+            onBack: _backFromParent,
+            onExit: _exit,
+          ),
+        );
       case _Step.complete:
         return CompleteStep(outcomes: _outcomes, onGoHome: _exit);
     }
@@ -206,16 +223,21 @@ class _OnboardingFlowState extends ConsumerState<OnboardingFlow> {
 
   /// Resolve the current child before rendering a per-child step; show a brief
   /// spinner while the members list (re)loads.
-  Widget _childGuarded(Widget Function(List<Member> children, Member child) build) {
+  Widget _childGuarded(
+    Widget Function(List<Member> children, Member child) build,
+  ) {
     final children = ref.watch(dependentsProvider).valueOrNull;
-    if (children == null || _childIndex >= children.length) return _loading(0.66);
+    if (children == null || _childIndex >= children.length) {
+      return _loading(0.66);
+    }
     return build(children, children[_childIndex]);
   }
 
   /// The 1g counterpart: resolve the caretaker whose turn it is.
   /// [wizardAdultsProvider] puts self first, so index 0 is the user's own step.
   Widget _adultGuarded(
-      Widget Function(List<Member> adults, Member adult, bool isSelf) build) {
+    Widget Function(List<Member> adults, Member adult, bool isSelf) build,
+  ) {
     final adults = ref.watch(wizardAdultsProvider).valueOrNull;
     if (adults == null || adults.isEmpty || _adultIndex >= adults.length) {
       return _loading(0.90);
@@ -224,16 +246,21 @@ class _OnboardingFlowState extends ConsumerState<OnboardingFlow> {
   }
 
   Widget _loading(double progress) => OnboardingScaffold(
-        progress: progress,
-        body: const [
-          Padding(
-            padding: EdgeInsets.symmetric(vertical: 60),
-            child: Center(
-                child: SizedBox(
-                    width: 26,
-                    height: 26,
-                    child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.indigo))),
+    progress: progress,
+    body: const [
+      Padding(
+        padding: EdgeInsets.symmetric(vertical: 60),
+        child: Center(
+          child: SizedBox(
+            width: 26,
+            height: 26,
+            child: CircularProgressIndicator(
+              strokeWidth: 2,
+              color: AppColors.indigo,
+            ),
           ),
-        ],
-      );
+        ),
+      ),
+    ],
+  );
 }

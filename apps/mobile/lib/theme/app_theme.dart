@@ -57,7 +57,12 @@ ThemeData buildAppTheme() {
       surfaceTintColor: Colors.transparent,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
       titleTextStyle: AppText.subPageTitle,
-      contentTextStyle: font(kBodyFont, 14, 500, color: AppColors.textSecondary),
+      contentTextStyle: font(
+        kBodyFont,
+        14,
+        500,
+        color: AppColors.textSecondary,
+      ),
     ),
     bottomSheetTheme: const BottomSheetThemeData(
       backgroundColor: AppColors.card,
@@ -91,7 +96,10 @@ ThemeData buildAppTheme() {
       ),
       trackOutlineColor: const WidgetStatePropertyAll(Colors.transparent),
     ),
-    dividerTheme: const DividerThemeData(color: AppColors.divider, thickness: 1),
+    dividerTheme: const DividerThemeData(
+      color: AppColors.divider,
+      thickness: 1,
+    ),
     snackBarTheme: SnackBarThemeData(
       backgroundColor: AppColors.card,
       contentTextStyle: font(kBodyFont, 13.5, 500),

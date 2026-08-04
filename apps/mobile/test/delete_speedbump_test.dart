@@ -24,8 +24,8 @@ class _FakeApiClient extends ApiClient {
 
   @override
   Future<Map<String, dynamic>> me() async => {
-        'user': {'email': 'you@example.com'},
-      };
+    'user': {'email': 'you@example.com'},
+  };
 
   @override
   Future<void> deleteMyAccount() async {
@@ -50,13 +50,17 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   setUp(() {
-    const channel = MethodChannel('plugins.it_nomads.com/flutter_secure_storage');
+    const channel = MethodChannel(
+      'plugins.it_nomads.com/flutter_secure_storage',
+    );
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(channel, (call) async => null);
   });
 
   tearDown(() {
-    const channel = MethodChannel('plugins.it_nomads.com/flutter_secure_storage');
+    const channel = MethodChannel(
+      'plugins.it_nomads.com/flutter_secure_storage',
+    );
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(channel, null);
   });
@@ -81,98 +85,114 @@ void main() {
   }
 
   testWidgets(
-      'deleting the account requires the full slide gesture, not just opening the sheet',
-      (tester) async {
-    final api = _FakeApiClient();
-    final me = Member(
-      id: 'me',
-      relationName: 'Me',
-      isCaretaker: true,
-      isAdmin: false,
-      requiresCaretaker: false,
-    );
+    'deleting the account requires the full slide gesture, not just opening the sheet',
+    (tester) async {
+      final api = _FakeApiClient();
+      final me = Member(
+        id: 'me',
+        relationName: 'Me',
+        isCaretaker: true,
+        isAdmin: false,
+        requiresCaretaker: false,
+      );
 
-    await tester.pumpWidget(
-      ProviderScope(
-        overrides: [
-          apiClientProvider.overrideWithValue(api),
-          currentMemberProvider.overrideWith((ref) async => me),
-          familyInfoProvider.overrideWith((ref) async => (name: 'Test Family', count: 1)),
-          accountsProvider.overrideWith((ref) async => const <ExternalAccount>[]),
-          loginIdentitiesProvider.overrideWith((ref) async => const <LoginIdentity>[]),
-        ],
-        child: const MaterialApp(home: Scaffold(body: MeScreen())),
-      ),
-    );
-    await tester.pumpAndSettle();
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            apiClientProvider.overrideWithValue(api),
+            currentMemberProvider.overrideWith((ref) async => me),
+            familyInfoProvider.overrideWith(
+              (ref) async => (name: 'Test Family', count: 1),
+            ),
+            accountsProvider.overrideWith(
+              (ref) async => const <ExternalAccount>[],
+            ),
+            loginIdentitiesProvider.overrideWith(
+              (ref) async => const <LoginIdentity>[],
+            ),
+          ],
+          child: const MaterialApp(home: Scaffold(body: MeScreen())),
+        ),
+      );
+      await tester.pumpAndSettle();
 
-    await tester.scrollUntilVisible(find.text('Delete account'), 300);
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Delete account'));
-    await tester.pumpAndSettle();
+      await tester.scrollUntilVisible(find.text('Delete account'), 300);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Delete account'));
+      await tester.pumpAndSettle();
 
-    expect(find.byType(SlideToConfirm), findsOneWidget);
-    // Opening the confirmation sheet alone must not have deleted anything.
-    expect(api.deletedAccount, isFalse);
+      expect(find.byType(SlideToConfirm), findsOneWidget);
+      // Opening the confirmation sheet alone must not have deleted anything.
+      expect(api.deletedAccount, isFalse);
 
-    // A plain tap on the thumb (no slide) doesn't confirm either.
-    await tester.tap(find.byType(SlideToConfirm));
-    await tester.pumpAndSettle();
-    expect(api.deletedAccount, isFalse);
+      // A plain tap on the thumb (no slide) doesn't confirm either.
+      await tester.tap(find.byType(SlideToConfirm));
+      await tester.pumpAndSettle();
+      expect(api.deletedAccount, isFalse);
 
-    await slideToConfirm(tester);
+      await slideToConfirm(tester);
 
-    expect(api.deletedAccount, isTrue);
-    // The sheet must close itself on success — nothing else pops it, and
-    // leaving it stuck open is exactly the "dialog over a blank screen" bug
-    // class this codebase already guards against elsewhere.
-    expect(find.byType(SlideToConfirm), findsNothing);
-    expect(tester.takeException(), isNull);
-  });
+      expect(api.deletedAccount, isTrue);
+      // The sheet must close itself on success — nothing else pops it, and
+      // leaving it stuck open is exactly the "dialog over a blank screen" bug
+      // class this codebase already guards against elsewhere.
+      expect(find.byType(SlideToConfirm), findsNothing);
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   testWidgets(
-      'shows the blocking message up front instead of the slide when the account cannot be deleted yet',
-      (tester) async {
-    final api = _FakeApiClient()..accountIsDeletable = false;
-    final me = Member(
-      id: 'me',
-      relationName: 'Me',
-      isCaretaker: true,
-      isAdmin: true,
-      requiresCaretaker: false,
-    );
+    'shows the blocking message up front instead of the slide when the account cannot be deleted yet',
+    (tester) async {
+      final api = _FakeApiClient()..accountIsDeletable = false;
+      final me = Member(
+        id: 'me',
+        relationName: 'Me',
+        isCaretaker: true,
+        isAdmin: true,
+        requiresCaretaker: false,
+      );
 
-    await tester.pumpWidget(
-      ProviderScope(
-        overrides: [
-          apiClientProvider.overrideWithValue(api),
-          currentMemberProvider.overrideWith((ref) async => me),
-          familyInfoProvider.overrideWith((ref) async => (name: 'Test Family', count: 1)),
-          accountsProvider.overrideWith((ref) async => const <ExternalAccount>[]),
-          loginIdentitiesProvider.overrideWith((ref) async => const <LoginIdentity>[]),
-        ],
-        child: const MaterialApp(home: Scaffold(body: MeScreen())),
-      ),
-    );
-    await tester.pumpAndSettle();
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            apiClientProvider.overrideWithValue(api),
+            currentMemberProvider.overrideWith((ref) async => me),
+            familyInfoProvider.overrideWith(
+              (ref) async => (name: 'Test Family', count: 1),
+            ),
+            accountsProvider.overrideWith(
+              (ref) async => const <ExternalAccount>[],
+            ),
+            loginIdentitiesProvider.overrideWith(
+              (ref) async => const <LoginIdentity>[],
+            ),
+          ],
+          child: const MaterialApp(home: Scaffold(body: MeScreen())),
+        ),
+      );
+      await tester.pumpAndSettle();
 
-    await tester.scrollUntilVisible(find.text('Delete account'), 300);
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Delete account'));
-    await tester.pumpAndSettle();
+      await tester.scrollUntilVisible(find.text('Delete account'), 300);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Delete account'));
+      await tester.pumpAndSettle();
 
-    // No slide control at all — the block is shown, not a failure toast.
-    expect(find.byType(SlideToConfirm), findsNothing);
-    expect(
-      find.text('Before you can delete your account, you must either leave '
-          'or delete all the families you are involved in.'),
-      findsOneWidget,
-    );
+      // No slide control at all — the block is shown, not a failure toast.
+      expect(find.byType(SlideToConfirm), findsNothing);
+      expect(
+        find.text(
+          'Before you can delete your account, you must either leave '
+          'or delete all the families you are involved in.',
+        ),
+        findsOneWidget,
+      );
 
-    await tester.tap(find.text('OK'));
-    await tester.pumpAndSettle();
-    expect(api.deletedAccount, isFalse);
-  });
+      await tester.tap(find.text('OK'));
+      await tester.pumpAndSettle();
+      expect(api.deletedAccount, isFalse);
+    },
+  );
 
   final admin = Member(
     id: 'dad',
@@ -190,17 +210,21 @@ void main() {
   );
 
   Widget familyApp(_FakeApiClient api, Member currentMember) => ProviderScope(
-        overrides: [
-          apiClientProvider.overrideWithValue(api),
-          familyProvider.overrideWith((ref) async => 'fam-1'),
-          familyInfoProvider.overrideWith((ref) async => (name: 'Test Family', count: 1)),
-          currentMemberProvider.overrideWith((ref) async => currentMember),
-          membersProvider.overrideWith((ref) async => [admin, nonAdmin]),
-        ],
-        child: const MaterialApp(home: Scaffold(body: FamilyScreen())),
-      );
+    overrides: [
+      apiClientProvider.overrideWithValue(api),
+      familyProvider.overrideWith((ref) async => 'fam-1'),
+      familyInfoProvider.overrideWith(
+        (ref) async => (name: 'Test Family', count: 1),
+      ),
+      currentMemberProvider.overrideWith((ref) async => currentMember),
+      membersProvider.overrideWith((ref) async => [admin, nonAdmin]),
+    ],
+    child: const MaterialApp(home: Scaffold(body: FamilyScreen())),
+  );
 
-  testWidgets('a non-admin does not see the delete-family link', (tester) async {
+  testWidgets('a non-admin does not see the delete-family link', (
+    tester,
+  ) async {
     await tester.pumpWidget(familyApp(_FakeApiClient(), nonAdmin));
     await tester.pumpAndSettle();
 
@@ -208,7 +232,9 @@ void main() {
     expect(find.text('Delete family'), findsNothing);
   });
 
-  testWidgets('an admin can delete the family via the slide gesture', (tester) async {
+  testWidgets('an admin can delete the family via the slide gesture', (
+    tester,
+  ) async {
     final api = _FakeApiClient();
     await tester.pumpWidget(familyApp(api, admin));
     await tester.pumpAndSettle();
@@ -228,7 +254,9 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('a non-admin can leave the family via the slide gesture', (tester) async {
+  testWidgets('a non-admin can leave the family via the slide gesture', (
+    tester,
+  ) async {
     final api = _FakeApiClient();
     await tester.pumpWidget(familyApp(api, nonAdmin));
     await tester.pumpAndSettle();
@@ -249,25 +277,31 @@ void main() {
   });
 
   testWidgets(
-      'the sole admin sees the blocking message instead of the slide when leaving',
-      (tester) async {
-    final api = _FakeApiClient();
-    // `admin` is the only admin among [admin, nonAdmin] — leaving would
-    // orphan the family.
-    await tester.pumpWidget(familyApp(api, admin));
-    await tester.pumpAndSettle();
+    'the sole admin sees the blocking message instead of the slide when leaving',
+    (tester) async {
+      final api = _FakeApiClient();
+      // `admin` is the only admin among [admin, nonAdmin] — leaving would
+      // orphan the family.
+      await tester.pumpWidget(familyApp(api, admin));
+      await tester.pumpAndSettle();
 
-    await tester.scrollUntilVisible(find.text('Leave family'), 300);
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Leave family'));
-    await tester.pumpAndSettle();
+      await tester.scrollUntilVisible(find.text('Leave family'), 300);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Leave family'));
+      await tester.pumpAndSettle();
 
-    expect(find.byType(SlideToConfirm), findsNothing);
-    expect(find.text("You're the only admin here — promote a co-admin "
-        'first, or delete the family instead.'), findsOneWidget);
+      expect(find.byType(SlideToConfirm), findsNothing);
+      expect(
+        find.text(
+          "You're the only admin here — promote a co-admin "
+          'first, or delete the family instead.',
+        ),
+        findsOneWidget,
+      );
 
-    await tester.tap(find.text('OK'));
-    await tester.pumpAndSettle();
-    expect(api.leftFamilyId, isNull);
-  });
+      await tester.tap(find.text('OK'));
+      await tester.pumpAndSettle();
+      expect(api.leftFamilyId, isNull);
+    },
+  );
 }

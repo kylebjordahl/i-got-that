@@ -45,8 +45,9 @@ class _RouteEventSheetState extends ConsumerState<_RouteEventSheet> {
   final Set<String> _linkIds = {};
   bool _recurring = false;
   late String _matchOp = 'contains';
-  late final TextEditingController _value =
-      TextEditingController(text: widget.group.first.summary ?? '');
+  late final TextEditingController _value = TextEditingController(
+    text: widget.group.first.summary ?? '',
+  );
   bool _busy = false;
   String? _error;
 
@@ -66,7 +67,9 @@ class _RouteEventSheetState extends ConsumerState<_RouteEventSheet> {
     try {
       final familyId = await ref.read(familyProvider.future);
       final pattern = _value.text.trim();
-      await ref.read(apiClientProvider).resolvePendingDecision(
+      await ref
+          .read(apiClientProvider)
+          .resolvePendingDecision(
             familyId,
             _event.id,
             routeToLinkIds: _linkIds.toList(),
@@ -91,7 +94,8 @@ class _RouteEventSheetState extends ConsumerState<_RouteEventSheet> {
   Widget build(BuildContext context) {
     final members = ref.watch(membersProvider).valueOrNull ?? const <Member>[];
     final byId = {for (final m in members) m.id: m};
-    final isAdmin = ref.watch(currentMemberProvider).valueOrNull?.isAdmin ?? false;
+    final isAdmin =
+        ref.watch(currentMemberProvider).valueOrNull?.isAdmin ?? false;
     final when = _event.allDay
         ? dayHeading(dayKey(_event.start), DateTime.now())
         : '${dayHeading(dayKey(_event.start), DateTime.now())} · ${friendlyTime(_event.start)}';
@@ -99,7 +103,11 @@ class _RouteEventSheetState extends ConsumerState<_RouteEventSheet> {
     return SafeArea(
       child: SingleChildScrollView(
         padding: EdgeInsets.fromLTRB(
-            22, 4, 22, 28 + MediaQuery.of(context).viewInsets.bottom),
+          22,
+          4,
+          22,
+          28 + MediaQuery.of(context).viewInsets.bottom,
+        ),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -116,11 +124,15 @@ class _RouteEventSheetState extends ConsumerState<_RouteEventSheet> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(_event.summary ?? 'Untitled event',
-                      style: AppText.sectionItemTitle),
+                  Text(
+                    _event.summary ?? 'Untitled event',
+                    style: AppText.sectionItemTitle,
+                  ),
                   const SizedBox(height: 3),
                   Text(
-                    _event.location == null ? when : '$when · ${_event.location}',
+                    _event.location == null
+                        ? when
+                        : '$when · ${_event.location}',
                     style: AppText.subtitle,
                   ),
                 ],
@@ -133,16 +145,21 @@ class _RouteEventSheetState extends ConsumerState<_RouteEventSheet> {
               _MemberCheck(
                 member: byId[row.familyMemberId],
                 checked: _linkIds.contains(row.linkId),
-                onTap: () => setState(() => _linkIds.contains(row.linkId)
-                    ? _linkIds.remove(row.linkId)
-                    : _linkIds.add(row.linkId)),
+                onTap: () => setState(
+                  () => _linkIds.contains(row.linkId)
+                      ? _linkIds.remove(row.linkId)
+                      : _linkIds.add(row.linkId),
+                ),
               ),
             if (isAdmin) ...[
               const SizedBox(height: 20),
               Text('HOW OFTEN', style: AppText.eyebrow()),
               const SizedBox(height: 8),
               _Segmented(
-                options: const [(false, 'Just this event'), (true, 'Every time')],
+                options: const [
+                  (false, 'Just this event'),
+                  (true, 'Every time'),
+                ],
                 value: _recurring,
                 onChanged: (v) => setState(() => _recurring = v),
               ),
@@ -164,15 +181,21 @@ class _RouteEventSheetState extends ConsumerState<_RouteEventSheet> {
                 TextField(
                   controller: _value,
                   decoration: InputDecoration(
-                    labelText: 'Title ${_matchOp == 'regex' ? 'pattern' : 'value'}',
-                    hintText: _matchOp == 'regex' ? '/^swim/i' : 'Swim practice',
+                    labelText:
+                        'Title ${_matchOp == 'regex' ? 'pattern' : 'value'}',
+                    hintText: _matchOp == 'regex'
+                        ? '/^swim/i'
+                        : 'Swim practice',
                   ),
                 ),
               ],
             ],
             if (_error != null) ...[
               const SizedBox(height: 12),
-              Text(_error!, style: font(kBodyFont, 13, 500, color: AppColors.coral)),
+              Text(
+                _error!,
+                style: font(kBodyFont, 13, 500, color: AppColors.coral),
+              ),
             ],
             const SizedBox(height: 20),
             SizedBox(
@@ -203,7 +226,9 @@ class _MemberCheck extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final color = member != null ? personColor(member!) : AppColors.textSecondary;
+    final color = member != null
+        ? personColor(member!)
+        : AppColors.textSecondary;
     return Padding(
       padding: const EdgeInsets.only(bottom: 8),
       child: Material(
@@ -217,8 +242,9 @@ class _MemberCheck extends StatelessWidget {
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(14),
               border: Border.all(
-                  color: checked ? color : AppColors.border,
-                  width: checked ? 1.5 : 1),
+                color: checked ? color : AppColors.border,
+                width: checked ? 1.5 : 1,
+              ),
             ),
             child: Row(
               children: [
@@ -231,9 +257,15 @@ class _MemberCheck extends StatelessWidget {
                 ),
                 const SizedBox(width: 12),
                 Expanded(
-                  child: Text(member?.relationName ?? 'member',
-                      style: font(kBodyFont, 14, 700,
-                          color: checked ? color : AppColors.textSecondary)),
+                  child: Text(
+                    member?.relationName ?? 'member',
+                    style: font(
+                      kBodyFont,
+                      14,
+                      700,
+                      color: checked ? color : AppColors.textSecondary,
+                    ),
+                  ),
                 ),
               ],
             ),
@@ -278,13 +310,19 @@ class _Segmented<T> extends StatelessWidget {
                     color: v == value ? AppColors.indigo : Colors.transparent,
                     borderRadius: BorderRadius.circular(10),
                   ),
-                  child: Text(label,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: font(kBodyFont, 12, 700,
-                          color: v == value
-                              ? const Color(0xFF17162B)
-                              : AppColors.textSecondary)),
+                  child: Text(
+                    label,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: font(
+                      kBodyFont,
+                      12,
+                      700,
+                      color: v == value
+                          ? const Color(0xFF17162B)
+                          : AppColors.textSecondary,
+                    ),
+                  ),
                 ),
               ),
             ),

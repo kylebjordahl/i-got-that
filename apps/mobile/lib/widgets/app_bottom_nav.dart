@@ -19,11 +19,11 @@ const double kBottomNavClearance = 68;
 /// Flutter's own default floating-SnackBar margin (`EdgeInsets.fromLTRB(15,
 /// 5, 15, 10)`) except for the bottom inset.
 EdgeInsets snackBarMarginAboveNav(BuildContext context) => EdgeInsets.fromLTRB(
-      15,
-      5,
-      15,
-      MediaQuery.of(context).padding.bottom + kBottomNavClearance + 10,
-    );
+  15,
+  5,
+  15,
+  MediaQuery.of(context).padding.bottom + kBottomNavClearance + 10,
+);
 
 /// The floating nav, mounted once above the inner content Navigator (see
 /// `_AuthedRoot` in main.dart) instead of inside any pushed route's own
@@ -41,7 +41,8 @@ class PersistentAppNav extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final index = ref.watch(navIndexProvider);
-    final isAdmin = ref.watch(currentMemberProvider).valueOrNull?.isAdmin ?? false;
+    final isAdmin =
+        ref.watch(currentMemberProvider).valueOrNull?.isAdmin ?? false;
     return Positioned(
       left: 0,
       right: 0,
@@ -53,12 +54,15 @@ class PersistentAppNav extends ConsumerWidget {
           builder: (context, depth, _) => AppBottomNav(
             currentIndex: index,
             onAdd: depth == 0 && index == 2 && isAdmin
-                ? () => showAddMemberSheet(rootNavigatorKey.currentContext!, ref)
+                ? () =>
+                      showAddMemberSheet(rootNavigatorKey.currentContext!, ref)
                 : null,
             onSelect: (i) {
               ref.read(navIndexProvider.notifier).state = i;
               if (depth > 0) {
-                rootNavigatorKey.currentState!.popUntil((route) => route.isFirst);
+                rootNavigatorKey.currentState!.popUntil(
+                  (route) => route.isFirst,
+                );
               }
             },
           ),
@@ -160,17 +164,31 @@ class _NavTab extends StatelessWidget {
         borderRadius: BorderRadius.circular(999),
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 180),
-          padding: EdgeInsets.symmetric(horizontal: active ? 15 : 12, vertical: 11),
+          padding: EdgeInsets.symmetric(
+            horizontal: active ? 15 : 12,
+            vertical: 11,
+          ),
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(icon,
-                  size: 20,
-                  color: active ? const Color(0xFF17162B) : AppColors.textTertiary),
+              Icon(
+                icon,
+                size: 20,
+                color: active
+                    ? const Color(0xFF17162B)
+                    : AppColors.textTertiary,
+              ),
               if (active) ...[
                 const SizedBox(width: 7),
-                Text(label,
-                    style: font(kBodyFont, 13, 700, color: const Color(0xFF17162B))),
+                Text(
+                  label,
+                  style: font(
+                    kBodyFont,
+                    13,
+                    700,
+                    color: const Color(0xFF17162B),
+                  ),
+                ),
               ],
             ],
           ),

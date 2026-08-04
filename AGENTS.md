@@ -75,6 +75,10 @@ Backend: Cloudflare Workers + Hono + D1 + Drizzle. Client: Flutter (Riverpod, di
   consume each other via `@igt/*` source path-mapping). `.npmrc` uses
   `shamefully-hoist=true`.
 - **Flutter via `fvm`** (Flutter 3.44.x). Don't call bare `flutter` for local work.
+  `pubspec.yaml`'s floor is Dart 3.12 / Flutter 3.44 — that floor *is* the
+  language version `dart format` reads, so it also selects the formatter's
+  style. CI runs `dart format --set-exit-if-changed`, so an unformatted file
+  fails the build; run `fvm dart format lib test` before committing.
 
 ## Commands
 
@@ -86,7 +90,7 @@ node_modules/.bin/vitest run --root apps/api
 # DB: generate a migration after editing libs/db/src/schema.ts
 pnpm db:generate                 # then commit libs/db/migrations/*
 # Flutter (always before committing client changes)
-cd apps/mobile && fvm flutter analyze && fvm flutter test
+cd apps/mobile && fvm dart format lib test && fvm flutter analyze && fvm flutter test
 ```
 
 **Always** run the relevant typecheck/tests before committing. Add or update tests

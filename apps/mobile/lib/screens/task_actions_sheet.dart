@@ -44,25 +44,30 @@ Future<void> showTaskActions(
 
   // Tasks the assign/unassign/dismiss actions operate on (the event's whole
   // group for a block tap; just this task otherwise).
-  final scope = (scopeTasks == null || scopeTasks.isEmpty) ? [task] : scopeTasks;
+  final scope = (scopeTasks == null || scopeTasks.isEmpty)
+      ? [task]
+      : scopeTasks;
   final anyUnowned = scope.any((t) => t.status == 'unowned');
   final anyOwned = scope.any((t) => t.status == 'owned');
   final allUnowned = scope.every((t) => t.status == 'unowned');
 
   // Derive the current change-type segment from the whole event group.
   final all = ref.read(allTasksProvider).valueOrNull ?? const <TaskItem>[];
-  final group =
-      all.where((t) => t.calendarEventId == task.calendarEventId).toList();
+  final group = all
+      .where((t) => t.calendarEventId == task.calendarEventId)
+      .toList();
   final types = (group.isEmpty ? [task] : group).map((t) => t.type).toSet();
   final hasAtt = types.contains('attendance');
   final hasTrans = types.contains('pickup') || types.contains('dropoff');
-  final currentSeg = hasAtt && hasTrans ? 'both' : (hasAtt ? 'attendance' : 'transition');
+  final currentSeg = hasAtt && hasTrans
+      ? 'both'
+      : (hasAtt ? 'attendance' : 'transition');
 
   List<String> targetOf(String seg) => switch (seg) {
-        'attendance' => ['attendance'],
-        'both' => const ['dropoff', 'pickup', 'attendance'],
-        _ => const ['dropoff', 'pickup'],
-      };
+    'attendance' => ['attendance'],
+    'both' => const ['dropoff', 'pickup', 'attendance'],
+    _ => const ['dropoff', 'pickup'],
+  };
 
   final owners = scope
       .where((t) => t.status == 'owned')
@@ -80,7 +85,10 @@ Future<void> showTaskActions(
 
   // The event's own time range when it has one, else just the task's start.
   final eventEnd = sourceEvent?.end;
-  final eventTime = sourceEvent != null && eventEnd != null && eventEnd.isAfter(sourceEvent.start)
+  final eventTime =
+      sourceEvent != null &&
+          eventEnd != null &&
+          eventEnd.isAfter(sourceEvent.start)
       ? friendlyRange(sourceEvent.start, eventEnd)
       : friendlyTime(sourceEvent?.start ?? task.start);
 
@@ -96,7 +104,11 @@ Future<void> showTaskActions(
     isScrollControlled: true,
     builder: (sheetCtx) => SingleChildScrollView(
       padding: EdgeInsets.fromLTRB(
-          22, 4, 22, 28 + MediaQuery.of(sheetCtx).viewInsets.bottom),
+        22,
+        4,
+        22,
+        28 + MediaQuery.of(sheetCtx).viewInsets.bottom,
+      ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -109,11 +121,15 @@ Future<void> showTaskActions(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text('${sourceEvent?.displaySummary ?? taskTypeLabel(task.type)} · ${child?.relationName ?? 'child'}',
-                        style: AppText.sectionItemTitle),
+                    Text(
+                      '${sourceEvent?.displaySummary ?? taskTypeLabel(task.type)} · ${child?.relationName ?? 'child'}',
+                      style: AppText.sectionItemTitle,
+                    ),
                     const SizedBox(height: 2),
-                    Text('${taskCategory(task.type)} · $eventTime · $statusText',
-                        style: AppText.subtitle),
+                    Text(
+                      '${taskCategory(task.type)} · $eventTime · $statusText',
+                      style: AppText.subtitle,
+                    ),
                   ],
                 ),
               ),
@@ -121,9 +137,11 @@ Future<void> showTaskActions(
           ),
           if (hasLocation || hasDescription) ...[
             const SizedBox(height: 14),
-            if (hasLocation) _DetailRow(icon: Icons.location_on_outlined, text: location),
+            if (hasLocation)
+              _DetailRow(icon: Icons.location_on_outlined, text: location),
             if (hasLocation && hasDescription) const SizedBox(height: 8),
-            if (hasDescription) _DetailRow(icon: Icons.notes_rounded, text: description),
+            if (hasDescription)
+              _DetailRow(icon: Icons.notes_rounded, text: description),
           ],
           if (isFeedTask) ...[
             const SizedBox(height: 20),
@@ -145,9 +163,16 @@ Future<void> showTaskActions(
                           ? null
                           : () {
                               Navigator.of(sheetCtx).pop();
-                              _run(context, ref,
-                                  (api, fid) => api.convertTask(fid, task.id, targetOf(seg)),
-                                  'Type updated');
+                              _run(
+                                context,
+                                ref,
+                                (api, fid) => api.convertTask(
+                                  fid,
+                                  task.id,
+                                  targetOf(seg),
+                                ),
+                                'Type updated',
+                              );
                             },
                     ),
                   ),
@@ -171,10 +196,11 @@ Future<void> showTaskActions(
                   onSubmit: (minutes) {
                     Navigator.of(sheetCtx).pop();
                     _run(
-                        context,
-                        ref,
-                        (api, fid) => api.setTaskDuration(fid, t.id, minutes),
-                        'Duration updated');
+                      context,
+                      ref,
+                      (api, fid) => api.setTaskDuration(fid, t.id, minutes),
+                      'Duration updated',
+                    );
                   },
                 ),
               ),
@@ -192,11 +218,12 @@ Future<void> showTaskActions(
                     onTap: () {
                       Navigator.of(sheetCtx).pop();
                       _runScope(
-                          context,
-                          ref,
-                          scope.where((t) => t.status == 'unowned'),
-                          (api, fid, t) => api.assignTask(fid, t.id),
-                          'Claimed');
+                        context,
+                        ref,
+                        scope.where((t) => t.status == 'unowned'),
+                        (api, fid, t) => api.assignTask(fid, t.id),
+                        'Claimed',
+                      );
                     },
                   ),
                   const Divider(height: 18),
@@ -205,7 +232,9 @@ Future<void> showTaskActions(
                   _ActionRow(
                     icon: Icons.person_add_alt_1_rounded,
                     iconColor: AppColors.blue,
-                    label: allUnowned ? 'Assign to someone…' : 'Reassign to someone…',
+                    label: allUnowned
+                        ? 'Assign to someone…'
+                        : 'Reassign to someone…',
                     onTap: () {
                       Navigator.of(sheetCtx).pop();
                       _pickAndAssign(context, ref, scope, caretakers);
@@ -221,11 +250,12 @@ Future<void> showTaskActions(
                     onTap: () {
                       Navigator.of(sheetCtx).pop();
                       _runScope(
-                          context,
-                          ref,
-                          scope.where((t) => t.status == 'owned'),
-                          (api, fid, t) => api.unassignTask(fid, t.id),
-                          'Returned to the queue');
+                        context,
+                        ref,
+                        scope.where((t) => t.status == 'owned'),
+                        (api, fid, t) => api.unassignTask(fid, t.id),
+                        'Returned to the queue',
+                      );
                     },
                   ),
                   const Divider(height: 18),
@@ -237,9 +267,13 @@ Future<void> showTaskActions(
                   destructive: true,
                   onTap: () {
                     Navigator.of(sheetCtx).pop();
-                    _runScope(context, ref, scope,
-                        (api, fid, t) => api.dismissTask(fid, t.id),
-                        'Marked not needed');
+                    _runScope(
+                      context,
+                      ref,
+                      scope,
+                      (api, fid, t) => api.dismissTask(fid, t.id),
+                      'Marked not needed',
+                    );
                   },
                 ),
               ],
@@ -278,8 +312,8 @@ Future<void> showEventDetails(
   final timeText = event.allDay
       ? 'All day'
       : (end != null && end.isAfter(event.start)
-          ? friendlyRange(event.start, end)
-          : friendlyTime(event.start));
+            ? friendlyRange(event.start, end)
+            : friendlyTime(event.start));
 
   final location = event.location;
   final description = event.description;
@@ -302,13 +336,14 @@ Future<void> showEventDetails(
           'that feed off "busy" mode to have its events typed.',
     'claimed' => 'This event is already a claimed task.',
     // Eligible, so the tasks were dismissed or never built — both rebuildable.
-    _ => dismissed > 0
-        ? 'Its ${dismissed == 1 ? 'task is' : '$dismissed tasks are'} marked not '
-            'needed. Marking one not needed sticks, so rebuild to put this '
-            'event back in the claim queue.'
-        : 'This event has no tasks right now, though it should generate them. '
-            'Rebuild to run it back through '
-            '${member == null ? 'the' : "$name's"} task rules.',
+    _ =>
+      dismissed > 0
+          ? 'Its ${dismissed == 1 ? 'task is' : '$dismissed tasks are'} marked not '
+                'needed. Marking one not needed sticks, so rebuild to put this '
+                'event back in the claim queue.'
+          : 'This event has no tasks right now, though it should generate them. '
+                'Rebuild to run it back through '
+                '${member == null ? 'the' : "$name's"} task rules.',
   };
 
   await showModalBottomSheet<void>(
@@ -319,7 +354,11 @@ Future<void> showEventDetails(
     builder: (sheetCtx) => SingleChildScrollView(
       // Keyboard-aware: the travel-time field lifts the sheet above it.
       padding: EdgeInsets.fromLTRB(
-          22, 4, 22, 28 + MediaQuery.of(sheetCtx).viewInsets.bottom),
+        22,
+        4,
+        22,
+        28 + MediaQuery.of(sheetCtx).viewInsets.bottom,
+      ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -333,13 +372,16 @@ Future<void> showEventDetails(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                        member == null
-                            ? event.displaySummary
-                            : '${event.displaySummary} · ${member.relationName}',
-                        style: AppText.sectionItemTitle),
+                      member == null
+                          ? event.displaySummary
+                          : '${event.displaySummary} · ${member.relationName}',
+                      style: AppText.sectionItemTitle,
+                    ),
                     const SizedBox(height: 2),
-                    Text('$timeText${event.isHuman ? ' · manual' : ''}',
-                        style: AppText.subtitle),
+                    Text(
+                      '$timeText${event.isHuman ? ' · manual' : ''}',
+                      style: AppText.subtitle,
+                    ),
                   ],
                 ),
               ),
@@ -347,9 +389,11 @@ Future<void> showEventDetails(
           ),
           if (hasLocation || hasDescription) ...[
             const SizedBox(height: 14),
-            if (hasLocation) _DetailRow(icon: Icons.location_on_outlined, text: location),
+            if (hasLocation)
+              _DetailRow(icon: Icons.location_on_outlined, text: location),
             if (hasLocation && hasDescription) const SizedBox(height: 8),
-            if (hasDescription) _DetailRow(icon: Icons.notes_rounded, text: description),
+            if (hasDescription)
+              _DetailRow(icon: Icons.notes_rounded, text: description),
           ],
           // Travel time is a property of the trip *out to the target calendar*,
           // so it's offered on the events we mirror — above all a claim, which
@@ -363,12 +407,13 @@ Future<void> showEventDetails(
               onSubmit: (minutes) {
                 Navigator.of(sheetCtx).pop();
                 _run(
-                    context,
-                    ref,
-                    (api, fid) => api.setEventTravelTime(fid, event.id, minutes),
-                    minutes == null
-                        ? 'Back to the estimate'
-                        : 'Travel time updated');
+                  context,
+                  ref,
+                  (api, fid) => api.setEventTravelTime(fid, event.id, minutes),
+                  minutes == null
+                      ? 'Back to the estimate'
+                      : 'Travel time updated',
+                );
               },
             ),
           ],
@@ -389,12 +434,11 @@ Future<void> showEventDetails(
                 onTap: () {
                   Navigator.of(sheetCtx).pop();
                   _run(
-                      context,
-                      ref,
-                      (api, fid) => api.rebuildEventTasks(fid, event.id),
-                      dismissed > 0
-                          ? 'Back in the claim queue'
-                          : 'Tasks rebuilt');
+                    context,
+                    ref,
+                    (api, fid) => api.rebuildEventTasks(fid, event.id),
+                    dismissed > 0 ? 'Back in the claim queue' : 'Tasks rebuilt',
+                  );
                 },
               ),
             ),
@@ -432,9 +476,13 @@ Future<void> _pickAndAssign(
             InkWell(
               onTap: () {
                 Navigator.of(sheetCtx).pop();
-                _runScope(context, ref, scope,
-                    (api, fid, t) => api.assignTask(fid, t.id, memberId: m.id),
-                    'Assigned to ${m.relationName}');
+                _runScope(
+                  context,
+                  ref,
+                  scope,
+                  (api, fid, t) => api.assignTask(fid, t.id, memberId: m.id),
+                  'Assigned to ${m.relationName}',
+                );
               },
               borderRadius: BorderRadius.circular(14),
               child: Padding(
@@ -442,7 +490,10 @@ Future<void> _pickAndAssign(
                 child: Row(
                   children: [
                     PersonAvatar(
-                        initial: initialFor(m.relationName), color: personColor(m), size: 40),
+                      initial: initialFor(m.relationName),
+                      color: personColor(m),
+                      size: 40,
+                    ),
                     const SizedBox(width: 14),
                     Text(m.relationName, style: AppText.sectionItemTitle),
                   ],
@@ -469,17 +520,21 @@ Future<void> _run(
     // Claims move events between calendars (the recursion) — refresh Plan too.
     ref.invalidate(calendarEventsProvider);
     if (context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text(success),
-        margin: snackBarMarginAboveNav(context),
-      ));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(success),
+          margin: snackBarMarginAboveNav(context),
+        ),
+      );
     }
   } catch (e) {
     if (context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text('Failed: $e'),
-        margin: snackBarMarginAboveNav(context),
-      ));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Failed: $e'),
+          margin: snackBarMarginAboveNav(context),
+        ),
+      );
     }
   }
 }
@@ -504,17 +559,21 @@ Future<void> _runScope(
     // Claims move events between calendars (the recursion) — refresh Plan too.
     ref.invalidate(calendarEventsProvider);
     if (context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text(success),
-        margin: snackBarMarginAboveNav(context),
-      ));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(success),
+          margin: snackBarMarginAboveNav(context),
+        ),
+      );
     }
   } catch (e) {
     if (context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text('Failed: $e'),
-        margin: snackBarMarginAboveNav(context),
-      ));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Failed: $e'),
+          margin: snackBarMarginAboveNav(context),
+        ),
+      );
     }
   }
 }
@@ -546,16 +605,29 @@ class _SegTile extends StatelessWidget {
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(15),
             border: Border.all(
-                color: selected ? AppColors.indigo : AppColors.border, width: selected ? 1.5 : 1),
+              color: selected ? AppColors.indigo : AppColors.border,
+              width: selected ? 1.5 : 1,
+            ),
           ),
           child: Column(
             children: [
-              Icon(icon,
-                  size: 22, color: selected ? AppColors.indigo : AppColors.textSecondary),
+              Icon(
+                icon,
+                size: 22,
+                color: selected ? AppColors.indigo : AppColors.textSecondary,
+              ),
               const SizedBox(height: 7),
-              Text(label,
-                  style: font(kBodyFont, 12.5, 600,
-                      color: selected ? AppColors.textPrimary : AppColors.textSecondary)),
+              Text(
+                label,
+                style: font(
+                  kBodyFont,
+                  12.5,
+                  600,
+                  color: selected
+                      ? AppColors.textPrimary
+                      : AppColors.textSecondary,
+                ),
+              ),
             ],
           ),
         ),
@@ -584,8 +656,9 @@ class _DurationField extends StatefulWidget {
 }
 
 class _DurationFieldState extends State<_DurationField> {
-  late final TextEditingController _controller =
-      TextEditingController(text: widget.task.signedDurationMin.toString());
+  late final TextEditingController _controller = TextEditingController(
+    text: widget.task.signedDurationMin.toString(),
+  );
 
   @override
   void dispose() {
@@ -617,8 +690,9 @@ class _DurationFieldState extends State<_DurationField> {
             Expanded(
               child: TextField(
                 controller: _controller,
-                keyboardType:
-                    const TextInputType.numberWithOptions(signed: true),
+                keyboardType: const TextInputType.numberWithOptions(
+                  signed: true,
+                ),
                 inputFormatters: [
                   FilteringTextInputFormatter.allow(RegExp(r'^-?\d*')),
                 ],
@@ -637,7 +711,10 @@ class _DurationFieldState extends State<_DurationField> {
                 backgroundColor: AppColors.tint(AppColors.indigo, 0.22),
                 foregroundColor: AppColors.indigo,
                 elevation: 0,
-                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 20,
+                  vertical: 14,
+                ),
               ),
               child: const Text('Set'),
             ),
@@ -676,7 +753,8 @@ class _TravelTimeField extends StatefulWidget {
 
 class _TravelTimeFieldState extends State<_TravelTimeField> {
   late final TextEditingController _controller = TextEditingController(
-      text: widget.event.travelTimeOverrideMin?.toString() ?? '');
+    text: widget.event.travelTimeOverrideMin?.toString() ?? '',
+  );
 
   @override
   void dispose() {
@@ -725,7 +803,10 @@ class _TravelTimeFieldState extends State<_TravelTimeField> {
                 backgroundColor: AppColors.tint(AppColors.indigo, 0.22),
                 foregroundColor: AppColors.indigo,
                 elevation: 0,
-                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 20,
+                  vertical: 14,
+                ),
               ),
               child: const Text('Set'),
             ),
@@ -735,9 +816,9 @@ class _TravelTimeFieldState extends State<_TravelTimeField> {
         Text(
           overridden
               ? 'Your own number, used as-is. Clear the field to go back to the '
-                  'estimate; 0 means no travel time on this one.'
+                    'estimate; 0 means no travel time on this one.'
               : 'Estimated from wherever you\'re coming from. Enter minutes to '
-                  'override it; 0 means no travel time on this one.',
+                    'override it; 0 means no travel time on this one.',
           style: AppText.subtitle,
         ),
       ],
@@ -792,9 +873,15 @@ class _ActionRow extends StatelessWidget {
           children: [
             Icon(icon, color: iconColor, size: 22),
             const SizedBox(width: 14),
-            Text(label,
-                style: font(kBodyFont, 14.5, 600,
-                    color: destructive ? AppColors.coral : AppColors.textPrimary)),
+            Text(
+              label,
+              style: font(
+                kBodyFont,
+                14.5,
+                600,
+                color: destructive ? AppColors.coral : AppColors.textPrimary,
+              ),
+            ),
           ],
         ),
       ),

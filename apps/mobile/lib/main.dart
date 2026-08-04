@@ -91,11 +91,11 @@ class _CaretakerAppState extends ConsumerState<CaretakerApp> {
           // second-parent join flow, whether or not the recipient is already
           // signed in — it owns the screen until it finishes and clears the token.
           : inviteToken != null
-              ? JoinFlow(token: inviteToken)
-              : auth.isAuthed
-                  // First-run wizard vs. the app, latched once (see OnboardingGate).
-                  ? OnboardingGate(appBuilder: (_) => const _AuthedRoot())
-                  : const WelcomeStep(),
+          ? JoinFlow(token: inviteToken)
+          : auth.isAuthed
+          // First-run wizard vs. the app, latched once (see OnboardingGate).
+          ? OnboardingGate(appBuilder: (_) => const _AuthedRoot())
+          : const WelcomeStep(),
     );
   }
 }
@@ -117,8 +117,10 @@ class _AuthedRoot extends StatelessWidget {
         Navigator(
           key: rootNavigatorKey,
           observers: [AppNavObserver()],
-          onGenerateRoute: (settings) =>
-              MaterialPageRoute(builder: (_) => const AppShell(), settings: settings),
+          onGenerateRoute: (settings) => MaterialPageRoute(
+            builder: (_) => const AppShell(),
+            settings: settings,
+          ),
         ),
         const PersistentAppNav(),
       ],

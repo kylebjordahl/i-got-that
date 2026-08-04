@@ -17,7 +17,12 @@ class AppShell extends ConsumerStatefulWidget {
 }
 
 class _AppShellState extends ConsumerState<AppShell> {
-  static const _pages = [HomeScreen(), PlanScreen(), FamilyScreen(), MeScreen()];
+  static const _pages = [
+    HomeScreen(),
+    PlanScreen(),
+    FamilyScreen(),
+    MeScreen(),
+  ];
 
   @override
   void initState() {

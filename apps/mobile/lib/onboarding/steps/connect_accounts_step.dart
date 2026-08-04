@@ -16,43 +16,57 @@ class ConnectAccountsStep extends ConsumerWidget {
   final VoidCallback onNext;
 
   ({IconData icon, Color color}) _visual(String kind) => switch (kind) {
-        'google' => (icon: Icons.calendar_month_rounded, color: AppColors.feedBlue),
-        'icloud' => (icon: Icons.cloud_rounded, color: AppColors.indigo),
-        _ => (icon: Icons.event_note_rounded, color: AppColors.indigo),
-      };
+    'google' => (icon: Icons.calendar_month_rounded, color: AppColors.feedBlue),
+    'icloud' => (icon: Icons.cloud_rounded, color: AppColors.indigo),
+    _ => (icon: Icons.event_note_rounded, color: AppColors.indigo),
+  };
 
   Future<void> _connectMore(BuildContext context, WidgetRef ref) async {
-    await Navigator.of(context).push(MaterialPageRoute(
-      builder: (_) => ConnectAccountWizard(skipCalendarStep: true, onConnected: (_) {}),
-    ));
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) =>
+            ConnectAccountWizard(skipCalendarStep: true, onConnected: (_) {}),
+      ),
+    );
     ref.invalidate(accountsProvider);
   }
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final accounts = ref.watch(accountsProvider).valueOrNull ?? const <ExternalAccount>[];
+    final accounts =
+        ref.watch(accountsProvider).valueOrNull ?? const <ExternalAccount>[];
     return OnboardingScaffold(
       progress: 0.16,
       trailingLabel: 'Skip for now',
       onTrailing: onNext,
       title: 'Connect your calendars',
-      subtitle: 'Sign in to the accounts you already use. They become available '
+      subtitle:
+          'Sign in to the accounts you already use. They become available '
           'as sources and delivery targets everywhere in the app.',
       body: [
-        GroupedCard(children: [
-          for (final a in accounts)
-            GroupRow(
-              leading: IconTile(icon: _visual(a.kind).icon, color: _visual(a.kind).color),
-              title: a.kindLabel,
-              subtitle: a.username ?? a.name,
-              trailing: const MiniPill('Connected', color: AppColors.green, dot: true),
+        GroupedCard(
+          children: [
+            for (final a in accounts)
+              GroupRow(
+                leading: IconTile(
+                  icon: _visual(a.kind).icon,
+                  color: _visual(a.kind).color,
+                ),
+                title: a.kindLabel,
+                subtitle: a.username ?? a.name,
+                trailing: const MiniPill(
+                  'Connected',
+                  color: AppColors.green,
+                  dot: true,
+                ),
+              ),
+            GroupAddRow(
+              title: 'Connect another account',
+              subtitle: 'iCloud · Google · Outlook · CalDAV / ICS',
+              onTap: () => _connectMore(context, ref),
             ),
-          GroupAddRow(
-            title: 'Connect another account',
-            subtitle: 'iCloud · Google · Outlook · CalDAV / ICS',
-            onTap: () => _connectMore(context, ref),
-          ),
-        ]),
+          ],
+        ),
         const InfoHint('Add or remove accounts anytime from Me.'),
       ],
       bottom: OnboardingButton(label: 'Continue', onPressed: onNext),
