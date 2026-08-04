@@ -36,21 +36,32 @@ class _WelcomeStepState extends ConsumerState<WelcomeStep> {
     }
   }
 
-  void _apple() => _run(() => kIsWeb
-      ? Future.sync(() => ref.read(authControllerProvider.notifier).loginWithApple())
-      : ref.read(authControllerProvider.notifier).loginWithAppleNative());
+  void _apple() => _run(
+    () => kIsWeb
+        ? Future.sync(
+            () => ref.read(authControllerProvider.notifier).loginWithApple(),
+          )
+        : ref.read(authControllerProvider.notifier).loginWithAppleNative(),
+  );
 
-  void _google() => _run(() => kIsWeb
-      // Web redirect flow: the same consent grants calendar access, so signing
-      // in with Google also connects the user's Google Calendar automatically.
-      ? Future.sync(() => ref.read(authControllerProvider.notifier).loginWithGoogle())
-      : ref.read(authControllerProvider.notifier).loginWithGoogleNative());
+  void _google() => _run(
+    () => kIsWeb
+        // Web redirect flow: the same consent grants calendar access, so signing
+        // in with Google also connects the user's Google Calendar automatically.
+        ? Future.sync(
+            () => ref.read(authControllerProvider.notifier).loginWithGoogle(),
+          )
+        : ref.read(authControllerProvider.notifier).loginWithGoogleNative(),
+  );
 
   Future<void> _magicLink() async {
     final email = await _promptEmail();
     if (email == null || email.trim().isEmpty) return;
-    await _run(() =>
-        ref.read(authControllerProvider.notifier).loginWithEmail(email.trim()));
+    await _run(
+      () => ref
+          .read(authControllerProvider.notifier)
+          .loginWithEmail(email.trim()),
+    );
   }
 
   Future<String?> _promptEmail() async {
@@ -73,7 +84,9 @@ class _WelcomeStepState extends ConsumerState<WelcomeStep> {
                 autofocus: true,
                 keyboardType: TextInputType.emailAddress,
                 decoration: const InputDecoration(
-                    labelText: 'Email', hintText: 'you@example.com'),
+                  labelText: 'Email',
+                  hintText: 'you@example.com',
+                ),
                 onSubmitted: (v) => Navigator.of(ctx).pop(v),
               ),
               const SizedBox(height: 16),
@@ -114,22 +127,31 @@ class _WelcomeStepState extends ConsumerState<WelcomeStep> {
                 const Spacer(),
                 const _LogoMark(),
                 const SizedBox(height: 24),
-                Text('I Got That',
-                    style: font(kDisplayFont, 38, 700, letterSpacing: -0.8)),
+                Text(
+                  'I Got That',
+                  style: font(kDisplayFont, 38, 700, letterSpacing: -0.8),
+                ),
                 const SizedBox(height: 12),
                 ConstrainedBox(
                   constraints: const BoxConstraints(maxWidth: 280),
                   child: Text(
                     'One shared calendar for the whole family — every handoff '
                     'owned, nothing dropped.',
-                    style: font(kBodyFont, 16, 500,
-                        color: const Color(0xFFA79FB5), height: 1.55),
+                    style: font(
+                      kBodyFont,
+                      16,
+                      500,
+                      color: const Color(0xFFA79FB5),
+                      height: 1.55,
+                    ),
                   ),
                 ),
                 const Spacer(),
                 if (error != null) ...[
-                  Text(error,
-                      style: font(kBodyFont, 12.5, 500, color: AppColors.coral)),
+                  Text(
+                    error,
+                    style: font(kBodyFont, 12.5, 500, color: AppColors.coral),
+                  ),
                   const SizedBox(height: 12),
                 ],
                 OnboardingButton(
@@ -160,18 +182,33 @@ class _WelcomeStepState extends ConsumerState<WelcomeStep> {
                     child: Text.rich(
                       TextSpan(
                         text: 'By continuing you agree to our ',
-                        style: font(kBodyFont, 11.5, 500,
-                            color: AppColors.textMuted, height: 1.5),
+                        style: font(
+                          kBodyFont,
+                          11.5,
+                          500,
+                          color: AppColors.textMuted,
+                          height: 1.5,
+                        ),
                         children: [
                           TextSpan(
-                              text: 'Terms',
-                              style: font(kBodyFont, 11.5, 600,
-                                  color: AppColors.textSecondary)),
+                            text: 'Terms',
+                            style: font(
+                              kBodyFont,
+                              11.5,
+                              600,
+                              color: AppColors.textSecondary,
+                            ),
+                          ),
                           const TextSpan(text: ' & '),
                           TextSpan(
-                              text: 'Privacy Policy',
-                              style: font(kBodyFont, 11.5, 600,
-                                  color: AppColors.textSecondary)),
+                            text: 'Privacy Policy',
+                            style: font(
+                              kBodyFont,
+                              11.5,
+                              600,
+                              color: AppColors.textSecondary,
+                            ),
+                          ),
                           const TextSpan(text: '.'),
                         ],
                       ),

@@ -67,12 +67,22 @@ class OnboardingScaffold extends StatelessWidget {
                       TextButton(
                         onPressed: onTrailing,
                         style: TextButton.styleFrom(
-                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 6,
+                            vertical: 4,
+                          ),
                           minimumSize: Size.zero,
                           tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                         ),
-                        child: Text(trailingLabel!,
-                            style: font(kBodyFont, 13, 600, color: AppColors.textTertiary)),
+                        child: Text(
+                          trailingLabel!,
+                          style: font(
+                            kBodyFont,
+                            13,
+                            600,
+                            color: AppColors.textTertiary,
+                          ),
+                        ),
                       ),
                   ],
                 ),
@@ -86,9 +96,16 @@ class OnboardingScaffold extends StatelessWidget {
                     Text(title!, style: AppText.screenTitleAlt),
                   if (subtitle != null) ...[
                     const SizedBox(height: 8),
-                    Text(subtitle!,
-                        style: font(kBodyFont, 14, 500,
-                            color: AppColors.textSecondary, height: 1.5)),
+                    Text(
+                      subtitle!,
+                      style: font(
+                        kBodyFont,
+                        14,
+                        500,
+                        color: AppColors.textSecondary,
+                        height: 1.5,
+                      ),
+                    ),
                   ],
                   if (title != null || subtitle != null || header != null)
                     const SizedBox(height: 22),
@@ -155,8 +172,11 @@ class _BackButton extends StatelessWidget {
             borderRadius: BorderRadius.circular(11),
             border: Border.all(color: AppColors.border),
           ),
-          child: const Icon(Icons.chevron_left_rounded,
-              size: 22, color: Color(0xFFC9C2D6)),
+          child: const Icon(
+            Icons.chevron_left_rounded,
+            size: 22,
+            color: Color(0xFFC9C2D6),
+          ),
         ),
       ),
     );
@@ -187,15 +207,27 @@ class OnboardingButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final (bg, fg, border) = switch (variant) {
-      OnbButtonVariant.indigo => (AppColors.indigo, const Color(0xFF15121B), null),
-      OnbButtonVariant.green => (AppColors.green, const Color(0xFF0C2A1F), null),
+      OnbButtonVariant.indigo => (
+        AppColors.indigo,
+        const Color(0xFF15121B),
+        null,
+      ),
+      OnbButtonVariant.green => (
+        AppColors.green,
+        const Color(0xFF0C2A1F),
+        null,
+      ),
       OnbButtonVariant.blue => (AppColors.blue, const Color(0xFF06243F), null),
-      OnbButtonVariant.white => (AppColors.textPrimary, const Color(0xFF17141C), null),
+      OnbButtonVariant.white => (
+        AppColors.textPrimary,
+        const Color(0xFF17141C),
+        null,
+      ),
       OnbButtonVariant.ghost => (
-          Colors.transparent,
-          const Color(0xFFC9C2D6),
-          const Color(0x1FFFFFFF),
-        ),
+        Colors.transparent,
+        const Color(0xFFC9C2D6),
+        const Color(0x1FFFFFFF),
+      ),
     };
     return Material(
       color: bg,
@@ -292,13 +324,26 @@ class SelectRow extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Text(title,
-                      style: font(kBodyFont, 14.5, 600,
-                          color: titleColor ?? AppColors.textPrimary)),
+                  Text(
+                    title,
+                    style: font(
+                      kBodyFont,
+                      14.5,
+                      600,
+                      color: titleColor ?? AppColors.textPrimary,
+                    ),
+                  ),
                   if (subtitle != null) ...[
                     const SizedBox(height: 1),
-                    Text(subtitle!,
-                        style: font(kBodyFont, 12, 500, color: AppColors.textTertiary)),
+                    Text(
+                      subtitle!,
+                      style: font(
+                        kBodyFont,
+                        12,
+                        500,
+                        color: AppColors.textTertiary,
+                      ),
+                    ),
                   ],
                 ],
               ),
@@ -324,15 +369,26 @@ class SelectRow extends StatelessWidget {
           height: 24,
           alignment: Alignment.center,
           decoration: BoxDecoration(color: accent, shape: BoxShape.circle),
-          child: const Icon(Icons.check_rounded, size: 15, color: Color(0xFF15121B)),
+          child: const Icon(
+            Icons.check_rounded,
+            size: 15,
+            color: Color(0xFF15121B),
+          ),
         );
       case RowTrailing.radioFilled:
         return Container(
           width: 26,
           height: 26,
           alignment: Alignment.center,
-          decoration: const BoxDecoration(color: AppColors.green, shape: BoxShape.circle),
-          child: const Icon(Icons.check_rounded, size: 16, color: Color(0xFF0F2A20)),
+          decoration: const BoxDecoration(
+            color: AppColors.green,
+            shape: BoxShape.circle,
+          ),
+          child: const Icon(
+            Icons.check_rounded,
+            size: 16,
+            color: Color(0xFF0F2A20),
+          ),
         );
       case RowTrailing.radio:
         return Container(
@@ -344,16 +400,28 @@ class SelectRow extends StatelessWidget {
           ),
         );
       case RowTrailing.lock:
-        return const Icon(Icons.lock_outline_rounded, size: 18, color: AppColors.textMuted);
+        return const Icon(
+          Icons.lock_outline_rounded,
+          size: 18,
+          color: AppColors.textMuted,
+        );
       case RowTrailing.chevron:
-        return const Icon(Icons.chevron_right_rounded, size: 20, color: AppColors.textMuted);
+        return const Icon(
+          Icons.chevron_right_rounded,
+          size: 20,
+          color: AppColors.textMuted,
+        );
     }
   }
 }
 
 /// A small rounded icon tile; [dashed] draws the dashed "+" add affordance.
 class _IconTile extends StatelessWidget {
-  const _IconTile({required this.icon, required this.color, this.dashed = false});
+  const _IconTile({
+    required this.icon,
+    required this.color,
+    this.dashed = false,
+  });
   final IconData icon;
   final Color color;
   final bool dashed;
@@ -422,8 +490,15 @@ class AddRow extends StatelessWidget {
                   Text(title, style: font(kBodyFont, 14.5, 700, color: accent)),
                   if (subtitle != null) ...[
                     const SizedBox(height: 1),
-                    Text(subtitle!,
-                        style: font(kBodyFont, 12, 500, color: AppColors.textTertiary)),
+                    Text(
+                      subtitle!,
+                      style: font(
+                        kBodyFont,
+                        12,
+                        500,
+                        color: AppColors.textTertiary,
+                      ),
+                    ),
                   ],
                 ],
               ),
@@ -447,10 +522,16 @@ class GroupedCard extends StatelessWidget {
     for (var i = 0; i < children.length; i++) {
       rows.add(children[i]);
       if (i < children.length - 1) {
-        rows.add(const Padding(
-          padding: EdgeInsets.symmetric(horizontal: 14),
-          child: Divider(height: 1, thickness: 1, color: AppColors.borderSubtle),
-        ));
+        rows.add(
+          const Padding(
+            padding: EdgeInsets.symmetric(horizontal: 14),
+            child: Divider(
+              height: 1,
+              thickness: 1,
+              color: AppColors.borderSubtle,
+            ),
+          ),
+        );
       }
     }
     return Container(
@@ -501,8 +582,15 @@ class GroupRow extends StatelessWidget {
                 Text(title, style: font(kBodyFont, 14.5, 600)),
                 if (subtitle != null) ...[
                   const SizedBox(height: 1),
-                  Text(subtitle!,
-                      style: font(kBodyFont, 11.5, 500, color: AppColors.textTertiary)),
+                  Text(
+                    subtitle!,
+                    style: font(
+                      kBodyFont,
+                      11.5,
+                      500,
+                      color: AppColors.textTertiary,
+                    ),
+                  ),
                 ],
               ],
             ),
@@ -563,8 +651,15 @@ class GroupAddRow extends StatelessWidget {
                   Text(title, style: font(kBodyFont, 14, 700, color: accent)),
                   if (subtitle != null) ...[
                     const SizedBox(height: 1),
-                    Text(subtitle!,
-                        style: font(kBodyFont, 12, 500, color: AppColors.textTertiary)),
+                    Text(
+                      subtitle!,
+                      style: font(
+                        kBodyFont,
+                        12,
+                        500,
+                        color: AppColors.textTertiary,
+                      ),
+                    ),
                   ],
                 ],
               ),
@@ -578,7 +673,12 @@ class GroupAddRow extends StatelessWidget {
 
 /// A small pill ("Connected", "You") used as a grouped-row trailing.
 class MiniPill extends StatelessWidget {
-  const MiniPill(this.label, {super.key, required this.color, this.dot = false});
+  const MiniPill(
+    this.label, {
+    super.key,
+    required this.color,
+    this.dot = false,
+  });
   final String label;
   final Color color;
   final bool dot;
@@ -597,9 +697,10 @@ class MiniPill extends StatelessWidget {
         children: [
           if (dot) ...[
             Container(
-                width: 6,
-                height: 6,
-                decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
+              width: 6,
+              height: 6,
+              decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+            ),
             const SizedBox(width: 6),
           ],
           Text(label, style: font(kBodyFont, 11, 700, color: color)),
@@ -613,7 +714,12 @@ class MiniPill extends StatelessWidget {
 /// gets the green check; one they skipped gets a muted dash and says so, so the
 /// summary receipts what happened rather than implying everything was done.
 class ReceiptRow extends StatelessWidget {
-  const ReceiptRow({super.key, required this.text, required this.done, this.note});
+  const ReceiptRow({
+    super.key,
+    required this.text,
+    required this.done,
+    this.note,
+  });
 
   final String text;
   final bool done;
@@ -629,8 +735,15 @@ class ReceiptRow extends StatelessWidget {
         width: 24,
         height: 24,
         alignment: Alignment.center,
-        decoration: BoxDecoration(color: AppColors.tint(color, 0.18), shape: BoxShape.circle),
-        child: Icon(done ? Icons.check_rounded : Icons.remove_rounded, size: 13, color: color),
+        decoration: BoxDecoration(
+          color: AppColors.tint(color, 0.18),
+          shape: BoxShape.circle,
+        ),
+        child: Icon(
+          done ? Icons.check_rounded : Icons.remove_rounded,
+          size: 13,
+          color: color,
+        ),
       ),
       title: text,
       subtitle: note,
@@ -640,7 +753,11 @@ class ReceiptRow extends StatelessWidget {
 
 /// A small inline hint row ("ⓘ …") used beneath several step bodies.
 class InfoHint extends StatelessWidget {
-  const InfoHint(this.text, {super.key, this.icon = Icons.info_outline_rounded});
+  const InfoHint(
+    this.text, {
+    super.key,
+    this.icon = Icons.info_outline_rounded,
+  });
   final String text;
   final IconData icon;
 
@@ -654,8 +771,16 @@ class InfoHint extends StatelessWidget {
           Icon(icon, size: 15, color: AppColors.textMuted),
           const SizedBox(width: 8),
           Expanded(
-            child: Text(text,
-                style: font(kBodyFont, 12, 500, color: AppColors.textTertiary, height: 1.5)),
+            child: Text(
+              text,
+              style: font(
+                kBodyFont,
+                12,
+                500,
+                color: AppColors.textTertiary,
+                height: 1.5,
+              ),
+            ),
           ),
         ],
       ),

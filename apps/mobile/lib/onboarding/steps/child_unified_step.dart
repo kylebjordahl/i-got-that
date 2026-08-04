@@ -52,7 +52,11 @@ class _ChildUnifiedStepState extends ConsumerState<ChildUnifiedStep> {
       _error = null;
     });
     try {
-      await commitUnifiedTarget(ref, memberId: widget.child.id, choice: _choice!);
+      await commitUnifiedTarget(
+        ref,
+        memberId: widget.child.id,
+        choice: _choice!,
+      );
       if (mounted) widget.onNext();
     } catch (e) {
       if (mounted) setState(() => _error = '$e');
@@ -64,17 +68,26 @@ class _ChildUnifiedStepState extends ConsumerState<ChildUnifiedStep> {
   @override
   Widget build(BuildContext context) {
     final name = widget.child.relationName;
-    final feeds = ref.watch(memberFeedsProvider(widget.child.id)).valueOrNull ?? const <FeedItem>[];
-    final locked = [for (final f in feeds) if (f.isException) f.displayName];
+    final feeds =
+        ref.watch(memberFeedsProvider(widget.child.id)).valueOrNull ??
+        const <FeedItem>[];
+    final locked = [
+      for (final f in feeds)
+        if (f.isException) f.displayName,
+    ];
     return OnboardingScaffold(
       progress: 0.75,
       onBack: widget.onBack,
       trailingLabel: 'Finish later',
       onTrailing: widget.onExit,
       header: MemberStrip(
-          members: widget.children, currentIndex: widget.childIndex, noun: 'Child'),
+        members: widget.children,
+        currentIndex: widget.childIndex,
+        noun: 'Child',
+      ),
       title: "$name's unified calendar",
-      subtitle: 'Pick the one writable calendar everything else syncs onto — '
+      subtitle:
+          'Pick the one writable calendar everything else syncs onto — '
           "$name's single source of truth.",
       body: [
         UnifiedCalendarPicker(
@@ -87,7 +100,10 @@ class _ChildUnifiedStepState extends ConsumerState<ChildUnifiedStep> {
         _SynthNote(),
         if (_error != null) ...[
           const SizedBox(height: 14),
-          Text(_error!, style: font(kBodyFont, 13, 500, color: AppColors.coral)),
+          Text(
+            _error!,
+            style: font(kBodyFont, 13, 500, color: AppColors.coral),
+          ),
         ],
       ],
       bottom: OnboardingButton(
@@ -114,13 +130,24 @@ class _SynthNote extends StatelessWidget {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Icon(Icons.arrow_upward_rounded, size: 15, color: AppColors.green),
+          const Icon(
+            Icons.arrow_upward_rounded,
+            size: 15,
+            color: AppColors.green,
+          ),
           const SizedBox(width: 8),
           Expanded(
             child: Text(
-                'School events and other sources will synthesize onto this '
-                'calendar automatically.',
-                style: font(kBodyFont, 12, 500, color: const Color(0xFF9FD8C2), height: 1.5)),
+              'School events and other sources will synthesize onto this '
+              'calendar automatically.',
+              style: font(
+                kBodyFont,
+                12,
+                500,
+                color: const Color(0xFF9FD8C2),
+                height: 1.5,
+              ),
+            ),
           ),
         ],
       ),

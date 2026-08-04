@@ -22,7 +22,8 @@ For dev setup, commands, and architecture, see **[AGENTS.md](AGENTS.md)**.
 
 4. **Verify before pushing** (see AGENTS.md for the exact commands):
    - Backend: `pnpm nx run-many -t typecheck test --projects=tag:language:typescript`
-   - Client: `cd apps/mobile && fvm flutter analyze && fvm flutter test`
+   - Client: `cd apps/mobile && fvm dart format lib test && fvm flutter analyze && fvm flutter test`
+     (CI runs `dart format --set-exit-if-changed`, so unformatted Dart fails it)
    - If you changed `libs/db/src/schema.ts`, run `pnpm db:generate` and commit the
      new `libs/db/migrations/*`.
 

@@ -41,7 +41,8 @@ Future<void> showConflictResolution(
     useRootNavigator: true,
     showDragHandle: true,
     isScrollControlled: true,
-    builder: (_) => _ConflictResolutionSheet(conflict: conflict, member: member),
+    builder: (_) =>
+        _ConflictResolutionSheet(conflict: conflict, member: member),
   );
 }
 
@@ -70,10 +71,10 @@ class _ConflictResolutionSheetState
   // (null when either end isn't geocoded — then the handles start at zero, as
   // they always did). Getting there and coming back is the same trip, so both
   // start at the same number; dragging either handle takes over from there.
-  late double _travelBefore =
-      (widget.conflict.suggestedTravelMin ?? 0).toDouble();
-  late double _travelAfter =
-      (widget.conflict.suggestedTravelMin ?? 0).toDouble();
+  late double _travelBefore = (widget.conflict.suggestedTravelMin ?? 0)
+      .toDouble();
+  late double _travelAfter = (widget.conflict.suggestedTravelMin ?? 0)
+      .toDouble();
 
   /// Vertical drag sensitivity — logical px per minute. Deliberately coarse: at
   /// the original 1.4px/min a thumb-sized twitch swung travel by 15+ minutes,
@@ -101,7 +102,8 @@ class _ConflictResolutionSheetState
   double _resolveTravel(double raw, double max) {
     final clamped = raw.clamp(0.0, max);
     if (clamped >= max) return max;
-    final stepped = (clamped / _travelStepMin).round() * _travelStepMin.toDouble();
+    final stepped =
+        (clamped / _travelStepMin).round() * _travelStepMin.toDouble();
     return math.min(stepped, max);
   }
 
@@ -111,7 +113,10 @@ class _ConflictResolutionSheetState
   /// fully dragged-out split fits the sheet's timeline budget, and so the zoom
   /// never shifts under the finger while a handle is being dragged.
   double _zoom(int winnerMin, double maxTravel) {
-    final budget = (MediaQuery.of(context).size.height * 0.34).clamp(180.0, 320.0);
+    final budget = (MediaQuery.of(context).size.height * 0.34).clamp(
+      180.0,
+      320.0,
+    );
     final span = winnerMin + maxTravel;
     if (span <= 0) return _maxZoom;
     return math.min(_maxZoom, budget / span);
@@ -120,12 +125,18 @@ class _ConflictResolutionSheetState
   /// Applies a drag delta to one half's travel buffer, ticking a selection haptic
   /// each time the resolved 5-minute step changes — the same feedback a picker
   /// gives, so the steps are felt rather than watched.
-  void _dragTravel({required bool before, required double dy, required double max}) {
+  void _dragTravel({
+    required bool before,
+    required double dy,
+    required double max,
+  }) {
     final raw = before ? _travelBefore : _travelAfter;
     // Up shortens the morning half (an earlier pick-up); down lengthens the
     // afternoon's lead-in (a later drop-off).
-    final next = (before ? raw - dy / _pxPerMin : raw + dy / _pxPerMin)
-        .clamp(0.0, max);
+    final next = (before ? raw - dy / _pxPerMin : raw + dy / _pxPerMin).clamp(
+      0.0,
+      max,
+    );
     final stepped = _resolveTravel(next, max) != _resolveTravel(raw, max);
     setState(() {
       if (before) {
@@ -139,8 +150,9 @@ class _ConflictResolutionSheetState
 
   Conflict get _conflict => widget.conflict;
 
-  Color get _memberColor =>
-      widget.member != null ? personColor(widget.member!) : AppColors.textSecondary;
+  Color get _memberColor => widget.member != null
+      ? personColor(widget.member!)
+      : AppColors.textSecondary;
 
   /// Refresh everything a resolve/dismiss touches: the conflict queue, the
   /// unified-calendar events (loser gets split), and the task lists (a split
@@ -164,17 +176,21 @@ class _ConflictResolutionSheetState
       _invalidate();
       if (!mounted) return;
       Navigator.of(context).pop();
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text(successMessage),
-        margin: snackBarMarginAboveNav(context),
-      ));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(successMessage),
+          margin: snackBarMarginAboveNav(context),
+        ),
+      );
     } catch (e) {
       if (!mounted) return;
       setState(() => _busy = false);
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text('Couldn\'t update: $e'),
-        margin: snackBarMarginAboveNav(context),
-      ));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Couldn\'t update: $e'),
+          margin: snackBarMarginAboveNav(context),
+        ),
+      );
     }
   }
 
@@ -184,7 +200,9 @@ class _ConflictResolutionSheetState
   void _confirmSplit(int travelBeforeMin, int travelAfterMin) {
     final bothGone = !_beforeNeeded && !_afterNeeded;
     _act(
-      (familyId) => ref.read(apiClientProvider).resolveConflict(
+      (familyId) => ref
+          .read(apiClientProvider)
+          .resolveConflict(
             familyId,
             _conflict.id,
             travelBeforeMin: _beforeNeeded ? travelBeforeMin : 0,
@@ -199,10 +217,10 @@ class _ConflictResolutionSheetState
   }
 
   void _ignore() => _act(
-        (familyId) =>
-            ref.read(apiClientProvider).dismissConflict(familyId, _conflict.id),
-        'Conflict ignored — both events kept as scheduled',
-      );
+    (familyId) =>
+        ref.read(apiClientProvider).dismissConflict(familyId, _conflict.id),
+    'Conflict ignored — both events kept as scheduled',
+  );
 
   @override
   Widget build(BuildContext context) {
@@ -218,7 +236,8 @@ class _ConflictResolutionSheetState
     // segment only renders when it has real positive duration — a loser that
     // starts at the winner (or an all-day / open-ended event that can't be cut
     // on the timeline) collapses to just the two overlapping events.
-    final splittable = !loser.allDay &&
+    final splittable =
+        !loser.allDay &&
         !winner.allDay &&
         loser.end != null &&
         winner.end != null;
@@ -253,7 +272,11 @@ class _ConflictResolutionSheetState
 
     return SingleChildScrollView(
       padding: EdgeInsets.fromLTRB(
-          22, 4, 22, 24 + MediaQuery.of(context).viewInsets.bottom),
+        22,
+        4,
+        22,
+        24 + MediaQuery.of(context).viewInsets.bottom,
+      ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -265,7 +288,8 @@ class _ConflictResolutionSheetState
               const Spacer(),
               _MemberDayChip(
                 member: widget.member,
-                label: '${widget.member?.relationName ?? 'Member'} · '
+                label:
+                    '${widget.member?.relationName ?? 'Member'} · '
                     '${_shortDate(day)}',
               ),
             ],
@@ -277,16 +301,24 @@ class _ConflictResolutionSheetState
           Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Icon(Icons.info_outline_rounded,
-                  size: 15, color: AppColors.textMuted),
+              const Icon(
+                Icons.info_outline_rounded,
+                size: 15,
+                color: AppColors.textMuted,
+              ),
               const SizedBox(width: 7),
               Expanded(
                 child: Text(
                   'A manually added event always outranks a source-feed one, so '
                   '${_titleOf(winner)} stays put and ${_titleOf(loser)} is split '
                   'around it.',
-                  style: font(kBodyFont, 12, 500,
-                      color: AppColors.textTertiary, height: 1.45),
+                  style: font(
+                    kBodyFont,
+                    12,
+                    500,
+                    color: AppColors.textTertiary,
+                    height: 1.45,
+                  ),
                 ),
               ),
             ],
@@ -295,10 +327,11 @@ class _ConflictResolutionSheetState
           Align(
             alignment: Alignment.centerLeft,
             child: Text(
-                splittable && (hasBefore || hasAfter)
-                    ? 'DRAG TO ADJUST TIMING'
-                    : (splittable ? 'AFTER THE SPLIT' : 'THE OVERLAP'),
-                style: AppText.eyebrow()),
+              splittable && (hasBefore || hasAfter)
+                  ? 'DRAG TO ADJUST TIMING'
+                  : (splittable ? 'AFTER THE SPLIT' : 'THE OVERLAP'),
+              style: AppText.eyebrow(),
+            ),
           ),
           const SizedBox(height: 12),
           if (splittable) ...[
@@ -383,7 +416,8 @@ class _ConflictResolutionSheetState
             busy: _busy,
             onTap: _busy
                 ? null
-                : () => _confirmSplit(travelBefore.round(), travelAfter.round()),
+                : () =>
+                      _confirmSplit(travelBefore.round(), travelAfter.round()),
           ),
           const SizedBox(height: 9),
           _WideButton(
@@ -410,7 +444,7 @@ class _ConflictResolutionSheetState
 String _shortDate(DateTime day) {
   const months = [
     'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', //
-    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
+    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
   ];
   return '${weekdayShort(day)}, ${months[day.month - 1]} ${day.day}';
 }
@@ -424,7 +458,9 @@ class _MemberDayChip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final color = member != null ? personColor(member!) : AppColors.textSecondary;
+    final color = member != null
+        ? personColor(member!)
+        : AppColors.textSecondary;
     return Container(
       padding: const EdgeInsets.fromLTRB(5, 4, 10, 4),
       decoration: BoxDecoration(
@@ -437,14 +473,21 @@ class _MemberDayChip extends StatelessWidget {
         children: [
           if (member != null)
             PersonAvatar(
-                initial: initialFor(member!.relationName),
-                color: color,
-                size: 16)
+              initial: initialFor(member!.relationName),
+              color: color,
+              size: 16,
+            )
           else
-            const Icon(Icons.event_busy_rounded,
-                size: 16, color: AppColors.textSecondary),
+            const Icon(
+              Icons.event_busy_rounded,
+              size: 16,
+              color: AppColors.textSecondary,
+            ),
           const SizedBox(width: 6),
-          Text(label, style: font(kBodyFont, 12, 600, color: AppColors.textPrimary)),
+          Text(
+            label,
+            style: font(kBodyFont, 12, 600, color: AppColors.textPrimary),
+          ),
         ],
       ),
     );
@@ -493,7 +536,10 @@ class _SegmentBlock extends StatelessWidget {
             : LinearGradient(
                 begin: Alignment.topLeft,
                 end: Alignment.bottomRight,
-                colors: [AppColors.tint(accent, 0.18), AppColors.tint(accent, 0.08)],
+                colors: [
+                  AppColors.tint(accent, 0.18),
+                  AppColors.tint(accent, 0.08),
+                ],
               ),
         color: dimmed ? AppColors.bg.withValues(alpha: 0.4) : null,
         borderRadius: BorderRadius.circular(14),
@@ -506,14 +552,24 @@ class _SegmentBlock extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(title,
-                    style: font(kBodyFont, 13, 600, color: titleColor),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis),
+                Text(
+                  title,
+                  style: font(kBodyFont, 13, 600, color: titleColor),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
                 const SizedBox(height: 2),
-                Text(timeLabel,
-                    style: font(kBodyFont, 11, 500,
-                        color: dimmed ? AppColors.textMuted : AppColors.textTertiary)),
+                Text(
+                  timeLabel,
+                  style: font(
+                    kBodyFont,
+                    11,
+                    500,
+                    color: dimmed
+                        ? AppColors.textMuted
+                        : AppColors.textTertiary,
+                  ),
+                ),
               ],
             ),
           ),
@@ -528,8 +584,16 @@ class _SegmentBlock extends StatelessWidget {
                 color: AppColors.tint(accent, 0.16),
                 borderRadius: BorderRadius.circular(999),
               ),
-              child: Text(badge!,
-                  style: font(kBodyFont, 9.5, 700, color: accent, letterSpacing: 0.3)),
+              child: Text(
+                badge!,
+                style: font(
+                  kBodyFont,
+                  9.5,
+                  700,
+                  color: accent,
+                  letterSpacing: 0.3,
+                ),
+              ),
             ),
           ],
         ],
@@ -585,56 +649,60 @@ class _EditableHalf extends StatelessWidget {
     // off), so the visible block-to-segment gaps stay tight and even.
     final handleY = handleAtBottom ? _blockH : 0.0;
 
-    return LayoutBuilder(builder: (context, c) {
-      final blockW = c.maxWidth - _railWidth;
-      final controlLeft = blockW + _connectorWidth;
-      return SizedBox(
-        height: _blockH,
-        child: Stack(
-          clipBehavior: Clip.none,
-          children: [
-            // The (narrower) event block, with the trash / restore control.
-            Positioned(
-              left: 0,
-              top: 0,
-              width: blockW,
-              height: _blockH,
-              child: _SegmentBlock(
-                title: title,
-                timeLabel: needed ? timeLabel : notNeededLabel,
-                accent: accent,
-                dimmed: !needed,
-                compact: true,
-                trailing: _RemoveButton(needed: needed, onTap: onToggle),
-              ),
-            ),
-            // The green drag handle, pinned to the appointment-facing edge.
-            if (needed) ...[
+    return LayoutBuilder(
+      builder: (context, c) {
+        final blockW = c.maxWidth - _railWidth;
+        final controlLeft = blockW + _connectorWidth;
+        return SizedBox(
+          height: _blockH,
+          child: Stack(
+            clipBehavior: Clip.none,
+            children: [
+              // The (narrower) event block, with the trash / restore control.
               Positioned(
-                left: blockW,
-                top: handleY - 0.75,
-                child: Container(
-                    width: _connectorWidth,
-                    height: 1.5,
-                    color: AppColors.green.withValues(alpha: 0.6)),
-              ),
-              Positioned(
-                // Centred on the edge: back off half the pill plus the
-                // transparent grab margin the handle pads itself with.
-                left: controlLeft - 4,
-                top: handleY -
-                    _DragHandle.height / 2 -
-                    _DragHandle.touchPadding,
-                child: _DragHandle(
-                  label: handleLabel,
-                  onDragMinutes: onDragMinutes,
+                left: 0,
+                top: 0,
+                width: blockW,
+                height: _blockH,
+                child: _SegmentBlock(
+                  title: title,
+                  timeLabel: needed ? timeLabel : notNeededLabel,
+                  accent: accent,
+                  dimmed: !needed,
+                  compact: true,
+                  trailing: _RemoveButton(needed: needed, onTap: onToggle),
                 ),
               ),
+              // The green drag handle, pinned to the appointment-facing edge.
+              if (needed) ...[
+                Positioned(
+                  left: blockW,
+                  top: handleY - 0.75,
+                  child: Container(
+                    width: _connectorWidth,
+                    height: 1.5,
+                    color: AppColors.green.withValues(alpha: 0.6),
+                  ),
+                ),
+                Positioned(
+                  // Centred on the edge: back off half the pill plus the
+                  // transparent grab margin the handle pads itself with.
+                  left: controlLeft - 4,
+                  top:
+                      handleY -
+                      _DragHandle.height / 2 -
+                      _DragHandle.touchPadding,
+                  child: _DragHandle(
+                    label: handleLabel,
+                    onDragMinutes: onDragMinutes,
+                  ),
+                ),
+              ],
             ],
-          ],
-        ),
-      );
-    });
+          ),
+        );
+      },
+    );
   }
 }
 
@@ -746,26 +814,34 @@ class _DragHandleState extends State<_DragHandle> {
       gestures: <Type, GestureRecognizerFactory>{
         _HandleDragRecognizer:
             GestureRecognizerFactoryWithHandlers<_HandleDragRecognizer>(
-          () => _HandleDragRecognizer(debugOwner: this),
-          (r) => r
-            ..onStart = _onStart
-            ..onUpdate = _onUpdate,
-        ),
+              () => _HandleDragRecognizer(debugOwner: this),
+              (r) => r
+                ..onStart = _onStart
+                ..onUpdate = _onUpdate,
+            ),
       },
       child: MouseRegion(
         cursor: SystemMouseCursors.resizeUpDown,
         child: Padding(
           padding: const EdgeInsets.symmetric(
-              vertical: _DragHandle.touchPadding, horizontal: 4),
+            vertical: _DragHandle.touchPadding,
+            horizontal: 4,
+          ),
           child: Container(
             height: _DragHandle.height,
             padding: const EdgeInsets.symmetric(horizontal: 8),
             decoration: BoxDecoration(
               color: const Color(0xFF172B23),
               borderRadius: BorderRadius.circular(8),
-              border: Border.all(color: AppColors.green.withValues(alpha: 0.65)),
+              border: Border.all(
+                color: AppColors.green.withValues(alpha: 0.65),
+              ),
               boxShadow: const [
-                BoxShadow(color: Color(0x59000000), blurRadius: 6, offset: Offset(0, 2)),
+                BoxShadow(
+                  color: Color(0x59000000),
+                  blurRadius: 6,
+                  offset: Offset(0, 2),
+                ),
               ],
             ),
             child: Row(
@@ -773,8 +849,15 @@ class _DragHandleState extends State<_DragHandle> {
               children: [
                 const _GripDots(),
                 const SizedBox(width: 6),
-                Text(widget.label,
-                    style: font(kBodyFont, 10, 700, color: const Color(0xFFEAFFF5))),
+                Text(
+                  widget.label,
+                  style: font(
+                    kBodyFont,
+                    10,
+                    700,
+                    color: const Color(0xFFEAFFF5),
+                  ),
+                ),
               ],
             ),
           ),
@@ -805,14 +888,23 @@ class _GripDots extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     Widget dot() => Container(
-          width: 2.6,
-          height: 2.6,
-          decoration: const BoxDecoration(color: AppColors.green, shape: BoxShape.circle),
-        );
+      width: 2.6,
+      height: 2.6,
+      decoration: const BoxDecoration(
+        color: AppColors.green,
+        shape: BoxShape.circle,
+      ),
+    );
     Widget col() => Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [dot(), const SizedBox(height: 2.5), dot(), const SizedBox(height: 2.5), dot()],
-        );
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        dot(),
+        const SizedBox(height: 2.5),
+        dot(),
+        const SizedBox(height: 2.5),
+        dot(),
+      ],
+    );
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [col(), const SizedBox(width: 2.5), col()],
@@ -845,10 +937,16 @@ class _TravelGapBlock extends StatelessWidget {
         child: Row(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            const Icon(Icons.directions_walk_rounded, size: 13, color: AppColors.amber),
+            const Icon(
+              Icons.directions_walk_rounded,
+              size: 13,
+              color: AppColors.amber,
+            ),
             const SizedBox(width: 6),
-            Text('Travel time · $minutes min',
-                style: font(kBodyFont, 10, 700, color: AppColors.amber)),
+            Text(
+              'Travel time · $minutes min',
+              style: font(kBodyFont, 10, 700, color: AppColors.amber),
+            ),
           ],
         ),
       ),
@@ -870,8 +968,16 @@ class _NoteRow extends StatelessWidget {
         borderRadius: BorderRadius.circular(12),
         border: Border.all(color: AppColors.amber.withValues(alpha: 0.4)),
       ),
-      child: Text(text,
-          style: font(kBodyFont, 11.5, 500, color: AppColors.textTertiary, height: 1.4)),
+      child: Text(
+        text,
+        style: font(
+          kBodyFont,
+          11.5,
+          500,
+          color: AppColors.textTertiary,
+          height: 1.4,
+        ),
+      ),
     );
   }
 }
@@ -916,7 +1022,10 @@ class _WideButton extends StatelessWidget {
                 ? SizedBox(
                     width: 20,
                     height: 20,
-                    child: CircularProgressIndicator(strokeWidth: 2.4, color: fg),
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2.4,
+                      color: fg,
+                    ),
                   )
                 : Row(
                     mainAxisSize: MainAxisSize.min,

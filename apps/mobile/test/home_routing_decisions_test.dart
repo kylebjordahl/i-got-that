@@ -33,15 +33,19 @@ class _RecordingApiClient extends ApiClient {
   }
 }
 
-Member _m(String id, String name,
-        {bool caretaker = false, bool admin = false, bool child = false}) =>
-    Member(
-      id: id,
-      relationName: name,
-      isCaretaker: caretaker,
-      isAdmin: admin,
-      requiresCaretaker: child,
-    );
+Member _m(
+  String id,
+  String name, {
+  bool caretaker = false,
+  bool admin = false,
+  bool child = false,
+}) => Member(
+  id: id,
+  relationName: name,
+  isCaretaker: caretaker,
+  isAdmin: admin,
+  requiresCaretaker: child,
+);
 
 void main() {
   final me = _m('dad', 'Dad', caretaker: true, admin: true);
@@ -50,7 +54,8 @@ void main() {
 
   // One unrouted event on the shared calendar, asked of both kids — the API
   // returns a row per member, and Home has to show a single card.
-  PendingDecision row(String id, String memberId, String linkId) => PendingDecision(
+  PendingDecision row(String id, String memberId, String linkId) =>
+      PendingDecision(
         id: id,
         feedId: 'f1',
         kind: 'routing',
@@ -61,30 +66,34 @@ void main() {
         allDay: false,
         summary: 'Swim practice',
       );
-  final decisions = [row('pd-theo', 'theo', 'link-theo'), row('pd-bee', 'bee', 'link-bee')];
+  final decisions = [
+    row('pd-theo', 'theo', 'link-theo'),
+    row('pd-bee', 'bee', 'link-bee'),
+  ];
 
   Widget app(ApiClient api, {Member? asMember}) => ProviderScope(
-        overrides: [
-          apiClientProvider.overrideWithValue(api),
-          familyProvider.overrideWith((ref) async => 'fam-1'),
-          membersProvider.overrideWith((ref) async => [me, theo, bee]),
-          currentMemberProvider.overrideWith((ref) async => asMember ?? me),
-          unownedTasksProvider.overrideWith((ref) async => const []),
-          allTasksProvider.overrideWith((ref) async => const []),
-          pendingDecisionsProvider.overrideWith((ref) async => decisions),
-          conflictsProvider.overrideWith((ref) async => const []),
-          calendarEventsProvider.overrideWith((ref) async => const []),
-          threadingThresholdProvider.overrideWith((ref) async => 30),
-        ],
-        child: MaterialApp(
-          theme: buildAppTheme(),
-          themeMode: ThemeMode.dark,
-          home: const Scaffold(body: HomeScreen()),
-        ),
-      );
+    overrides: [
+      apiClientProvider.overrideWithValue(api),
+      familyProvider.overrideWith((ref) async => 'fam-1'),
+      membersProvider.overrideWith((ref) async => [me, theo, bee]),
+      currentMemberProvider.overrideWith((ref) async => asMember ?? me),
+      unownedTasksProvider.overrideWith((ref) async => const []),
+      allTasksProvider.overrideWith((ref) async => const []),
+      pendingDecisionsProvider.overrideWith((ref) async => decisions),
+      conflictsProvider.overrideWith((ref) async => const []),
+      calendarEventsProvider.overrideWith((ref) async => const []),
+      threadingThresholdProvider.overrideWith((ref) async => 30),
+    ],
+    child: MaterialApp(
+      theme: buildAppTheme(),
+      themeMode: ThemeMode.dark,
+      home: const Scaffold(body: HomeScreen()),
+    ),
+  );
 
-  testWidgets('the per-member routing rows show as one "whose is this?" card',
-      (tester) async {
+  testWidgets('the per-member routing rows show as one "whose is this?" card', (
+    tester,
+  ) async {
     await tester.pumpWidget(app(_RecordingApiClient()));
     await tester.pumpAndSettle();
 
@@ -95,7 +104,9 @@ void main() {
     expect(find.textContaining('who is this for?'), findsOneWidget);
   });
 
-  testWidgets('routing to one child sends just that link, one-off', (tester) async {
+  testWidgets('routing to one child sends just that link, one-off', (
+    tester,
+  ) async {
     final api = _RecordingApiClient();
     await tester.pumpWidget(app(api));
     await tester.pumpAndSettle();
@@ -122,7 +133,9 @@ void main() {
     });
   });
 
-  testWidgets('"every time" sends a rule matching the event title', (tester) async {
+  testWidgets('"every time" sends a rule matching the event title', (
+    tester,
+  ) async {
     // Tall enough that the expanded rule fields and the footer both fit.
     tester.view.physicalSize = const Size(600, 1600);
     tester.view.devicePixelRatio = 1.0;
@@ -151,8 +164,9 @@ void main() {
     });
   });
 
-  testWidgets('a non-admin can route the event but is not offered the rule',
-      (tester) async {
+  testWidgets('a non-admin can route the event but is not offered the rule', (
+    tester,
+  ) async {
     final aunt = _m('aunt', 'Aunt', caretaker: true);
     await tester.pumpWidget(app(_RecordingApiClient(), asMember: aunt));
     await tester.pumpAndSettle();

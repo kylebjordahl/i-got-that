@@ -84,8 +84,13 @@ class _CornerRibbon extends StatelessWidget {
                   ),
                   child: Text(
                     label,
-                    style: font(kBodyFont, 9.5, 700,
-                        color: AppColors.amberHero, letterSpacing: 1.6),
+                    style: font(
+                      kBodyFont,
+                      9.5,
+                      700,
+                      color: AppColors.amberHero,
+                      letterSpacing: 1.6,
+                    ),
                   ),
                 ),
               ),
