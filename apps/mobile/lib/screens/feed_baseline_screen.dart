@@ -15,9 +15,10 @@ const _weekdayLabels = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
 /// Feed setup (6g): how one source calendar shapes a member's SCHEDULE. Feed
 /// type (standard / exception-only), the baseline for normal days on exception
-/// feeds, and the override pipeline — cancel/modify/ignore, first match wins,
-/// unmatched exception events become pending decisions. Task typing lives
-/// separately in Task rules (6k).
+/// feeds, and the rule pipeline — cancel/modify/ignore on an exception feed,
+/// or `keep` on a routed shared family calendar (one calendar for the whole
+/// family, split per person). First match wins; anything unmatched becomes a
+/// pending decision. Task typing lives separately in Task rules (6k).
 class FeedBaselineScreen extends ConsumerStatefulWidget {
   const FeedBaselineScreen({
     super.key,
@@ -85,16 +86,29 @@ class _FeedBaselineScreenState extends ConsumerState<FeedBaselineScreen> {
     try {
       final familyId = await ref.read(familyProvider.future);
       await ref.read(apiClientProvider).updateFeed(familyId, _feed.id, mode: mode);
-      setState(() => _feed = FeedItem(
-            id: _feed.id,
-            kind: _feed.kind,
-            mode: mode,
-            url: _feed.url,
-            sourceCalendarName: _feed.sourceCalendarName,
-            timezone: _feed.timezone,
-            status: _feed.status,
-            accountKind: _feed.accountKind,
-          ));
+      // The server clears routing when a feed stops being a standard one.
+      setState(() => _feed =
+          _feed.copyWith(mode: mode, routed: mode == 'standard' && _feed.routed));
+      _refresh();
+    } catch (e) {
+      setState(() => _error = '$e');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  /// Turn the feed into a shared family calendar (or back). Routing belongs to
+  /// the FEED, so this is the same switch every member linked to the calendar
+  /// sees — the copy says so, because flipping it here changes their setup too.
+  Future<void> _setRouted(bool routed) async {
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      final familyId = await ref.read(familyProvider.future);
+      await ref.read(apiClientProvider).updateFeed(familyId, _feed.id, routed: routed);
+      setState(() => _feed = _feed.copyWith(routed: routed));
       _refresh();
     } catch (e) {
       setState(() => _error = '$e');
@@ -252,14 +266,37 @@ class _FeedBaselineScreenState extends ConsumerState<FeedBaselineScreen> {
                       ),
                     ),
                     const SizedBox(height: 24),
-                    _OverridePipeline(feed: _feed, link: widget.existingLink),
-                  ] else ...[
-                    const SizedBox(height: 16),
-                    Text(
-                      'Standard feeds pass events through as-is. What tasks they '
-                      'generate is set in Task rules (Family logistics).',
-                      style: AppText.subtitle,
+                    _OverridePipeline(
+                        feed: _feed, link: widget.existingLink, member: widget.member),
+                  ] else if (!_feed.isBusy) ...[
+                    const SizedBox(height: 24),
+                    const SectionEyebrow('Shared family calendar', color: AppColors.green),
+                    const SizedBox(height: 12),
+                    AppCard(
+                      child: SwitchRow(
+                        icon: Icons.call_split_rounded,
+                        iconColor: AppColors.green,
+                        title: 'Route events per person',
+                        subtitle: 'One calendar for the whole family — each person keeps '
+                            'only the events that are theirs. It’s a setting on the '
+                            'calendar itself, so it applies to everyone linked to it.',
+                        value: _feed.isRouted,
+                        onChanged: _busy ? null : _setRouted,
+                      ),
                     ),
+                    if (_feed.isRouted) ...[
+                      const SizedBox(height: 24),
+                      _OverridePipeline(
+                          feed: _feed, link: widget.existingLink, member: widget.member),
+                    ] else ...[
+                      const SizedBox(height: 16),
+                      Text(
+                        'Off, this feed passes every event through to '
+                        '${widget.member.relationName} as-is. What tasks they generate '
+                        'is set in Task rules (Family logistics).',
+                        style: AppText.subtitle,
+                      ),
+                    ],
                   ],
                   if (_error != null) ...[
                     const SizedBox(height: 16),
@@ -284,13 +321,16 @@ class _FeedBaselineScreenState extends ConsumerState<FeedBaselineScreen> {
       );
 }
 
-/// The override pipeline (schedule only; first match wins): incoming event →
-/// rules in order → the unmatched terminal (pending decision). Rules edit via
-/// the 6m bottom sheet.
+/// The link's rule pipeline (schedule only; first match wins): incoming event →
+/// rules in order → the unmatched terminal (a pending decision). On an
+/// exception feed the rules override the baseline day; on a routed shared
+/// family calendar they pick out the events that are this member's. Rules edit
+/// via the 6m bottom sheet.
 class _OverridePipeline extends ConsumerWidget {
-  const _OverridePipeline({required this.feed, required this.link});
+  const _OverridePipeline({required this.feed, required this.link, required this.member});
   final FeedItem feed;
   final FeedLink link;
+  final Member member;
 
   ({String feedId, String linkId}) get _key => (feedId: feed.id, linkId: link.id);
 
@@ -309,12 +349,18 @@ class _OverridePipeline extends ConsumerWidget {
       ref.invalidate(pendingDecisionsProvider);
     }
 
+    final routed = feed.isRouted;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const SectionEyebrow('Override pipeline', color: AppColors.purple),
+        SectionEyebrow(routed ? 'Routing rules' : 'Override pipeline',
+            color: AppColors.purple),
         const SizedBox(height: 8),
-        Text('How feed exceptions change the baseline. Drag to reorder · first match wins.',
+        Text(
+            routed
+                ? 'Which of this calendar’s events are ${member.relationName}’s. '
+                    'Drag to reorder · first match wins.'
+                : 'How feed exceptions change the baseline. Drag to reorder · first match wins.',
             style: AppText.subtitle),
         const SizedBox(height: 12),
         AppCard(
@@ -340,14 +386,19 @@ class _OverridePipeline extends ConsumerWidget {
                   child: _RuleCard(
                     index: i,
                     rule: rules[i],
-                    onTap: () => showOverrideRuleSheet(context, ref, feed: feed, link: link, existing: rules[i]),
+                    onTap: () => showOverrideRuleSheet(context, ref,
+                        feed: feed,
+                        link: link,
+                        memberLabel: member.relationName,
+                        existing: rules[i]),
                   ),
                 ),
             ],
           ),
         Center(
           child: TextButton.icon(
-            onPressed: () => showOverrideRuleSheet(context, ref, feed: feed, link: link),
+            onPressed: () => showOverrideRuleSheet(context, ref,
+                feed: feed, link: link, memberLabel: member.relationName),
             icon: const Icon(Icons.add_rounded, size: 18, color: AppColors.purple),
             label: Text('Add rule', style: font(kBodyFont, 13, 700, color: AppColors.purple)),
           ),
@@ -366,8 +417,12 @@ class _OverridePipeline extends ConsumerWidget {
               const SizedBox(width: 10),
               Expanded(
                 child: Text(
-                  'Everything else — unmatched: not on the baseline and no rule '
-                  'matched → pending decision. The system won’t guess.',
+                  routed
+                      ? 'Everything else — no rule here matched: the event stays off '
+                          '${member.relationName}’s calendar. If nobody’s rules match '
+                          'it, it becomes a decision: whose is this?'
+                      : 'Everything else — unmatched: not on the baseline and no rule '
+                          'matched → pending decision. The system won’t guess.',
                   style: font(kBodyFont, 12, 500, color: AppColors.amber),
                 ),
               ),
@@ -389,6 +444,7 @@ class _RuleCard extends StatelessWidget {
         'cancel_day' => AppColors.coral,
         'modify_day' => AppColors.amber,
         'add_event' => AppColors.green,
+        'keep' => AppColors.green,
         _ => AppColors.textMuted,
       };
 
@@ -425,7 +481,9 @@ class _RuleCard extends StatelessWidget {
   }
 }
 
-/// Override-rule editor bottom sheet (6m): match + Then (cancel/modify/ignore).
+/// Rule editor bottom sheet (6m): match + Then (cancel/modify/ignore) on an
+/// exception feed. On a routed shared family calendar there is only one Then —
+/// keep the event here — so the sheet states it instead of offering a choice.
 /// [prefillMatchValue] seeds a new rule's match value (e.g. from an unmatched
 /// event's title) — ignored when editing an [existing] rule.
 Future<void> showOverrideRuleSheet(
@@ -435,6 +493,7 @@ Future<void> showOverrideRuleSheet(
   required FeedLink link,
   OverrideRule? existing,
   String? prefillMatchValue,
+  String? memberLabel,
 }) {
   return showModalBottomSheet<void>(
     context: context,
@@ -446,6 +505,7 @@ Future<void> showOverrideRuleSheet(
       link: link,
       existing: existing,
       prefillMatchValue: prefillMatchValue,
+      memberLabel: memberLabel,
     ),
   );
 }
@@ -456,11 +516,15 @@ class _OverrideRuleSheet extends ConsumerStatefulWidget {
     required this.link,
     this.existing,
     this.prefillMatchValue,
+    this.memberLabel,
   });
   final FeedItem feed;
   final FeedLink link;
   final OverrideRule? existing;
   final String? prefillMatchValue;
+
+  /// Whose calendar this link feeds — names the one outcome a routing rule has.
+  final String? memberLabel;
 
   @override
   ConsumerState<_OverrideRuleSheet> createState() => _OverrideRuleSheetState();
@@ -476,13 +540,14 @@ class _OverrideRuleSheetState extends ConsumerState<_OverrideRuleSheet> {
   String? _error;
 
   bool get _editing => widget.existing != null;
+  bool get _routing => widget.feed.isRouted;
 
   @override
   void initState() {
     super.initState();
     final ex = widget.existing;
     _matchOp = ex?.matchOp == 'regex' ? 'regex' : 'contains';
-    _outcome = ex?.outcome ?? 'cancel_day';
+    _outcome = ex?.outcome ?? (_routing ? 'keep' : 'cancel_day');
     _value.text = ex?.matchValue ?? widget.prefillMatchValue ?? '';
     _newStart.text = (ex?.params?['dayStart'] as String?) ?? '';
     _newEnd.text = (ex?.params?['dayEnd'] as String?) ?? '';
@@ -576,7 +641,11 @@ class _OverrideRuleSheetState extends ConsumerState<_OverrideRuleSheet> {
           children: [
             Row(
               children: [
-                Text(_editing ? 'Edit override rule' : 'New override rule', style: AppText.subPageTitle),
+                Text(
+                    _routing
+                        ? (_editing ? 'Edit routing rule' : 'New routing rule')
+                        : (_editing ? 'Edit override rule' : 'New override rule'),
+                    style: AppText.subPageTitle),
                 const Spacer(),
                 if (_editing)
                   IconButton(
@@ -586,7 +655,10 @@ class _OverrideRuleSheetState extends ConsumerState<_OverrideRuleSheet> {
               ],
             ),
             const SizedBox(height: 4),
-            Text('${widget.feed.displayName} · exception feed', style: AppText.subtitle),
+            Text(
+                '${widget.feed.displayName} · '
+                '${_routing ? 'shared family calendar' : 'exception feed'}',
+                style: AppText.subtitle),
             const SizedBox(height: 16),
             Text('MATCH', style: AppText.eyebrow()),
             const SizedBox(height: 8),
@@ -607,17 +679,43 @@ class _OverrideRuleSheetState extends ConsumerState<_OverrideRuleSheet> {
             const SizedBox(height: 20),
             Text('THEN', style: AppText.eyebrow()),
             const SizedBox(height: 8),
-            _Segmented(
-              options: const [
-                ('cancel_day', 'Cancel day'),
-                ('modify_day', 'Modify day'),
-                ('add_event', 'Add event'),
-                ('ignore', 'Ignore'),
-              ],
-              value: _outcome,
-              activeColor: AppColors.purple,
-              onChanged: (v) => setState(() => _outcome = v),
-            ),
+            if (_routing) ...[
+              // One outcome only — a routing rule's whole job is "this one's
+              // theirs" — so this states it rather than pretending to choose.
+              Row(
+                children: [
+                  const Icon(Icons.call_split_rounded, color: AppColors.green, size: 18),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      widget.memberLabel == null
+                          ? 'Keep it on this calendar'
+                          : 'Keep it on ${widget.memberLabel}’s calendar',
+                      style: font(kBodyFont, 13, 700, color: AppColors.green),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 10),
+              Text(
+                'Everyone else on this shared calendar decides for themselves; an '
+                'event nobody keeps becomes a “whose is this?” decision.',
+                style: AppText.subtitle,
+              ),
+            ] else
+              _Segmented(
+                options: const [
+                  ('cancel_day', 'Cancel day'),
+                  ('modify_day', 'Modify day'),
+                  ('add_event', 'Add event'),
+                  ('ignore', 'Ignore'),
+                ],
+                value: _outcome,
+                activeColor: AppColors.purple,
+                onChanged: (v) => setState(() => _outcome = v),
+              ),
+            // The per-outcome extras below are exception-feed only — a routing
+            // rule's outcome is always `keep`, so none of them match.
             if (_outcome == 'cancel_day') ...[
               const SizedBox(height: 12),
               Text('A matched day is dropped from the baseline entirely — nothing generates.',

@@ -394,11 +394,20 @@ class ApiClient {
     await _dio.delete('/families/$familyId/feeds/$feedId/member-links/$linkId', options: _auth);
   }
 
-  /// Update a feed's mode ('standard' | 'exception'); a change resynthesizes.
-  Future<void> updateFeed(String familyId, String feedId, {String? mode}) async {
+  /// Update a feed's mode ('standard' | 'exception') or its routing (shared
+  /// family calendar, standard feeds only). Either change resynthesizes.
+  Future<void> updateFeed(
+    String familyId,
+    String feedId, {
+    String? mode,
+    bool? routed,
+  }) async {
     await _dio.patch(
       '/families/$familyId/feeds/$feedId',
-      data: {if (mode != null) 'mode': mode},
+      data: {
+        if (mode != null) 'mode': mode,
+        if (routed != null) 'routed': routed,
+      },
       options: _auth,
     );
   }
@@ -580,17 +589,33 @@ class ApiClient {
   /// Resolve a pending decision: accept the unmatched event onto the calendar
   /// as a normal day (task typing then flows through the member's task rules).
   /// Optional start/end override the source event's own times.
+  ///
+  /// For a routing decision (a shared family calendar), [routeToLinkIds] says
+  /// whose the event is — the sibling questions asked of the other members are
+  /// answered by the same call. Pass [ruleMatchOp] + [ruleMatchValue] to also
+  /// leave a `keep` rule behind, so events like it route themselves from now on
+  /// (admin only, and the rule has to match this event).
   Future<void> resolvePendingDecision(
     String familyId,
     String decisionId, {
     String? startTime,
     String? endTime,
+    List<String>? routeToLinkIds,
+    String? ruleMatchOp,
+    String? ruleMatchValue,
   }) async {
     await _dio.post(
       '/families/$familyId/pending-decisions/$decisionId/resolve',
       data: {
         if (startTime != null) 'startTime': startTime,
         if (endTime != null) 'endTime': endTime,
+        if (routeToLinkIds != null) 'routeToLinkIds': routeToLinkIds,
+        if (ruleMatchOp != null && ruleMatchValue != null)
+          'rule': {
+            'matchField': 'summary',
+            'matchOp': ruleMatchOp,
+            'matchValue': ruleMatchValue,
+          },
       },
       options: _auth,
     );

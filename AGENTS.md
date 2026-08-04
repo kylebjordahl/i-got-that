@@ -22,7 +22,8 @@ calendar_events (synthesized|claimed) → MIRROR → the member's one target cal
 **Two rule pipelines** (round-6 review split): `link_rules` are the feed's
 SCHEDULE overrides (`cancel_day`/`modify_day`/`ignore` on the baseline day an
 exception event covers, or `add_event` to put the feed event on the calendar
-*beside* an untouched baseline day — a school's community dinner);
+*beside* an untouched baseline day — a school's community dinner; plus `keep`,
+which on a **routed** feed claims the event for that link's member);
 `task_rules` are the per-member TYPING pipeline (`transition` vs `attendance`
 + drop-off/pickup windows, scoped `this_calendar`/`all_calendars`, with a
 terminal default per calendar on the link + member). Task type is resolved at
@@ -33,8 +34,10 @@ null ⇒ the member's own unified/direct calendar). A member's
 Every member (child or caretaker) can have a unified calendar: the DB
 (`calendar_events`) is canonical; an optional per-member external target
 (CalDAV/iCloud or Google, `member_calendars`) is a write-through mirror whose
-human-authored events are read back in. Unmatched exception-feed events become
-**pending decisions** — the system never guesses.
+human-authored events are read back in. Events the pipeline can't place become
+**pending decisions** — the system never guesses. Two kinds: an unmatched
+exception-feed event (`kind: 'exception'`), and an event on a routed shared
+family calendar that no member's `keep` rules claimed (`kind: 'routing'`).
 
 - Product spec: PRD 1 (unified calendars & task generation); `docs/original-plan.md` is the superseded original plan
 - Deploy: `docs/DEPLOYMENT.md` · Auth: `docs/AUTH.md`
@@ -98,6 +101,21 @@ paths in particular).
   a `contentHash` skip — rule/config changes resynthesize without duplicating.
   Key forms: `bl:<linkId>:<date>`, `ev:<linkId>:<sourceEventId>`,
   `pd:<decisionId>`, `task:<taskId>`, `ext:<uid>:<recurrenceId>`.
+- **A routed feed (`feeds.routed`) is the shared family calendar**: one input
+  calendar carrying several members' events, split back out per member. It's the
+  only mode whose engine pass runs across *all* of a feed's links at once
+  (`synthesizeRouted` in `libs/classification`) — each link's `keep` rules filter
+  the same occurrence set, so an event can land on several calendars and one no
+  link keeps is unrouted. Routing is a property of the FEED, not of a link: flip
+  it from any member's copy of the calendar and every linked member routes.
+  Unrouted occurrences raise a `routing` pending decision **per link** (one
+  question per member, sharing a `sourceEventId`); the client groups them into
+  one card and `POST /pending-decisions/:id/resolve` answers the whole group —
+  `routeToLinkIds` get the event, the rest are dismissed. With `rule` it also
+  appends a `keep` rule to each chosen link (admin-only, and it must match the
+  event it came from) instead of writing one-off `pd:` events. Standard/exception
+  is still the mode; `routed` only applies to `standard` and is cleared if the
+  mode moves off it.
 - **Two recursion guards** keep the claim loop from echoing: task-gen never
   generates from `claimed_task` events (`libs/classification`), and read-back
   never imports events whose UID starts with `igt-`
