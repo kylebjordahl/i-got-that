@@ -81,7 +81,11 @@ class _ParentUnifiedStepState extends ConsumerState<ParentUnifiedStep> {
     });
     try {
       if (_choice != null) {
-        await commitUnifiedTarget(ref, memberId: widget.adult.id, choice: _choice!);
+        await commitUnifiedTarget(
+          ref,
+          memberId: widget.adult.id,
+          choice: _choice!,
+        );
       }
       if (mounted) widget.onNext(_choice != null);
     } catch (e) {
@@ -103,13 +107,18 @@ class _ParentUnifiedStepState extends ConsumerState<ParentUnifiedStep> {
       onTrailing: _busy ? null : widget.onExit,
       header: widget.adults.length > 1
           ? MemberStrip(
-              members: widget.adults, currentIndex: widget.adultIndex, noun: 'Caretaker')
+              members: widget.adults,
+              currentIndex: widget.adultIndex,
+              noun: 'Caretaker',
+            )
           : null,
-      title: widget.isSelf ? 'Your unified calendar' : "$name's unified calendar",
+      title: widget.isSelf
+          ? 'Your unified calendar'
+          : "$name's unified calendar",
       subtitle: widget.isSelf
           ? 'Choose where the tasks you claim will land — your own single calendar.'
           : "Choose where $name's claimed tasks land. You can only offer calendars "
-              "from your own connected accounts — skip and $name picks their own on join.",
+                "from your own connected accounts — skip and $name picks their own on join.",
       body: [
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
@@ -121,7 +130,10 @@ class _ParentUnifiedStepState extends ConsumerState<ParentUnifiedStep> {
           child: Row(
             children: [
               PersonAvatar(
-                  initial: initialFor(name), color: personColor(widget.adult), size: 40),
+                initial: initialFor(name),
+                color: personColor(widget.adult),
+                size: 40,
+              ),
               const SizedBox(width: 11),
               Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -130,10 +142,16 @@ class _ParentUnifiedStepState extends ConsumerState<ParentUnifiedStep> {
                   Text(name, style: font(kBodyFont, 15, 600)),
                   const SizedBox(height: 1),
                   Text(
-                      widget.isSelf
-                          ? '$role · this is just for you'
-                          : '$role · setting this up on their behalf',
-                      style: font(kBodyFont, 12, 500, color: AppColors.textTertiary)),
+                    widget.isSelf
+                        ? '$role · this is just for you'
+                        : '$role · setting this up on their behalf',
+                    style: font(
+                      kBodyFont,
+                      12,
+                      500,
+                      color: AppColors.textTertiary,
+                    ),
+                  ),
                 ],
               ),
             ],
@@ -146,25 +164,39 @@ class _ParentUnifiedStepState extends ConsumerState<ParentUnifiedStep> {
           onChanged: (c) => setState(() => _choice = c),
         ),
         if (widget.isSelf)
-          const InfoHint('Only one connected? We pick it automatically and skip this step.')
+          const InfoHint(
+            'Only one connected? We pick it automatically and skip this step.',
+          )
         else
           Align(
             child: Padding(
               padding: const EdgeInsets.only(top: 16),
               child: TextButton(
                 onPressed: _busy ? null : () => widget.onNext(false),
-                child: Text('Skip — $name picks their own on join',
-                    style: font(kBodyFont, 13, 600, color: AppColors.textTertiary)),
+                child: Text(
+                  'Skip — $name picks their own on join',
+                  style: font(
+                    kBodyFont,
+                    13,
+                    600,
+                    color: AppColors.textTertiary,
+                  ),
+                ),
               ),
             ),
           ),
         if (_error != null) ...[
           const SizedBox(height: 14),
-          Text(_error!, style: font(kBodyFont, 13, 500, color: AppColors.coral)),
+          Text(
+            _error!,
+            style: font(kBodyFont, 13, 500, color: AppColors.coral),
+          ),
         ],
       ],
       bottom: OnboardingButton(
-        label: _isLast ? 'Finish setup' : 'Continue · next is ${widget.nextAdultName}',
+        label: _isLast
+            ? 'Finish setup'
+            : 'Continue · next is ${widget.nextAdultName}',
         variant: _isLast ? OnbButtonVariant.green : OnbButtonVariant.indigo,
         busy: _busy,
         onPressed: _continue,

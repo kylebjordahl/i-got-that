@@ -13,7 +13,7 @@ void startWebRedirect(String url) => html.window.location.assign(url);
 /// calendar flows), then strip the fragment so nothing lingers in the address
 /// bar or browser history.
 ({String? session, String? error, String? linked, String? connected})
-    consumeWebAuthFragment() {
+consumeWebAuthFragment() {
   final loc = html.window.location;
   final raw = loc.hash.startsWith('#') ? loc.hash.substring(1) : loc.hash;
   if (raw.isEmpty) {

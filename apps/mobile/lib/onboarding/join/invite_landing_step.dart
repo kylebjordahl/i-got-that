@@ -10,7 +10,11 @@ import '../onboarding_scaffold.dart';
 /// parent lands on a warm, pre-populated welcome (not step 1 of a wizard).
 /// One-tap sign-in, then the invite is accepted and the join continues.
 class InviteLandingStep extends ConsumerStatefulWidget {
-  const InviteLandingStep({super.key, required this.token, required this.onAccepted});
+  const InviteLandingStep({
+    super.key,
+    required this.token,
+    required this.onAccepted,
+  });
 
   final String token;
   final VoidCallback onAccepted;
@@ -35,7 +39,9 @@ class _InviteLandingStepState extends ConsumerState<InviteLandingStep> {
       final p = await ref.read(apiClientProvider).previewInvite(widget.token);
       if (mounted) setState(() => _preview = p);
     } catch (_) {
-      if (mounted) setState(() => _error = 'This invite link is invalid or expired.');
+      if (mounted) {
+        setState(() => _error = 'This invite link is invalid or expired.');
+      }
     }
   }
 
@@ -59,26 +65,32 @@ class _InviteLandingStepState extends ConsumerState<InviteLandingStep> {
   }
 
   void _joinApple() => _run(() async {
-        final auth = ref.read(authControllerProvider.notifier);
-        if (kIsWeb) {
-          auth.loginWithApple();
-          return; // redirects away; accept happens once authed on return
-        }
-        await auth.loginWithAppleNative();
-        await _accept();
-      });
+    final auth = ref.read(authControllerProvider.notifier);
+    if (kIsWeb) {
+      auth.loginWithApple();
+      return; // redirects away; accept happens once authed on return
+    }
+    await auth.loginWithAppleNative();
+    await _accept();
+  });
 
   void _joinGoogle() {
-    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-      content: Text('Google sign-in is coming soon — use Apple or email for now.'),
-    ));
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text(
+          'Google sign-in is coming soon — use Apple or email for now.',
+        ),
+      ),
+    );
   }
 
   Future<void> _joinMagicLink() async {
     final email = await _promptEmail();
     if (email == null || email.trim().isEmpty) return;
     await _run(() async {
-      await ref.read(authControllerProvider.notifier).loginWithEmail(email.trim());
+      await ref
+          .read(authControllerProvider.notifier)
+          .loginWithEmail(email.trim());
       await _accept();
     });
   }
@@ -90,9 +102,15 @@ class _InviteLandingStepState extends ConsumerState<InviteLandingStep> {
       backgroundColor: AppColors.card,
       isScrollControlled: true,
       shape: const RoundedRectangleBorder(
-          borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
       builder: (ctx) => Padding(
-        padding: EdgeInsets.fromLTRB(22, 18, 22, MediaQuery.of(ctx).viewInsets.bottom + 24),
+        padding: EdgeInsets.fromLTRB(
+          22,
+          18,
+          22,
+          MediaQuery.of(ctx).viewInsets.bottom + 24,
+        ),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -103,14 +121,18 @@ class _InviteLandingStepState extends ConsumerState<InviteLandingStep> {
               controller: controller,
               autofocus: true,
               keyboardType: TextInputType.emailAddress,
-              decoration: const InputDecoration(labelText: 'Email', hintText: 'you@example.com'),
+              decoration: const InputDecoration(
+                labelText: 'Email',
+                hintText: 'you@example.com',
+              ),
               onSubmitted: (v) => Navigator.of(ctx).pop(v),
             ),
             const SizedBox(height: 16),
             OnboardingButton(
-                label: 'Send link',
-                variant: OnbButtonVariant.blue,
-                onPressed: () => Navigator.of(ctx).pop(controller.text)),
+              label: 'Send link',
+              variant: OnbButtonVariant.blue,
+              onPressed: () => Navigator.of(ctx).pop(controller.text),
+            ),
           ],
         ),
       ),
@@ -143,23 +165,39 @@ class _InviteLandingStepState extends ConsumerState<InviteLandingStep> {
                 const Spacer(),
                 _Monogram(name: familyName),
                 const SizedBox(height: 24),
-                Text("You're invited to $familyName",
-                    style: font(kDisplayFont, 30, 600, height: 1.15, letterSpacing: -0.3)),
+                Text(
+                  "You're invited to $familyName",
+                  style: font(
+                    kDisplayFont,
+                    30,
+                    600,
+                    height: 1.15,
+                    letterSpacing: -0.3,
+                  ),
+                ),
                 const SizedBox(height: 12),
                 ConstrainedBox(
                   constraints: const BoxConstraints(maxWidth: 300),
                   child: Text(
                     "You're joining as $relation. The heavy setup is already done — "
                     'you just connect your calendar and you\'re in.',
-                    style: font(kBodyFont, 15, 500,
-                        color: const Color(0xFFA79FB5), height: 1.55),
+                    style: font(
+                      kBodyFont,
+                      15,
+                      500,
+                      color: const Color(0xFFA79FB5),
+                      height: 1.55,
+                    ),
                   ),
                 ),
                 const SizedBox(height: 22),
                 _points(),
                 const Spacer(),
                 if (_error != null) ...[
-                  Text(_error!, style: font(kBodyFont, 12.5, 500, color: AppColors.coral)),
+                  Text(
+                    _error!,
+                    style: font(kBodyFont, 12.5, 500, color: AppColors.coral),
+                  ),
                   const SizedBox(height: 12),
                 ],
                 if (authed)
@@ -194,8 +232,10 @@ class _InviteLandingStepState extends ConsumerState<InviteLandingStep> {
                 ],
                 const SizedBox(height: 14),
                 Center(
-                  child: Text('Just one quick step after this.',
-                      style: font(kBodyFont, 12, 500, color: AppColors.textMuted)),
+                  child: Text(
+                    'Just one quick step after this.',
+                    style: font(kBodyFont, 12, 500, color: AppColors.textMuted),
+                  ),
                 ),
                 const SizedBox(height: 24),
               ],
@@ -208,17 +248,20 @@ class _InviteLandingStepState extends ConsumerState<InviteLandingStep> {
 
   Widget _points() {
     Widget row(String text) => Padding(
-          padding: const EdgeInsets.symmetric(vertical: 5),
-          child: Row(
-            children: [
-              const Icon(Icons.check_rounded, size: 17, color: AppColors.green),
-              const SizedBox(width: 10),
-              Expanded(
-                  child: Text(text,
-                      style: font(kBodyFont, 13, 500, color: const Color(0xFFC9C2D6)))),
-            ],
+      padding: const EdgeInsets.symmetric(vertical: 5),
+      child: Row(
+        children: [
+          const Icon(Icons.check_rounded, size: 17, color: AppColors.green),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              text,
+              style: font(kBodyFont, 13, 500, color: const Color(0xFFC9C2D6)),
+            ),
           ),
-        );
+        ],
+      ),
+    );
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 10),
       decoration: BoxDecoration(
@@ -242,7 +285,9 @@ class _Monogram extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final initial = name.trim().isEmpty ? '?' : name.trim().substring(0, 1).toUpperCase();
+    final initial = name.trim().isEmpty
+        ? '?'
+        : name.trim().substring(0, 1).toUpperCase();
     return Container(
       width: 56,
       height: 56,
@@ -252,12 +297,16 @@ class _Monogram extends StatelessWidget {
         borderRadius: BorderRadius.circular(18),
         boxShadow: [
           BoxShadow(
-              color: AppColors.blue.withValues(alpha: 0.45),
-              blurRadius: 30,
-              offset: const Offset(0, 14)),
+            color: AppColors.blue.withValues(alpha: 0.45),
+            blurRadius: 30,
+            offset: const Offset(0, 14),
+          ),
         ],
       ),
-      child: Text(initial, style: font(kDisplayFont, 26, 700, color: const Color(0xFF06243F))),
+      child: Text(
+        initial,
+        style: font(kDisplayFont, 26, 700, color: const Color(0xFF06243F)),
+      ),
     );
   }
 }

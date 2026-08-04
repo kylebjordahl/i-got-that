@@ -10,8 +10,9 @@ void main() {
   // channel (unavailable under `flutter test`) isn't hit.
   setUp(() => FlutterSecureStorage.setMockInitialValues({}));
 
-  testWidgets('shows the welcome / sign-in screen when unauthenticated',
-      (tester) async {
+  testWidgets('shows the welcome / sign-in screen when unauthenticated', (
+    tester,
+  ) async {
     await tester.pumpWidget(const ProviderScope(child: CaretakerApp()));
     await tester.pumpAndSettle();
 

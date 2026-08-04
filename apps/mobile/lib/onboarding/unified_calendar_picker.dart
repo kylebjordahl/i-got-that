@@ -48,7 +48,8 @@ class UnifiedCalendarPicker extends ConsumerStatefulWidget {
   final List<String> lockedFeeds;
 
   @override
-  ConsumerState<UnifiedCalendarPicker> createState() => _UnifiedCalendarPickerState();
+  ConsumerState<UnifiedCalendarPicker> createState() =>
+      _UnifiedCalendarPickerState();
 }
 
 class _UnifiedCalendarPickerState extends ConsumerState<UnifiedCalendarPicker> {
@@ -79,12 +80,14 @@ class _UnifiedCalendarPickerState extends ConsumerState<UnifiedCalendarPicker> {
           cals = const [];
         }
         for (final c in cals.cast<Map<String, dynamic>>()) {
-          out.add(UnifiedTargetChoice(
-            accountId: acct.id,
-            calendarId: c['id'] as String,
-            calendarName: (c['name'] as String?) ?? 'Calendar',
-            accountLabel: '${acct.kindLabel} · ${acct.username ?? acct.name}',
-          ));
+          out.add(
+            UnifiedTargetChoice(
+              accountId: acct.id,
+              calendarId: c['id'] as String,
+              calendarName: (c['name'] as String?) ?? 'Calendar',
+              accountLabel: '${acct.kindLabel} · ${acct.username ?? acct.name}',
+            ),
+          );
         }
       }
       if (!mounted) return;
@@ -107,13 +110,16 @@ class _UnifiedCalendarPickerState extends ConsumerState<UnifiedCalendarPicker> {
 
   bool _isSelected(UnifiedTargetChoice c) {
     final s = widget.selected;
-    return s != null && s.accountId == c.accountId && s.calendarId == c.calendarId;
+    return s != null &&
+        s.accountId == c.accountId &&
+        s.calendarId == c.calendarId;
   }
 
   Future<void> _connectMore() async {
     await Navigator.of(context).push(
       MaterialPageRoute(
-        builder: (_) => ConnectAccountWizard(skipCalendarStep: true, onConnected: (_) {}),
+        builder: (_) =>
+            ConnectAccountWizard(skipCalendarStep: true, onConnected: (_) {}),
       ),
     );
     ref.invalidate(accountsProvider);
@@ -126,14 +132,22 @@ class _UnifiedCalendarPickerState extends ConsumerState<UnifiedCalendarPicker> {
       return const Padding(
         padding: EdgeInsets.symmetric(vertical: 40),
         child: Center(
-            child: SizedBox(
-                width: 26,
-                height: 26,
-                child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.indigo))),
+          child: SizedBox(
+            width: 26,
+            height: 26,
+            child: CircularProgressIndicator(
+              strokeWidth: 2,
+              color: AppColors.indigo,
+            ),
+          ),
+        ),
       );
     }
     if (_error != null) {
-      return Text(_error!, style: font(kBodyFont, 13, 500, color: AppColors.coral));
+      return Text(
+        _error!,
+        style: font(kBodyFont, 13, 500, color: AppColors.coral),
+      );
     }
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -169,7 +183,9 @@ class _UnifiedCalendarPickerState extends ConsumerState<UnifiedCalendarPicker> {
           onTap: _connectMore,
         ),
         if (_candidates.isEmpty)
-          const InfoHint('Connect a calendar account to choose your unified calendar.'),
+          const InfoHint(
+            'Connect a calendar account to choose your unified calendar.',
+          ),
       ],
     );
   }

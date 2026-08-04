@@ -31,7 +31,11 @@ Future<void> showSlideToConfirmSheet(
     isScrollControlled: true,
     builder: (sheetContext) => Padding(
       padding: EdgeInsets.fromLTRB(
-          22, 4, 22, 28 + MediaQuery.of(sheetContext).viewInsets.bottom),
+        22,
+        4,
+        22,
+        28 + MediaQuery.of(sheetContext).viewInsets.bottom,
+      ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -54,10 +58,12 @@ Future<void> showSlideToConfirmSheet(
               },
               onError: (e) {
                 if (!sheetContext.mounted) return;
-                ScaffoldMessenger.of(sheetContext).showSnackBar(SnackBar(
-                  content: Text(errorMessage(e)),
-                  margin: snackBarMarginAboveNav(sheetContext),
-                ));
+                ScaffoldMessenger.of(sheetContext).showSnackBar(
+                  SnackBar(
+                    content: Text(errorMessage(e)),
+                    margin: snackBarMarginAboveNav(sheetContext),
+                  ),
+                );
               },
             ),
             const SizedBox(height: 12),
@@ -120,13 +126,14 @@ class _SlideToConfirmState extends State<SlideToConfirm>
   @override
   void initState() {
     super.initState();
-    _controller = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 220),
-    )..addListener(() {
-        final snap = _snap;
-        if (snap != null) setState(() => _dragX = snap.value);
-      });
+    _controller =
+        AnimationController(
+          vsync: this,
+          duration: const Duration(milliseconds: 220),
+        )..addListener(() {
+          final snap = _snap;
+          if (snap != null) setState(() => _dragX = snap.value);
+        });
   }
 
   @override
@@ -139,9 +146,10 @@ class _SlideToConfirmState extends State<SlideToConfirm>
       (trackWidth - _thumbSize - _pad * 2).clamp(0, double.infinity);
 
   void _animateTo(double target) {
-    _snap = Tween<double>(begin: _dragX, end: target).animate(
-      CurvedAnimation(parent: _controller, curve: Curves.easeOutCubic),
-    );
+    _snap = Tween<double>(
+      begin: _dragX,
+      end: target,
+    ).animate(CurvedAnimation(parent: _controller, curve: Curves.easeOutCubic));
     _controller.forward(from: 0);
   }
 
@@ -168,63 +176,68 @@ class _SlideToConfirmState extends State<SlideToConfirm>
 
   @override
   Widget build(BuildContext context) {
-    return LayoutBuilder(builder: (context, constraints) {
-      final max = _maxDrag(constraints.maxWidth);
-      final progress = max == 0 ? 0.0 : (_dragX / max).clamp(0.0, 1.0);
-      return GestureDetector(
-        onHorizontalDragUpdate: (d) {
-          if (_busy || _done) return;
-          setState(() => _dragX = (_dragX + d.delta.dx).clamp(0, max));
-        },
-        onHorizontalDragEnd: (_) => _onDragEnd(max),
-        child: Container(
-          height: _trackHeight,
-          clipBehavior: Clip.antiAlias,
-          decoration: BoxDecoration(
-            color: AppColors.tint(widget.color, 0.10),
-            borderRadius: BorderRadius.circular(_trackHeight / 2),
-            border: Border.all(color: widget.color.withValues(alpha: 0.5)),
-          ),
-          child: Stack(
-            alignment: Alignment.centerLeft,
-            children: [
-              Positioned.fill(
-                child: Center(
-                  child: Opacity(
-                    opacity: (1 - progress * 1.4).clamp(0.0, 1.0),
-                    child: Text(
-                      widget.label,
-                      style: font(kBodyFont, 13.5, 700, color: widget.color),
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final max = _maxDrag(constraints.maxWidth);
+        final progress = max == 0 ? 0.0 : (_dragX / max).clamp(0.0, 1.0);
+        return GestureDetector(
+          onHorizontalDragUpdate: (d) {
+            if (_busy || _done) return;
+            setState(() => _dragX = (_dragX + d.delta.dx).clamp(0, max));
+          },
+          onHorizontalDragEnd: (_) => _onDragEnd(max),
+          child: Container(
+            height: _trackHeight,
+            clipBehavior: Clip.antiAlias,
+            decoration: BoxDecoration(
+              color: AppColors.tint(widget.color, 0.10),
+              borderRadius: BorderRadius.circular(_trackHeight / 2),
+              border: Border.all(color: widget.color.withValues(alpha: 0.5)),
+            ),
+            child: Stack(
+              alignment: Alignment.centerLeft,
+              children: [
+                Positioned.fill(
+                  child: Center(
+                    child: Opacity(
+                      opacity: (1 - progress * 1.4).clamp(0.0, 1.0),
+                      child: Text(
+                        widget.label,
+                        style: font(kBodyFont, 13.5, 700, color: widget.color),
+                      ),
                     ),
                   ),
                 ),
-              ),
-              Positioned(
-                left: _pad + _dragX,
-                child: Container(
-                  width: _thumbSize,
-                  height: _thumbSize,
-                  alignment: Alignment.center,
-                  decoration: BoxDecoration(color: widget.color, shape: BoxShape.circle),
-                  child: _busy
-                      ? const SizedBox(
-                          width: 18,
-                          height: 18,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2,
-                            color: Color(0xFF2A1205),
+                Positioned(
+                  left: _pad + _dragX,
+                  child: Container(
+                    width: _thumbSize,
+                    height: _thumbSize,
+                    alignment: Alignment.center,
+                    decoration: BoxDecoration(
+                      color: widget.color,
+                      shape: BoxShape.circle,
+                    ),
+                    child: _busy
+                        ? const SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: Color(0xFF2A1205),
+                            ),
+                          )
+                        : Icon(
+                            _done ? Icons.check_rounded : widget.icon,
+                            color: const Color(0xFF2A1205),
                           ),
-                        )
-                      : Icon(
-                          _done ? Icons.check_rounded : widget.icon,
-                          color: const Color(0xFF2A1205),
-                        ),
+                  ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
-        ),
-      );
-    });
+        );
+      },
+    );
   }
 }

@@ -95,9 +95,12 @@ class _ConnectOneStepState extends ConsumerState<_ConnectOneStep> {
   int _selected = 0;
 
   Future<void> _connect() async {
-    await Navigator.of(context).push(MaterialPageRoute(
-      builder: (_) => ConnectAccountWizard(skipCalendarStep: true, onConnected: (_) {}),
-    ));
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) =>
+            ConnectAccountWizard(skipCalendarStep: true, onConnected: (_) {}),
+      ),
+    );
     ref.invalidate(accountsProvider);
     final accounts = await ref.read(accountsProvider.future);
     if (accounts.isNotEmpty && mounted) widget.onNext();
@@ -111,7 +114,8 @@ class _ConnectOneStepState extends ConsumerState<_ConnectOneStep> {
       onBack: widget.onBack,
       trailingLabel: 'Step 1 of 2',
       title: 'Connect your calendar',
-      subtitle: 'This is the only setup you need. Sign in to the account where '
+      subtitle:
+          'This is the only setup you need. Sign in to the account where '
           'you keep your schedule.',
       body: [
         for (var i = 0; i < _providers.length; i++) ...[
@@ -131,12 +135,23 @@ class _ConnectOneStepState extends ConsumerState<_ConnectOneStep> {
           padding: const EdgeInsets.fromLTRB(4, 8, 4, 0),
           child: Row(
             children: [
-              const Icon(Icons.shield_outlined, size: 15, color: AppColors.blue),
+              const Icon(
+                Icons.shield_outlined,
+                size: 15,
+                color: AppColors.blue,
+              ),
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
-                    "We open the provider's secure sign-in. We never see your password.",
-                    style: font(kBodyFont, 12, 500, color: AppColors.textTertiary, height: 1.5)),
+                  "We open the provider's secure sign-in. We never see your password.",
+                  style: font(
+                    kBodyFont,
+                    12,
+                    500,
+                    color: AppColors.textTertiary,
+                    height: 1.5,
+                  ),
+                ),
               ),
             ],
           ),
@@ -147,8 +162,10 @@ class _ConnectOneStepState extends ConsumerState<_ConnectOneStep> {
             padding: const EdgeInsets.only(top: 16),
             child: TextButton(
               onPressed: widget.onNext,
-              child: Text("I'll connect later",
-                  style: font(kBodyFont, 13, 600, color: AppColors.textTertiary)),
+              child: Text(
+                "I'll connect later",
+                style: font(kBodyFont, 13, 600, color: AppColors.textTertiary),
+              ),
             ),
           ),
         ),
@@ -162,8 +179,8 @@ class _ConnectOneStepState extends ConsumerState<_ConnectOneStep> {
   }
 
   String _shortLabel(String full) => switch (full) {
-        'Apple iCloud' => 'iCloud',
-        'Google Calendar' => 'Google',
-        _ => 'Outlook',
-      };
+    'Apple iCloud' => 'iCloud',
+    'Google Calendar' => 'Google',
+    _ => 'Outlook',
+  };
 }

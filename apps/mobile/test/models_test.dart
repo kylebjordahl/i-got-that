@@ -53,14 +53,14 @@ void main() {
     const jul6 = 1783296000000;
 
     CalendarEventItem event({Object? dtend}) => CalendarEventItem.fromJson({
-          'id': 'e1',
-          'familyMemberId': 'm1',
-          'provenance': 'synthesized',
-          'dtstart': jul3,
-          if (dtend != null) 'dtend': dtend,
-          'allDay': true,
-          'summary': 'Long weekend',
-        });
+      'id': 'e1',
+      'familyMemberId': 'm1',
+      'provenance': 'synthesized',
+      'dtstart': jul3,
+      if (dtend != null) 'dtend': dtend,
+      'allDay': true,
+      'summary': 'Long weekend',
+    });
 
     test('reads dtend as a date, not an instant', () {
       final e = event(dtend: jul6);
@@ -95,8 +95,10 @@ void main() {
       // The API serialises `dtstart` (a timestamp_ms column) as a UTC ISO string.
       final dt = parseTimestamp('2026-07-07T02:00:00.000Z');
       // Same instant as the UTC time...
-      expect(dt.millisecondsSinceEpoch,
-          DateTime.utc(2026, 7, 7, 2).millisecondsSinceEpoch);
+      expect(
+        dt.millisecondsSinceEpoch,
+        DateTime.utc(2026, 7, 7, 2).millisecondsSinceEpoch,
+      );
       // ...but a *local* DateTime, so `.hour` reflects the clock the user sees
       // (this is what the Plan grid positions against).
       expect(dt.isUtc, isFalse);
@@ -209,28 +211,31 @@ void main() {
       expect(estimated.travelTimeOverrideMin, isNull);
     });
 
-    test("reads a conflict's suggested buffer, null when either end is unpinned", () {
-      Map<String, dynamic> ev(String summary) => {
-            'summary': summary,
-            'allDay': false,
-            'dtstart': '2026-07-06T15:30:00.000Z',
-          };
-      final suggested = Conflict.fromJson({
-        'id': 'c1',
-        'familyMemberId': 'm1',
-        'loser': ev('School day'),
-        'winner': ev('Doctor'),
-        'suggestedTravelMin': 20,
-      });
-      expect(suggested.suggestedTravelMin, 20);
+    test(
+      "reads a conflict's suggested buffer, null when either end is unpinned",
+      () {
+        Map<String, dynamic> ev(String summary) => {
+          'summary': summary,
+          'allDay': false,
+          'dtstart': '2026-07-06T15:30:00.000Z',
+        };
+        final suggested = Conflict.fromJson({
+          'id': 'c1',
+          'familyMemberId': 'm1',
+          'loser': ev('School day'),
+          'winner': ev('Doctor'),
+          'suggestedTravelMin': 20,
+        });
+        expect(suggested.suggestedTravelMin, 20);
 
-      final unpinned = Conflict.fromJson({
-        'id': 'c2',
-        'familyMemberId': 'm1',
-        'loser': ev('School day'),
-        'winner': ev('Doctor'),
-      });
-      expect(unpinned.suggestedTravelMin, isNull);
-    });
+        final unpinned = Conflict.fromJson({
+          'id': 'c2',
+          'familyMemberId': 'm1',
+          'loser': ev('School day'),
+          'winner': ev('Doctor'),
+        });
+        expect(unpinned.suggestedTravelMin, isNull);
+      },
+    );
   });
 }

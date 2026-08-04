@@ -51,35 +51,41 @@ class AvatarCluster extends StatelessWidget {
     final children = <Widget>[];
     var left = 0.0;
     for (final (initial, color) in avatars) {
-      children.add(Positioned(
-        left: left,
-        child: Container(
-          padding: const EdgeInsets.all(2),
-          decoration: const BoxDecoration(
-            color: AppColors.card,
-            shape: BoxShape.circle,
+      children.add(
+        Positioned(
+          left: left,
+          child: Container(
+            padding: const EdgeInsets.all(2),
+            decoration: const BoxDecoration(
+              color: AppColors.card,
+              shape: BoxShape.circle,
+            ),
+            child: PersonAvatar(initial: initial, color: color, size: size),
           ),
-          child: PersonAvatar(initial: initial, color: color, size: size),
         ),
-      ));
+      );
       left += size - overlap + 4;
     }
     if (overflow != null && overflow! > 0) {
-      children.add(Positioned(
-        left: left,
-        child: Container(
-          width: size + 4,
-          height: size + 4,
-          alignment: Alignment.center,
-          decoration: BoxDecoration(
-            color: const Color(0xFF322B40),
-            shape: BoxShape.circle,
-            border: Border.all(color: AppColors.card, width: 2),
+      children.add(
+        Positioned(
+          left: left,
+          child: Container(
+            width: size + 4,
+            height: size + 4,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: const Color(0xFF322B40),
+              shape: BoxShape.circle,
+              border: Border.all(color: AppColors.card, width: 2),
+            ),
+            child: Text(
+              '+$overflow',
+              style: font(kBodyFont, 11, 700, color: AppColors.textSecondary),
+            ),
           ),
-          child: Text('+$overflow',
-              style: font(kBodyFont, 11, 700, color: AppColors.textSecondary)),
         ),
-      ));
+      );
       left += size + 4;
     }
     return SizedBox(
@@ -184,8 +190,10 @@ class SectionEyebrow extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.center,
         children: [
           Expanded(
-            child: Text(label.toUpperCase(),
-                style: AppText.eyebrow(color ?? AppColors.textMuted)),
+            child: Text(
+              label.toUpperCase(),
+              style: AppText.eyebrow(color ?? AppColors.textMuted),
+            ),
           ),
           if (trailing != null) trailing!,
         ],
@@ -196,7 +204,12 @@ class SectionEyebrow extends StatelessWidget {
 
 /// A small tinted pill used for counts / status ("2 active", "Linked").
 class TintBadge extends StatelessWidget {
-  const TintBadge(this.label, {super.key, required this.color, this.filled = false});
+  const TintBadge(
+    this.label, {
+    super.key,
+    required this.color,
+    this.filled = false,
+  });
 
   final String label;
   final Color color;
@@ -212,8 +225,12 @@ class TintBadge extends StatelessWidget {
       ),
       child: Text(
         label,
-        style: font(kBodyFont, 11, 700,
-            color: filled ? const Color(0xFF17162B) : color),
+        style: font(
+          kBodyFont,
+          11,
+          700,
+          color: filled ? const Color(0xFF17162B) : color,
+        ),
       ),
     );
   }
@@ -241,9 +258,15 @@ class RefreshFeedsButton extends StatelessWidget {
             width: size * 0.45,
             height: size * 0.45,
             child: const CircularProgressIndicator(
-                strokeWidth: 2, color: AppColors.textSecondary),
+              strokeWidth: 2,
+              color: AppColors.textSecondary,
+            ),
           )
-        : Icon(Icons.refresh_rounded, size: size * 0.5, color: AppColors.textSecondary);
+        : Icon(
+            Icons.refresh_rounded,
+            size: size * 0.5,
+            color: AppColors.textSecondary,
+          );
 
     return Material(
       color: AppColors.card,
@@ -251,7 +274,11 @@ class RefreshFeedsButton extends StatelessWidget {
       child: InkWell(
         onTap: busy ? null : onTap,
         customBorder: const CircleBorder(),
-        child: SizedBox(width: size, height: size, child: Center(child: iconOrSpinner)),
+        child: SizedBox(
+          width: size,
+          height: size,
+          child: Center(child: iconOrSpinner),
+        ),
       ),
     );
   }
@@ -304,7 +331,10 @@ class TaskFilterChip extends StatelessWidget {
               Container(
                 width: 7,
                 height: 7,
-                decoration: BoxDecoration(color: accent, shape: BoxShape.circle),
+                decoration: BoxDecoration(
+                  color: accent,
+                  shape: BoxShape.circle,
+                ),
               ),
               const SizedBox(width: 7),
             ],
@@ -339,7 +369,10 @@ class FiltersButton extends StatelessWidget {
             children: [
               const Icon(Icons.tune_rounded, size: 17, color: onIndigo),
               const SizedBox(width: 7),
-              Text('Filters', style: font(kBodyFont, 13.5, 700, color: onIndigo)),
+              Text(
+                'Filters',
+                style: font(kBodyFont, 13.5, 700, color: onIndigo),
+              ),
               if (count > 0) ...[
                 const SizedBox(width: 8),
                 Container(
@@ -350,7 +383,10 @@ class FiltersButton extends StatelessWidget {
                     color: Color(0x33000000),
                     shape: BoxShape.circle,
                   ),
-                  child: Text('$count', style: font(kBodyFont, 11, 800, color: onIndigo)),
+                  child: Text(
+                    '$count',
+                    style: font(kBodyFont, 11, 800, color: onIndigo),
+                  ),
                 ),
               ],
             ],
@@ -388,8 +424,16 @@ class PillButton extends StatelessWidget {
   Widget build(BuildContext context) {
     final (bg, fg, border) = switch (variant) {
       PillVariant.amber => (AppColors.amberHero, const Color(0xFF2A1E05), null),
-      PillVariant.white => (AppColors.textPrimary, const Color(0xFF17141C), null),
-      PillVariant.ghost => (Colors.transparent, AppColors.textPrimary, AppColors.border),
+      PillVariant.white => (
+        AppColors.textPrimary,
+        const Color(0xFF17141C),
+        null,
+      ),
+      PillVariant.ghost => (
+        Colors.transparent,
+        AppColors.textPrimary,
+        AppColors.border,
+      ),
       PillVariant.indigo => (AppColors.indigo, const Color(0xFF17162B), null),
     };
     return Material(
@@ -414,7 +458,10 @@ class PillButton extends StatelessWidget {
                 Icon(icon, size: 16, color: fg),
                 const SizedBox(width: 6),
               ],
-              Text(label, style: font(kBodyFont, compact ? 11.5 : 13, 700, color: fg)),
+              Text(
+                label,
+                style: font(kBodyFont, compact ? 11.5 : 13, 700, color: fg),
+              ),
             ],
           ),
         ),

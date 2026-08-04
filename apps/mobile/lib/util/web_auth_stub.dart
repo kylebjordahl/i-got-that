@@ -8,5 +8,5 @@ void startWebRedirect(String url) {}
 /// fragment an auth callback set, clearing it so nothing lingers. Always empty
 /// off the web.
 ({String? session, String? error, String? linked, String? connected})
-    consumeWebAuthFragment() =>
-        (session: null, error: null, linked: null, connected: null);
+consumeWebAuthFragment() =>
+    (session: null, error: null, linked: null, connected: null);

@@ -35,7 +35,7 @@ jobs:
         run: pnpm nx run-many -t test --projects=tag:language:typescript
 
   flutter:
-    name: Flutter (analyze + test)
+    name: Flutter (analyze + format + test)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -49,5 +49,7 @@ jobs:
       - run: flutter create . --platforms=ios,web --project-name caretaker_app
         working-directory: apps/mobile
       # Drive Flutter through Nx with the `ci` configuration (plain `flutter`,
-      # no fvm), selected abstractly by language tag.
-      - run: pnpm nx run-many -t pub-get analyze test --configuration=ci --projects=tag:language:dart
+      # no fvm), selected abstractly by language tag. `format` runs after
+      # `pub-get` on purpose: `dart format`'s style is keyed to the package's
+      # language version, which it can only read once `.dart_tool/` exists.
+      - run: pnpm nx run-many -t pub-get analyze format test --configuration=ci --projects=tag:language:dart

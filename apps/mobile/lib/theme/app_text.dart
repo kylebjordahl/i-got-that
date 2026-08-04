@@ -7,12 +7,12 @@ const kBodyFont = 'Hanken Grotesk'; // everything else
 const kAccentFont = 'Caveat'; // handwritten annotation accents
 
 FontWeight _weightOf(int w) => switch (w) {
-      <= 400 => FontWeight.w400,
-      500 => FontWeight.w500,
-      600 => FontWeight.w600,
-      700 => FontWeight.w700,
-      _ => FontWeight.w800,
-    };
+  <= 400 => FontWeight.w400,
+  500 => FontWeight.w500,
+  600 => FontWeight.w600,
+  700 => FontWeight.w700,
+  _ => FontWeight.w800,
+};
 
 /// Build a [TextStyle] for one of the bundled variable fonts, pinning the
 /// weight through the `wght` axis (variable fonts don't respond to plain
@@ -24,16 +24,15 @@ TextStyle font(
   Color color = AppColors.textPrimary,
   double? height,
   double? letterSpacing,
-}) =>
-    TextStyle(
-      fontFamily: family,
-      fontSize: size,
-      height: height,
-      letterSpacing: letterSpacing,
-      color: color,
-      fontWeight: _weightOf(weight),
-      fontVariations: [FontVariation('wght', weight.toDouble())],
-    );
+}) => TextStyle(
+  fontFamily: family,
+  fontSize: size,
+  height: height,
+  letterSpacing: letterSpacing,
+  color: color,
+  fontWeight: _weightOf(weight),
+  fontVariations: [FontVariation('wght', weight.toDouble())],
+);
 
 /// Named styles from the design's type scale (README § Typography).
 abstract final class AppText {

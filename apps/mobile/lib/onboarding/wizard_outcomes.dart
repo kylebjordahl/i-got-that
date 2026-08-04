@@ -29,11 +29,10 @@ class WizardOutcomes {
   WizardOutcomes copyWith({
     bool? accountsConnected,
     Map<String, bool>? adultCalendars,
-  }) =>
-      WizardOutcomes(
-        accountsConnected: accountsConnected ?? this.accountsConnected,
-        adultCalendars: adultCalendars ?? this.adultCalendars,
-      );
+  }) => WizardOutcomes(
+    accountsConnected: accountsConnected ?? this.accountsConnected,
+    adultCalendars: adultCalendars ?? this.adultCalendars,
+  );
 
   /// Record the outcome of one caretaker's unified-calendar step (1g).
   WizardOutcomes withAdultCalendar(String memberId, {required bool done}) =>

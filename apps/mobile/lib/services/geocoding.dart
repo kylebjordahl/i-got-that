@@ -45,17 +45,24 @@ class MapKitGeocodingProvider implements GeocodingProvider {
   @override
   Future<List<GeoPlace>> search(String query) async {
     if (query.trim().isEmpty) return const [];
-    final raw = await _channel.invokeListMethod<dynamic>('search', {'query': query});
+    final raw = await _channel.invokeListMethod<dynamic>('search', {
+      'query': query,
+    });
     if (raw == null) return const [];
     return raw
         .map((e) => (e as Map).cast<String, dynamic>())
         .where((m) => m['lat'] is num && m['lon'] is num)
-        .map((m) => GeoPlace(
-              title: (m['title'] as String?) ?? (m['address'] as String?) ?? 'Location',
-              address: m['address'] as String?,
-              lat: (m['lat'] as num).toDouble(),
-              lon: (m['lon'] as num).toDouble(),
-            ))
+        .map(
+          (m) => GeoPlace(
+            title:
+                (m['title'] as String?) ??
+                (m['address'] as String?) ??
+                'Location',
+            address: m['address'] as String?,
+            lat: (m['lat'] as num).toDouble(),
+            lon: (m['lon'] as num).toDouble(),
+          ),
+        )
         .toList();
   }
 }
@@ -80,5 +87,6 @@ GeocodingProvider createGeocodingProvider() {
 }
 
 /// Overridable in tests/widget previews.
-final geocoderProvider =
-    Provider<GeocodingProvider>((ref) => createGeocodingProvider());
+final geocoderProvider = Provider<GeocodingProvider>(
+  (ref) => createGeocodingProvider(),
+);
