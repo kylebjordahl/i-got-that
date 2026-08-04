@@ -371,6 +371,19 @@ describe('mirror reconcile (syncMemberMirror)', () => {
     });
     const afterLongGap = await dropoff(new Date('2026-07-08T15:30:00Z'));
 
+    // Thursday: the last thing before the run is an opaque free/busy block —
+    // it can still say where it happens, because the family declared that on
+    // the link. That's the point of geocoding a busy input.
+    await insertEvent(db, fam.familyId, fam.adminMemberId, {
+      synthKey: 'fb:work:2026-07-09',
+      summary: 'Busy (work)',
+      dtstart: new Date('2026-07-09T13:00:00Z'),
+      dtend: new Date('2026-07-09T15:10:00Z'),
+      location: 'Acme HQ',
+      locationGeo: meeting,
+    });
+    const fromBusyBlock = await dropoff(new Date('2026-07-09T15:30:00Z'));
+
     const fake = new FakeProvider('caldav');
     const registry = new DeliveryProviderRegistry().register(fake);
     await syncMemberMirror(db, registry, env.KEK, fam.adminMemberId);
@@ -380,6 +393,7 @@ describe('mirror reconcile (syncMemberMirror)', () => {
     expect(travelFor(fromHome.id)).toBe(estimateTravelMinutes(home, school));
     expect(travelFor(fromMeeting.id)).toBe(estimateTravelMinutes(meeting, school));
     expect(travelFor(afterLongGap.id)).toBe(estimateTravelMinutes(home, school));
+    expect(travelFor(fromBusyBlock.id)).toBe(estimateTravelMinutes(meeting, school));
     // Sanity: the long haul from home really is the bigger block, so the three
     // assertions above aren't all quietly agreeing on the same number.
     expect(travelFor(fromHome.id)!).toBeGreaterThan(travelFor(fromMeeting.id)!);

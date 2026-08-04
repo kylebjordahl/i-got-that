@@ -318,6 +318,13 @@ export function synthesizeStandard(
  * construction. Each lands on the unified calendar as a detail-free block
  * labeled with the link's summary ("Busy" when unnamed). No override rules
  * apply and nothing ever pends; the interval itself is the whole payload.
+ *
+ * The one thing a busy block can say about *place* is what the family declared
+ * on the link — "this calendar's busy time happens at the office". That's their
+ * own annotation, never anything read from the source calendar (nothing of the
+ * sort ever crosses Google's ACL boundary), and it's what lets a busy block
+ * stand in as the place a following drop-off/pickup is driven from. Left unset,
+ * blocks stay exactly as detail-free as before.
  */
 export function synthesizeBusy(
   link: LinkConfigLike,
@@ -332,8 +339,8 @@ export function synthesizeBusy(
       dtend: occ.dtend,
       allDay: occ.allDay,
       summary: link.baselineSummary ?? 'Busy',
-      location: null,
-      locationGeo: null,
+      location: link.location ?? null,
+      locationGeo: link.locationGeo ?? null,
       description: null,
     })),
     pending: [],

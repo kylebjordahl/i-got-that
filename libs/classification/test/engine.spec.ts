@@ -174,13 +174,15 @@ describe('synthesizeStandard', () => {
 // --- Stage A: busy feeds ------------------------------------------------------
 
 describe('synthesizeBusy', () => {
+  // A busy link says nothing about place unless the family fills one in.
+  const busyLink = { ...schoolLink, location: null, baselineSummary: 'Busy (work)' };
+
   it('emits detail-free fb: blocks labeled with the link summary, never pends', () => {
     const interval = occ({
       dtstart: new Date('2026-07-06T15:00:00Z'),
       dtend: new Date('2026-07-06T16:30:00Z'),
     });
-    const link = { ...schoolLink, baselineSummary: 'Busy (work)' };
-    const { events, pending } = synthesizeBusy(link, [interval]);
+    const { events, pending } = synthesizeBusy(busyLink, [interval]);
     expect(pending).toEqual([]);
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({
@@ -188,6 +190,7 @@ describe('synthesizeBusy', () => {
       sourceEventId: interval.id,
       summary: 'Busy (work)',
       location: null,
+      locationGeo: null,
       description: null,
       allDay: false,
     });
@@ -198,9 +201,24 @@ describe('synthesizeBusy', () => {
   it('defaults the label to "Busy" and never leaks source text fields', () => {
     // Even if a source row somehow carried text, busy synthesis drops it.
     const interval = occ({ summary: 'should never appear', location: 'nor this' });
-    const { events } = synthesizeBusy({ ...schoolLink, baselineSummary: null }, [interval]);
+    const { events } = synthesizeBusy({ ...busyLink, baselineSummary: null }, [interval]);
     expect(events[0]!.summary).toBe('Busy');
     expect(events[0]!.location).toBeNull();
+  });
+
+  it("stamps the family's declared place on the block, source text still dropped", () => {
+    // "My work calendar's busy time happens at the office" — declared on the
+    // link, so a following school run can be measured from there.
+    const office = { lat: 37.7896, lon: -122.4, title: 'Acme HQ' };
+    const link = { ...busyLink, location: 'Acme HQ', locationGeo: office };
+    const interval = occ({ summary: 'should never appear', location: 'nor this' });
+    const { events } = synthesizeBusy(link, [interval]);
+    expect(events[0]).toMatchObject({
+      summary: 'Busy (work)',
+      location: 'Acme HQ',
+      locationGeo: office,
+      description: null,
+    });
   });
 });
 

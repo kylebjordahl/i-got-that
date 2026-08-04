@@ -198,6 +198,27 @@ class _FeedBaselineScreenState extends ConsumerState<FeedBaselineScreen> {
                       'feed and set up a new one.',
                       style: AppText.subtitle,
                     ),
+                    const SizedBox(height: 24),
+                    const SectionEyebrow('Where this time is spent', color: AppColors.purple),
+                    const SizedBox(height: 8),
+                    Text(
+                      'Optional, and yours to state — nothing about place ever '
+                      'comes out of the source calendar. Pick a place and these '
+                      'blocks show it, and a drop-off or pickup that follows one '
+                      'gets its travel time measured from here.',
+                      style: AppText.subtitle,
+                    ),
+                    const SizedBox(height: 12),
+                    AppCard(
+                      child: LocationPickerField(
+                        controller: _location,
+                        geo: _locationGeo,
+                        geocoder: ref.watch(geocoderProvider),
+                        onChanged: (_, geo) => setState(() => _locationGeo = geo),
+                        label: 'Location',
+                        hint: 'e.g. the office',
+                      ),
+                    ),
                   ] else ...[
                     Text(
                       'Exception-only feeds are empty on normal days and carry only '

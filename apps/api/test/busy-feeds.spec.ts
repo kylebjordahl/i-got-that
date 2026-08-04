@@ -406,6 +406,40 @@ describe('busy feeds: synthesis + task-gen', () => {
       .where(eq(calendarEvents.linkId, t.link.id));
     expect(after).toHaveLength(1);
   });
+
+  it("stamps the family's declared place on the blocks, so a later trip can start there", async () => {
+    const t = await setupBusyFeed('busy-place@example.com');
+    const office = { lat: 37.7896, lon: -122.4, title: 'Acme HQ' };
+    // Declared on the link by the family — nothing about the place comes from
+    // the work calendar, which only ever returns intervals.
+    await t.db
+      .update(familyMemberFeeds)
+      .set({ location: 'Acme HQ', locationGeo: office })
+      .where(eq(familyMemberFeeds.id, t.link.id));
+
+    await ingestFeed(t.db, t.feed, {
+      fetchImpl: freeBusyFetch([{ start: at(2, 15), end: at(2, 16, 30) }]),
+      kek: env.KEK,
+    });
+    await synthesizeFeed(t.db, t.feed);
+
+    const block = (
+      await t.db
+        .select()
+        .from(calendarEvents)
+        .where(eq(calendarEvents.linkId, t.link.id))
+    )[0]!;
+    expect(block.synthKey.startsWith('fb:')).toBe(true);
+    expect(block.location).toBe('Acme HQ');
+    expect(block.locationGeo).toEqual(office);
+    // Still opaque about everything the source calendar knows.
+    expect(block.summary).toBe('Busy (work)');
+    expect(block.description).toBeNull();
+
+    // And a busy block is still availability, not logistics: no tasks.
+    const gen = await buildMemberTasks(t.db, t.adminMemberId);
+    expect(gen.tasksCreated).toBe(0);
+  });
 });
 
 describe('busy feeds: routes', () => {
