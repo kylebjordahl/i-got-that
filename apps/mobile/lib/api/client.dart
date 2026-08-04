@@ -331,6 +331,8 @@ class ApiClient {
     return _obj(res);
   }
 
+  /// Disconnect a connected calendar account. The server blocks (409
+  /// `in_use`) while any feed or delivery target still points at it.
   Future<void> deleteAccount(String accountId) async {
     await _dio.delete('/accounts/$accountId', options: _auth);
   }

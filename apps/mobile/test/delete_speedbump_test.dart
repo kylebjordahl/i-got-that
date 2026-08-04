@@ -4,7 +4,9 @@ import 'package:caretaker_app/screens/family_screen.dart';
 import 'package:caretaker_app/screens/me_screen.dart';
 import 'package:caretaker_app/state/auth.dart';
 import 'package:caretaker_app/state/family.dart';
+import 'package:caretaker_app/theme/app_theme.dart';
 import 'package:caretaker_app/widgets/slide_to_confirm.dart';
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -17,6 +19,7 @@ class _FakeApiClient extends ApiClient {
   bool deletedAccount = false;
   String? deletedFamilyId;
   String? leftFamilyId;
+  String? deleteAccountErrorCode;
 
   /// Controls the up-front eligibility check the delete-account sheet does
   /// before showing its slide control.
@@ -43,6 +46,21 @@ class _FakeApiClient extends ApiClient {
   @override
   Future<void> leaveFamily(String familyId) async {
     leftFamilyId = familyId;
+  }
+
+  @override
+  Future<void> deleteAccount(String accountId) async {
+    if (deleteAccountErrorCode != null) {
+      throw DioException(
+        requestOptions: RequestOptions(path: '/accounts/$accountId'),
+        response: Response(
+          requestOptions: RequestOptions(path: '/accounts/$accountId'),
+          statusCode: 409,
+          data: {'error': deleteAccountErrorCode},
+        ),
+      );
+    }
+    deletedAccount = true;
   }
 }
 
@@ -191,6 +209,63 @@ void main() {
       await tester.tap(find.text('OK'));
       await tester.pumpAndSettle();
       expect(api.deletedAccount, isFalse);
+    },
+  );
+
+  testWidgets(
+    'disconnecting a calendar account still in use by a feed shows the in_use message, not the raw error',
+    (tester) async {
+      final api = _FakeApiClient()..deleteAccountErrorCode = 'in_use';
+      final me = Member(
+        id: 'me',
+        relationName: 'Me',
+        isCaretaker: true,
+        isAdmin: false,
+        requiresCaretaker: false,
+      );
+      final account = ExternalAccount(
+        id: 'acc-1',
+        kind: 'google',
+        name: 'Google',
+        username: 'you@gmail.com',
+      );
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            apiClientProvider.overrideWithValue(api),
+            currentMemberProvider.overrideWith((ref) async => me),
+            familyInfoProvider.overrideWith(
+              (ref) async => (name: 'Test Family', count: 1),
+            ),
+            accountsProvider.overrideWith((ref) async => [account]),
+            loginIdentitiesProvider.overrideWith(
+              (ref) async => const <LoginIdentity>[],
+            ),
+          ],
+          child: MaterialApp(
+            theme: buildAppTheme(),
+            home: const Scaffold(body: MeScreen()),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.scrollUntilVisible(find.text('Google'), 300);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Google'));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('Disconnect'));
+      await tester.pumpAndSettle();
+
+      expect(api.deletedAccount, isFalse);
+      expect(
+        find.text(
+          'Still in use by a feed or delivery method — remove those first.',
+        ),
+        findsOneWidget,
+      );
     },
   );
 
