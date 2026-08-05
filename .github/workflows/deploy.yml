@@ -154,8 +154,11 @@ jobs:
     needs: version
     runs-on: ubuntu-latest
     # Binds to the GitHub Environment — add required reviewers there to gate
-    # production behind a manual approval.
-    environment: ${{ inputs.environment }}
+    # production behind a manual approval. Backend and TestFlight each have
+    # their own per-stage Environment (this one's "-backend") so a required
+    # reviewer or branch policy on one doesn't block the other, and so their
+    # deployment histories don't interleave.
+    environment: ${{ inputs.environment }}-backend
     # Everything else is derived from `environment` (staging | production).
     env:
       WRANGLER_ENV: "${{ inputs.environment }}"
@@ -336,18 +339,20 @@ jobs:
             echo "mobile is not Nx-affected since the last successful TestFlight build — skipping."
           fi
 
-  # Archives, signs, and uploads the mobile app's flavor for this environment
-  # to TestFlight. Needs macOS for Xcode/codesign, so it's a separate job from
-  # `deploy` (which stays on ubuntu-latest) rather than an extra step there.
+  # Archives and signs the mobile app's flavor for this environment, ready
+  # for TestFlight. Split from the actual upload (`testflight-upload` below)
+  # so the slow part — Xcode/codesign/build, the reason this needs macOS —
+  # runs in parallel with `deploy` instead of waiting on it. Only the upload
+  # is gated on `deploy` succeeding; a broken backend must never end up
+  # fronted by a new TestFlight build.
   #
   # Gated at the job level (rather than per-step) on `check-mobile-changed`
   # so a no-op shows up as skipped, not a false green success.
-  testflight:
-    name: TestFlight → ${{ inputs.environment }}
+  testflight-build:
+    name: Build TestFlight IPA (${{ inputs.environment }})
     needs: [check-mobile-changed, version]
     if: needs.check-mobile-changed.outputs.changed == 'true'
     runs-on: macos-latest
-    environment: ${{ inputs.environment }}
     env:
       # Flutter flavor + Apple bundle id differ per env (see apps/mobile/ios/):
       # staging -> "staging" flavor / com.kylebjordahl.igt.staging
@@ -422,10 +427,10 @@ jobs:
       # "strictly increasing build number" rule without a fragile round-trip
       # to query the latest existing build.
 
-      # Resolve the glob to a concrete file ourselves: the upload action hands
-      # app-path straight to `xcrun altool`, which doesn't do shell-style glob
-      # expansion, so a literal `*.ipa` pattern fails with "File does not
-      # exist at path: .../*.ipa".
+      # Resolve the glob to a concrete file ourselves: xcrun altool (invoked
+      # by upload-testflight-build in testflight-upload below) doesn't do
+      # shell-style glob expansion, so a literal `*.ipa` pattern fails with
+      # "File does not exist at path: .../*.ipa".
       - name: Locate built IPA
         id: locate-ipa
         working-directory: apps/mobile
@@ -436,6 +441,48 @@ jobs:
             exit 1
           fi
           echo "path=apps/mobile/$ipa_path" >> "$GITHUB_OUTPUT"
+
+      # Hands the IPA off to testflight-upload, which runs on its own runner
+      # (spun up only once `deploy` has also finished) rather than this one.
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ipa-${{ inputs.environment }}
+          path: ${{ steps.locate-ipa.outputs.path }}
+          retention-days: 1
+
+  # Pushes the IPA built above to TestFlight — gated on both the build and
+  # `deploy` succeeding, so a backend deploy failure can never be fronted by
+  # a new TestFlight build. Its own job (rather than a step tacked onto
+  # testflight-build) so that gate doesn't hold up the expensive build/sign
+  # work: testflight-build starts as soon as check-mobile-changed/version are
+  # ready, in parallel with deploy, and only this short upload step waits on
+  # deploy. Still needs macOS — apple-actions/upload-testflight-build shells
+  # out to xcrun altool, which only exists on the Apple toolchain.
+  testflight-upload:
+    name: TestFlight → ${{ inputs.environment }}
+    needs: [testflight-build, deploy]
+    runs-on: macos-latest
+    # Separate per-stage Environment from `deploy`'s "-backend" one — see the
+    # comment on that job. Also what check-mobile-changed's "last successful
+    # TestFlight build" lookup keys off of via this job's `name:` above.
+    environment: ${{ inputs.environment }}-testflight
+    steps:
+      - name: Download IPA artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ipa-${{ inputs.environment }}
+          path: ipa
+
+      - name: Locate downloaded IPA
+        id: locate-ipa
+        run: |
+          ipa_path=$(find ipa -maxdepth 1 -name '*.ipa' -print -quit)
+          if [ -z "$ipa_path" ]; then
+            echo "::error::No .ipa file found in downloaded artifact"
+            exit 1
+          fi
+          echo "path=$ipa_path" >> "$GITHUB_OUTPUT"
 
       - name: Upload to TestFlight
         uses: apple-actions/upload-testflight-build@v5
