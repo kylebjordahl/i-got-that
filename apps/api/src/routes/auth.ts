@@ -34,6 +34,7 @@ import {
   linkGoogleIdentity,
   linkMagicLinkIdentity,
   listIdentities,
+  MagicLinkCapExceededError,
   requestMagicLink,
   unlinkIdentity,
   verifyMagicLink,
@@ -60,7 +61,15 @@ authRoutes.post('/magic-link/request', async (c) => {
     return c.json({ error: 'invalid', issues: parsed.error.issues }, 400);
   }
 
-  const rawToken = await requestMagicLink(getDb(c.env.DB), parsed.data.email);
+  let rawToken: string;
+  try {
+    rawToken = await requestMagicLink(getDb(c.env.DB), parsed.data.email);
+  } catch (err) {
+    if (err instanceof MagicLinkCapExceededError) {
+      return c.json({ error: 'too_many_requests' }, 429);
+    }
+    throw err;
+  }
   await getMailer(c.env).sendMagicLink({
     to: parsed.data.email,
     token: rawToken,
