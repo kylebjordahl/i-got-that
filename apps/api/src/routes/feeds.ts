@@ -44,6 +44,7 @@ import { Hono } from 'hono';
 import type { Bindings, HonoEnv } from '../env.js';
 import { resolveAccountCredential } from '../lib/account-credentials.js';
 import { googleRefresherFor } from '../lib/google-oauth.js';
+import { buildKekKeySet } from '../lib/secrets.js';
 import {
   assertSafeOutboundUrl,
   createGuardedFetch,
@@ -77,7 +78,7 @@ async function probeFreeBusy(
   calendarId: string,
 ): Promise<string | null> {
   try {
-    const credential = await resolveAccountCredential(db, env.KEK, accountId);
+    const credential = await resolveAccountCredential(db, buildKekKeySet(env), accountId);
     if (!credential || credential.kind !== 'oauth') return 'no_account_credential';
     const refresh = googleRefresherFor(env);
     const accessToken =

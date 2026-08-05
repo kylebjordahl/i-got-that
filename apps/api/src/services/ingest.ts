@@ -11,13 +11,14 @@ import {
   parseAndExpand,
 } from '@igt/ical';
 import { resolveAccountCredential } from '../lib/account-credentials.js';
+import type { KekKeySet } from '../lib/secrets.js';
 
 export interface IngestOptions {
   fetchImpl?: typeof fetch;
   windowStart?: Date;
   windowEnd?: Date;
-  /** Envelope key — required to decrypt account credentials for caldav/google feeds. */
-  kek?: string;
+  /** Envelope key set — required to decrypt account credentials for caldav/google feeds. */
+  kek?: KekKeySet;
   /** Exchange a Google refresh token for an access token (host holds the client secret). */
   googleRefresh?: (refreshToken: string) => Promise<string>;
 }

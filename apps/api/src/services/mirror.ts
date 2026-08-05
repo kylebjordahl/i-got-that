@@ -26,6 +26,7 @@ import type { Bindings } from '../env.js';
 import { googleRefresherFor } from '../lib/google-oauth.js';
 import { createGuardedFetch } from '../lib/outbound-url.js';
 import { resolveAccountCredential } from '../lib/account-credentials.js';
+import { buildKekKeySet, type KekKeySet } from '../lib/secrets.js';
 
 type CalendarEventRow = typeof calendarEvents.$inferSelect;
 type MemberCalendarRow = typeof memberCalendars.$inferSelect;
@@ -72,9 +73,10 @@ type ReconcileCtx = {
 function runJob(env: Bindings, job: DeliveryJob): Promise<SyncResult> {
   const db = getDb(env.DB);
   const registry = getProductionRegistry(env);
+  const keys = buildKekKeySet(env);
   return job.kind === 'member'
-    ? syncMemberMirror(db, registry, env.KEK, job.memberId)
-    : syncFamilyMirror(db, registry, env.KEK, job.familyId);
+    ? syncMemberMirror(db, registry, keys, job.memberId)
+    : syncFamilyMirror(db, registry, keys, job.familyId);
 }
 
 /**
@@ -256,10 +258,10 @@ function mirrorUid(calendarEventId: string): string {
 
 async function mirrorTarget(
   db: Db,
-  kek: string | undefined,
+  keys: KekKeySet | undefined,
   cal: MemberCalendarRow,
 ): Promise<DeliveryTarget | null> {
-  const credential = await resolveAccountCredential(db, kek, cal.targetExternalAccountId);
+  const credential = await resolveAccountCredential(db, keys, cal.targetExternalAccountId);
   if (!credential) return null;
   return {
     method: cal.targetMethod,
@@ -325,7 +327,7 @@ async function claimedTaskMeta(
 export async function syncMemberMirror(
   db: Db,
   registry: DeliveryProviderRegistry,
-  kek: string | undefined,
+  keys: KekKeySet | undefined,
   memberId: string,
 ): Promise<SyncResult> {
   const result = emptyResult();
@@ -340,7 +342,7 @@ export async function syncMemberMirror(
   result.targets++;
   if (!registry.has(cal.targetMethod)) return result;
 
-  const target = await mirrorTarget(db, kek, cal);
+  const target = await mirrorTarget(db, keys, cal);
   if (!target) return result; // account gone / no KEK — leave remote state alone
   const provider = registry.get(cal.targetMethod);
 
@@ -483,7 +485,7 @@ export async function syncMemberMirror(
 export async function syncFamilyMirror(
   db: Db,
   registry: DeliveryProviderRegistry,
-  kek: string | undefined,
+  keys: KekKeySet | undefined,
   familyId: string,
 ): Promise<SyncResult> {
   const result = emptyResult();
@@ -492,7 +494,7 @@ export async function syncFamilyMirror(
     .from(memberCalendars)
     .where(eq(memberCalendars.familyId, familyId));
   for (const { memberId } of rows) {
-    const r = await syncMemberMirror(db, registry, kek, memberId);
+    const r = await syncMemberMirror(db, registry, keys, memberId);
     result.targets += r.targets;
     result.created += r.created;
     result.updated += r.updated;
@@ -510,7 +512,7 @@ export async function syncFamilyMirror(
 export async function purgeMemberMirror(
   db: Db,
   registry: DeliveryProviderRegistry,
-  kek: string | undefined,
+  keys: KekKeySet | undefined,
   cal: MemberCalendarRow,
 ): Promise<void> {
   const rows = await db
@@ -520,7 +522,7 @@ export async function purgeMemberMirror(
   if (rows.length === 0) return;
 
   if (registry.has(cal.targetMethod)) {
-    const target = await mirrorTarget(db, kek, cal);
+    const target = await mirrorTarget(db, keys, cal);
     if (target) {
       const provider = registry.get(cal.targetMethod);
       for (const m of rows) {

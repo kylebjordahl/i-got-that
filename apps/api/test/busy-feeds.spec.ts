@@ -16,7 +16,7 @@ import { storeSecret } from '../src/lib/secrets.js';
 import { ingestFeed } from '../src/services/ingest.js';
 import { synthesizeFeed } from '../src/services/synthesis.js';
 import { buildMemberTasks } from '../src/services/task-gen.js';
-import { authed, call, patched, setupFamily } from './helpers.js';
+import { authed, call, patched, setupFamily, testKeys } from './helpers.js';
 
 /**
  * Busy-mode feeds — the free/busy "calendar firewall" input. A work calendar
@@ -73,7 +73,7 @@ async function setupBusyFeed(email: string) {
   const db = getDb(env.DB);
   const credRef = await storeSecret(
     db,
-    env.KEK,
+    testKeys(),
     null,
     JSON.stringify({ kind: 'oauth', accessToken: 'at-busy' }),
   );
@@ -124,7 +124,7 @@ describe('busy feeds: ingest', () => {
 
     const res = await ingestFeed(t.db, t.feed, {
       fetchImpl: freeBusyFetch(intervals),
-      kek: env.KEK,
+      kek: testKeys(),
     });
     expect(res.fetched).toBe(true);
     expect(res.processed).toBe(2);
@@ -144,7 +144,7 @@ describe('busy feeds: ingest', () => {
     // Same intervals again → same keys, no duplicates.
     await ingestFeed(t.db, t.feed, {
       fetchImpl: freeBusyFetch(intervals),
-      kek: env.KEK,
+      kek: testKeys(),
     });
     const rows2 = await t.db
       .select()
@@ -164,7 +164,7 @@ describe('busy feeds: ingest', () => {
     const original = { start: at(2, 15), end: at(2, 16) };
     await ingestFeed(t.db, t.feed, {
       fetchImpl: freeBusyFetch([original]),
-      kek: env.KEK,
+      kek: testKeys(),
     });
     await synthesizeFeed(t.db, t.feed);
     const before = await t.db
@@ -177,7 +177,7 @@ describe('busy feeds: ingest', () => {
     const moved = { start: at(2, 16), end: at(2, 17) };
     await ingestFeed(t.db, t.feed, {
       fetchImpl: freeBusyFetch([moved]),
-      kek: env.KEK,
+      kek: testKeys(),
     });
     const rows = await t.db
       .select()
@@ -210,7 +210,7 @@ describe('busy feeds: ingest', () => {
 
     await ingestFeed(t.db, t.feed, {
       fetchImpl: freeBusyFetch([ooo]),
-      kek: env.KEK,
+      kek: testKeys(),
     });
 
     const rows = await t.db
@@ -227,7 +227,7 @@ describe('busy feeds: ingest', () => {
     const ooo = [{ start: at(-2, 0), end: at(3, 0) }];
 
     for (let i = 0; i < 3; i++) {
-      await ingestFeed(t.db, t.feed, { fetchImpl: freeBusyFetch(ooo), kek: env.KEK });
+      await ingestFeed(t.db, t.feed, { fetchImpl: freeBusyFetch(ooo), kek: testKeys() });
       await synthesizeFeed(t.db, t.feed);
     }
 
@@ -256,7 +256,7 @@ describe('busy feeds: ingest', () => {
 
     await ingestFeed(t.db, t.feed, {
       fetchImpl: freeBusyFetch(ooo),
-      kek: env.KEK,
+      kek: testKeys(),
       ...win(yesterday),
     });
     await synthesizeFeed(t.db, t.feed);
@@ -266,7 +266,7 @@ describe('busy feeds: ingest', () => {
     // sweep never looked at it, so the block doubled at every rollover.
     await ingestFeed(t.db, t.feed, {
       fetchImpl: freeBusyFetch(ooo),
-      kek: env.KEK,
+      kek: testKeys(),
       ...win(today),
     });
     await synthesizeFeed(t.db, t.feed);
@@ -289,12 +289,12 @@ describe('busy feeds: ingest', () => {
     const t = await setupBusyFeed('busy-empty@example.com');
     await ingestFeed(t.db, t.feed, {
       fetchImpl: freeBusyFetch([{ start: at(2, 15), end: at(2, 16) }]),
-      kek: env.KEK,
+      kek: testKeys(),
     });
 
     const res = await ingestFeed(t.db, t.feed, {
       fetchImpl: freeBusyFetch([]),
-      kek: env.KEK,
+      kek: testKeys(),
     });
     expect(res.processed).toBe(0);
     const rows = await t.db
@@ -321,7 +321,7 @@ describe('busy feeds: ingest', () => {
     })) as unknown as typeof fetch;
 
     await expect(
-      ingestFeed(t.db, t.feed, { fetchImpl, kek: env.KEK }),
+      ingestFeed(t.db, t.feed, { fetchImpl, kek: testKeys() }),
     ).rejects.toThrow(/notFound/);
     const after = (
       await t.db.select().from(feeds).where(eq(feeds.id, t.feed.id)).limit(1)
@@ -342,7 +342,7 @@ describe('busy feeds: synthesis + task-gen', () => {
 
     await ingestFeed(t.db, t.feed, {
       fetchImpl: freeBusyFetch([{ start: at(2, 15), end: at(2, 16, 30) }]),
-      kek: env.KEK,
+      kek: testKeys(),
     });
     await synthesizeFeed(t.db, t.feed);
 
@@ -384,7 +384,7 @@ describe('busy feeds: synthesis + task-gen', () => {
         { start: at(2, 15), end: at(2, 16) },
         { start: at(4, 10), end: at(4, 11) },
       ]),
-      kek: env.KEK,
+      kek: testKeys(),
     });
     await synthesizeFeed(t.db, t.feed);
     await synthesizeFeed(t.db, t.feed);
@@ -397,7 +397,7 @@ describe('busy feeds: synthesis + task-gen', () => {
     // One meeting cancelled: its interval disappears from the next sync.
     await ingestFeed(t.db, t.feed, {
       fetchImpl: freeBusyFetch([{ start: at(2, 15), end: at(2, 16) }]),
-      kek: env.KEK,
+      kek: testKeys(),
     });
     await synthesizeFeed(t.db, t.feed);
     const after = await t.db
@@ -419,7 +419,7 @@ describe('busy feeds: synthesis + task-gen', () => {
 
     await ingestFeed(t.db, t.feed, {
       fetchImpl: freeBusyFetch([{ start: at(2, 15), end: at(2, 16, 30) }]),
-      kek: env.KEK,
+      kek: testKeys(),
     });
     await synthesizeFeed(t.db, t.feed);
 
@@ -454,7 +454,7 @@ describe('busy feeds: routes', () => {
     const db = getDb(env.DB);
     const credRef = await storeSecret(
       db,
-      env.KEK,
+      testKeys(),
       null,
       JSON.stringify({ kind: 'oauth', accessToken: 'at-routes' }),
     );

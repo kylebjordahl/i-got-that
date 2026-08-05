@@ -3,7 +3,7 @@ import { and, calendarEvents, eq, getDb, memberCalendars } from '@igt/db';
 import { wallTimeToUtc } from '@igt/classification';
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { readBackMember } from '../src/services/readback.js';
-import { authed, bearer, call, patched, setupFamily } from './helpers.js';
+import { authed, bearer, call, patched, setupFamily, testKeys } from './helpers.js';
 
 const CALDAV_ORIGIN = 'https://dav.example.com';
 const COLLECTION_PATH = '/calendars/child/home/';
@@ -142,7 +142,7 @@ describe("member target calendar timezone (read-back's floating-time fix)", () =
     // explicit window: the default (today forward 30 days) already covers
     // APPT_DAY and matches what the route below uses.
     await readBackMember(db, cal, {
-      kek: env.KEK,
+      kek: testKeys(),
       fetchImpl: caldavFetchImpl([
         { href: '/calendars/child/home/floating-event.ics', etag: 'e1', data: FLOATING_ICS },
       ]),
