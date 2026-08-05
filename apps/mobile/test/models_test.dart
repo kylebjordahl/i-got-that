@@ -171,6 +171,78 @@ void main() {
     });
   });
 
+  group('AssignmentRule.fromJson', () {
+    test('parses filters, weekday mask and biweekly anchor', () {
+      final r = AssignmentRule.fromJson({
+        'id': 'ar1',
+        'position': 0,
+        'ownerMemberId': 'parentA',
+        'aboutMemberId': 'childB',
+        'linkId': null,
+        'taskType': 'pickup',
+        'weekdayMask': 5, // Mon (bit0) + Wed (bit2)
+        'cadenceWeeks': 2,
+        'anchorDate': 1783036800000, // 2026-07-03T00:00Z
+      });
+      expect(r.ownerMemberId, 'parentA');
+      expect(r.aboutMemberId, 'childB');
+      expect(r.taskType, 'pickup');
+      expect(r.weekdays, {0, 2});
+      expect(r.isBiweekly, isTrue);
+      expect(r.anchorDate, isNotNull);
+    });
+
+    test('defaults an unfiltered weekly rule (any day)', () {
+      final r = AssignmentRule.fromJson({
+        'id': 'ar2',
+        'position': 1,
+        'ownerMemberId': 'parentA',
+      });
+      expect(r.weekdayMask, 0);
+      expect(r.weekdays, isEmpty);
+      expect(r.cadenceWeeks, 1);
+      expect(r.isBiweekly, isFalse);
+      expect(r.anchorDate, isNull);
+    });
+
+    test('AssignmentRuleSet parses rules and links', () {
+      final set = AssignmentRuleSet.fromJson({
+        'rules': [
+          {'id': 'ar1', 'position': 0, 'ownerMemberId': 'p1'},
+        ],
+        'links': [
+          {'id': 'l1', 'feedId': 'f1', 'familyMemberId': 'c1'},
+        ],
+      });
+      expect(set.rules, hasLength(1));
+      expect(set.links.single.feedId, 'f1');
+    });
+  });
+
+  group('TaskItem auto-assignment provenance', () {
+    Map<String, dynamic> task(Map<String, dynamic> extra) => {
+      'id': 't1',
+      'familyMemberId': 'theo',
+      'type': 'pickup',
+      'dtstart': '2026-07-06T15:30:00.000Z',
+      'status': 'owned',
+      'ownerMemberId': 'dad',
+      ...extra,
+    };
+
+    test('reads the rule that claimed the task', () {
+      final t = TaskItem.fromJson(task({'autoAssignedRuleId': 'ar1'}));
+      expect(t.autoAssignedRuleId, 'ar1');
+      expect(t.isAutoAssigned, isTrue);
+    });
+
+    test('a hand-claimed task carries no rule', () {
+      final t = TaskItem.fromJson(task(const {}));
+      expect(t.autoAssignedRuleId, isNull);
+      expect(t.isAutoAssigned, isFalse);
+    });
+  });
+
   group("Member's home", () {
     test('parses a geocoded home address', () {
       final member = Member.fromJson({

@@ -717,6 +717,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           ? 'Attendance · ${friendlyRange(t.start, t.end!)}'
           : '${taskCategory(t.type)} · ${friendlyTime(t.start)}',
       ownedColor: owned ? ownerColor : null,
+      autoAssigned: owned && t.isAutoAssigned,
       onTap: () => showTaskActions(
         context,
         ref,

@@ -115,7 +115,14 @@ taskRoutes.post('/tasks/:taskId/assign', async (c) => {
   const updated = (
     await db
       .update(tasks)
-      .set({ ownerMemberId: targetMemberId, status: 'owned' })
+      .set({
+        ownerMemberId: targetMemberId,
+        status: 'owned',
+        // A human touched ownership: opt this task out of the rule engine for
+        // good (a manual action always wins over an assignment rule).
+        manualOwnerOverride: true,
+        autoAssignedRuleId: null,
+      })
       .where(eq(tasks.id, task.id))
       .returning()
   )[0]!;
@@ -149,7 +156,12 @@ taskRoutes.post('/tasks/:taskId/unassign', async (c) => {
   const updated = (
     await db
       .update(tasks)
-      .set({ ownerMemberId: null, status: 'unowned' })
+      .set({
+        ownerMemberId: null,
+        status: 'unowned',
+        manualOwnerOverride: true,
+        autoAssignedRuleId: null,
+      })
       .where(eq(tasks.id, task.id))
       .returning()
   )[0]!;
@@ -179,7 +191,12 @@ taskRoutes.post('/tasks/:taskId/dismiss', async (c) => {
   const updated = (
     await db
       .update(tasks)
-      .set({ status: 'dismissed', ownerMemberId: null })
+      .set({
+        status: 'dismissed',
+        ownerMemberId: null,
+        manualOwnerOverride: true,
+        autoAssignedRuleId: null,
+      })
       .where(eq(tasks.id, task.id))
       .returning()
   )[0]!;
@@ -206,7 +223,12 @@ taskRoutes.post('/tasks/:taskId/restore', async (c) => {
   const updated = (
     await db
       .update(tasks)
-      .set({ status: 'unowned', ownerMemberId: null })
+      .set({
+        status: 'unowned',
+        ownerMemberId: null,
+        manualOwnerOverride: true,
+        autoAssignedRuleId: null,
+      })
       .where(eq(tasks.id, task.id))
       .returning()
   )[0]!;
