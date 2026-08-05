@@ -1,20 +1,18 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models.dart';
-import '../services/geocoding.dart';
 import '../state/auth.dart';
 import '../state/family.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_text.dart';
 import '../theme/person_colors.dart';
 import '../widgets/color_swatch_picker.dart';
-import '../widgets/location_picker.dart';
 import '../widgets/primitives.dart';
 import '../widgets/settings.dart';
 
 /// Family-member editor (6h) — name, color, family-view role label, and the
-/// admin permission. Opened by the ✎ on the 6e profile card. Identity editing
-/// lives entirely here; the detail screen has none.
+/// admin permission. Opened by the ✎ on the 6e profile card. Home address
+/// lives in the Family logistics section of the detail screen instead.
 Future<void> showMemberEditor(
   BuildContext context,
   WidgetRef ref,
@@ -43,10 +41,6 @@ class _MemberEditorState extends ConsumerState<_MemberEditor> {
   late final TextEditingController _name = TextEditingController(
     text: widget.member.relationName,
   );
-  late final TextEditingController _home = TextEditingController(
-    text: widget.member.homeLocation ?? '',
-  );
-  late GeoLocation? _homeGeo = widget.member.homeLocationGeo;
   late Color _color = personColor(widget.member);
   late bool _isChild = widget.member.requiresCaretaker;
   late bool _isAdmin = widget.member.isAdmin;
@@ -56,7 +50,6 @@ class _MemberEditorState extends ConsumerState<_MemberEditor> {
   @override
   void dispose() {
     _name.dispose();
-    _home.dispose();
     super.dispose();
   }
 
@@ -69,7 +62,6 @@ class _MemberEditorState extends ConsumerState<_MemberEditor> {
     });
     try {
       final familyId = await ref.read(familyProvider.future);
-      final home = _home.text.trim();
       await ref
           .read(apiClientProvider)
           .updateMember(
@@ -81,10 +73,6 @@ class _MemberEditorState extends ConsumerState<_MemberEditor> {
             requiresCaretaker: canAdmin ? _isChild : null,
             isCaretaker: canAdmin ? !_isChild : null,
             isAdmin: canAdmin ? _isAdmin : null,
-            homeLocation: home.isEmpty ? null : home,
-            // Keep the geocode only while the text still matches the picked
-            // place; an empty field clears both. `null` is a real value (clear).
-            homeLocationGeo: home.isEmpty ? null : _homeGeo,
           );
       ref.invalidate(membersProvider);
       ref.invalidate(currentMemberProvider);
@@ -142,24 +130,6 @@ class _MemberEditorState extends ConsumerState<_MemberEditor> {
             controller: _name,
             onChanged: (_) => setState(() {}),
             decoration: const InputDecoration(hintText: 'Name / relation'),
-          ),
-          const SizedBox(height: 20),
-          Text('HOME', style: AppText.eyebrow()),
-          const SizedBox(height: 8),
-          LocationPickerField(
-            controller: _home,
-            geo: _homeGeo,
-            geocoder: ref.watch(geocoderProvider),
-            onChanged: (_, geo) => setState(() => _homeGeo = geo),
-            label: 'Home address',
-            hint: 'Where the day starts and ends',
-          ),
-          const SizedBox(height: 6),
-          Text(
-            'Pick a place (not just text) and drop-offs and pickups mirror out '
-            'with travel time measured from here — used whenever nothing earlier '
-            'on the calendar says where they are.',
-            style: AppText.subtitle,
           ),
           const SizedBox(height: 20),
           Text('COLOR', style: AppText.eyebrow()),
