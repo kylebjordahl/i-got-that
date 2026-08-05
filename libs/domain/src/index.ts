@@ -231,6 +231,20 @@ export type MagicLinkVerifyInput = z.infer<typeof MagicLinkVerifyInput>;
 /** Sign in with Apple: the identity token the native/web flow returns. */
 export const AppleSignInInput = z.object({
   identityToken: z.string().min(1),
+  /**
+   * The client's original (unhashed) nonce for this sign-in attempt — the
+   * client sends `sha256(nonce)` to Apple as the authorize-request `nonce`,
+   * and Apple echoes that digest verbatim into the identity token's `nonce`
+   * claim, so the server can recompute the digest here and assert it matches
+   * (replay protection: a captured identity token can't be redeemed without
+   * also knowing the raw value the *client* generated for that attempt).
+   *
+   * Optional and only validated when present — this is an interim step, not
+   * the full fix: the mobile client isn't wired up to generate/send a nonce
+   * yet, so today every request omits it and skips this check entirely. Once
+   * the client change lands, this should become required.
+   */
+  nonce: z.string().min(1).optional(),
 });
 export type AppleSignInInput = z.infer<typeof AppleSignInInput>;
 
