@@ -1152,4 +1152,122 @@ class ApiClient {
       options: _auth,
     );
   }
+
+  // --- Push notifications (user-owned, not family-scoped) --------------------
+
+  /// Register or refresh this device's APNs token. Idempotent on the token —
+  /// re-posting under a different account moves the device rather than
+  /// duplicating it.
+  Future<void> registerPushDevice({
+    required String deviceToken,
+    required String bundleId,
+    required String environment, // 'sandbox' | 'production'
+    String? timezone,
+  }) async {
+    await _dio.post(
+      '/notifications/devices',
+      data: {
+        'deviceToken': deviceToken,
+        'bundleId': bundleId,
+        'environment': environment,
+        if (timezone != null) 'timezone': timezone,
+      },
+      options: _auth,
+    );
+  }
+
+  /// Drop this device's registration — on sign-out, or when push is turned off.
+  Future<void> unregisterPushDevice(String deviceToken) async {
+    await _dio.delete(
+      '/notifications/devices',
+      data: {'deviceToken': deviceToken},
+      options: _auth,
+    );
+  }
+
+  Future<List<dynamic>> listPushDevices() async => _list(
+    await _dio.get('/notifications/devices', options: _auth),
+    'devices',
+  );
+
+  Future<List<dynamic>> listNotificationSchedules() async => _list(
+    await _dio.get('/notifications/schedules', options: _auth),
+    'schedules',
+  );
+
+  Future<Map<String, dynamic>> createNotificationSchedule({
+    required String label,
+    required String sendAt,
+    required String timezone,
+    required int weekdayMask,
+    required int startOffsetDays,
+    required int horizonDays,
+    required List<String> categories,
+    required bool skipWhenEmpty,
+  }) async {
+    final res = await _dio.post(
+      '/notifications/schedules',
+      data: {
+        'label': label,
+        'sendAt': sendAt,
+        'timezone': timezone,
+        'weekdayMask': weekdayMask,
+        'startOffsetDays': startOffsetDays,
+        'horizonDays': horizonDays,
+        'categories': categories,
+        'skipWhenEmpty': skipWhenEmpty,
+      },
+      options: _auth,
+    );
+    return _obj(res)['schedule'] as Map<String, dynamic>;
+  }
+
+  /// Partial update; omitted fields keep their current value.
+  Future<Map<String, dynamic>> updateNotificationSchedule(
+    String scheduleId, {
+    String? label,
+    bool? enabled,
+    String? sendAt,
+    String? timezone,
+    int? weekdayMask,
+    int? startOffsetDays,
+    int? horizonDays,
+    List<String>? categories,
+    bool? skipWhenEmpty,
+  }) async {
+    final res = await _dio.patch(
+      '/notifications/schedules/$scheduleId',
+      data: {
+        if (label != null) 'label': label,
+        if (enabled != null) 'enabled': enabled,
+        if (sendAt != null) 'sendAt': sendAt,
+        if (timezone != null) 'timezone': timezone,
+        if (weekdayMask != null) 'weekdayMask': weekdayMask,
+        if (startOffsetDays != null) 'startOffsetDays': startOffsetDays,
+        if (horizonDays != null) 'horizonDays': horizonDays,
+        if (categories != null) 'categories': categories,
+        if (skipWhenEmpty != null) 'skipWhenEmpty': skipWhenEmpty,
+      },
+      options: _auth,
+    );
+    return _obj(res)['schedule'] as Map<String, dynamic>;
+  }
+
+  Future<void> deleteNotificationSchedule(String scheduleId) async {
+    await _dio.delete('/notifications/schedules/$scheduleId', options: _auth);
+  }
+
+  /// Send this schedule's digest now. Returns the computed digest as well as
+  /// the delivery outcome, so the UI can preview what the notification would
+  /// say even where the push itself can't be verified (web, simulator, or a
+  /// deployment without the APNs secrets set).
+  Future<Map<String, dynamic>> testNotificationSchedule(
+    String scheduleId,
+  ) async => _obj(
+    await _dio.post(
+      '/notifications/schedules/$scheduleId/test',
+      data: <String, dynamic>{},
+      options: _auth,
+    ),
+  );
 }

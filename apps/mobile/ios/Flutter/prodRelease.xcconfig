@@ -26,3 +26,11 @@ CODE_SIGN_STYLE=Manual
 DEVELOPMENT_TEAM=WG5R9LUU9X
 CODE_SIGN_IDENTITY=Apple Distribution
 PROVISIONING_PROFILE_SPECIFIER=IGT App Store
+
+// APNs environment this build's `aps-environment` entitlement is signed with
+// (Runner.entitlements reads $(APS_ENVIRONMENT), and Info.plist surfaces the
+// same value as IGTApsEnvironment so the app reports the matching APNs host to
+// the server). Debug builds are signed with a development profile, whose tokens
+// only route via api.sandbox.push.apple.com; archives — TestFlight included —
+// use the production host.
+APS_ENVIRONMENT=production
