@@ -270,162 +270,167 @@ class _ConflictResolutionSheetState
     final zoom = _zoom(winnerMin, maxBefore + maxAfter);
     final winnerH = winnerMin * zoom;
 
-    return SingleChildScrollView(
-      padding: EdgeInsets.fromLTRB(
-        22,
-        4,
-        22,
-        24 + MediaQuery.of(context).viewInsets.bottom,
-      ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // Eyebrow: CONFLICT + member/day chip.
-          Row(
-            children: [
-              Text('CONFLICT', style: AppText.eyebrow(AppColors.coral)),
-              const Spacer(),
-              _MemberDayChip(
-                member: widget.member,
-                label:
-                    '${widget.member?.relationName ?? 'Member'} · '
-                    '${_shortDate(day)}',
-              ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          Text('Two events, one $memberName', style: AppText.subPageTitle),
-          const SizedBox(height: 10),
-          // Why one wins: manual events outrank feed events.
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Icon(
-                Icons.info_outline_rounded,
-                size: 15,
-                color: AppColors.textMuted,
-              ),
-              const SizedBox(width: 7),
-              Expanded(
-                child: Text(
-                  'A manually added event always outranks a source-feed one, so '
-                  '${_titleOf(winner)} stays put and ${_titleOf(loser)} is split '
-                  'around it.',
-                  style: font(
-                    kBodyFont,
-                    12,
-                    500,
-                    color: AppColors.textTertiary,
-                    height: 1.45,
+    return SafeArea(
+      child: SingleChildScrollView(
+        padding: EdgeInsets.fromLTRB(
+          22,
+          4,
+          22,
+          24 + MediaQuery.of(context).viewInsets.bottom,
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Eyebrow: CONFLICT + member/day chip.
+            Row(
+              children: [
+                Text('CONFLICT', style: AppText.eyebrow(AppColors.coral)),
+                const Spacer(),
+                _MemberDayChip(
+                  member: widget.member,
+                  label:
+                      '${widget.member?.relationName ?? 'Member'} · '
+                      '${_shortDate(day)}',
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Text('Two events, one $memberName', style: AppText.subPageTitle),
+            const SizedBox(height: 10),
+            // Why one wins: manual events outrank feed events.
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Icon(
+                  Icons.info_outline_rounded,
+                  size: 15,
+                  color: AppColors.textMuted,
+                ),
+                const SizedBox(width: 7),
+                Expanded(
+                  child: Text(
+                    'A manually added event always outranks a source-feed one, so '
+                    '${_titleOf(winner)} stays put and ${_titleOf(loser)} is split '
+                    'around it.',
+                    style: font(
+                      kBodyFont,
+                      12,
+                      500,
+                      color: AppColors.textTertiary,
+                      height: 1.45,
+                    ),
                   ),
                 ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 18),
-          Align(
-            alignment: Alignment.centerLeft,
-            child: Text(
-              splittable && (hasBefore || hasAfter)
-                  ? 'DRAG TO ADJUST TIMING'
-                  : (splittable ? 'AFTER THE SPLIT' : 'THE OVERLAP'),
-              style: AppText.eyebrow(),
+              ],
             ),
-          ),
-          const SizedBox(height: 12),
-          if (splittable) ...[
-            if (hasBefore) ...[
-              _EditableHalf(
-                title: _titleOf(loser),
-                timeLabel: friendlyRange(lStart, beforeEnd),
-                notNeededLabel: '$memberName skips the first half',
-                accent: _memberColor,
-                needed: _beforeNeeded,
-                handleAtBottom: true,
-                handleLabel: 'Pick-up · ${clockShort(beforeEnd)}',
-                onToggle: () => setState(() => _beforeNeeded = !_beforeNeeded),
-                onDragMinutes: (dy) =>
-                    _dragTravel(before: true, dy: dy, max: maxBefore),
+            const SizedBox(height: 18),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                splittable && (hasBefore || hasAfter)
+                    ? 'DRAG TO ADJUST TIMING'
+                    : (splittable ? 'AFTER THE SPLIT' : 'THE OVERLAP'),
+                style: AppText.eyebrow(),
               ),
-              if (_beforeNeeded && travelBefore.round() > 0) ...[
+            ),
+            const SizedBox(height: 12),
+            if (splittable) ...[
+              if (hasBefore) ...[
+                _EditableHalf(
+                  title: _titleOf(loser),
+                  timeLabel: friendlyRange(lStart, beforeEnd),
+                  notNeededLabel: '$memberName skips the first half',
+                  accent: _memberColor,
+                  needed: _beforeNeeded,
+                  handleAtBottom: true,
+                  handleLabel: 'Pick-up · ${clockShort(beforeEnd)}',
+                  onToggle: () =>
+                      setState(() => _beforeNeeded = !_beforeNeeded),
+                  onDragMinutes: (dy) =>
+                      _dragTravel(before: true, dy: dy, max: maxBefore),
+                ),
+                if (_beforeNeeded && travelBefore.round() > 0) ...[
+                  const SizedBox(height: 7),
+                  _TravelGapBlock(
+                    minutes: travelBefore.round(),
+                    height: travelBefore * zoom,
+                  ),
+                ],
                 const SizedBox(height: 7),
-                _TravelGapBlock(
-                  minutes: travelBefore.round(),
-                  height: travelBefore * zoom,
+              ],
+              _FixedBlock(
+                title: _titleOf(winner),
+                timeLabel: _rangeLabel(winner),
+                height: winnerH,
+              ),
+              if (hasAfter) ...[
+                if (_afterNeeded && travelAfter.round() > 0) ...[
+                  const SizedBox(height: 7),
+                  _TravelGapBlock(
+                    minutes: travelAfter.round(),
+                    height: travelAfter * zoom,
+                  ),
+                ],
+                const SizedBox(height: 7),
+                _EditableHalf(
+                  title: _titleOf(loser),
+                  timeLabel: friendlyRange(afterStart!, lEnd),
+                  notNeededLabel: '$memberName skips the second half',
+                  accent: _memberColor,
+                  needed: _afterNeeded,
+                  handleAtBottom: false,
+                  handleLabel: 'Drop-off · ${clockShort(afterStart)}',
+                  onToggle: () => setState(() => _afterNeeded = !_afterNeeded),
+                  onDragMinutes: (dy) =>
+                      _dragTravel(before: false, dy: dy, max: maxAfter),
                 ),
               ],
-              const SizedBox(height: 7),
-            ],
-            _FixedBlock(
-              title: _titleOf(winner),
-              timeLabel: _rangeLabel(winner),
-              height: winnerH,
-            ),
-            if (hasAfter) ...[
-              if (_afterNeeded && travelAfter.round() > 0) ...[
-                const SizedBox(height: 7),
-                _TravelGapBlock(
-                  minutes: travelAfter.round(),
-                  height: travelAfter * zoom,
+              if (!hasBefore && !hasAfter) ...[
+                const SizedBox(height: 3),
+                _NoteRow(
+                  'The visit covers the whole event, so confirming removes '
+                  '${_titleOf(loser)} for the day.',
                 ),
               ],
+            ] else ...[
+              // Can't cut cleanly on the timeline (all-day / open-ended): just name
+              // the two colliding events.
+              _FixedBlock(
+                title: _titleOf(winner),
+                timeLabel: _rangeLabel(winner),
+                fullWidth: true,
+              ),
               const SizedBox(height: 7),
-              _EditableHalf(
+              _SegmentBlock(
                 title: _titleOf(loser),
-                timeLabel: friendlyRange(afterStart!, lEnd),
-                notNeededLabel: '$memberName skips the second half',
+                timeLabel: _rangeLabel(loser),
                 accent: _memberColor,
-                needed: _afterNeeded,
-                handleAtBottom: false,
-                handleLabel: 'Drop-off · ${clockShort(afterStart)}',
-                onToggle: () => setState(() => _afterNeeded = !_afterNeeded),
-                onDragMinutes: (dy) =>
-                    _dragTravel(before: false, dy: dy, max: maxAfter),
+                badge: 'Split',
               ),
             ],
-            if (!hasBefore && !hasAfter) ...[
-              const SizedBox(height: 3),
-              _NoteRow(
-                'The visit covers the whole event, so confirming removes '
-                '${_titleOf(loser)} for the day.',
-              ),
-            ],
-          ] else ...[
-            // Can't cut cleanly on the timeline (all-day / open-ended): just name
-            // the two colliding events.
-            _FixedBlock(
-              title: _titleOf(winner),
-              timeLabel: _rangeLabel(winner),
-              fullWidth: true,
+            const SizedBox(height: 22),
+            // Terminal actions.
+            _WideButton(
+              label: 'Confirm split',
+              icon: Icons.check_rounded,
+              variant: _WideVariant.amber,
+              busy: _busy,
+              onTap: _busy
+                  ? null
+                  : () => _confirmSplit(
+                      travelBefore.round(),
+                      travelAfter.round(),
+                    ),
             ),
-            const SizedBox(height: 7),
-            _SegmentBlock(
-              title: _titleOf(loser),
-              timeLabel: _rangeLabel(loser),
-              accent: _memberColor,
-              badge: 'Split',
+            const SizedBox(height: 9),
+            _WideButton(
+              label: 'Ignore conflict — keep both as-is',
+              variant: _WideVariant.ghost,
+              onTap: _busy ? null : _ignore,
             ),
           ],
-          const SizedBox(height: 22),
-          // Terminal actions.
-          _WideButton(
-            label: 'Confirm split',
-            icon: Icons.check_rounded,
-            variant: _WideVariant.amber,
-            busy: _busy,
-            onTap: _busy
-                ? null
-                : () =>
-                      _confirmSplit(travelBefore.round(), travelAfter.round()),
-          ),
-          const SizedBox(height: 9),
-          _WideButton(
-            label: 'Ignore conflict — keep both as-is',
-            variant: _WideVariant.ghost,
-            onTap: _busy ? null : _ignore,
-          ),
-        ],
+        ),
       ),
     );
   }
