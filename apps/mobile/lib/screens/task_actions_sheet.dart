@@ -7,6 +7,7 @@ import '../state/family.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_text.dart';
 import '../theme/person_colors.dart';
+import '../util/assignment_text.dart';
 import '../util/format.dart';
 import '../util/task_visuals.dart';
 import '../widgets/app_bottom_nav.dart';
@@ -74,9 +75,21 @@ Future<void> showTaskActions(
       .map((t) => byId[t.ownerMemberId]?.relationName)
       .whereType<String>()
       .toSet();
-  final statusText = allUnowned
-      ? 'unclaimed'
-      : (owners.length == 1 ? owners.first : '${owners.length} assigned');
+  // Rules responsible for the owned tasks in scope — drives the "assigned by a
+  // rule" note (and the header's "· auto" hint) so a rule-claim never looks
+  // like a person quietly claiming for you.
+  final autoRuleIds = scope
+      .map((t) => t.autoAssignedRuleId)
+      .whereType<String>()
+      .toSet();
+  final allAuto =
+      !allUnowned &&
+      scope.where((t) => t.status == 'owned').every((t) => t.isAutoAssigned);
+  final statusText =
+      (allUnowned
+          ? 'unclaimed'
+          : (owners.length == 1 ? owners.first : '${owners.length} assigned')) +
+      (allAuto ? ' · auto' : '');
 
   // Transition tasks in scope get an editable duration field (keyboard-aware,
   // so the sheet lifts above it). A single tag/row scopes to one; a Plan block
@@ -161,6 +174,10 @@ Future<void> showTaskActions(
             if (hasLocation && hasDescription) const SizedBox(height: 8),
             if (hasDescription)
               _DetailRow(icon: Icons.notes_rounded, text: description),
+          ],
+          if (autoRuleIds.isNotEmpty) ...[
+            const SizedBox(height: 14),
+            _AutoAssignedNote(ruleIds: autoRuleIds),
           ],
           if (isFeedTask) ...[
             const SizedBox(height: 20),
@@ -887,6 +904,84 @@ class _TravelTimeFieldState extends State<_TravelTimeField> {
           style: AppText.subtitle,
         ),
       ],
+    );
+  }
+}
+
+/// Names the assignment rule(s) that auto-claimed the task(s) in scope, so the
+/// owner reads as "a rule did this, and here's which one" rather than as a
+/// human claim. Rules are readable by any family member, so this renders for
+/// caretakers and admins alike; it degrades to the generic line while the rule
+/// set is still loading (or if it fails to load).
+class _AutoAssignedNote extends ConsumerWidget {
+  const _AutoAssignedNote({required this.ruleIds});
+
+  final Set<String> ruleIds;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final ruleSet = ref.watch(assignmentRulesProvider).valueOrNull;
+    final members = ref.watch(membersProvider).valueOrNull ?? const <Member>[];
+    final feeds = ref.watch(feedsProvider).valueOrNull ?? const <FeedItem>[];
+
+    final matched = (ruleSet?.rules ?? const <AssignmentRule>[])
+        .where((r) => ruleIds.contains(r.id))
+        .toList();
+
+    return Container(
+      padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+      decoration: BoxDecoration(
+        color: AppColors.indigo.withValues(alpha: 0.10),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppColors.indigo.withValues(alpha: 0.35)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Icon(Icons.bolt_rounded, size: 16, color: AppColors.indigo),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Assigned automatically',
+                  style: font(kBodyFont, 12.5, 700, color: AppColors.indigo),
+                ),
+                const SizedBox(height: 3),
+                if (matched.isEmpty)
+                  Text(
+                    // The rule was deleted or edited out from under the task —
+                    // the claim stands, we just can't name its source.
+                    ruleSet == null
+                        ? 'Looking up the rule…'
+                        : 'By an assignment rule that no longer exists.',
+                    style: AppText.subtitle,
+                  )
+                else
+                  for (final r in matched)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 2),
+                      child: Text(
+                        'By “${describeRule(r, members, feeds, ruleSet?.links ?? const <AssignmentLink>[])}”',
+                        style: AppText.subtitle,
+                      ),
+                    ),
+                const SizedBox(height: 3),
+                Text(
+                  'Claiming or unassigning by hand overrides the rule.',
+                  style: font(
+                    kBodyFont,
+                    11,
+                    500,
+                    color: AppColors.textTertiary,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

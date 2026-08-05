@@ -156,6 +156,78 @@ void main() {
     },
   );
 
+  testWidgets(
+    'an auto-assigned task is marked on the row and names its rule in the sheet',
+    (tester) async {
+      final me = _m('dad', 'Dad', caretaker: true, admin: true);
+      final autoTask = TaskItem(
+        id: 't3',
+        familyMemberId: 'theo',
+        type: 'pickup',
+        start: DateTime.now().add(const Duration(hours: 2)),
+        status: 'owned',
+        createdVia: 'generated',
+        calendarEventId: 'e3',
+        ownerMemberId: 'dad',
+        autoAssignedRuleId: 'ar1',
+      );
+      final ruleSet = AssignmentRuleSet(
+        links: const [],
+        rules: [
+          AssignmentRule(
+            id: 'ar1',
+            position: 0,
+            ownerMemberId: 'dad',
+            aboutMemberId: 'theo',
+            taskType: 'pickup',
+            weekdayMask: 1 << 0, // Mon
+            cadenceWeeks: 2,
+          ),
+        ],
+      );
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            familyProvider.overrideWith((ref) async => 'fam-1'),
+            membersProvider.overrideWith(
+              (ref) async => [me, _m('theo', 'Theo', child: true)],
+            ),
+            currentMemberProvider.overrideWith((ref) async => me),
+            unownedTasksProvider.overrideWith((ref) async => const []),
+            allTasksProvider.overrideWith((ref) async => [autoTask]),
+            pendingDecisionsProvider.overrideWith((ref) async => const []),
+            conflictsProvider.overrideWith((ref) async => const []),
+            calendarEventsProvider.overrideWith((ref) async => const []),
+            threadingThresholdProvider.overrideWith((ref) async => 30),
+            assignmentRulesProvider.overrideWith((ref) async => ruleSet),
+            feedsProvider.overrideWith((ref) async => const []),
+          ],
+          child: MaterialApp(
+            theme: buildAppTheme(),
+            themeMode: ThemeMode.dark,
+            home: const Scaffold(body: HomeScreen()),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      // The row carries the auto-assigned bolt.
+      final row = tester.widget<TaskRow>(find.byType(TaskRow));
+      expect(row.autoAssigned, isTrue);
+
+      await tester.tap(find.byType(TaskRow));
+      await tester.pumpAndSettle();
+
+      // The sheet says a rule did it, and describes which one.
+      expect(find.text('Assigned automatically'), findsOneWidget);
+      expect(
+        find.text('By “Pickup · for Theo · Mon · every other week”'),
+        findsOneWidget,
+      );
+    },
+  );
+
   testWidgets("a claimed drop-off's sheet edits the travel time on its claim", (
     tester,
   ) async {

@@ -18,6 +18,7 @@ class TaskRow extends StatelessWidget {
     this.sourceInitial,
     this.sourceColor,
     this.ownedColor,
+    this.autoAssigned = false,
     this.trailing,
     this.onTap,
     this.onLongPress,
@@ -37,6 +38,10 @@ class TaskRow extends StatelessWidget {
 
   /// Solid left-bar color when owned; null ⇒ dashed "needs an owner" bar.
   final Color? ownedColor;
+
+  /// Owned by an assignment rule rather than by a hand claim — marked with a
+  /// bolt against the subtitle. Tapping through names the responsible rule.
+  final bool autoAssigned;
   final Widget? trailing;
   final VoidCallback? onTap;
   final VoidCallback? onLongPress;
@@ -138,11 +143,26 @@ class TaskRow extends StatelessWidget {
           overflow: TextOverflow.ellipsis,
         ),
         const SizedBox(height: 2),
-        Text(
-          subtitle,
-          style: font(kBodyFont, 11.5, 500, color: AppColors.textTertiary),
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
+        Row(
+          children: [
+            if (autoAssigned) ...[
+              const Icon(Icons.bolt_rounded, size: 13, color: AppColors.indigo),
+              const SizedBox(width: 2),
+            ],
+            Flexible(
+              child: Text(
+                subtitle,
+                style: font(
+                  kBodyFont,
+                  11.5,
+                  500,
+                  color: AppColors.textTertiary,
+                ),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          ],
         ),
       ],
     );

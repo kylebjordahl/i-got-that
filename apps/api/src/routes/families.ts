@@ -16,6 +16,7 @@ import { wouldOrphanFamily } from '../services/families.js';
 import { enqueueReconcile } from '../services/mirror.js';
 import { rebuildMemberTasks } from '../services/task-gen.js';
 import { createMemberClaimInvite } from '../services/invites.js';
+import { assignmentRuleRoutes } from './assignment-rules.js';
 import { feedRoutes } from './feeds.js';
 import { memberCalendarRoutes } from './member-calendars.js';
 import { taskRoutes } from './tasks.js';
@@ -43,6 +44,9 @@ familyRoutes.route('/:familyId', memberCalendarRoutes);
 
 // Per-member task-rule pipeline under /families/:familyId/members/:memberId/task-rules.
 familyRoutes.route('/:familyId', taskRuleRoutes);
+
+// Family-wide auto-assignment pipeline under /families/:familyId/assignment-rules.
+familyRoutes.route('/:familyId', assignmentRuleRoutes);
 
 /**
  * Create a family and seed the creator as an admin caretaker. (Prototype:
