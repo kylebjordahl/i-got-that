@@ -39,6 +39,12 @@
         // to 1, matching this single configured version. See
         // docs/DEPLOYMENT.md § KEK rotation.
         "KEK_V1": "2OmcakKhoLtzTqOq5ZrXq/e/7mXa8Gmav+dtCe/2ThM=",
+        // DEV ONLY COOKIE_SIGNING_KEY (HMAC secret for the Apple/Google OAuth state
+        // cookies — deliberately separate from KEK). Production sets a real secret
+        // via `wrangler secret put COOKIE_SIGNING_KEY` — never commit prod keys.
+        // Unset ⇒ the web Apple/Google start/callback routes 501 rather than
+        // falling back to a constant. See docs/DEPLOYMENT.md.
+        "COOKIE_SIGNING_KEY": "Hsvruai7aj85vT33C9hW+orop4ux8ere3Ovz+L/Pa7E=",
         // Escape hatch for the outbound-URL (SSRF) policy in
         // src/lib/outbound-url.ts: comma-separated `host` / `host:port` entries
         // that user-supplied feed + CalDAV URLs may target even though the

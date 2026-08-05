@@ -10,6 +10,7 @@ import type { Bindings } from '../env.js';
 
 const AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
 const TOKEN_URL = 'https://oauth2.googleapis.com/token';
+const REVOKE_URL = 'https://oauth2.googleapis.com/revoke';
 /** `calendar.events` grants read/write on events within a known calendar;
  *  `calendar.readonly` additionally covers `calendarList.list`, needed by the
  *  "pick a calendar" flow (`fetchGoogleCalendars`); `calendar.freebusy` covers
@@ -165,4 +166,29 @@ export async function refreshGoogleAccessToken(
   }
   const json = (await res.json()) as { access_token: string };
   return json.access_token;
+}
+
+/**
+ * Revoke a stored refresh token at Google's revoke endpoint — called on
+ * account disconnect and account deletion so the grant doesn't linger in the
+ * user's Google account after we drop our copy. The endpoint is
+ * unauthenticated by design (no client id/secret needed) and revoking also
+ * invalidates every access token minted from it. Callers should treat this as
+ * best-effort: log and swallow failures rather than blocking the
+ * disconnect/delete on Google's availability.
+ */
+export async function revokeGoogleToken(
+  env: Bindings,
+  refreshToken: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<void> {
+  const body = new URLSearchParams({ token: refreshToken });
+  const res = await fetchImpl(REVOKE_URL, {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body,
+  });
+  if (!res.ok) {
+    throw new Error(`google token revoke failed: ${res.status} ${await res.text().catch(() => '')}`);
+  }
 }

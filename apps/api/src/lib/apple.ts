@@ -10,6 +10,8 @@
  * network or a live Apple token.
  */
 
+import { sha256hex } from './crypto.js';
+
 export interface AppleIdentity {
   /** Apple's stable subject — becomes identities.provider_ref. */
   sub: string;
@@ -28,7 +30,8 @@ export interface AppleNotificationEvent {
   sub: string;
   email?: string;
   isPrivateEmail?: boolean;
-  eventTime?: number;
+  /** Milliseconds since epoch — required and freshness-checked (see `verifyAppleNotificationToken`). */
+  eventTime: number;
 }
 
 export interface AppleJwk {
@@ -43,12 +46,22 @@ export interface VerifyAppleOptions {
   /** Allowed `aud` values — your iOS bundle id and/or web Services ID. */
   audience: string | string[];
   /**
-   * Expected `nonce`. The web (Services ID) flow round-trips a nonce through
-   * Apple, which echoes it into the token; passing it here asserts the token
-   * belongs to the flow we started (replay protection). Omitted for the native
-   * flow, which doesn't set one.
+   * Expected `nonce`, already SHA-256-hashed the same way Apple hashes what it
+   * echoes into the token's `nonce` claim (Apple never returns the raw value —
+   * it round-trips whatever digest the client sent it at authorization time).
+   * Prefer {@link rawNonce} when you have the client's original, unhashed
+   * value; this is here for callers that already have the digest.
    */
   nonce?: string;
+  /**
+   * The client's original (unhashed) nonce. When present, this is SHA-256'd
+   * and compared against the token's `nonce` claim — replay protection: the
+   * token can only be redeemed by whoever holds the raw value the client
+   * generated for this specific sign-in attempt, since Apple ties the digest
+   * it echoes back to the digest the client sent it. Preferred over
+   * {@link nonce}; only one of the two should be set.
+   */
+  rawNonce?: string;
   /** Injected JWKS (skips the network fetch); used in tests. */
   jwks?: AppleJwk[];
   fetchImpl?: typeof fetch;
@@ -81,12 +94,21 @@ async function fetchAppleJwks(fetchImpl: typeof fetch): Promise<AppleJwk[]> {
 
 /**
  * Verify an Apple-signed JWS — RS256 signature (via JWKS/`kid`), `iss`, `aud`,
- * and (when present) `exp` — and return the decoded payload. Shared by the
- * identity-token and notification checks; callers assert their own extra claims.
+ * and `exp` — and return the decoded payload. Shared by the identity-token and
+ * notification checks; callers assert their own extra claims.
  */
 async function verifyAppleJws(
   token: string,
-  opts: Pick<VerifyAppleOptions, 'audience' | 'jwks' | 'fetchImpl' | 'now'>,
+  opts: Pick<VerifyAppleOptions, 'audience' | 'jwks' | 'fetchImpl' | 'now'> & {
+    /**
+     * Identity tokens always carry `exp` and it must be enforced strictly —
+     * default `true`. Apple's server-to-server *notification* JWS never sets
+     * `exp` (it's not a bearer credential), so the notification-verification
+     * path passes `false` and relies on its own `iat`/`event_time` freshness
+     * checks instead.
+     */
+    requireExp?: boolean;
+  },
 ): Promise<Record<string, unknown>> {
   const parts = token.split('.');
   if (parts.length !== 3) throw new Error('malformed token');
@@ -124,8 +146,11 @@ async function verifyAppleJws(
     throw new Error('token audience mismatch');
   }
   const now = opts.now ?? Date.now();
-  if (typeof payload.exp === 'number' && payload.exp * 1000 < now) {
-    throw new Error('token expired');
+  const requireExp = opts.requireExp ?? true;
+  if (typeof payload.exp === 'number') {
+    if (payload.exp * 1000 < now) throw new Error('token expired');
+  } else if (requireExp) {
+    throw new Error('token missing exp');
   }
   return payload;
 }
@@ -134,8 +159,9 @@ export async function verifyAppleIdentityToken(
   identityToken: string,
   opts: VerifyAppleOptions,
 ): Promise<AppleIdentity> {
-  const payload = await verifyAppleJws(identityToken, opts);
-  if (opts.nonce !== undefined && payload.nonce !== opts.nonce) {
+  const payload = await verifyAppleJws(identityToken, { ...opts, requireExp: true });
+  const expectedNonce = opts.rawNonce !== undefined ? await sha256hex(opts.rawNonce) : opts.nonce;
+  if (expectedNonce !== undefined && payload.nonce !== expectedNonce) {
     throw new Error('identity token nonce mismatch');
   }
   if (typeof payload.sub !== 'string') throw new Error('identity token missing subject');
@@ -145,16 +171,37 @@ export async function verifyAppleIdentityToken(
   };
 }
 
+/** Max allowed clock skew (ms) between our clock and the `iat` Apple stamped on a notification. */
+const NOTIFICATION_IAT_SKEW_MS = 5 * 60 * 1000;
+/** Max allowed age (ms) of the *event* itself (Apple's `event_time`, not the JWS `iat`). */
+const NOTIFICATION_MAX_AGE_MS = 5 * 60 * 1000;
+
 /**
  * Verify a server-to-server notification JWS and decode its single event. Apple
  * nests the event as a JSON **string** in the `events` claim; we parse it into a
- * typed {@link AppleNotificationEvent}. (No `nonce`/`exp` is expected here.)
+ * typed {@link AppleNotificationEvent}.
+ *
+ * Notifications never carry `exp` (they're not bearer credentials), so instead
+ * of the identity-token's `exp` check we require a fresh `iat` (within
+ * {@link NOTIFICATION_IAT_SKEW_MS} of our clock) and a recent `event_time`
+ * (within {@link NOTIFICATION_MAX_AGE_MS}) — both close a replay window where
+ * an old, legitimately-signed notification is resent later to re-trigger a
+ * destructive action (`consent-revoked` / `account-delete`). Callers should
+ * additionally dedupe by digest (see `services/auth.ts`'s
+ * `recordAppleNotificationOnce`) so an in-window replay still no-ops.
  */
 export async function verifyAppleNotificationToken(
   notificationToken: string,
   opts: Pick<VerifyAppleOptions, 'audience' | 'jwks' | 'fetchImpl' | 'now'>,
 ): Promise<AppleNotificationEvent> {
-  const payload = await verifyAppleJws(notificationToken, opts);
+  const payload = await verifyAppleJws(notificationToken, { ...opts, requireExp: false });
+  const now = opts.now ?? Date.now();
+
+  if (typeof payload.iat !== 'number') throw new Error('notification missing iat');
+  if (Math.abs(payload.iat * 1000 - now) > NOTIFICATION_IAT_SKEW_MS) {
+    throw new Error('notification iat outside allowed skew');
+  }
+
   if (typeof payload.events !== 'string') {
     throw new Error('notification missing events');
   }
@@ -166,6 +213,12 @@ export async function verifyAppleNotificationToken(
     event_time?: number;
   };
   if (!event.type || !event.sub) throw new Error('notification missing type/sub');
+  // Apple's `event_time` is milliseconds since epoch (unlike the second-based `iat`/`exp`).
+  if (typeof event.event_time !== 'number') throw new Error('notification missing event_time');
+  if (now - event.event_time > NOTIFICATION_MAX_AGE_MS) {
+    throw new Error('notification event_time too old');
+  }
+
   return {
     type: event.type as AppleNotificationEvent['type'],
     sub: event.sub,

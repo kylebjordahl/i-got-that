@@ -968,6 +968,25 @@ export const sessions = sqliteTable(
   }),
 );
 
+// --- Apple S2S notification replay dedupe --------------------------------
+
+/**
+ * One row per Apple server-to-server notification JWS we've successfully
+ * verified and applied, keyed by a digest of the raw token. `verifyApple-
+ * NotificationToken`'s `iat`/`event_time` freshness checks close most of the
+ * replay window, but Apple retries notifications on anything but a 200 — so
+ * a legitimately-fresh redelivery must still no-op rather than re-apply a
+ * destructive action (`consent-revoked` / `account-delete`) a second time.
+ * `expiresAt` lets a periodic sweep (or lazy delete-on-insert) reclaim rows
+ * once they're older than the freshness window could ever accept anyway.
+ */
+export const appleNotificationReceipts = sqliteTable('apple_notification_receipts', {
+  id: id(),
+  digest: text('digest').notNull().unique(),
+  expiresAt: integer('expires_at', { mode: 'timestamp_ms' }).notNull(),
+  createdAt: createdAt(),
+});
+
 export const schema = {
   users,
   identities,
@@ -989,6 +1008,7 @@ export const schema = {
   invites,
   authTokens,
   sessions,
+  appleNotificationReceipts,
 };
 
 // Keep `sql` referenced for future raw defaults without tripping lint.

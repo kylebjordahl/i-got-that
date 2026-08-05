@@ -139,6 +139,28 @@ runtime. Use **different** values per environment (and per KEK purpose —
 don't reuse the cookie `KEK` as `KEK_V1`, even though the checked-in dev
 `vars` do for convenience).
 
+**COOKIE_SIGNING_KEY**. The Apple/Google web login redirect flows (`/auth/apple/*`,
+`/auth/google/*`) stash a short-lived `state` (+ link-mode session reference) in a
+signed cookie between the "start" and "callback" hops. That signing key is
+**separate from KEK** — signing a cookie and wrapping stored credentials are
+unrelated cryptographic operations with different rotation needs, and coupling
+them would mean rotating one drags the other along. `wrangler.jsonc` ships a
+**dev-only** value in `vars`, same as KEK; production must use a real secret:
+
+```bash
+# 32 random bytes, base64 — generate locally, never commit:
+openssl rand -base64 32
+
+cd apps/api
+echo "<that-value>" | pnpm wrangler secret put COOKIE_SIGNING_KEY --env staging
+echo "<another>"    | pnpm wrangler secret put COOKIE_SIGNING_KEY --env production
+```
+
+Use a **different** key per environment, and never let it fall back to a
+constant: if `COOKIE_SIGNING_KEY` is unset, the Apple/Google web `start` and
+`callback` routes fail closed and return `501` (the same shape they already use
+for an unconfigured provider) instead of signing with anything predictable.
+
 > **Never set `ALLOW_DEV_TOKENS` on a deployed env.** It makes
 > `POST /auth/magic-link/request` return the raw magic-link token, which is an
 > unauthenticated "log in as any email address" primitive. It lives in the

@@ -43,6 +43,19 @@ export interface Bindings {
      */
     KEK_CURRENT_VERSION?: string;
     /**
+     * base64 of 32 random bytes; the HMAC signing secret for the short-lived
+     * Apple/Google OAuth `state` cookies (`routes/auth.ts`). Deliberately
+     * distinct from `KEK` — signing the state cookie and wrapping stored
+     * credentials are unrelated cryptographic purposes with different
+     * rotation profiles, and the state cookie carries the link-mode session
+     * reference used to graft an OAuth identity onto an account, so a shared
+     * or predictable key would be a real account-takeover path. Unset ⇒ the
+     * Apple/Google web start/callback routes fail closed with 501 rather than
+     * falling back to any constant. Set via `wrangler secret put
+     * COOKIE_SIGNING_KEY` per env; see docs/DEPLOYMENT.md.
+     */
+    COOKIE_SIGNING_KEY?: string;
+    /**
      * Escape hatch for the outbound-URL (SSRF) policy in
      * `lib/outbound-url.ts`: comma-separated `host` or `host:port` entries that
      * user-supplied feed / CalDAV URLs may target even though the default

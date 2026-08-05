@@ -1,9 +1,9 @@
+import { eq, externalAccounts, getDb, invites as invitesTable, secrets } from '@igt/db';
 import {
   createExecutionContext,
   env,
   waitOnExecutionContext,
 } from 'cloudflare:test';
-import { eq, getDb, invites as invitesTable } from '@igt/db';
 import { describe, expect, it } from 'vitest';
 import app from '../src/index.js';
 import { sha256hex } from '../src/lib/crypto.js';
@@ -511,6 +511,47 @@ describe('delete account', () => {
     await call('/families', authed(alice.token, { name: 'Solo Fam' }));
 
     expect((await call('/auth/me', delMe(alice.token))).status).toBe(204);
+  });
+
+  it('removes the now-orphaned secret behind a deleted user’s connected account', async () => {
+    const alice = await login('delacct-secrets@example.com');
+    const created = await call(
+      '/accounts',
+      authed(alice.token, {
+        kind: 'caldav',
+        name: 'My CalDAV',
+        serverUrl: 'https://dav.example.com',
+        username: 'u',
+        password: 'p',
+      }),
+    );
+    expect(created.status).toBe(201);
+
+    const db = getDb(env.DB);
+    const accountRows = await db
+      .select({ credentialsRef: externalAccounts.credentialsRef })
+      .from(externalAccounts)
+      .where(eq(externalAccounts.userId, alice.userId));
+    const credentialsRef = accountRows[0]?.credentialsRef;
+    expect(credentialsRef).toBeTruthy();
+
+    // Sanity: the secret exists before the account is deleted.
+    const before = await db
+      .select({ id: secrets.id })
+      .from(secrets)
+      .where(eq(secrets.id, credentialsRef!));
+    expect(before).toHaveLength(1);
+
+    expect((await call('/auth/me', delMe(alice.token))).status).toBe(204);
+
+    // The FK cascade drops `external_accounts` with the user, but the
+    // user-owned secret (family_id is null) isn't reachable by any cascade —
+    // it must be explicitly cleaned up rather than left orphaned.
+    const after = await db
+      .select({ id: secrets.id })
+      .from(secrets)
+      .where(eq(secrets.id, credentialsRef!));
+    expect(after).toHaveLength(0);
   });
 });
 

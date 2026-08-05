@@ -21,6 +21,7 @@ import {
   exchangeGoogleCode,
   googleOAuthConfigured,
   googleRefresherFor,
+  revokeGoogleToken,
 } from '../lib/google-oauth.js';
 import { authMiddleware } from '../middleware/auth.js';
 import {
@@ -228,6 +229,21 @@ accountRoutes.delete('/:accountId', async (c) => {
       .limit(1)
   )[0];
   if (usedByFeed || usedByTarget) return c.json({ error: 'in_use' }, 409);
+
+  // Best-effort: revoke the upstream Google grant before dropping our own
+  // copy, so disconnecting here also disconnects at Google. Never blocks the
+  // disconnect on Google's availability.
+  const revokeKeys = buildKekKeySet(c.env);
+  if (account.kind === 'google' && account.credentialsRef && revokeKeys) {
+    try {
+      const credential = await resolveAccountCredential(db, revokeKeys, account.id);
+      if (credential?.kind === 'oauth' && credential.refreshToken) {
+        await revokeGoogleToken(c.env, credential.refreshToken);
+      }
+    } catch (err) {
+      console.error(`google token revoke failed for account ${account.id}`, err);
+    }
+  }
 
   await db.delete(externalAccounts).where(eq(externalAccounts.id, account.id));
   if (account.credentialsRef) {
