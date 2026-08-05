@@ -28,7 +28,7 @@ import {
   syncMemberMirror,
 } from '../src/services/mirror.js';
 import { hashCalendarEvent } from '../src/services/synthesis.js';
-import { authed, bearer, call, setupFamily } from './helpers.js';
+import { authed, bearer, call, linkMember, setupFamily, testKeys } from './helpers.js';
 
 class FakeProvider implements DeliveryProvider {
   upserts: { event: DeliveryEvent; target: DeliveryTarget }[] = [];
@@ -114,10 +114,10 @@ async function insertEvent(
 
 describe('envelope encryption', () => {
   it('round-trips a secret through encrypt/decrypt', async () => {
-    const enc = await encryptSecret(env.KEK, 'app-specific-password');
+    const enc = await encryptSecret(testKeys(), 'app-specific-password');
     expect(enc.ciphertext).toBeTruthy();
     expect(enc.wrappedDek).toBeTruthy();
-    const back = await decryptSecret(env.KEK, enc);
+    const back = await decryptSecret(testKeys(), enc);
     expect(back).toBe('app-specific-password');
   });
 });
@@ -143,7 +143,7 @@ describe('mirror reconcile (syncMemberMirror)', () => {
     const registry = new DeliveryProviderRegistry().register(fake);
 
     // 1) First sync mirrors only the synthesized event.
-    const r1 = await syncMemberMirror(db, registry, env.KEK, fam.childId);
+    const r1 = await syncMemberMirror(db, registry, testKeys(), fam.childId);
     expect(r1.created).toBe(1);
     expect(fake.upserts).toHaveLength(1);
     expect(fake.upserts[0]!.event.uid).toBe(`igt-${event.id}`);
@@ -159,7 +159,7 @@ describe('mirror reconcile (syncMemberMirror)', () => {
     expect(m1.sequence).toBe(0);
 
     // 2) Re-sync with no change is a no-op (payloadHash match).
-    const r2 = await syncMemberMirror(db, registry, env.KEK, fam.childId);
+    const r2 = await syncMemberMirror(db, registry, testKeys(), fam.childId);
     expect(r2.created + r2.updated).toBe(0);
     expect(fake.upserts).toHaveLength(1);
 
@@ -168,7 +168,7 @@ describe('mirror reconcile (syncMemberMirror)', () => {
       .update(calendarEvents)
       .set({ location: 'New Gym' })
       .where(eq(calendarEvents.id, event.id));
-    const r3 = await syncMemberMirror(db, registry, env.KEK, fam.childId);
+    const r3 = await syncMemberMirror(db, registry, testKeys(), fam.childId);
     expect(r3.updated).toBe(1);
     const m3 = (
       await db.select().from(eventMirrors).where(eq(eventMirrors.calendarEventId, event.id))
@@ -178,7 +178,7 @@ describe('mirror reconcile (syncMemberMirror)', () => {
 
     // 4) Deleting the event (synthesis would do this) → remote cancel, row gone.
     await db.delete(calendarEvents).where(eq(calendarEvents.id, event.id));
-    const r4 = await syncMemberMirror(db, registry, env.KEK, fam.childId);
+    const r4 = await syncMemberMirror(db, registry, testKeys(), fam.childId);
     expect(r4.removed).toBe(1);
     expect(fake.cancels).toHaveLength(1);
     expect(fake.cancels[0]!.event.uid).toBe(`igt-${event.id}`);
@@ -207,7 +207,7 @@ describe('mirror reconcile (syncMemberMirror)', () => {
 
     const fake = new FakeProvider('caldav');
     const registry = new DeliveryProviderRegistry().register(fake);
-    const r = await syncMemberMirror(db, registry, env.KEK, fam.childId);
+    const r = await syncMemberMirror(db, registry, testKeys(), fam.childId);
     expect(r.created).toBe(1);
     expect(fake.upserts[0]!.event.location).toBe('Lincoln Elementary');
     expect(fake.upserts[0]!.event.locationGeo).toEqual(geo);
@@ -226,10 +226,10 @@ describe('mirror reconcile (syncMemberMirror)', () => {
 
     const fake = new FakeProvider('caldav');
     const registry = new DeliveryProviderRegistry().register(fake);
-    const r = await syncMemberMirror(db, registry, env.KEK, fam.adminMemberId);
+    const r = await syncMemberMirror(db, registry, testKeys(), fam.adminMemberId);
     expect(r.created).toBe(1);
 
-    await purgeMemberMirror(db, registry, env.KEK, cal);
+    await purgeMemberMirror(db, registry, testKeys(), cal);
     expect(fake.cancels).toHaveLength(1);
     expect(
       await db
@@ -294,7 +294,7 @@ describe('mirror reconcile (syncMemberMirror)', () => {
 
     const fake = new FakeProvider('caldav');
     const registry = new DeliveryProviderRegistry().register(fake);
-    const r = await syncMemberMirror(db, registry, env.KEK, fam.adminMemberId);
+    const r = await syncMemberMirror(db, registry, testKeys(), fam.adminMemberId);
     expect(r.created).toBe(1);
     expect(fake.upserts[0]!.event.timezone).toBe('America/Denver');
   });
@@ -388,7 +388,7 @@ describe('mirror reconcile (syncMemberMirror)', () => {
 
     const fake = new FakeProvider('caldav');
     const registry = new DeliveryProviderRegistry().register(fake);
-    await syncMemberMirror(db, registry, env.KEK, fam.adminMemberId);
+    await syncMemberMirror(db, registry, testKeys(), fam.adminMemberId);
     const travelFor = (eventId: string) =>
       fake.upserts.find((u) => u.event.uid === `igt-${eventId}`)?.event.travelTimeMinutes;
 
@@ -465,7 +465,7 @@ describe('mirror reconcile (syncMemberMirror)', () => {
 
     const fake = new FakeProvider('caldav');
     const registry = new DeliveryProviderRegistry().register(fake);
-    await syncMemberMirror(db, registry, env.KEK, fam.adminMemberId);
+    await syncMemberMirror(db, registry, testKeys(), fam.adminMemberId);
 
     const travelFor = (eventId: string) =>
       fake.upserts.find((u) => u.event.uid === `igt-${eventId}`)?.event.travelTimeMinutes;
@@ -538,7 +538,7 @@ describe('mirror reconcile (syncMemberMirror)', () => {
 
     const fake = new FakeProvider('caldav');
     const registry = new DeliveryProviderRegistry().register(fake);
-    await syncMemberMirror(db, registry, env.KEK, fam.adminMemberId);
+    await syncMemberMirror(db, registry, testKeys(), fam.adminMemberId);
     const travelFor = (eventId: string) =>
       fake.upserts.find((u) => u.event.uid === `igt-${eventId}`)?.event.travelTimeMinutes;
 
@@ -553,7 +553,7 @@ describe('mirror reconcile (syncMemberMirror)', () => {
     const db = getDb(env.DB);
     await insertEvent(db, fam.familyId, fam.childId, { synthKey: 'bl:l1:2026-07-06' });
     const registry = new DeliveryProviderRegistry().register(new FakeProvider('caldav'));
-    const r = await syncMemberMirror(db, registry, env.KEK, fam.childId);
+    const r = await syncMemberMirror(db, registry, testKeys(), fam.childId);
     expect(r).toMatchObject({ targets: 0, created: 0, errors: [] });
   });
 });
@@ -699,16 +699,13 @@ describe('member calendar-target routes', () => {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ token: devToken }),
     });
-    const partnerUserId = ((await verify.json()) as { user: { id: string } }).user.id;
+    const { sessionToken: partnerToken } = (await verify.json()) as { sessionToken: string };
     const partnerRes = await call(
       `/families/${fam.familyId}/members`,
-      authed(fam.admin.token, {
-        relationName: 'partner',
-        isCaretaker: true,
-        userId: partnerUserId,
-      }),
+      authed(fam.admin.token, { relationName: 'partner', isCaretaker: true }),
     );
     const partnerId = ((await partnerRes.json()) as { member: { id: string } }).member.id;
+    await linkMember(fam.admin.token, fam.familyId, partnerId, partnerToken);
 
     const acct2 = await call(
       '/accounts',

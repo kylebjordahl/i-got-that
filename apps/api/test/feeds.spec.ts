@@ -4,6 +4,7 @@ import {
   calendarEvents,
   eq,
   externalAccounts,
+  feeds as feedsTable,
   getDb,
   memberCalendars,
   tasks,
@@ -19,6 +20,7 @@ import {
   patched,
   put,
   setupFamily,
+  testKeys,
 } from './helpers.js';
 
 const FEED_ORIGIN = 'https://feed.example.com';
@@ -113,6 +115,14 @@ describe('feed ingest', () => {
     };
     expect(r1.ingest.fetched).toBe(true);
     expect(r1.ingest.processed).toBe(2);
+
+    // Back-to-back refreshes are cooldown-gated (`refreshMinutes`, default
+    // 360) — clear the stamp to simulate the cooldown having elapsed, so
+    // this can assert idempotent re-ingest rather than the cooldown.
+    await getDb(env.DB)
+      .update(feedsTable)
+      .set({ lastRefreshRequestedAt: null })
+      .where(eq(feedsTable.id, feed.id));
 
     // Re-ingest is idempotent (no duplicate source_events).
     const refresh2 = await call(
@@ -307,7 +317,7 @@ describe('feed ingest', () => {
     const db = getDb(env.DB);
     const credRef = await storeSecret(
       db,
-      env.KEK,
+      testKeys(),
       null,
       // A pre-resolved access token — no live Google OAuth refresh needed.
       JSON.stringify({ kind: 'oauth', accessToken: 'test-access-token' }),
@@ -387,6 +397,94 @@ describe('feed ingest', () => {
       .from(calendarEvents)
       .where(eq(calendarEvents.id, humanBefore[0]!.id));
     expect(humanAfter[0]!.summary).toBe('Playdate with Sam (moved to Rec Center)');
+  });
+
+  it('enforces the refresh cooldown on /refresh, then allows it again once the window elapses', async () => {
+    stubFeed(2); // the first (accepted) refresh's ingest + the one after the reset
+    const admin = await login('cooldown-single@example.com');
+    const familyId = await createFamily(admin.token, 'Cooldown Fam');
+    const feedRes = await call(
+      `/families/${familyId}/feeds`,
+      authed(admin.token, { url: FEED_URL, mode: 'exception' }),
+    );
+    const { feed } = (await feedRes.json()) as { feed: { id: string; refreshMinutes: number } };
+    expect(feed.refreshMinutes).toBeGreaterThan(0); // default 360; cooldown is meaningful
+
+    // A brand-new feed has never been refresh-requested, so the first call
+    // goes through and stamps `lastRefreshRequestedAt`.
+    const accepted = await call(`/families/${familyId}/feeds/${feed.id}/refresh`, authed(admin.token));
+    expect(accepted.status).toBe(200);
+
+    // Immediately calling it again is within the cooldown window → rejected.
+    const rejected = await call(`/families/${familyId}/feeds/${feed.id}/refresh`, authed(admin.token));
+    expect(rejected.status).toBe(429);
+    const rejectedBody = (await rejected.json()) as { error: string; retryAfterSeconds: number };
+    expect(rejectedBody.error).toBe('refresh_cooldown');
+    expect(rejectedBody.retryAfterSeconds).toBeGreaterThan(0);
+    expect(rejected.headers.get('Retry-After')).toBeTruthy();
+
+    const db = getDb(env.DB);
+    const afterRejection = (
+      await db.select().from(feedsTable).where(eq(feedsTable.id, feed.id)).limit(1)
+    )[0]!;
+    const stampedAtAcceptance = afterRejection.lastRefreshRequestedAt!.getTime();
+
+    // Simulate the cooldown window having elapsed.
+    await db
+      .update(feedsTable)
+      .set({
+        lastRefreshRequestedAt: new Date(
+          Date.now() - (feed.refreshMinutes * 60_000 + 1000),
+        ),
+      })
+      .where(eq(feedsTable.id, feed.id));
+
+    const allowed = await call(`/families/${familyId}/feeds/${feed.id}/refresh`, authed(admin.token));
+    expect(allowed.status).toBe(200);
+
+    // The rejected attempt must not have re-stamped the timestamp — only the
+    // two accepted calls did, and the second of those (`allowed`) moved it
+    // forward from the manually-rewound value.
+    const afterAllowed = (
+      await db.select().from(feedsTable).where(eq(feedsTable.id, feed.id)).limit(1)
+    )[0]!;
+    expect(afterAllowed.lastRefreshRequestedAt!.getTime()).toBeGreaterThan(stampedAtAcceptance - 1000);
+  });
+
+  it('enforces the refresh cooldown on /refresh-all across the family, then allows it again once elapsed', async () => {
+    stubFeed(2); // the first (accepted) refresh-all's ingest + the one after the reset
+    const admin = await login('cooldown-all@example.com');
+    const familyId = await createFamily(admin.token, 'Cooldown Fam All');
+    const feedRes = await call(
+      `/families/${familyId}/feeds`,
+      authed(admin.token, { url: FEED_URL, mode: 'exception' }),
+    );
+    const { feed } = (await feedRes.json()) as { feed: { id: string; refreshMinutes: number } };
+
+    // A brand-new feed has never been refresh-requested, so the first
+    // refresh-all goes through and stamps every family feed.
+    const accepted = await call(`/families/${familyId}/feeds/refresh-all`, authed(admin.token));
+    expect(accepted.status).toBe(200);
+
+    // Immediately calling it again is within the cooldown window → rejected.
+    const rejected = await call(`/families/${familyId}/feeds/refresh-all`, authed(admin.token));
+    expect(rejected.status).toBe(429);
+    const rejectedBody = (await rejected.json()) as { error: string; retryAfterSeconds: number };
+    expect(rejectedBody.error).toBe('refresh_cooldown');
+    expect(rejectedBody.retryAfterSeconds).toBeGreaterThan(0);
+
+    const db = getDb(env.DB);
+    await db
+      .update(feedsTable)
+      .set({
+        lastRefreshRequestedAt: new Date(
+          Date.now() - (feed.refreshMinutes * 60_000 + 1000),
+        ),
+      })
+      .where(eq(feedsTable.id, feed.id));
+
+    const allowed = await call(`/families/${familyId}/feeds/refresh-all`, authed(admin.token));
+    expect(allowed.status).toBe(200);
   });
 });
 

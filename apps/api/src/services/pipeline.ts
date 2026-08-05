@@ -2,6 +2,7 @@ import { eq, familyMemberFeeds, type feeds, type Db } from '@igt/db';
 import type { Bindings } from '../env.js';
 import { googleRefresherFor } from '../lib/google-oauth.js';
 import { createGuardedFetch } from '../lib/outbound-url.js';
+import { buildKekKeySet } from '../lib/secrets.js';
 import { reconcileMemberConflicts } from './conflicts.js';
 import { ingestFeed } from './ingest.js';
 import { enqueueReconcile } from './mirror.js';
@@ -26,7 +27,7 @@ export interface PipelineContext {
  */
 export function ingestSecrets(env: Bindings) {
   return {
-    kek: env.KEK,
+    kek: buildKekKeySet(env),
     googleRefresh: googleRefresherFor(env),
     fetchImpl: createGuardedFetch(env),
   };

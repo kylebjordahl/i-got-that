@@ -7,6 +7,7 @@ import { reconcileFamilyConflicts } from './services/conflicts.js';
 import { getProductionRegistry, syncFamilyMirror } from './services/mirror.js';
 import { ingestFeed } from './services/ingest.js';
 import { readBackFamily } from './services/readback.js';
+import { buildKekKeySet } from './lib/secrets.js';
 import { synthesizeFeed } from './services/synthesis.js';
 import { buildFamilyTasks } from './services/task-gen.js';
 
@@ -34,8 +35,9 @@ export async function scheduled(
 ): Promise<void> {
   const db = getDb(env.DB);
   const registry = getProductionRegistry(env);
+  const keys = buildKekKeySet(env);
   const secrets = {
-    kek: env.KEK,
+    kek: keys,
     googleRefresh: googleRefresherFor(env),
     // Every feed / read-back URL in here came from a user; the guard re-vets
     // each one at request time (these rows may predate the policy).
@@ -65,7 +67,7 @@ export async function scheduled(
           await reconcileFamilyConflicts(db, fam.id);
           await buildFamilyTasks(db, fam.id);
           await reconcileClaimEvents(db, fam.id);
-          await syncFamilyMirror(db, registry, env.KEK, fam.id);
+          await syncFamilyMirror(db, registry, keys, fam.id);
         } catch (err) {
           console.error(`scheduled tick failed for family ${fam.id}`, err);
         }

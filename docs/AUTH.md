@@ -477,17 +477,22 @@ through connecting one calendar. See the `/invites` endpoints.
 ### Invite deep link
 
 `POST /families/:familyId/members/:memberId/invite` returns
-`{ token, expiresAt, url }`. When `PUBLIC_ORIGIN` is set, `url` is a shareable
-deep link:
+`{ id, token, expiresAt, url }`. When `PUBLIC_ORIGIN` is set, `url` is a
+shareable deep link:
 
 ```
-<PUBLIC_ORIGIN>/app/?invite=<token>
+<PUBLIC_ORIGIN>/app/#invite=<token>
 ```
+
+The token rides in the URL **fragment**, not a query param — fragments never
+leave the browser (no `Referer` header on outbound links from the landing
+page, never logged server-side), unlike `?invite=`.
 
 One URL serves both surfaces:
 
-- **Web** — the Flutter web client reads `?invite=` (or `#invite=`) from the
-  launch URL and renders the join flow (`onboarding/onboarding_entry.dart`).
+- **Web** — the Flutter web client reads `#invite=` (or, for back-compat,
+  `?invite=`) from the launch URL and renders the join flow
+  (`onboarding/onboarding_entry.dart`).
 - **iOS** — the same URL is a **Universal Link**: with the app installed,
   tapping it opens the app straight into the join flow (`app_links` captures the
   link and seeds `activeInviteTokenProvider` in `main.dart`); without the app,
@@ -498,6 +503,16 @@ stays as a fallback — the URL still contains the raw token.
 
 Without `PUBLIC_ORIGIN` (local dev / tests), `url` is `null` and the client
 shows the bare token with the paste-the-code instructions.
+
+Like `sessions`/`auth_tokens`, only a SHA-256 hash of the token is persisted
+(`invites.tokenHash`) — the raw value is returned once, at creation, and never
+stored. Invites expire after **48 hours** (`INVITE_TTL_MS`,
+`services/invites.ts`) — short enough that a stale link stops being a usable
+credential quickly, since the flow is normally completed within minutes. An
+admin can see and cancel outstanding invites via `GET
+/families/:familyId/invites` and `DELETE /families/:familyId/invites/:id`
+(soft-delete: sets `status = 'revoked'`, so the row — and audit trail —
+survives).
 
 ### iOS Universal Links setup
 

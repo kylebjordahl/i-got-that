@@ -14,8 +14,34 @@ export interface Bindings {
      * Unset (local dev / tests) ⇒ features that need an absolute public URL are off.
      */
     PUBLIC_ORIGIN?: string;
-    /** base64 of 32 random bytes; the key-encryption key for envelope encryption. */
+    /**
+     * base64 of 32 random bytes. Historically the single key-encryption key
+     * for envelope encryption (`lib/secrets.ts`); that role has moved to the
+     * versioned `KEK_V<n>` bindings below. `KEK` now only backs the state
+     * cookie's signing secret (`routes/auth.ts`'s `cookieSecret`) — see issue
+     * #143 for retiring that reuse.
+     */
     KEK?: string;
+    /**
+     * Versioned key-encryption keys for envelope-encrypted secrets
+     * (`lib/secrets.ts`) — each `KEK_V<n>` is base64 of 32 random bytes, set
+     * via `wrangler secret put KEK_V<n> [--env <env>]`. Only `KEK_V1` needs to
+     * exist today (it carries the same value the single `KEK` used to). Add a
+     * `KEK_V<n>` field here (and set the matching secret) for each new version
+     * as you rotate — `lib/secrets.ts#buildKekKeySet` looks versions up by
+     * name, so no other code changes with each rotation. See
+     * `docs/DEPLOYMENT.md` § KEK rotation.
+     */
+    KEK_V1?: string;
+    /**
+     * Which `KEK_V<n>` new secrets are encrypted with (`encryptSecret` stamps
+     * `secrets.keyVersion` from this). Unset ⇒ version 1, matching today's
+     * single-key deployments. Existing rows keep decrypting with whichever
+     * version they were stamped with, as long as that `KEK_V<n>` stays
+     * configured — bump this only after the new `KEK_V<n>` secret is set, then
+     * run `tools/rotate-kek.ts` to re-encrypt rows still on the old version.
+     */
+    KEK_CURRENT_VERSION?: string;
     /**
      * Escape hatch for the outbound-URL (SSRF) policy in
      * `lib/outbound-url.ts`: comma-separated `host` or `host:port` entries that

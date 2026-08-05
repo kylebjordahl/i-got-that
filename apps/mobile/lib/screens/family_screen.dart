@@ -69,7 +69,6 @@ class FamilyScreen extends ConsumerWidget {
           const SectionEyebrow('Automation', color: AppColors.indigo),
           const SizedBox(height: 12),
           AppCard(
-            padding: EdgeInsets.zero,
             child: SettingRow(
               icon: Icons.rule_rounded,
               iconColor: AppColors.indigo,

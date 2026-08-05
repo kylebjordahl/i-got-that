@@ -12,6 +12,7 @@ import { verifyAppleIdentityToken, verifyAppleNotificationToken } from '../lib/a
 import { randomToken } from '../lib/crypto.js';
 import { connectGoogleAccount } from '../lib/google-account.js';
 import { verifyGoogleIdentityToken } from '../lib/google-identity.js';
+import { buildKekKeySet } from '../lib/secrets.js';
 import {
   buildGoogleAuthorizeUrl,
   decodeGoogleIdToken,
@@ -34,6 +35,7 @@ import {
   linkGoogleIdentity,
   linkMagicLinkIdentity,
   listIdentities,
+  MagicLinkCapExceededError,
   requestMagicLink,
   unlinkIdentity,
   verifyMagicLink,
@@ -60,7 +62,15 @@ authRoutes.post('/magic-link/request', async (c) => {
     return c.json({ error: 'invalid', issues: parsed.error.issues }, 400);
   }
 
-  const rawToken = await requestMagicLink(getDb(c.env.DB), parsed.data.email);
+  let rawToken: string;
+  try {
+    rawToken = await requestMagicLink(getDb(c.env.DB), parsed.data.email);
+  } catch (err) {
+    if (err instanceof MagicLinkCapExceededError) {
+      return c.json({ error: 'too_many_requests' }, 429);
+    }
+    throw err;
+  }
   await getMailer(c.env).sendMagicLink({
     to: parsed.data.email,
     token: rawToken,
@@ -101,11 +111,12 @@ async function autoConnectGoogleCalendarNative(
   db: ReturnType<typeof getDb>,
   opts: { userId: string; serverAuthCode?: string; email?: string },
 ): Promise<void> {
-  if (!opts.serverAuthCode || !env.KEK || !googleOAuthConfigured(env)) return;
+  const keys = buildKekKeySet(env);
+  if (!opts.serverAuthCode || !keys || !googleOAuthConfigured(env)) return;
   try {
     const tokens = await exchangeGoogleCode(env, { code: opts.serverAuthCode });
     if (tokens.refreshToken) {
-      await connectGoogleAccount(db, env.KEK, {
+      await connectGoogleAccount(db, keys, {
         userId: opts.userId,
         refreshToken: tokens.refreshToken,
         email: opts.email,
@@ -452,9 +463,10 @@ authRoutes.get('/google/callback', async (c) => {
   }
 
   // Auto-connect the Google Calendar from the refresh token this consent yielded.
-  if (tokens.refreshToken && c.env.KEK) {
+  const kekKeys = buildKekKeySet(c.env);
+  if (tokens.refreshToken && kekKeys) {
     try {
-      await connectGoogleAccount(db, c.env.KEK, {
+      await connectGoogleAccount(db, kekKeys, {
         userId,
         refreshToken: tokens.refreshToken,
         email: identity.email,

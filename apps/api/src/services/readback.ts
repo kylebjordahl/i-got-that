@@ -16,6 +16,7 @@ import {
   type Occurrence,
 } from '@igt/ical';
 import { resolveAccountCredential } from '../lib/account-credentials.js';
+import type { KekKeySet } from '../lib/secrets.js';
 import { hashCalendarEvent, synthesisWindow } from './synthesis.js';
 
 type MemberCalendarRow = typeof memberCalendars.$inferSelect;
@@ -24,8 +25,8 @@ export interface ReadBackOptions {
   fetchImpl?: typeof fetch;
   windowStart?: Date;
   windowEnd?: Date;
-  /** Envelope key — required to decrypt the target account's credential. */
-  kek?: string;
+  /** Envelope key set — required to decrypt the target account's credential. */
+  kek?: KekKeySet;
   /** Exchange a Google refresh token for an access token (host holds the client secret). */
   googleRefresh?: (refreshToken: string) => Promise<string>;
 }

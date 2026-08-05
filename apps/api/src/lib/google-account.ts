@@ -1,5 +1,5 @@
 import { and, type Db, eq, externalAccounts, secrets } from '@igt/db';
-import { storeSecret } from './secrets.js';
+import { storeSecret, type KekKeySet } from './secrets.js';
 
 /**
  * Connect (or refresh) a user's Google Calendar as an `external_accounts` row,
@@ -14,7 +14,7 @@ import { storeSecret } from './secrets.js';
  */
 export async function connectGoogleAccount(
   db: Db,
-  kek: string,
+  keys: KekKeySet,
   opts: { userId: string; refreshToken: string; email?: string },
 ): Promise<string> {
   const label = opts.email ?? 'Google Calendar';
@@ -38,7 +38,7 @@ export async function connectGoogleAccount(
       .limit(1)
   )[0];
 
-  const credentialsRef = await storeSecret(db, kek, null, payload);
+  const credentialsRef = await storeSecret(db, keys, null, payload);
 
   if (existing) {
     await db

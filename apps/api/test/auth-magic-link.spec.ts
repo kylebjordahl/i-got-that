@@ -81,4 +81,39 @@ describe('magic-link request', () => {
     });
     expect(verify.status).toBe(200);
   });
+
+  it('caps outstanding tokens per email — rejects the 4th while 3 are still unconsumed/unexpired', async () => {
+    const email = 'capped@example.com';
+    for (let i = 0; i < 3; i++) {
+      const res = await call('/auth/magic-link/request', requestBody(email));
+      expect(res.status).toBe(200);
+      expect(((await res.json()) as { sent: boolean }).sent).toBe(true);
+    }
+
+    const fourth = await call('/auth/magic-link/request', requestBody(email));
+    expect(fourth.status).toBe(429);
+    expect(await fourth.json()).toEqual({ error: 'too_many_requests' });
+  });
+
+  it('frees a cap slot once an outstanding token is consumed', async () => {
+    const email = 'capped-then-consumed@example.com';
+    let lastDevToken = '';
+    for (let i = 0; i < 3; i++) {
+      const res = await call('/auth/magic-link/request', requestBody(email));
+      expect(res.status).toBe(200);
+      lastDevToken = ((await res.json()) as { devToken: string }).devToken;
+    }
+    expect(await (await call('/auth/magic-link/request', requestBody(email))).status).toBe(429);
+
+    // Consuming one of the three outstanding tokens frees a slot.
+    const verify = await call('/auth/magic-link/verify', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ token: lastDevToken }),
+    });
+    expect(verify.status).toBe(200);
+
+    const afterConsume = await call('/auth/magic-link/request', requestBody(email));
+    expect(afterConsume.status).toBe(200);
+  });
 });

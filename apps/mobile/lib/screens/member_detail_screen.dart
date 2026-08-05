@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:share_plus/share_plus.dart';
 import '../models.dart';
+import '../services/geocoding.dart';
 import '../state/auth.dart';
 import '../state/family.dart';
 import '../state/nav.dart';
@@ -10,6 +11,7 @@ import '../theme/app_colors.dart';
 import '../theme/app_text.dart';
 import '../theme/person_colors.dart';
 import '../widgets/app_bottom_nav.dart';
+import '../widgets/location_picker.dart';
 import '../widgets/primitives.dart';
 import '../widgets/settings.dart';
 import 'add_calendar_sheet.dart';
@@ -20,8 +22,9 @@ import 'task_rules_screen.dart';
 
 /// One detail screen for every family member — child and caretaker alike (6e).
 /// Three sections, each with a full-height accent bar: Source calendars, the
-/// Unified (target) calendar, and Family logistics (task generation + claiming
-/// merged). Identity — name / color / role / admin — is edited in the ✎ modal.
+/// Unified (target) calendar, and Family logistics (task generation + claiming,
+/// plus the home address used for travel time). Identity — name / color / role
+/// / admin — is edited in the ✎ modal.
 class MemberDetailScreen extends ConsumerWidget {
   const MemberDetailScreen({super.key, required this.memberId});
   final String memberId;
@@ -95,6 +98,7 @@ class MemberDetailScreen extends ConsumerWidget {
                     child: _FamilyLogisticsSection(
                       member: member,
                       canEdit: isAdmin,
+                      canEditHome: isAdmin || isSelf,
                     ),
                   ),
                   const SizedBox(height: 28),
@@ -612,23 +616,31 @@ class _AccentSection extends StatelessWidget {
 }
 
 /// "Family logistics" (6e) — task generation + claiming are one feature, so
-/// they live together. Admin access moved to the member editor (6h).
+/// they live together, alongside the home address travel time is measured
+/// from. Admin access moved to the member editor (6h).
 class _FamilyLogisticsSection extends ConsumerWidget {
-  const _FamilyLogisticsSection({required this.member, required this.canEdit});
+  const _FamilyLogisticsSection({
+    required this.member,
+    required this.canEdit,
+    required this.canEditHome,
+  });
   final Member member;
   final bool canEdit;
+  final bool canEditHome;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final generates = member.generatesFamilyTasks;
+    final home = member.homeLocation?.trim();
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         const SectionEyebrow('Family logistics', color: AppColors.amber),
         const SizedBox(height: 8),
         Text(
-          "Turn this person's events into tasks the family can claim — and "
-          'whether this person can claim others’ tasks.',
+          "Turn this person's events into tasks the family can claim, whether "
+          'this person can claim others’ tasks, and the home address travel '
+          'time is measured from.',
           style: AppText.subtitle,
         ),
         const SizedBox(height: 12),
@@ -675,6 +687,18 @@ class _FamilyLogisticsSection extends ConsumerWidget {
                     ? (v) => _setFlag(ref, isCaretaker: v)
                     : null,
               ),
+              const Divider(height: 20),
+              SettingRow(
+                icon: Icons.place_outlined,
+                iconColor: AppColors.blue,
+                title: 'Home address',
+                subtitle: home?.isNotEmpty == true
+                    ? home
+                    : 'Not set — used for travel time',
+                onTap: canEditHome
+                    ? () => _showHomeAddressSheet(context)
+                    : null,
+              ),
             ],
           ),
         ),
@@ -708,6 +732,125 @@ class _FamilyLogisticsSection extends ConsumerWidget {
     ref.invalidate(currentMemberProvider);
     ref.invalidate(unownedTasksProvider);
     ref.invalidate(allTasksProvider);
+  }
+
+  Future<void> _showHomeAddressSheet(BuildContext context) {
+    return showModalBottomSheet<void>(
+      context: context,
+      useRootNavigator: true,
+      showDragHandle: true,
+      isScrollControlled: true,
+      backgroundColor: AppColors.card,
+      builder: (_) => _HomeAddressSheet(member: member),
+    );
+  }
+}
+
+/// Editor for the home address moved out of the member editor (6h) and into
+/// Family logistics — it drives travel time for claimed drop-offs/pickups, so
+/// it reads as logistics rather than identity.
+class _HomeAddressSheet extends ConsumerStatefulWidget {
+  const _HomeAddressSheet({required this.member});
+  final Member member;
+
+  @override
+  ConsumerState<_HomeAddressSheet> createState() => _HomeAddressSheetState();
+}
+
+class _HomeAddressSheetState extends ConsumerState<_HomeAddressSheet> {
+  late final TextEditingController _home = TextEditingController(
+    text: widget.member.homeLocation ?? '',
+  );
+  late GeoLocation? _homeGeo = widget.member.homeLocationGeo;
+  bool _busy = false;
+  String? _error;
+
+  @override
+  void dispose() {
+    _home.dispose();
+    super.dispose();
+  }
+
+  Future<void> _save() async {
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      final familyId = await ref.read(familyProvider.future);
+      final home = _home.text.trim();
+      await ref
+          .read(apiClientProvider)
+          .updateMember(
+            familyId,
+            widget.member.id,
+            homeLocation: home.isEmpty ? null : home,
+            // Keep the geocode only while the text still matches the picked
+            // place; an empty field clears both. `null` is a real value (clear).
+            homeLocationGeo: home.isEmpty ? null : _homeGeo,
+          );
+      ref.invalidate(membersProvider);
+      ref.invalidate(currentMemberProvider);
+      if (mounted) Navigator.of(context).pop();
+    } catch (e) {
+      setState(() {
+        _busy = false;
+        _error = '$e';
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: EdgeInsets.fromLTRB(
+        22,
+        4,
+        22,
+        22 + MediaQuery.of(context).viewInsets.bottom,
+      ),
+      child: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Home address', style: AppText.subPageTitle),
+            const SizedBox(height: 16),
+            LocationPickerField(
+              controller: _home,
+              geo: _homeGeo,
+              geocoder: ref.watch(geocoderProvider),
+              onChanged: (_, geo) => setState(() => _homeGeo = geo),
+              label: 'Home address',
+              hint: 'Where the day starts and ends',
+            ),
+            const SizedBox(height: 6),
+            Text(
+              'Pick a place (not just text) and drop-offs and pickups mirror out '
+              'with travel time measured from here — used whenever nothing earlier '
+              'on the calendar says where they are.',
+              style: AppText.subtitle,
+            ),
+            if (_error != null) ...[
+              const SizedBox(height: 12),
+              Text(
+                _error!,
+                style: font(kBodyFont, 13, 500, color: AppColors.coral),
+              ),
+            ],
+            const SizedBox(height: 20),
+            SizedBox(
+              width: double.infinity,
+              child: PillButton(
+                label: 'Save',
+                variant: PillVariant.indigo,
+                onPressed: _busy ? null : _save,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }
 

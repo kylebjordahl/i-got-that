@@ -401,7 +401,6 @@ export const CreateFamilyMemberInput = z.object({
   // generating them. Resolved from `isCaretaker` server-side when omitted.
   generatesFamilyTasks: z.boolean().optional(),
   color: HexColor.optional(),
-  userId: Id.optional(),
 });
 export type CreateFamilyMemberInput = z.infer<typeof CreateFamilyMemberInput>;
 
