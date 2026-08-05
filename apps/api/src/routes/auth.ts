@@ -9,7 +9,7 @@ import { Hono } from 'hono';
 import { deleteCookie, getSignedCookie, setSignedCookie } from 'hono/cookie';
 import type { HonoEnv } from '../env.js';
 import { verifyAppleIdentityToken, verifyAppleNotificationToken } from '../lib/apple.js';
-import { randomToken } from '../lib/crypto.js';
+import { randomToken, sha256hex } from '../lib/crypto.js';
 import { connectGoogleAccount } from '../lib/google-account.js';
 import { verifyGoogleIdentityToken } from '../lib/google-identity.js';
 import { buildKekKeySet } from '../lib/secrets.js';
@@ -18,11 +18,13 @@ import {
   decodeGoogleIdToken,
   exchangeGoogleCode,
   googleOAuthConfigured,
+  revokeGoogleToken,
 } from '../lib/google-oauth.js';
 import { getMailer } from '../lib/mailer.js';
 import { clearSessionCookie, sessionToken, setSessionCookie } from '../lib/session-cookie.js';
 import { authMiddleware } from '../middleware/auth.js';
 import {
+  type AccountCleanupOptions,
   accountDeletionBlocked,
   createSession,
   deleteSession,
@@ -36,6 +38,7 @@ import {
   linkMagicLinkIdentity,
   listIdentities,
   MagicLinkCapExceededError,
+  recordAppleNotificationOnce,
   requestMagicLink,
   unlinkIdentity,
   verifyMagicLink,
@@ -127,42 +130,57 @@ async function autoConnectGoogleCalendarNative(
   }
 }
 
-/** The signing secret for the state cookie — reuses the per-env KEK. */
-function cookieSecret(env: HonoEnv['Bindings']): string {
-  return env.KEK ?? 'insecure-dev-cookie-secret';
-}
-
 /**
  * Config for the web redirect flow, derived from PUBLIC_ORIGIN + the Services ID.
- * Null when either is unset (⇒ the web routes report 501). `redirectUri` is the
- * Apple Return URL (must be registered on the Services ID); `appBase` is where we
- * send the browser back with the session.
+ * Null when any of those — including the dedicated `COOKIE_SIGNING_KEY` — is
+ * unset (⇒ the web routes report 501; **never** fall back to a constant signing
+ * secret). `redirectUri` is the Apple Return URL (must be registered on the
+ * Services ID); `appBase` is where we send the browser back with the session.
  */
 function appleWebConfig(
   env: HonoEnv['Bindings'],
-): { clientId: string; redirectUri: string; appBase: URL } | null {
-  if (!env.APPLE_WEB_CLIENT_ID || !env.PUBLIC_ORIGIN) return null;
+): { clientId: string; redirectUri: string; appBase: URL; cookieSigningKey: string } | null {
+  if (!env.APPLE_WEB_CLIENT_ID || !env.PUBLIC_ORIGIN || !env.COOKIE_SIGNING_KEY) return null;
   return {
     clientId: env.APPLE_WEB_CLIENT_ID,
     redirectUri: new URL(APPLE_CALLBACK_PATH, env.PUBLIC_ORIGIN).toString(),
     appBase: new URL('/app/', env.PUBLIC_ORIGIN),
+    cookieSigningKey: env.COOKIE_SIGNING_KEY,
   };
 }
 
 /**
  * Config for the Google login / connect redirect flow, derived from the OAuth
- * client credentials + PUBLIC_ORIGIN. Null when Google OAuth is unconfigured or
- * PUBLIC_ORIGIN is unset (⇒ the routes report 501). `redirectUri` is the Google
- * Authorized redirect URI (register it in the Cloud Console); `appBase` is where
- * we send the browser back with the session / connect result.
+ * client credentials + PUBLIC_ORIGIN. Null when Google OAuth is unconfigured,
+ * PUBLIC_ORIGIN is unset, or `COOKIE_SIGNING_KEY` is unset (⇒ the routes report
+ * 501; **never** fall back to a constant signing secret). `redirectUri` is the
+ * Google Authorized redirect URI (register it in the Cloud Console); `appBase`
+ * is where we send the browser back with the session / connect result.
  */
 function googleWebConfig(
   env: HonoEnv['Bindings'],
-): { redirectUri: string; appBase: URL } | null {
-  if (!googleOAuthConfigured(env) || !env.PUBLIC_ORIGIN) return null;
+): { redirectUri: string; appBase: URL; cookieSigningKey: string } | null {
+  if (!googleOAuthConfigured(env) || !env.PUBLIC_ORIGIN || !env.COOKIE_SIGNING_KEY) return null;
   return {
     redirectUri: new URL(GOOGLE_CALLBACK_PATH, env.PUBLIC_ORIGIN).toString(),
     appBase: new URL('/app/', env.PUBLIC_ORIGIN),
+    cookieSigningKey: env.COOKIE_SIGNING_KEY,
+  };
+}
+
+/**
+ * Options threaded into account-deletion paths (`DELETE /me`, the Apple
+ * `account-delete` S2S notification) so they best-effort revoke a connected
+ * Google account's refresh token upstream before cleaning up orphaned
+ * credentials. `revokeGoogleToken` itself never throws-through (see
+ * `deleteUserAndCleanupCredentials`), so this is safe to pass unconditionally.
+ */
+function accountCleanupOptions(env: HonoEnv['Bindings']): AccountCleanupOptions {
+  return {
+    kek: env.KEK,
+    revokeGoogleToken: googleOAuthConfigured(env)
+      ? (refreshToken: string) => revokeGoogleToken(env, refreshToken)
+      : undefined,
   };
 }
 
@@ -182,7 +200,10 @@ authRoutes.post('/apple', async (c) => {
 
   let identity;
   try {
-    identity = await verifyAppleIdentityToken(parsed.data.identityToken, { audience });
+    identity = await verifyAppleIdentityToken(parsed.data.identityToken, {
+      audience,
+      rawNonce: parsed.data.nonce,
+    });
   } catch (err) {
     return c.json({ error: 'invalid_apple_token', message: String(err) }, 401);
   }
@@ -217,24 +238,39 @@ authRoutes.get('/apple/start', async (c) => {
   // SPA is same-origin, so the `igt_session` cookie is sent on this navigation),
   // the callback threads Apple onto the current user instead of starting a fresh
   // session. Without a session it degrades to a normal login.
-  let linkUserId = '';
+  //
+  // We stash the *live session token itself* (not a pre-resolved user id) in
+  // the OAuth cookie: the `igt_session` cookie is SameSite=Lax, which browsers
+  // won't deliver on Apple's cross-site top-level POST callback, so it can't be
+  // re-read there directly. Embedding the token here — inside the cookie that's
+  // already proven to survive that transport — lets the callback independently
+  // re-resolve the session (defense in depth: a compromised COOKIE_SIGNING_KEY
+  // alone isn't enough to forge a link target, since the embedded value also has
+  // to resolve to a real, still-valid session via a DB lookup).
+  let linkSessionToken = '';
   if (c.req.query('link') === '1') {
     const token = sessionToken(c);
     const user = token ? await getUserBySessionToken(getDb(c.env.DB), token) : null;
-    if (user) linkUserId = user.id;
+    if (user && token) linkSessionToken = token;
   }
 
   const state = randomToken();
   const nonce = randomToken();
-  await setSignedCookie(c, APPLE_OAUTH_COOKIE, `${state}.${nonce}.${linkUserId}`, cookieSecret(c.env), {
-    httpOnly: true,
-    secure: true,
-    // Apple's form-POST is a cross-site top-level navigation, so the cookie must
-    // be SameSite=None to ride along on the callback.
-    sameSite: 'None',
-    path: '/',
-    maxAge: APPLE_OAUTH_TTL_S,
-  });
+  await setSignedCookie(
+    c,
+    APPLE_OAUTH_COOKIE,
+    `${state}.${nonce}.${linkSessionToken}`,
+    web.cookieSigningKey,
+    {
+      httpOnly: true,
+      secure: true,
+      // Apple's form-POST is a cross-site top-level navigation, so the cookie must
+      // be SameSite=None to ride along on the callback.
+      sameSite: 'None',
+      path: '/',
+      maxAge: APPLE_OAUTH_TTL_S,
+    },
+  );
 
   const authorize = new URL(APPLE_AUTHORIZE_URL);
   authorize.search = new URLSearchParams({
@@ -271,7 +307,7 @@ authRoutes.post('/apple/callback', async (c) => {
     return c.redirect(to.toString(), 302);
   };
 
-  const cookie = await getSignedCookie(c, cookieSecret(c.env), APPLE_OAUTH_COOKIE);
+  const cookie = await getSignedCookie(c, web.cookieSigningKey, APPLE_OAUTH_COOKIE);
   deleteCookie(c, APPLE_OAUTH_COOKIE, { path: '/' });
 
   const form = await c.req.parseBody();
@@ -283,8 +319,8 @@ authRoutes.post('/apple/callback', async (c) => {
   if (errorParam) return back(`auth_error=${encodeURIComponent(errorParam)}`);
 
   // CSRF guard: the echoed `state` must match the one bound to this browser.
-  // A third segment (possibly empty) carries the user id for link mode.
-  const [expectedState, nonce, linkUserId] = (cookie || '').split('.');
+  // A third segment (possibly empty) carries the live session token for link mode.
+  const [expectedState, nonce, linkSessionToken] = (cookie || '').split('.');
   if (!cookie || !state || !expectedState || state !== expectedState) {
     return back('auth_error=state_mismatch');
   }
@@ -299,9 +335,15 @@ authRoutes.post('/apple/callback', async (c) => {
 
   const db = getDb(c.env.DB);
 
-  // Link mode: thread Apple onto the already-signed-in user; keep their session.
-  if (linkUserId) {
-    const result = await linkAppleIdentity(db, linkUserId, identity.sub);
+  // Link mode: never trust a cached user id — re-resolve the embedded session
+  // token live against the DB, and thread Apple onto whichever user it
+  // currently (still) belongs to. A stale/expired/revoked session (or a
+  // tampered cookie, though the HMAC would already have rejected that) simply
+  // fails to resolve here.
+  if (linkSessionToken) {
+    const linkUser = await getUserBySessionToken(db, linkSessionToken);
+    if (!linkUser) return back('auth_error=link_session_expired');
+    const result = await linkAppleIdentity(db, linkUser.id, identity.sub);
     if (!result.ok) return back(`auth_error=${result.error}`);
     return back('linked=apple');
   }
@@ -371,23 +413,32 @@ authRoutes.get('/google/start', async (c) => {
   const web = googleWebConfig(c.env);
   if (!web) return c.json({ error: 'google_web_not_configured' }, 501);
 
-  let linkUserId = '';
+  // See the matching comment in /apple/start: we embed the live session token
+  // itself (not a pre-resolved user id), and the callback independently
+  // re-resolves it against the DB before trusting it for link mode.
+  let linkSessionToken = '';
   if (c.req.query('link') === '1') {
     const token = sessionToken(c);
     const user = token ? await getUserBySessionToken(getDb(c.env.DB), token) : null;
-    if (user) linkUserId = user.id;
+    if (user && token) linkSessionToken = token;
   }
 
   const state = randomToken();
-  await setSignedCookie(c, GOOGLE_OAUTH_COOKIE, `${state}.${linkUserId}`, cookieSecret(c.env), {
-    httpOnly: true,
-    secure: true,
-    // Google's redirect back is a cross-site top-level navigation, so the cookie
-    // must be SameSite=None to ride along on the callback.
-    sameSite: 'None',
-    path: '/',
-    maxAge: GOOGLE_OAUTH_TTL_S,
-  });
+  await setSignedCookie(
+    c,
+    GOOGLE_OAUTH_COOKIE,
+    `${state}.${linkSessionToken}`,
+    web.cookieSigningKey,
+    {
+      httpOnly: true,
+      secure: true,
+      // Google's redirect back is a cross-site top-level navigation, so the cookie
+      // must be SameSite=None to ride along on the callback.
+      sameSite: 'None',
+      path: '/',
+      maxAge: GOOGLE_OAUTH_TTL_S,
+    },
+  );
 
   return c.redirect(
     buildGoogleAuthorizeUrl(c.env, { redirectUri: web.redirectUri, state, identity: true }),
@@ -415,7 +466,7 @@ authRoutes.get('/google/callback', async (c) => {
     return c.redirect(to.toString(), 302);
   };
 
-  const cookie = await getSignedCookie(c, cookieSecret(c.env), GOOGLE_OAUTH_COOKIE);
+  const cookie = await getSignedCookie(c, web.cookieSigningKey, GOOGLE_OAUTH_COOKIE);
   deleteCookie(c, GOOGLE_OAUTH_COOKIE, { path: '/' });
 
   const errorParam = c.req.query('error');
@@ -424,8 +475,8 @@ authRoutes.get('/google/callback', async (c) => {
   if (errorParam) return back(`auth_error=${encodeURIComponent(errorParam)}`);
 
   // CSRF guard: the echoed `state` must match the one bound to this browser.
-  // A second segment (possibly empty) carries the user id for link mode.
-  const [expectedState, linkUserId] = (cookie || '').split('.');
+  // A second segment (possibly empty) carries the live session token for link mode.
+  const [expectedState, linkSessionToken] = (cookie || '').split('.');
   if (!cookie || !state || !expectedState || state !== expectedState) {
     return back('auth_error=state_mismatch');
   }
@@ -449,14 +500,18 @@ authRoutes.get('/google/callback', async (c) => {
 
   const db = getDb(c.env.DB);
 
-  // Resolve the user: thread onto the signed-in user (link mode) or find/create.
+  // Resolve the user: thread onto the signed-in user (link mode, re-resolved
+  // live from the embedded session token — never trust a cached id) or
+  // find/create.
   let userId: string;
-  if (linkUserId) {
+  if (linkSessionToken) {
+    const linkUser = await getUserBySessionToken(db, linkSessionToken);
+    if (!linkUser) return back('auth_error=link_session_expired');
     // Best-effort identity threading — a `conflict` (this Google login already
     // belongs to someone else) or `already_linked` is fine; the calendar still
     // connects for the current user below.
-    await linkGoogleIdentity(db, linkUserId, identity.sub);
-    userId = linkUserId;
+    await linkGoogleIdentity(db, linkUser.id, identity.sub);
+    userId = linkUser.id;
   } else {
     const user = await findOrCreateUserByGoogle(db, identity.sub, identity.email);
     userId = user.id;
@@ -477,7 +532,7 @@ authRoutes.get('/google/callback', async (c) => {
     }
   }
 
-  if (linkUserId) return back('connected=google');
+  if (linkSessionToken) return back('connected=google');
 
   const token = await createSession(db, userId);
   setSessionCookie(c, token);
@@ -532,7 +587,17 @@ authRoutes.post('/apple/notifications', async (c) => {
     return c.json({ error: 'invalid_notification', message: String(err) }, 401);
   }
 
-  await handleAppleAccountEvent(getDb(c.env.DB), event);
+  const db = getDb(c.env.DB);
+
+  // Replay dedupe: `verifyAppleNotificationToken`'s `iat`/`event_time`
+  // freshness checks bound the window, but Apple retries redelivery on
+  // anything but a 200 — so a fresh, legitimately-signed redelivery must
+  // still no-op rather than re-apply a destructive event a second time.
+  const digest = await sha256hex(body.payload);
+  const firstTime = await recordAppleNotificationOnce(db, digest);
+  if (!firstTime) return c.body(null, 200);
+
+  await handleAppleAccountEvent(db, event, accountCleanupOptions(c.env));
   return c.body(null, 200);
 });
 
@@ -574,7 +639,7 @@ authRoutes.post('/logout', async (c) => {
  */
 authRoutes.delete('/me', authMiddleware, async (c) => {
   const user = c.get('user');
-  const result = await deleteUserAccount(getDb(c.env.DB), user.id);
+  const result = await deleteUserAccount(getDb(c.env.DB), user.id, accountCleanupOptions(c.env));
   if (result === 'last_admin') return c.json({ error: 'last_admin' }, 409);
   clearSessionCookie(c);
   return c.body(null, 204);
@@ -635,7 +700,10 @@ authRoutes.post('/link/apple', authMiddleware, async (c) => {
 
   let identity;
   try {
-    identity = await verifyAppleIdentityToken(parsed.data.identityToken, { audience });
+    identity = await verifyAppleIdentityToken(parsed.data.identityToken, {
+      audience,
+      rawNonce: parsed.data.nonce,
+    });
   } catch (err) {
     return c.json({ error: 'invalid_apple_token', message: String(err) }, 401);
   }
