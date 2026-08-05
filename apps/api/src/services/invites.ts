@@ -1,24 +1,34 @@
-import { and, type Db, eq, families, familyMembers, invites } from '@igt/db';
-import { randomToken } from '../lib/crypto.js';
+import { and, type Db, desc, eq, families, familyMembers, invites } from '@igt/db';
+import { randomToken, sha256hex } from '../lib/crypto.js';
 
 /**
  * Member-claim invites: an admin pre-creates a family member (no login), then
  * shares a link. When an authenticated user accepts it, their existing user is
  * linked to that member (sets family_members.user_id) — no new user is created,
  * so it also works for someone who already has an account in another family.
+ *
+ * Only a SHA-256 hash of the token is persisted (`invites.tokenHash`) — the
+ * raw value is handed back once, at creation, and never stored (same pattern
+ * as `auth_tokens`/`sessions` in services/auth.ts).
  */
 
-const INVITE_TTL_MS = 14 * 24 * 60 * 60 * 1000; // 14 days
+// Matched to the flow: a share link that's normally used within minutes, not
+// a long-lived credential. 48h gives an admin/invitee a couple of days of
+// slack without leaving stale bearer credentials sitting in the DB.
+export const INVITE_TTL_MS = 48 * 60 * 60 * 1000; // 48 hours
 
 export type Invite = typeof invites.$inferSelect;
+/** `createMemberClaimInvite`'s result: the stored row plus the one-time raw token. */
+export type CreatedInvite = Omit<Invite, 'tokenHash'> & { token: string };
 
 export async function createMemberClaimInvite(
   db: Db,
   familyId: string,
   memberId: string,
   issuedByMemberId: string,
-): Promise<Invite> {
+): Promise<CreatedInvite> {
   const token = randomToken();
+  const tokenHash = await sha256hex(token);
   const [row] = await db
     .insert(invites)
     .values({
@@ -26,22 +36,24 @@ export async function createMemberClaimInvite(
       familyId,
       memberId,
       issuedByMemberId,
-      token,
+      tokenHash,
       status: 'pending',
       expiresAt: new Date(Date.now() + INVITE_TTL_MS),
     })
     .returning();
-  return row!;
+  const { tokenHash: _tokenHash, ...rest } = row!;
+  return { ...rest, token };
 }
 
 /** Public preview of an invite (family + member names), by token. */
 export async function previewInvite(db: Db, token: string) {
+  const tokenHash = await sha256hex(token);
   const rows = await db
     .select({ invite: invites, family: families, member: familyMembers })
     .from(invites)
     .innerJoin(families, eq(families.id, invites.familyId))
     .leftJoin(familyMembers, eq(familyMembers.id, invites.memberId))
-    .where(eq(invites.token, token))
+    .where(eq(invites.tokenHash, tokenHash))
     .limit(1);
   const row = rows[0];
   if (!row) return null;
@@ -54,6 +66,36 @@ export async function previewInvite(db: Db, token: string) {
   };
 }
 
+/** Outstanding + historical invites for a family (admin view) — never exposes the token hash. */
+export async function listFamilyInvites(db: Db, familyId: string) {
+  const rows = await db
+    .select()
+    .from(invites)
+    .where(eq(invites.familyId, familyId))
+    .orderBy(desc(invites.createdAt));
+  return rows.map(({ tokenHash: _tokenHash, ...row }) => {
+    const expired = (row.expiresAt?.getTime() ?? 0) < Date.now();
+    return {
+      ...row,
+      status: expired && row.status === 'pending' ? 'expired' : row.status,
+    };
+  });
+}
+
+/** Soft-revoke an invite (admin) so its token can no longer be accepted. Returns false if not found. */
+export async function revokeInvite(
+  db: Db,
+  familyId: string,
+  inviteId: string,
+): Promise<boolean> {
+  const result = await db
+    .update(invites)
+    .set({ status: 'revoked' })
+    .where(and(eq(invites.id, inviteId), eq(invites.familyId, familyId)))
+    .returning({ id: invites.id });
+  return result.length > 0;
+}
+
 export type AcceptResult =
   | { ok: true; familyId: string; memberId: string }
   | { ok: false; error: string; httpStatus: 400 | 404 | 409 | 410 };
@@ -64,8 +106,9 @@ export async function acceptMemberClaimInvite(
   token: string,
   userId: string,
 ): Promise<AcceptResult> {
+  const tokenHash = await sha256hex(token);
   const invite = (
-    await db.select().from(invites).where(eq(invites.token, token)).limit(1)
+    await db.select().from(invites).where(eq(invites.tokenHash, tokenHash)).limit(1)
   )[0];
   if (!invite || invite.type !== 'claim_member' || !invite.memberId) {
     return { ok: false, error: 'invite_not_found', httpStatus: 404 };
