@@ -52,10 +52,18 @@ Repo → Settings → Secrets and variables → Actions → **New repository sec
 
 ### 3. GitHub Environments (protection + the prod gate)
 
-Repo → Settings → **Environments** → create **`staging`** and **`production`**.
-- On **`production`**, add yourself under **Required reviewers**. Publishing a
-  release then pauses the prod deploy until you approve it in the Actions run.
-- (Optional) restrict each environment's deployment branches to `main`.
+Repo → Settings → **Environments** → create **`staging-backend`**,
+**`staging-testflight`**, **`production-backend`**, and
+**`production-testflight`**. Backend and TestFlight are separate Environments
+per stage so a required reviewer or branch policy on one doesn't block the
+other, and their deployment histories (Environments tab, Actions run sidebar)
+don't interleave — see §8 for why the TestFlight upload is a separate job
+from the build.
+- On **`production-backend`** and **`production-testflight`**, add yourself
+  under **Required reviewers**. Publishing a release then pauses the
+  respective prod deploy step until you approve it in the Actions run.
+- (Optional) restrict each environment's deployment branches to `main` (and
+  `v*` tags for the production environments, since releases are tag-triggered).
 
 ### 4. Terraform state backend (R2)
 
@@ -243,17 +251,28 @@ the CI web-client cache is keyed per environment — keep it that way.
 
 ### 8. iOS / TestFlight (staging + production)
 
-`deploy.yml` has a `testflight` job (macOS runner) that archives, signs, and
-uploads the mobile app's flavor for the target environment (`staging` →
-`com.kylebjordahl.igt.staging`, `production` → `prod` flavor /
-`com.kylebjordahl.igt`) to TestFlight whenever the `mobile` Nx project is
-affected. Signing is **manual** (a distribution `.p12` + an App Store
-provisioning profile), not Xcode-managed — headless
-`-allowProvisioningUpdates` is flaky; a pinned profile name is deterministic.
+`deploy.yml` splits the TestFlight push across two macOS jobs so the backend
+deploy and the (slow) iOS build stay parallel, while the actual TestFlight
+push only happens once the backend is known-good:
+- `testflight-build` archives and signs the mobile app's flavor for the
+  target environment (`staging` → `com.kylebjordahl.igt.staging`,
+  `production` → `prod` flavor / `com.kylebjordahl.igt`) whenever the
+  `mobile` Nx project is affected, and uploads the resulting `.ipa` as a
+  workflow artifact. It runs in parallel with `deploy` — it doesn't wait on
+  it.
+- `testflight-upload` downloads that artifact and pushes it to TestFlight.
+  It needs **both** `testflight-build` and `deploy` to succeed, so a broken
+  backend deploy can never be fronted by a new TestFlight build — but since
+  only this short upload step (not the full archive/sign) waits on `deploy`,
+  the deploy doesn't meaningfully slow down.
+
+Signing is **manual** (a distribution `.p12` + an App Store provisioning
+profile), not Xcode-managed — headless `-allowProvisioningUpdates` is flaky;
+a pinned profile name is deterministic.
 
 **Marketing version** (`--build-name`, i.e. `CFBundleShortVersionString` on
-iOS) is computed once, by a dedicated `version` job that runs before both
-`deploy` and `testflight`, per environment:
+iOS) is computed once, by a dedicated `version` job that runs before
+`deploy` and `testflight-build`, per environment:
 - **production** always ships the exact version of the GitHub Release that
   triggered the deploy — it reads the version tag on the released commit
   (`git tag --points-at HEAD`) directly, so it can never drift from what the
@@ -267,8 +286,8 @@ iOS) is computed once, by a dedicated `version` job that runs before both
   form (`0.0.0` stands in for "no tag yet").
 
 That single computed value is shared — via job outputs — by **both** the iOS
-build (`testflight`'s `flutter build ipa --build-name=...`) **and** the web
-client build (`deploy`'s `flutter build web --build-name=...`), so the web
+build (`testflight-build`'s `flutter build ipa --build-name=...`) **and** the
+web client build (`deploy`'s `flutter build web --build-name=...`), so the web
 client and the iOS app always show the same marketing version for a given
 workflow run. The web client's `version.json` (what `package_info_plus` reads
 at runtime for the "Me → Help & about" screen) is re-stamped with this run's
@@ -287,19 +306,20 @@ stays `github.run_number` on both platforms — the two are independent
 version fields, and `github.run_number` already guarantees the "same build
 number for the same workflow run" property on its own.
 
-A `check-mobile-changed` job (ubuntu runner) gates `testflight`: it looks up
-the commit of the last `Deploy <env>` run whose `testflight` job actually
-succeeded for that same environment (via the GitHub API), then runs `nx show
-projects --affected --base=<that commit> --head=<this commit>` and checks
-whether `mobile` is in the result. This is base/head aware — unlike a plain
-`git diff` against the immediate parent commit, it correctly catches mobile
-changes accumulated across several commits since the last real build.
-Staging and production are tracked independently (each has its own last
-successful build, since staging deploys on every push to `main` but
-production only on a published release). `testflight` depends on that job's
-output at the **job level** (`if:
+A `check-mobile-changed` job (ubuntu runner) gates `testflight-build`: it
+looks up the commit of the last `Deploy <env>` run whose `TestFlight →
+<env>` job (`testflight-upload`) actually succeeded for that same
+environment (via the GitHub API), then runs `nx show projects --affected
+--base=<that commit> --head=<this commit>` and checks whether `mobile` is in
+the result. This is base/head aware — unlike a plain `git diff` against the
+immediate parent commit, it correctly catches mobile changes accumulated
+across several commits since the last real build. Staging and production are
+tracked independently (each has its own last successful build, since staging
+deploys on every push to `main` but production only on a published release).
+`testflight-build` depends on that job's output at the **job level** (`if:
 needs.check-mobile-changed.outputs.changed == 'true'`), so a no-op shows up
-in the Actions UI as **skipped**, not a false green success.
+in the Actions UI as **skipped**, not a false green success — and
+`testflight-upload` (needing `testflight-build`) skips right along with it.
 
 **One-time setup, all done by hand (not code):**
 
@@ -351,9 +371,10 @@ action needed per-release. Add internal/external testers in App Store Connect
 
 - **Staging**: merge to `main` → once `CI` passes, `Deploy staging` runs
   automatically (build web → Terraform → migrate → deploy). If `mobile` is
-  Nx-affected since the last successful TestFlight build, the `testflight`
-  job also archives, signs, and uploads the staging flavor to TestFlight (see
-  §8).
+  Nx-affected since the last successful TestFlight build, `testflight-build`
+  also archives and signs the staging flavor in parallel with the backend
+  deploy, and `testflight-upload` pushes it to TestFlight once both that
+  build and the backend deploy succeed (see §8).
 - **Production**: every successful staging deploy also creates/updates a
   **draft** release (`draft-release` job, `deploy-staging.yml`) tagged with
   the same next-version guess the `version` job (`deploy.yml`) computed for
@@ -427,8 +448,9 @@ cd apps/api && pnpm wrangler tail --env staging        # live logs
   under `apps/mobile` busts that cache and forces a rebuild.
 - **TestFlight is change-gated, not cached**: `check-mobile-changed` runs Nx
   affected-detection against the last commit that successfully reached
-  TestFlight and skips the whole `testflight` job (job-level `if`, shows as
-  skipped in the UI) when `mobile` isn't affected, rather than restoring a
+  TestFlight and skips `testflight-build` (job-level `if`, shows as skipped
+  in the UI, and `testflight-upload` skips right along with it) when
+  `mobile` isn't affected, rather than restoring a
   previous `.ipa` (there's nothing useful to "restore" — every build must get
   a fresh, strictly-increasing build number). This keeps macOS runner minutes
   and TestFlight build clutter tied to real client changes, and a skip is
