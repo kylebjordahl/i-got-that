@@ -112,14 +112,29 @@ class _AuthedRoot extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final mq = MediaQuery.of(context);
     return Stack(
       children: [
-        Navigator(
-          key: rootNavigatorKey,
-          observers: [AppNavObserver()],
-          onGenerateRoute: (settings) => MaterialPageRoute(
-            builder: (_) => const AppShell(),
-            settings: settings,
+        // Inflate the keyboard inset this Navigator's screens see by the
+        // nav pill's own footprint, so their default scroll-into-view
+        // behavior reserves room for it too — PersistentAppNav reads the
+        // real, un-inflated MediaQuery below since it's a sibling, not a
+        // descendant, of this MediaQuery override.
+        MediaQuery(
+          data: mq.viewInsets.bottom > 0
+              ? mq.copyWith(
+                  viewInsets:
+                      mq.viewInsets +
+                      const EdgeInsets.only(bottom: kBottomNavClearance),
+                )
+              : mq,
+          child: Navigator(
+            key: rootNavigatorKey,
+            observers: [AppNavObserver()],
+            onGenerateRoute: (settings) => MaterialPageRoute(
+              builder: (_) => const AppShell(),
+              settings: settings,
+            ),
           ),
         ),
         const PersistentAppNav(),
