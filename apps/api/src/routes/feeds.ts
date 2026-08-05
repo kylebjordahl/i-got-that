@@ -842,17 +842,30 @@ feedRoutes.post('/:feedId/events/:eventId/restore', requireAdmin, async (c) => {
 // --- Refresh ------------------------------------------------------------------
 
 /**
- * Seconds remaining before `lastRefreshRequestedAt` clears a feed's
- * `refreshMinutes` cooldown, or 0 if it's already clear (including a feed
+ * Debounce window for *manual* (user-pressed) refreshes.
+ *
+ * Deliberately NOT `feed.refreshMinutes`: that column is the background poll
+ * cadence the cron tick uses (`scheduled.ts`, keyed on `lastSyncedAt`) and
+ * defaults to 360 — gating the refresh button on it left the button dead for
+ * six hours after a single press. This is only here to stop the expensive
+ * synchronous pipeline (ingest every feed → synthesize → read back every
+ * member target calendar → task-gen → mirror) from being run in a loop, so a
+ * short window is enough; it matches the ~2/min edge-layer budget in #142.
+ */
+const MANUAL_REFRESH_COOLDOWN_SECONDS = 60;
+
+/**
+ * Seconds remaining in the manual-refresh cooldown that started at
+ * `lastRefreshRequestedAt`, or 0 if it's already clear (including a feed
  * that's never been refresh-requested).
  */
 function refreshCooldownRemainingSeconds(
-  feed: { refreshMinutes: number; lastRefreshRequestedAt: Date | null },
+  lastRefreshRequestedAt: Date | null,
   now: Date,
 ): number {
-  if (!feed.lastRefreshRequestedAt) return 0;
-  const cooldownMs = feed.refreshMinutes * 60_000;
-  const elapsedMs = now.getTime() - feed.lastRefreshRequestedAt.getTime();
+  if (!lastRefreshRequestedAt) return 0;
+  const cooldownMs = MANUAL_REFRESH_COOLDOWN_SECONDS * 1000;
+  const elapsedMs = now.getTime() - lastRefreshRequestedAt.getTime();
   return Math.max(0, Math.ceil((cooldownMs - elapsedMs) / 1000));
 }
 
@@ -876,7 +889,7 @@ feedRoutes.post('/:feedId/refresh', async (c) => {
   if (!feed) return c.json({ error: 'not_found' }, 404);
 
   const now = new Date();
-  const retryAfterSeconds = refreshCooldownRemainingSeconds(feed, now);
+  const retryAfterSeconds = refreshCooldownRemainingSeconds(feed.lastRefreshRequestedAt, now);
   if (retryAfterSeconds > 0) {
     c.header('Retry-After', String(retryAfterSeconds));
     return c.json({ error: 'refresh_cooldown', retryAfterSeconds }, 429);
@@ -913,15 +926,20 @@ feedRoutes.post('/refresh-all', async (c) => {
   const db = getDb(c.env.DB);
   const familyId = c.get('member').familyId;
 
-  // Gate the whole call on the family's feeds' cooldowns: proceed as soon as
-  // at least one feed is due (the pipeline below refreshes all of them
-  // together, same as the cron tick), otherwise reject citing the soonest
-  // one to clear.
+  // The pipeline below is family-wide, so gate it on when the family last ran
+  // one: the most recent stamp across its feeds. (Taking the *soonest* feed to
+  // clear instead would let anyone bypass the cooldown by adding a feed —
+  // creation leaves `lastRefreshRequestedAt` null, which reads as "due now".)
   const now = new Date();
   const existingFeeds = await db.select().from(feeds).where(eq(feeds.familyId, familyId));
-  const retryAfterSeconds = existingFeeds.length
-    ? Math.min(...existingFeeds.map((feed) => refreshCooldownRemainingSeconds(feed, now)))
-    : 0;
+  const lastRequestedAt = existingFeeds.reduce<Date | null>(
+    (latest, feed) =>
+      feed.lastRefreshRequestedAt && (!latest || feed.lastRefreshRequestedAt > latest)
+        ? feed.lastRefreshRequestedAt
+        : latest,
+    null,
+  );
+  const retryAfterSeconds = refreshCooldownRemainingSeconds(lastRequestedAt, now);
   if (retryAfterSeconds > 0) {
     c.header('Retry-After', String(retryAfterSeconds));
     return c.json({ error: 'refresh_cooldown', retryAfterSeconds }, 429);
