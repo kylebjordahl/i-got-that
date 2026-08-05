@@ -69,6 +69,13 @@ function stubFeed(times: number) {
     .times(times);
 }
 
+/** Mirrors `MANUAL_REFRESH_COOLDOWN_SECONDS` in `routes/feeds.ts`. */
+const MANUAL_REFRESH_COOLDOWN_SECONDS = 60;
+
+/** A `lastRefreshRequestedAt` far enough back that the cooldown has cleared. */
+const elapsedCooldownStamp = () =>
+  new Date(Date.now() - (MANUAL_REFRESH_COOLDOWN_SECONDS * 1000 + 1000));
+
 describe('feed ingest', () => {
   it('creates a feed, links a child, and ingests occurrences idempotently', async () => {
     stubFeed(3); // implicit first-link ingest, then two explicit force-refreshes below
@@ -408,7 +415,6 @@ describe('feed ingest', () => {
       authed(admin.token, { url: FEED_URL, mode: 'exception' }),
     );
     const { feed } = (await feedRes.json()) as { feed: { id: string; refreshMinutes: number } };
-    expect(feed.refreshMinutes).toBeGreaterThan(0); // default 360; cooldown is meaningful
 
     // A brand-new feed has never been refresh-requested, so the first call
     // goes through and stamps `lastRefreshRequestedAt`.
@@ -423,6 +429,11 @@ describe('feed ingest', () => {
     expect(rejectedBody.retryAfterSeconds).toBeGreaterThan(0);
     expect(rejected.headers.get('Retry-After')).toBeTruthy();
 
+    // The window is the manual-refresh debounce, NOT `refreshMinutes` (the
+    // background poll cadence, default 360 ⇒ a six-hour-dead refresh button).
+    expect(feed.refreshMinutes).toBe(360);
+    expect(rejectedBody.retryAfterSeconds).toBeLessThanOrEqual(MANUAL_REFRESH_COOLDOWN_SECONDS);
+
     const db = getDb(env.DB);
     const afterRejection = (
       await db.select().from(feedsTable).where(eq(feedsTable.id, feed.id)).limit(1)
@@ -432,11 +443,7 @@ describe('feed ingest', () => {
     // Simulate the cooldown window having elapsed.
     await db
       .update(feedsTable)
-      .set({
-        lastRefreshRequestedAt: new Date(
-          Date.now() - (feed.refreshMinutes * 60_000 + 1000),
-        ),
-      })
+      .set({ lastRefreshRequestedAt: elapsedCooldownStamp() })
       .where(eq(feedsTable.id, feed.id));
 
     const allowed = await call(`/families/${familyId}/feeds/${feed.id}/refresh`, authed(admin.token));
@@ -472,19 +479,42 @@ describe('feed ingest', () => {
     const rejectedBody = (await rejected.json()) as { error: string; retryAfterSeconds: number };
     expect(rejectedBody.error).toBe('refresh_cooldown');
     expect(rejectedBody.retryAfterSeconds).toBeGreaterThan(0);
+    expect(rejectedBody.retryAfterSeconds).toBeLessThanOrEqual(MANUAL_REFRESH_COOLDOWN_SECONDS);
 
     const db = getDb(env.DB);
     await db
       .update(feedsTable)
-      .set({
-        lastRefreshRequestedAt: new Date(
-          Date.now() - (feed.refreshMinutes * 60_000 + 1000),
-        ),
-      })
+      .set({ lastRefreshRequestedAt: elapsedCooldownStamp() })
       .where(eq(feedsTable.id, feed.id));
 
     const allowed = await call(`/families/${familyId}/feeds/refresh-all`, authed(admin.token));
     expect(allowed.status).toBe(200);
+  });
+
+  it("adding a feed mid-cooldown doesn't reopen /refresh-all", async () => {
+    stubFeed(1); // only the first (accepted) refresh-all ingests
+    const admin = await login('cooldown-newfeed@example.com');
+    const familyId = await createFamily(admin.token, 'Cooldown Fam New Feed');
+    await call(
+      `/families/${familyId}/feeds`,
+      authed(admin.token, { url: FEED_URL, mode: 'exception' }),
+    );
+
+    const accepted = await call(`/families/${familyId}/feeds/refresh-all`, authed(admin.token));
+    expect(accepted.status).toBe(200);
+
+    // A feed created now has a null `lastRefreshRequestedAt`. Gating on the
+    // soonest feed to clear would read that as "due now" and let the caller
+    // re-run the whole family pipeline; the gate is the most recent stamp.
+    const second = await call(
+      `/families/${familyId}/feeds`,
+      authed(admin.token, { url: 'https://feed.example.com/other.ics', mode: 'exception' }),
+    );
+    expect(second.status).toBe(201);
+
+    const rejected = await call(`/families/${familyId}/feeds/refresh-all`, authed(admin.token));
+    expect(rejected.status).toBe(429);
+    expect(((await rejected.json()) as { error: string }).error).toBe('refresh_cooldown');
   });
 });
 
