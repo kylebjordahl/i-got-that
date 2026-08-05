@@ -5,6 +5,7 @@ import 'package:caretaker_app/state/auth.dart';
 import 'package:caretaker_app/state/family.dart';
 import 'package:caretaker_app/theme/app_theme.dart';
 import 'package:caretaker_app/widgets/conflict_card.dart';
+import 'package:caretaker_app/widgets/location_picker.dart';
 import 'package:caretaker_app/widgets/primitives.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -17,6 +18,7 @@ Member _m(
   bool admin = false,
   bool child = false,
   String? userId,
+  String? homeLocation,
 }) => Member(
   id: id,
   relationName: name,
@@ -24,12 +26,15 @@ Member _m(
   isAdmin: admin,
   requiresCaretaker: child,
   userId: userId,
+  homeLocation: homeLocation,
 );
 
-/// Fakes the invite-issuing endpoint so the "Invite link" section can be
-/// exercised without a real network call.
+/// Fakes the invite-issuing and member-update endpoints so those sections can
+/// be exercised without a real network call.
 class _FakeApiClient extends ApiClient {
   _FakeApiClient() : super(baseUrl: 'http://test');
+
+  Map<String, dynamic>? lastUpdate;
 
   @override
   Future<Map<String, dynamic>> issueMemberInvite(
@@ -39,7 +44,33 @@ class _FakeApiClient extends ApiClient {
     'token': 'fake-invite-token',
     'expiresAt': DateTime.now().add(const Duration(days: 14)).toIso8601String(),
   };
+
+  @override
+  Future<void> updateMember(
+    String familyId,
+    String memberId, {
+    String? relationName,
+    bool? isCaretaker,
+    bool? isAdmin,
+    bool? requiresCaretaker,
+    bool? generatesFamilyTasks,
+    String? color,
+    Object? homeLocation = _unset,
+    Object? homeLocationGeo = _unset,
+  }) async {
+    lastUpdate = {
+      'familyId': familyId,
+      'memberId': memberId,
+      if (!identical(homeLocation, _unset)) 'homeLocation': homeLocation,
+      if (!identical(homeLocationGeo, _unset))
+        'homeLocationGeo': homeLocationGeo,
+    };
+  }
 }
+
+/// Sentinel distinguishing "leave unchanged" from an explicit `null` (clear),
+/// mirroring the private one in [ApiClient.updateMember].
+const _unset = Object();
 
 void main() {
   final me = _m('dad', 'Dad', caretaker: true, admin: true);
@@ -356,5 +387,89 @@ void main() {
 
     expect(find.text('fake-invite-token'), findsOneWidget);
     expect(find.text('No active invite yet'), findsNothing);
+  });
+
+  group('home address', () {
+    Widget screenFor(
+      Member other, {
+      required Member viewer,
+      ApiClient? client,
+    }) => ProviderScope(
+      overrides: [
+        apiClientProvider.overrideWithValue(client ?? _FakeApiClient()),
+        familyProvider.overrideWith((ref) async => 'fam-1'),
+        membersProvider.overrideWith((ref) async => [viewer, other]),
+        currentMemberProvider.overrideWith((ref) async => viewer),
+        feedsProvider.overrideWith((ref) async => const <FeedItem>[]),
+        accountsProvider.overrideWith((ref) async => const <ExternalAccount>[]),
+        memberCalendarProvider.overrideWith((ref, id) async => null),
+        calendarEventsProvider.overrideWith((ref) async => const []),
+      ],
+      child: MaterialApp(
+        theme: buildAppTheme(),
+        themeMode: ThemeMode.dark,
+        home: MemberDetailScreen(memberId: other.id),
+      ),
+    );
+
+    testWidgets(
+      'the Family logistics section shows the row, defaulting to "not set"',
+      (tester) async {
+        await pumpTall(tester, screenFor(theo, viewer: me));
+
+        expect(find.text('Home address'), findsOneWidget);
+        expect(find.text('Not set — used for travel time'), findsOneWidget);
+      },
+    );
+
+    testWidgets('shows the saved address as the subtitle', (tester) async {
+      final withHome = _m(
+        'theo',
+        'Theo',
+        child: true,
+        homeLocation: '123 Main St',
+      );
+      await pumpTall(tester, screenFor(withHome, viewer: me));
+
+      expect(find.text('123 Main St'), findsOneWidget);
+    });
+
+    testWidgets(
+      'tapping it as admin opens an editor sheet that saves via the API',
+      (tester) async {
+        final client = _FakeApiClient();
+        await pumpTall(tester, screenFor(theo, viewer: me, client: client));
+
+        await tester.tap(find.text('Not set — used for travel time'));
+        await tester.pumpAndSettle();
+
+        expect(find.text('Home address'), findsWidgets); // row + sheet title
+        final field = find.descendant(
+          of: find.byType(LocationPickerField),
+          matching: find.byType(TextField),
+        );
+        expect(field, findsOneWidget);
+
+        await tester.enterText(field, '123 Main St');
+        await tester.tap(find.text('Save'));
+        await tester.pumpAndSettle();
+
+        expect(client.lastUpdate?['memberId'], 'theo');
+        expect(client.lastUpdate?['homeLocation'], '123 Main St');
+      },
+    );
+
+    testWidgets(
+      "a non-admin viewing someone else's page can't open the editor",
+      (tester) async {
+        final dadCaretaker = _m('dad', 'Dad', caretaker: true);
+        await pumpTall(tester, screenFor(theo, viewer: dadCaretaker));
+
+        await tester.tap(find.text('Not set — used for travel time'));
+        await tester.pumpAndSettle();
+
+        expect(find.byType(LocationPickerField), findsNothing);
+      },
+    );
   });
 }
