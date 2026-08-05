@@ -21,6 +21,10 @@ abstract final class AppColors {
   /// Divider.
   static const divider = Color(0x0FFFFFFF);
 
+  /// Emphasised divider — a rule that marks a boundary rather than just
+  /// separating two rows (the Plan grid's midnight lines).
+  static const dividerStrong = Color(0x38FFFFFF); // rgba(255,255,255,.22)
+
   // --- Text --------------------------------------------------------------
   static const textPrimary = Color(0xFFF4F1F8);
   static const textSecondary = Color(0xFFA79FB5);

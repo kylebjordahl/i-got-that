@@ -2086,6 +2086,12 @@ void main() {
       await tester.pumpAndSettle();
     }
 
+    /// The rule drawn beside an hour's label — the gridline itself.
+    Finder ruleFor(Finder label) => find.descendant(
+      of: find.ancestor(of: label, matching: find.byType(Row)).first,
+      matching: find.byType(Container),
+    );
+
     /// The rendered height of one hour: the gap between two hour gridlines.
     double hourHeight(WidgetTester tester) =>
         tester.getRect(find.text('10 AM')).top -
@@ -2186,6 +2192,39 @@ void main() {
       expect(find.text('2 AM'), findsNWidgets(2));
       expect(tester.takeException(), isNull);
     });
+
+    testWidgets(
+      'both midnight lines are ruled heavier than the hours between',
+      (tester) async {
+        await pumpDay(tester, size: const Size(800, 700));
+        // All the way out, so the day's opening *and* closing midnight are
+        // both on the grid at once — both get the accent.
+        await pinch(tester, 300, 100);
+        expect(find.text('12 AM'), findsNWidgets(2));
+
+        final ordinary = tester.widget<Container>(ruleFor(find.text('8 AM')));
+        for (final midnight in [
+          find.text('12 AM').first,
+          find.text('12 AM').at(1),
+        ]) {
+          final rule = tester.widget<Container>(ruleFor(midnight));
+          expect(
+            tester.getSize(ruleFor(midnight)).height,
+            greaterThan(tester.getSize(ruleFor(find.text('8 AM'))).height),
+          );
+          // ...and in a brighter ink than an ordinary hour, so it reads as a
+          // boundary and not just a thicker hairline.
+          expect(rule.color, isNot(ordinary.color));
+          expect(rule.color!.a, greaterThan(ordinary.color!.a));
+          // The label is accented to match.
+          expect(
+            tester.widget<Text>(midnight).style!.color,
+            isNot(tester.widget<Text>(find.text('8 AM')).style!.color),
+          );
+        }
+        expect(tester.takeException(), isNull);
+      },
+    );
 
     testWidgets(
       'changing day keeps the zoom and the timeline where they were',

@@ -83,6 +83,25 @@ Future<void> showTaskActions(
   // tap scopes to the whole pair.
   final transitions = scope.where((t) => t.isTransition).toList();
 
+  // Travel time belongs to the *claimed* event — the copy of this task that
+  // mirrors out to the owner's calendar — and this is the sheet a drop-off or
+  // pickup opens (Plan draws them as tabs on their source event, never as
+  // claim blocks). An unclaimed task has no such event yet, so nothing to set.
+  final events =
+      ref.read(calendarEventsProvider).valueOrNull ??
+      const <CalendarEventItem>[];
+  CalendarEventItem? claimEventFor(TaskItem t) {
+    for (final e in events) {
+      if (e.isClaimedTask && e.taskId == t.id) return e;
+    }
+    return null;
+  }
+
+  final travelTargets = <(TaskItem, CalendarEventItem)>[
+    for (final t in transitions)
+      if (claimEventFor(t) case final claim?) (t, claim),
+  ];
+
   // The event's own time range when it has one, else just the task's start.
   final eventEnd = sourceEvent?.end;
   final eventTime =
@@ -200,6 +219,31 @@ Future<void> showTaskActions(
                       ref,
                       (api, fid) => api.setTaskDuration(fid, t.id, minutes),
                       'Duration updated',
+                    );
+                  },
+                ),
+              ),
+          ],
+          if (travelTargets.isNotEmpty) ...[
+            const SizedBox(height: 20),
+            Text('TRAVEL TIME', style: AppText.eyebrow()),
+            const SizedBox(height: 10),
+            for (final (t, claim) in travelTargets)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 4),
+                child: _TravelTimeField(
+                  event: claim,
+                  label: travelTargets.length > 1 ? t.typeLabel : null,
+                  onSubmit: (minutes) {
+                    Navigator.of(sheetCtx).pop();
+                    _run(
+                      context,
+                      ref,
+                      (api, fid) =>
+                          api.setEventTravelTime(fid, claim.id, minutes),
+                      minutes == null
+                          ? 'Back to the estimate'
+                          : 'Travel time updated',
                     );
                   },
                 ),
@@ -740,9 +784,16 @@ class _DurationFieldState extends State<_DurationField> {
 /// knows the run takes 25 minutes says so here and that stands. An empty field
 /// hands it back to the estimate; `0` says this trip needs no travel time.
 class _TravelTimeField extends StatefulWidget {
-  const _TravelTimeField({required this.event, required this.onSubmit});
+  const _TravelTimeField({
+    required this.event,
+    required this.onSubmit,
+    this.label,
+  });
 
   final CalendarEventItem event;
+
+  /// Names the edge when a scope holds both (a Plan block tap); null for one.
+  final String? label;
 
   /// Minutes, or null to drop the override and go back to the estimate.
   final ValueChanged<int?> onSubmit;
@@ -776,9 +827,23 @@ class _TravelTimeFieldState extends State<_TravelTimeField> {
   @override
   Widget build(BuildContext context) {
     final overridden = widget.event.travelTimeOverrideMin != null;
+    final location = widget.event.location;
+    // Apple hangs travel time off the event's location, so without one there's
+    // nothing to reserve time *to* — say so rather than offering a dead field.
+    if (location == null || location.isEmpty) {
+      return Text(
+        'This one has no location, so there\'s nowhere to travel to. Give the '
+        'event a place and travel time follows.',
+        style: AppText.subtitle,
+      );
+    }
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        if (widget.label != null) ...[
+          Text(widget.label!, style: AppText.subtitle),
+          const SizedBox(height: 6),
+        ],
         Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
