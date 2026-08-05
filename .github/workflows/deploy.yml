@@ -249,6 +249,14 @@ jobs:
           TF_VAR_cloudflare_api_token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           TF_VAR_cloudflare_account_id: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           TF_VAR_environment: ${{ inputs.environment }}
+          # Cloudflare Access allow-list for the staging web client (/app), as an
+          # HCL list — that's how Terraform parses TF_VAR_ values for complex
+          # types. This apply is the source of truth: it runs with no -var-file,
+          # so an allow-list that exists ONLY in a local staging.tfvars would be
+          # seen as empty here and the next deploy would destroy the Access app.
+          # Set the `ACCESS_ALLOWED_EMAILS` repository variable to enable it
+          # (docs/DEPLOYMENT.md §9); unset ⇒ "[]" ⇒ nothing is provisioned.
+          TF_VAR_access_allowed_emails: ${{ vars.ACCESS_ALLOWED_EMAILS || '[]' }}
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         run: |

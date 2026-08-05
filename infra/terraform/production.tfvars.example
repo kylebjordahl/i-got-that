@@ -1,0 +1,12 @@
+# Copy to production.tfvars (git-ignored) and fill in. See docs/DEPLOYMENT.md §4.
+# `cloudflare_api_token` is NOT set here — it comes from the environment
+# (`TF_VAR_cloudflare_api_token`) so the secret never lands in a file.
+#
+# Use a SEPARATE state workspace/backend from staging
+# (`terraform init -backend-config=backend.production.hcl`).
+
+environment           = "production"
+cloudflare_account_id = "REPLACE_WITH_YOUR_ACCOUNT_ID"
+
+# `access_allowed_emails` is staging-only — the Access resources are guarded on
+# `environment == "staging"`, so setting it here does nothing.
