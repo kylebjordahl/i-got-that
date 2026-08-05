@@ -2,6 +2,7 @@ import { and, eq, families, feeds, getDb } from '@igt/db';
 import type { Bindings } from './env.js';
 import { googleRefresherFor } from './lib/google-oauth.js';
 import { createGuardedFetch } from './lib/outbound-url.js';
+import { sweepOrphanedSecrets } from './services/auth.js';
 import { reconcileClaimEvents } from './services/claim.js';
 import { reconcileFamilyConflicts } from './services/conflicts.js';
 import { getProductionRegistry, syncFamilyMirror } from './services/mirror.js';
@@ -44,6 +45,18 @@ export async function scheduled(
     fetchImpl: createGuardedFetch(env),
   };
   const now = Date.now();
+
+  // Backstop for the small best-effort window in account-deletion cleanup (D1
+  // has no multi-statement transactions): reclaim any user-owned `secrets`
+  // row left behind by a crash mid-delete. Not per-family — this is a global
+  // pass over rows that, by definition, no family can reach via cascade.
+  ctx.waitUntil(
+    sweepOrphanedSecrets(db)
+      .then((count) => {
+        if (count > 0) console.log(`swept ${count} orphaned secret(s)`);
+      })
+      .catch((err) => console.error('orphaned-secrets sweep failed', err)),
+  );
 
   const allFamilies = await db.select().from(families);
   for (const fam of allFamilies) {
