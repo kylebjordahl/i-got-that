@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../api/client.dart';
 import '../models.dart';
 import '../state/auth.dart';
 import '../state/family.dart';
@@ -74,6 +75,20 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       ref.invalidate(feedsProvider);
       _refresh();
       await ref.read(allTasksProvider.future);
+    } on FeedRefreshCooldown catch (e) {
+      // A re-press inside the debounce window: the backend skipped the
+      // pipeline, but re-pull anyway so the user still sees current data.
+      ref.invalidate(feedsProvider);
+      _refresh();
+      await ref.read(allTasksProvider.future);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(e.message),
+            margin: snackBarMarginAboveNav(context),
+          ),
+        );
+      }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(

@@ -6,6 +6,25 @@ import 'dio_credentials.dart';
 /// Used by [ApiClient.updateLinkRule] for clearable nullable columns.
 const Object _unset = Object();
 
+/// Thrown when a feed refresh is rejected because one ran too recently. Not an
+/// error condition for the user — the data is already fresh, they just pressed
+/// the button again sooner than the backend's debounce window.
+class FeedRefreshCooldown implements Exception {
+  const FeedRefreshCooldown({required this.retryAfter});
+
+  final Duration retryAfter;
+
+  /// Snackbar-ready phrasing, e.g. "Already up to date — try again in 42s."
+  String get message {
+    final seconds = retryAfter.inSeconds;
+    if (seconds <= 0) return 'Already up to date.';
+    return 'Already up to date — try again in ${seconds}s.';
+  }
+
+  @override
+  String toString() => message;
+}
+
 /// Thin typed wrapper over the backend HTTP API. Replaced by an OpenAPI-
 /// generated client once the spec is emitted from libs/domain (see /tools).
 class ApiClient {
@@ -605,21 +624,32 @@ class ApiClient {
   Future<Map<String, dynamic>> refreshFeed(
     String familyId,
     String feedId,
-  ) async => _obj(
-    await _dio.post(
-      '/families/$familyId/feeds/$feedId/refresh',
-      data: <String, dynamic>{},
-      options: _auth,
-    ),
-  );
+  ) async => _refresh('/families/$familyId/feeds/$feedId/refresh');
 
-  Future<Map<String, dynamic>> refreshAllFeeds(String familyId) async => _obj(
-    await _dio.post(
-      '/families/$familyId/feeds/refresh-all',
-      data: <String, dynamic>{},
-      options: _auth,
-    ),
-  );
+  Future<Map<String, dynamic>> refreshAllFeeds(String familyId) async =>
+      _refresh('/families/$familyId/feeds/refresh-all');
+
+  /// POSTs a refresh endpoint, translating the backend's `refresh_cooldown`
+  /// 429 into [FeedRefreshCooldown] so callers can treat a too-soon re-press
+  /// as "already up to date" rather than as a failure.
+  Future<Map<String, dynamic>> _refresh(String path) async {
+    try {
+      return _obj(
+        await _dio.post(path, data: <String, dynamic>{}, options: _auth),
+      );
+    } on DioException catch (e) {
+      final data = e.response?.data;
+      if (e.response?.statusCode == 429 &&
+          data is Map &&
+          data['error'] == 'refresh_cooldown') {
+        final seconds = data['retryAfterSeconds'];
+        throw FeedRefreshCooldown(
+          retryAfter: Duration(seconds: seconds is int ? seconds : 0),
+        );
+      }
+      rethrow;
+    }
+  }
 
   // --- Tasks -------------------------------------------------------------
 
