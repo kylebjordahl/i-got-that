@@ -177,7 +177,7 @@ function googleWebConfig(
  */
 function accountCleanupOptions(env: HonoEnv['Bindings']): AccountCleanupOptions {
   return {
-    kek: env.KEK,
+    kek: buildKekKeySet(env),
     revokeGoogleToken: googleOAuthConfigured(env)
       ? (refreshToken: string) => revokeGoogleToken(env, refreshToken)
       : undefined,

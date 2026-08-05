@@ -17,7 +17,7 @@ import {
 import type { IdentityProvider } from '@igt/domain';
 import type { AppleNotificationEvent } from '../lib/apple.js';
 import { randomToken, sha256hex } from '../lib/crypto.js';
-import { loadSecret } from '../lib/secrets.js';
+import { loadSecret, type KekKeySet } from '../lib/secrets.js';
 import { wouldOrphanFamily } from './families.js';
 
 const MAGIC_LINK_TTL_MS = 15 * 60 * 1000; // 15 minutes
@@ -171,7 +171,7 @@ export async function findOrCreateUserByGoogle(
  */
 export type AccountCleanupOptions = {
   /** KEK for decrypting stored external-account credentials before revoke. */
-  kek?: string;
+  kek?: KekKeySet;
   /** Best-effort upstream revoke for a Google account's stored refresh token. */
   revokeGoogleToken?: (refreshToken: string) => Promise<void>;
 };

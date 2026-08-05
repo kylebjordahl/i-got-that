@@ -233,9 +233,10 @@ accountRoutes.delete('/:accountId', async (c) => {
   // Best-effort: revoke the upstream Google grant before dropping our own
   // copy, so disconnecting here also disconnects at Google. Never blocks the
   // disconnect on Google's availability.
-  if (account.kind === 'google' && account.credentialsRef && c.env.KEK) {
+  const revokeKeys = buildKekKeySet(c.env);
+  if (account.kind === 'google' && account.credentialsRef && revokeKeys) {
     try {
-      const credential = await resolveAccountCredential(db, c.env.KEK, account.id);
+      const credential = await resolveAccountCredential(db, revokeKeys, account.id);
       if (credential?.kind === 'oauth' && credential.refreshToken) {
         await revokeGoogleToken(c.env, credential.refreshToken);
       }

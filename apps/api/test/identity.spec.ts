@@ -1,10 +1,9 @@
-import { eq, externalAccounts, getDb, secrets } from '@igt/db';
+import { eq, externalAccounts, getDb, invites as invitesTable, secrets } from '@igt/db';
 import {
   createExecutionContext,
   env,
   waitOnExecutionContext,
 } from 'cloudflare:test';
-import { eq, getDb, invites as invitesTable } from '@igt/db';
 import { describe, expect, it } from 'vitest';
 import app from '../src/index.js';
 import { sha256hex } from '../src/lib/crypto.js';
