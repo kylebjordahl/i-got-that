@@ -73,6 +73,27 @@ export async function login(
   return { token: sessionToken, userId: user.id };
 }
 
+/**
+ * Link a user to an existing (unlinked) family member the only sanctioned
+ * way: an admin issues a member-claim invite and the user accepts it.
+ * `POST /families/:familyId/members` never links a `userId` directly (#147).
+ */
+export async function linkMember(
+  adminToken: string,
+  familyId: string,
+  memberId: string,
+  userToken: string,
+): Promise<void> {
+  const issued = await call(
+    `/families/${familyId}/members/${memberId}/invite`,
+    authed(adminToken),
+  );
+  expect(issued.status).toBe(201);
+  const { token } = (await issued.json()) as { token: string };
+  const accepted = await call(`/invites/${token}/accept`, authed(userToken));
+  expect(accepted.status).toBe(200);
+}
+
 /** Create a family as the given user; returns the family id (creator is admin). */
 export async function createFamily(token: string, name: string): Promise<string> {
   const res = await call('/families', authed(token, { name }));
