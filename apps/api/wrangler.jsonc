@@ -77,6 +77,13 @@
         // Served at /.well-known/apple-app-site-association. Empty ⇒ Universal
         // Links off (web fallback still works). Set per env below. See docs/AUTH.md.
         "APPLE_APP_ID_PREFIX": "",
+        // Apple Developer Team ID owning the APNs auth key. Not secret. The key
+        // itself (APNS_KEY_P8) and its Key ID (APNS_KEY_ID) are set per env via
+        // `wrangler secret put` — all three must be present or push digests are
+        // logged instead of sent (lib/apns.ts falls back to the DevPusher).
+        // Empty locally: APNs speaks HTTP/2 only and `wrangler dev` can't reach
+        // it. See docs/DEPLOYMENT.md § Push notifications.
+        "APNS_TEAM_ID": "",
     },
     "d1_databases": [
         {
@@ -112,6 +119,9 @@
                 "GOOGLE_IOS_OAUTH_CALLBACK_SCHEME": "com.kylebjordahl.igt.staging.oauth",
                 // Fill in your 10-char Apple Team ID: "<TeamID>.com.kylebjordahl.igt.staging".
                 "APPLE_APP_ID_PREFIX": "WG5R9LUU9X.com.kylebjordahl.igt.staging",
+                // APNS_KEY_P8 + APNS_KEY_ID are secrets (`wrangler secret put
+                // APNS_KEY_P8 --env staging`); the team id is not.
+                "APNS_TEAM_ID": "WG5R9LUU9X",
             },
             // The whole subdomain routes to this Worker (custom_domain provisions DNS
             // + cert; the parent zone must be on Cloudflare). The Worker serves the
@@ -176,6 +186,9 @@
                 "GOOGLE_IOS_OAUTH_CALLBACK_SCHEME": "com.kylebjordahl.igt.oauth",
                 // Fill in your 10-char Apple Team ID: "<TeamID>.com.kylebjordahl.igt".
                 "APPLE_APP_ID_PREFIX": "WG5R9LUU9X.com.kylebjordahl.igt",
+                // APNS_KEY_P8 + APNS_KEY_ID are secrets (`wrangler secret put
+                // APNS_KEY_P8 --env production`); the team id is not.
+                "APNS_TEAM_ID": "WG5R9LUU9X",
             },
             // Single-origin layout, mirroring staging (see §7 of docs/DEPLOYMENT.md):
             // custom_domain provisions DNS + cert on the parent Cloudflare zone.

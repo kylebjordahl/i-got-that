@@ -123,6 +123,20 @@ export interface Bindings {
      */
     GOOGLE_IOS_OAUTH_CALLBACK_SCHEME?: string;
     /**
+     * Contents of the Apple `.p8` APNs auth key (the whole PEM, BEGIN/END lines
+     * included), set via `wrangler secret put APNS_KEY_P8 [--env <env>]`. One
+     * key signs for every bundle id and both APNs environments. Together with
+     * APNS_KEY_ID + APNS_TEAM_ID this is what switches `lib/apns.ts` from the
+     * capture-only `DevPusher` to real sends — any of the three missing and
+     * digests are logged rather than pushed. See docs/DEPLOYMENT.md § Push
+     * notifications.
+     */
+    APNS_KEY_P8?: string;
+    /** The APNs auth key's 10-character Key ID (from the key's filename). */
+    APNS_KEY_ID?: string;
+    /** Apple Developer Team ID that owns the APNs key and the App IDs. */
+    APNS_TEAM_ID?: string;
+    /**
      * Comma-separated Apple App ID prefixes (`<TeamID>.<bundleId>`) for iOS
      * Universal Links, served in the apple-app-site-association file at
      * `/.well-known/apple-app-site-association`. List every bundle id that

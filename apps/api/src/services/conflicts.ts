@@ -8,6 +8,7 @@ import {
   familyMembers,
   gt,
   gte,
+  inArray,
   lt,
   or,
 } from '@igt/db';
@@ -91,6 +92,77 @@ export function scheduleStamp(e: {
 /** Whether a stored snapshot is a stamp this version knows how to compare. */
 function isCurrentStamp(stamp: string | null): boolean {
   return stamp != null && stamp.startsWith(`${SCHEDULE_STAMP_V1}:`);
+}
+
+/** The event fields a conflict card (or a digest line) needs. */
+export type ConflictSideEvent = Pick<
+  CalendarEventRow,
+  | 'familyMemberId'
+  | 'synthKey'
+  | 'summary'
+  | 'location'
+  | 'locationGeo'
+  | 'dtstart'
+  | 'dtend'
+  | 'allDay'
+>;
+
+export interface HydratedConflict {
+  conflict: typeof conflicts.$inferSelect;
+  loser: ConflictSideEvent;
+  winner: ConflictSideEvent;
+}
+
+/**
+ * Resolve each conflict's `loserKey`/`winnerKey` back to the calendar events
+ * they name. A conflict's identity is that pair of `synthKey`s rather than any
+ * event id (so it survives resynthesis), which means *every* reader — the
+ * conflicts list, the notification digest — has to do this join to learn so
+ * much as when the overlap is.
+ *
+ * Rows whose events have vanished are dropped: they clear on the next
+ * reconcile, and a half-hydrated conflict has nothing to say.
+ *
+ * Only the keys actually referenced are fetched. That matters for the digest,
+ * which runs on every cron tick — the alternative (all of the affected members'
+ * events) is unbounded in the size of their calendars.
+ */
+export async function hydrateConflicts(
+  db: Db,
+  familyIds: string[],
+  rows: (typeof conflicts.$inferSelect)[],
+): Promise<HydratedConflict[]> {
+  if (rows.length === 0 || familyIds.length === 0) return [];
+  const memberIds = [...new Set(rows.map((r) => r.familyMemberId))];
+  const synthKeys = [...new Set(rows.flatMap((r) => [r.loserKey, r.winnerKey]))];
+  const evs = await db
+    .select({
+      familyMemberId: calendarEvents.familyMemberId,
+      synthKey: calendarEvents.synthKey,
+      summary: calendarEvents.summary,
+      location: calendarEvents.location,
+      locationGeo: calendarEvents.locationGeo,
+      dtstart: calendarEvents.dtstart,
+      dtend: calendarEvents.dtend,
+      allDay: calendarEvents.allDay,
+    })
+    .from(calendarEvents)
+    .where(
+      and(
+        inArray(calendarEvents.familyId, familyIds),
+        inArray(calendarEvents.familyMemberId, memberIds),
+        inArray(calendarEvents.synthKey, synthKeys),
+      ),
+    );
+  const byKey = new Map(evs.map((e) => [`${e.familyMemberId}|${e.synthKey}`, e]));
+
+  const out: HydratedConflict[] = [];
+  for (const conflict of rows) {
+    const loser = byKey.get(`${conflict.familyMemberId}|${conflict.loserKey}`);
+    const winner = byKey.get(`${conflict.familyMemberId}|${conflict.winnerKey}`);
+    if (loser && winner) out.push({ conflict, loser, winner });
+  }
+  return out;
 }
 
 /**
