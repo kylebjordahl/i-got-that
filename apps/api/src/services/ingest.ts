@@ -26,6 +26,8 @@ export interface IngestResult {
   feedId: string;
   fetched: boolean;
   processed: number;
+  /** Set (and fetched/processed left at their defaults) when this feed's ingest threw. */
+  error?: string;
 }
 
 type FeedRow = typeof feeds.$inferSelect;
@@ -373,7 +375,12 @@ export async function ingestFeed(
   return ingestIcsFeed(db, feed, opts);
 }
 
-/** Ingest every active feed in a family (used by force-refresh-all). */
+/**
+ * Ingest every active feed in a family (used by force-refresh-all). One feed's
+ * failure (e.g. a revoked Google refresh token) must not abort the rest of the
+ * family's refresh — ingestFeed already marks that feed row 'error', so just
+ * record the message here and keep going.
+ */
 export async function ingestFamilyFeeds(
   db: Db,
   familyId: string,
@@ -382,7 +389,16 @@ export async function ingestFamilyFeeds(
   const rows = await db.select().from(feeds).where(eq(feeds.familyId, familyId));
   const results: IngestResult[] = [];
   for (const feed of rows) {
-    results.push(await ingestFeed(db, feed, opts));
+    try {
+      results.push(await ingestFeed(db, feed, opts));
+    } catch (err) {
+      results.push({
+        feedId: feed.id,
+        fetched: false,
+        processed: 0,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
   return results;
 }

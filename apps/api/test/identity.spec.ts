@@ -48,6 +48,27 @@ async function login(email: string): Promise<{ token: string; userId: string }> 
   return { token: sessionToken, userId: user.id };
 }
 
+/**
+ * Link a user to an existing (unlinked) family member the only sanctioned
+ * way: an admin issues a member-claim invite and the user accepts it
+ * (`POST /families/:familyId/members` never links a `userId` — see #147).
+ */
+async function linkMember(
+  adminToken: string,
+  familyId: string,
+  memberId: string,
+  userToken: string,
+): Promise<void> {
+  const issued = await call(
+    `/families/${familyId}/members/${memberId}/invite`,
+    authed(adminToken),
+  );
+  expect(issued.status).toBe(201);
+  const { token } = (await issued.json()) as { token: string };
+  const accepted = await call(`/invites/${token}/accept`, authed(userToken));
+  expect(accepted.status).toBe(200);
+}
+
 describe('identity & tenancy', () => {
   it('rejects unauthenticated /me', async () => {
     const res = await call('/me');
@@ -93,6 +114,39 @@ describe('identity & tenancy', () => {
     });
     const { members } = (await list.json()) as { members: unknown[] };
     expect(members).toHaveLength(2);
+  });
+
+  it('ignores a caller-supplied userId on member creation — new members are always unlinked (#147)', async () => {
+    const alice = await login('nolinkid-alice@example.com');
+    const bob = await login('nolinkid-bob@example.com');
+
+    const created = await call('/families', authed(alice.token, { name: 'No Link Id' }));
+    const { family } = (await created.json()) as { family: { id: string } };
+
+    // Alice tries to attach Bob's userId directly at creation time — this
+    // must be silently ignored, not honored, however Bob's id was obtained.
+    const res = await call(
+      `/families/${family.id}/members`,
+      authed(alice.token, {
+        relationName: 'uncle',
+        isCaretaker: true,
+        userId: bob.userId,
+      }),
+    );
+    expect(res.status).toBe(201);
+    const { member } = (await res.json()) as { member: { id: string; userId: string | null } };
+    expect(member.userId).toBeNull();
+
+    // Bob was never actually linked — he still has no access to the family.
+    const bobList = await call(`/families/${family.id}/members`, {
+      headers: { Authorization: `Bearer ${bob.token}` },
+    });
+    expect(bobList.status).toBe(403);
+
+    // ...and Bob's own /me doesn't show this family either.
+    const bobMe = await call('/me', { headers: { Authorization: `Bearer ${bob.token}` } });
+    const { families: bobFamilies } = (await bobMe.json()) as { families: unknown[] };
+    expect(bobFamilies).toHaveLength(0);
   });
 
   it('defaults generatesFamilyTasks from role: off for caretakers, on for dependents', async () => {
@@ -152,17 +206,17 @@ describe('identity & tenancy', () => {
     });
     expect(bobList.status).toBe(403);
 
-    // Alice (admin) adds Bob as a non-admin caretaker.
+    // Alice (admin) adds Bob as a non-admin caretaker (unlinked), and Bob
+    // links himself by accepting the invite — creation alone never links a
+    // userId (#147).
     const addBob = await call(
       `/families/${family.id}/members`,
-      authed(alice.token, {
-        relationName: 'uncle',
-        isCaretaker: true,
-        isAdmin: false,
-        userId: bob.userId,
-      }),
+      authed(alice.token, { relationName: 'uncle', isCaretaker: true, isAdmin: false }),
     );
     expect(addBob.status).toBe(201);
+    const addBobBody = (await addBob.json()) as { member: { id: string; userId: string | null } };
+    expect(addBobBody.member.userId).toBeNull();
+    await linkMember(alice.token, family.id, addBobBody.member.id, bob.token);
 
     // Now Bob can read members...
     const bobListAfter = await call(`/families/${family.id}/members`, {
@@ -195,17 +249,14 @@ describe('member editing & permissions', () => {
     const fam = await call('/families', authed(alice.token, { name: 'Edit Fam' }));
     const familyId = ((await fam.json()) as { family: { id: string } }).family.id;
 
-    // Alice (admin) adds Bob as a non-admin caretaker.
+    // Alice (admin) adds Bob as a non-admin caretaker, then Bob links himself
+    // via invite-accept.
     const addBob = await call(
       `/families/${familyId}/members`,
-      authed(alice.token, {
-        relationName: 'uncle',
-        isCaretaker: true,
-        isAdmin: false,
-        userId: bob.userId,
-      }),
+      authed(alice.token, { relationName: 'uncle', isCaretaker: true, isAdmin: false }),
     );
     const bobMemberId = ((await addBob.json()) as { member: { id: string } }).member.id;
+    await linkMember(alice.token, familyId, bobMemberId, bob.token);
 
     // Bob renames himself — allowed.
     const rename = await call(
@@ -253,9 +304,10 @@ describe('member editing & permissions', () => {
 
     const addBob = await call(
       `/families/${familyId}/members`,
-      authed(alice.token, { relationName: 'uncle', isCaretaker: true, userId: bob.userId }),
+      authed(alice.token, { relationName: 'uncle', isCaretaker: true }),
     );
     const bobMemberId = ((await addBob.json()) as { member: { id: string } }).member.id;
+    await linkMember(alice.token, familyId, bobMemberId, bob.token);
 
     // Bob sets his own color (not a role flag) — allowed.
     const setColor = await call(
@@ -281,9 +333,10 @@ describe('member editing & permissions', () => {
     const familyId = ((await fam.json()) as { family: { id: string } }).family.id;
     const addBob = await call(
       `/families/${familyId}/members`,
-      authed(alice.token, { relationName: 'uncle', isCaretaker: true, userId: bob.userId }),
+      authed(alice.token, { relationName: 'uncle', isCaretaker: true }),
     );
     const bobMemberId = ((await addBob.json()) as { member: { id: string } }).member.id;
+    await linkMember(alice.token, familyId, bobMemberId, bob.token);
 
     type HomeMember = {
       member: { homeLocation: string | null; homeLocationGeo: { lat: number } | null };
@@ -339,9 +392,10 @@ describe('member editing & permissions', () => {
 
     const addBob = await call(
       `/families/${familyId}/members`,
-      authed(alice.token, { relationName: 'uncle', isCaretaker: true, userId: bob.userId }),
+      authed(alice.token, { relationName: 'uncle', isCaretaker: true }),
     );
     const bobMemberId = ((await addBob.json()) as { member: { id: string } }).member.id;
+    await linkMember(alice.token, familyId, bobMemberId, bob.token);
 
     const del = (token: string): RequestInit => ({
       method: 'DELETE',
@@ -373,10 +427,12 @@ describe('delete family', () => {
 
     const fam = await call('/families', authed(alice.token, { name: 'Doomed Fam' }));
     const familyId = ((await fam.json()) as { family: { id: string } }).family.id;
-    await call(
+    const addBob = await call(
       `/families/${familyId}/members`,
-      authed(alice.token, { relationName: 'uncle', isCaretaker: true, userId: bob.userId }),
+      authed(alice.token, { relationName: 'uncle', isCaretaker: true }),
     );
+    const bobMemberId = ((await addBob.json()) as { member: { id: string } }).member.id;
+    await linkMember(alice.token, familyId, bobMemberId, bob.token);
 
     // Bob (non-admin) can't delete the family.
     expect((await call(`/families/${familyId}`, del(bob.token))).status).toBe(403);
@@ -411,10 +467,12 @@ describe('delete account', () => {
 
     const fam = await call('/families', authed(alice.token, { name: 'Guarded Fam' }));
     const familyId = ((await fam.json()) as { family: { id: string } }).family.id;
-    await call(
+    const addBob = await call(
       `/families/${familyId}/members`,
-      authed(alice.token, { relationName: 'uncle', isCaretaker: true, userId: bob.userId }),
+      authed(alice.token, { relationName: 'uncle', isCaretaker: true }),
     );
+    const bobMemberId = ((await addBob.json()) as { member: { id: string } }).member.id;
+    await linkMember(alice.token, familyId, bobMemberId, bob.token);
 
     expect((await call('/auth/me', delMe(alice.token))).status).toBe(409);
 
@@ -429,15 +487,12 @@ describe('delete account', () => {
 
     const fam = await call('/families', authed(alice.token, { name: 'Co-admin Fam' }));
     const familyId = ((await fam.json()) as { family: { id: string } }).family.id;
-    await call(
+    const addBob = await call(
       `/families/${familyId}/members`,
-      authed(alice.token, {
-        relationName: 'uncle',
-        isCaretaker: true,
-        isAdmin: true,
-        userId: bob.userId,
-      }),
+      authed(alice.token, { relationName: 'uncle', isCaretaker: true, isAdmin: true }),
     );
+    const bobMemberId = ((await addBob.json()) as { member: { id: string } }).member.id;
+    await linkMember(alice.token, familyId, bobMemberId, bob.token);
 
     expect((await call('/auth/me', delMe(alice.token))).status).toBe(204);
 
@@ -469,9 +524,10 @@ describe('leave family', () => {
     const familyId = ((await fam.json()) as { family: { id: string } }).family.id;
     const addBob = await call(
       `/families/${familyId}/members`,
-      authed(alice.token, { relationName: 'uncle', isCaretaker: true, userId: bob.userId }),
+      authed(alice.token, { relationName: 'uncle', isCaretaker: true }),
     );
     const bobMemberId = ((await addBob.json()) as { member: { id: string } }).member.id;
+    await linkMember(alice.token, familyId, bobMemberId, bob.token);
 
     expect((await call(`/families/${familyId}/leave`, leave(bob.token))).status).toBe(204);
 
@@ -495,10 +551,12 @@ describe('leave family', () => {
 
     const fam = await call('/families', authed(alice.token, { name: 'Guarded Leave Fam' }));
     const familyId = ((await fam.json()) as { family: { id: string } }).family.id;
-    await call(
+    const addBob = await call(
       `/families/${familyId}/members`,
-      authed(alice.token, { relationName: 'uncle', isCaretaker: true, userId: bob.userId }),
+      authed(alice.token, { relationName: 'uncle', isCaretaker: true }),
     );
+    const bobMemberId = ((await addBob.json()) as { member: { id: string } }).member.id;
+    await linkMember(alice.token, familyId, bobMemberId, bob.token);
 
     expect((await call(`/families/${familyId}/leave`, leave(alice.token))).status).toBe(409);
 
@@ -515,15 +573,12 @@ describe('leave family', () => {
 
     const fam = await call('/families', authed(alice.token, { name: 'Co-admin Leave Fam' }));
     const familyId = ((await fam.json()) as { family: { id: string } }).family.id;
-    await call(
+    const addBob = await call(
       `/families/${familyId}/members`,
-      authed(alice.token, {
-        relationName: 'uncle',
-        isCaretaker: true,
-        isAdmin: true,
-        userId: bob.userId,
-      }),
+      authed(alice.token, { relationName: 'uncle', isCaretaker: true, isAdmin: true }),
     );
+    const bobMemberId = ((await addBob.json()) as { member: { id: string } }).member.id;
+    await linkMember(alice.token, familyId, bobMemberId, bob.token);
 
     expect((await call(`/families/${familyId}/leave`, leave(alice.token))).status).toBe(204);
 
@@ -557,20 +612,18 @@ describe('account deletion eligibility', () => {
     const bob = await login('elig-bob@example.com');
     const fam = await call('/families', authed(alice.token, { name: 'Elig Fam' }));
     const familyId = ((await fam.json()) as { family: { id: string } }).family.id;
-    await call(
+    const addBob = await call(
       `/families/${familyId}/members`,
-      authed(alice.token, { relationName: 'uncle', isCaretaker: true, userId: bob.userId }),
+      authed(alice.token, { relationName: 'uncle', isCaretaker: true }),
     );
+    const bobMemberId = ((await addBob.json()) as { member: { id: string } }).member.id;
+    await linkMember(alice.token, familyId, bobMemberId, bob.token);
 
     // Sole admin of a family with another member — blocked.
     const blocked = await call('/auth/me/deletable', deletable(alice.token));
     expect((await blocked.json()) as unknown).toEqual({ deletable: false });
 
     // Promote Bob so Alice is no longer the *sole* admin — she can now leave.
-    const bobMe = await call('/me', { headers: { Authorization: `Bearer ${bob.token}` } });
-    const bobMemberId = ((await bobMe.json()) as {
-      families: { member: { id: string } }[];
-    }).families[0]!.member.id;
     await call(
       `/families/${familyId}/members/${bobMemberId}`,
       {
