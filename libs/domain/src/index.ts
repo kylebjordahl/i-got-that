@@ -173,6 +173,37 @@ export const InviteStatus = z.enum([
 ]);
 export type InviteStatus = z.infer<typeof InviteStatus>;
 
+/**
+ * A bucket of outstanding work a notification schedule can report on. These
+ * mirror Home's sections, and the digest keeps Home's priority order:
+ * `conflicts` rank above everything (a member can't be in two places at once),
+ * then `pending_decisions` (they block the pipeline until a human answers),
+ * then `unclaimed_tasks` (the claim queue). `my_tasks` is the reminder of what
+ * you've already taken on — not a gap, so it always sorts last.
+ */
+export const NotificationCategory = z.enum([
+  'conflicts',
+  'pending_decisions',
+  'unclaimed_tasks',
+  'my_tasks',
+]);
+export type NotificationCategory = z.infer<typeof NotificationCategory>;
+
+/**
+ * Which APNs host a device token is routable through. A token minted by a build
+ * signed with a `development` aps-environment entitlement only works against
+ * `api.sandbox.push.apple.com`, and a distribution one only against
+ * `api.push.apple.com` — sending to the wrong host is a `BadDeviceToken`. The
+ * client reports it from the same xcconfig value the entitlement is built from,
+ * so the two can't drift.
+ */
+export const ApnsEnvironment = z.enum(['sandbox', 'production']);
+export type ApnsEnvironment = z.infer<typeof ApnsEnvironment>;
+
+/** Push transport a device is registered for. iOS/APNs is the only one today. */
+export const PushPlatform = z.enum(['ios']);
+export type PushPlatform = z.infer<typeof PushPlatform>;
+
 // --- Reusable fragments --------------------------------------------------
 
 /** Bitmask of weekdays, Mon=1 (bit 0) … Sun=64 (bit 6). */
@@ -278,7 +309,7 @@ const RefreshMinutes = z.number().int().min(15).max(10080).default(360);
  * Auto-detection on sync still takes priority whenever a document/event does
  * carry a timezone; this is only the fallback for the ones that don't.
  */
-const IanaTimezone = z
+export const IanaTimezone = z
   .string()
   .min(1)
   .max(100)
@@ -290,6 +321,7 @@ const IanaTimezone = z
       return false;
     }
   }, 'invalid IANA timezone');
+export type IanaTimezone = z.infer<typeof IanaTimezone>;
 
 /**
  * Create an input feed. Either a public ICS URL (`kind: 'ics'`, the default) or a
@@ -907,3 +939,99 @@ export const SetMemberCalendarTargetInput = z.object({
   timezone: IanaTimezone.optional(),
 });
 export type SetMemberCalendarTargetInput = z.infer<typeof SetMemberCalendarTargetInput>;
+
+// --- Push notifications ----------------------------------------------------
+
+/**
+ * Register (or refresh) this device's APNs token for the signed-in user.
+ * Idempotent on `deviceToken`: re-posting the same token updates the row and
+ * re-points it at the caller, so signing a second account into one phone moves
+ * the device rather than duplicating it.
+ */
+export const RegisterPushDeviceInput = z.object({
+  /** Lowercase hex APNs device token. Apple doesn't fix the length; 64 is today's. */
+  deviceToken: z
+    .string()
+    .regex(/^[0-9a-f]{32,200}$/, 'expected a lowercase hex APNs device token'),
+  /** The app's bundle id — becomes the `apns-topic` header for this device. */
+  bundleId: z.string().min(1).max(200),
+  environment: ApnsEnvironment,
+  platform: PushPlatform.default('ios'),
+  /**
+   * The device's current IANA zone. Seeds the timezone of schedules created from
+   * this device — there's no user- or family-level timezone anywhere else in the
+   * model, so this is where the digest's idea of "a day" comes from.
+   */
+  timezone: IanaTimezone.optional(),
+});
+export type RegisterPushDeviceInput = z.infer<typeof RegisterPushDeviceInput>;
+
+/** Drop this device's registration (sign-out, or the user turning push off). */
+export const UnregisterPushDeviceInput = z.object({
+  deviceToken: z.string().min(1),
+});
+export type UnregisterPushDeviceInput = z.infer<typeof UnregisterPushDeviceInput>;
+
+/**
+ * How far ahead a digest looks, in whole local days:
+ *
+ *   from = startOfLocalDay(now) + startOffsetDays          (clamped to `now` when 0)
+ *   to   = from's anchor        + startOffsetDays + horizonDays
+ *
+ * So an evening "what's outstanding for tomorrow" brief is `(1, 1)`, a morning
+ * "rest of today" is `(0, 1)`, and "today and tomorrow" is `(0, 2)`.
+ */
+const StartOffsetDays = z.number().int().min(0).max(7);
+const HorizonDays = z.number().int().min(1).max(7);
+
+/** At least one bucket, each at most once — an empty digest can't say anything. */
+const NotificationCategories = z
+  .array(NotificationCategory)
+  .min(1)
+  .max(NotificationCategory.options.length)
+  .refine(
+    (cats) => new Set(cats).size === cats.length,
+    'duplicate notification category',
+  );
+
+/**
+ * A recurring digest of outstanding items, delivered as one push per firing and
+ * aggregated across every family the user belongs to.
+ *
+ * `sendAt` + the day window are read in `timezone`; `weekdayMask` uses the same
+ * Mon=bit0 convention as `assignment_rules`. The cron that dispatches these
+ * ticks every 15 minutes, so a send time is honoured to the quarter hour.
+ */
+export const CreateNotificationScheduleInput = z.object({
+  label: z.string().min(1).max(60).default('Daily brief'),
+  enabled: z.boolean().default(true),
+  sendAt: TimeOfDay,
+  timezone: IanaTimezone,
+  weekdayMask: WeekdayMask.default(127),
+  startOffsetDays: StartOffsetDays.default(1),
+  horizonDays: HorizonDays.default(1),
+  categories: NotificationCategories,
+  /** Stay silent when the window turns up nothing, rather than pushing a zero. */
+  skipWhenEmpty: z.boolean().default(true),
+});
+export type CreateNotificationScheduleInput = z.infer<
+  typeof CreateNotificationScheduleInput
+>;
+
+/** Partial update; omitted fields keep their current value. */
+export const UpdateNotificationScheduleInput = z
+  .object({
+    label: z.string().min(1).max(60),
+    enabled: z.boolean(),
+    sendAt: TimeOfDay,
+    timezone: IanaTimezone,
+    weekdayMask: WeekdayMask,
+    startOffsetDays: StartOffsetDays,
+    horizonDays: HorizonDays,
+    categories: NotificationCategories,
+    skipWhenEmpty: z.boolean(),
+  })
+  .partial();
+export type UpdateNotificationScheduleInput = z.infer<
+  typeof UpdateNotificationScheduleInput
+>;
