@@ -1,17 +1,19 @@
-import { and, eq, getDb, identities, users } from '@igt/db';
+import { and, appleNotificationReceipts, eq, getDb, identities, users } from '@igt/db';
 import { createExecutionContext, env, waitOnExecutionContext } from 'cloudflare:test';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import app from '../src/index.js';
 import {
   type AppleJwk,
   verifyAppleIdentityToken,
   verifyAppleNotificationToken,
 } from '../src/lib/apple.js';
+import { sha256hex } from '../src/lib/crypto.js';
 import {
   createSession,
   findOrCreateUserByApple,
   getUserBySessionToken,
   handleAppleAccountEvent,
+  recordAppleNotificationOnce,
 } from '../src/services/auth.js';
 
 const ISSUER = 'https://appleid.apple.com';
@@ -239,7 +241,7 @@ describe('Apple server-to-server notifications', () => {
     const token = await signNotification(privateKey, KID, {
       type: 'consent-revoked',
       sub: 'apple-sub-revoke',
-      event_time: 1700000000000,
+      event_time: Date.now(),
     });
     const event = await verifyAppleNotificationToken(token, { audience: AUD, jwks });
     expect(event.type).toBe('consent-revoked');
@@ -251,10 +253,41 @@ describe('Apple server-to-server notifications', () => {
     const token = await signNotification(privateKey, KID, {
       type: 'account-delete',
       sub: 's',
+      event_time: Date.now(),
     });
     await expect(
       verifyAppleNotificationToken(token, { audience: 'other.app', jwks }),
     ).rejects.toThrow(/audience/);
+  });
+
+  it('rejects a notification whose iat is outside the allowed clock skew', async () => {
+    const { privateKey, jwks } = await makeKeyAndJwks(KID);
+    const staleIat = Math.floor((Date.now() - 10 * 60 * 1000) / 1000); // 10 min old
+    const token = await signToken(privateKey, KID, {
+      iss: ISSUER,
+      aud: AUD,
+      iat: staleIat,
+      events: JSON.stringify({
+        type: 'account-delete',
+        sub: 's',
+        event_time: Date.now(),
+      }),
+    });
+    await expect(
+      verifyAppleNotificationToken(token, { audience: AUD, jwks }),
+    ).rejects.toThrow(/iat/);
+  });
+
+  it('rejects a notification whose event_time is stale (replay of an old, legitimately-signed event)', async () => {
+    const { privateKey, jwks } = await makeKeyAndJwks(KID);
+    const token = await signNotification(privateKey, KID, {
+      type: 'account-delete',
+      sub: 's',
+      event_time: Date.now() - 10 * 60 * 1000, // 10 min old
+    });
+    await expect(
+      verifyAppleNotificationToken(token, { audience: AUD, jwks }),
+    ).rejects.toThrow(/event_time/);
   });
 
   it('consent-revoked signs the user out and drops the Apple identity', async () => {
@@ -263,7 +296,7 @@ describe('Apple server-to-server notifications', () => {
     const user = await findOrCreateUserByApple(db, sub, 'revoke@relay.test');
     const session = await createSession(db, user.id);
 
-    await handleAppleAccountEvent(db, { type: 'consent-revoked', sub });
+    await handleAppleAccountEvent(db, { type: 'consent-revoked', sub, eventTime: Date.now() });
 
     // Session invalidated…
     expect(await getUserBySessionToken(db, session)).toBeNull();
@@ -284,7 +317,7 @@ describe('Apple server-to-server notifications', () => {
     const user = await findOrCreateUserByApple(db, sub, 'delete@relay.test');
     const session = await createSession(db, user.id);
 
-    await handleAppleAccountEvent(db, { type: 'account-delete', sub });
+    await handleAppleAccountEvent(db, { type: 'account-delete', sub, eventTime: Date.now() });
 
     expect(await getUserBySessionToken(db, session)).toBeNull();
     const userRow = await db.select({ id: users.id }).from(users).where(eq(users.id, user.id));
@@ -294,7 +327,11 @@ describe('Apple server-to-server notifications', () => {
   it('no-ops for an unknown subject', async () => {
     const db = getDb(env.DB);
     await expect(
-      handleAppleAccountEvent(db, { type: 'account-delete', sub: 'never-seen' }),
+      handleAppleAccountEvent(db, {
+        type: 'account-delete',
+        sub: 'never-seen',
+        eventTime: Date.now(),
+      }),
     ).resolves.toBeUndefined();
   });
 
@@ -326,5 +363,69 @@ describe('Apple server-to-server notifications', () => {
     );
     await waitOnExecutionContext(ctx);
     expect(res.status).toBe(400);
+  });
+
+  it('recordAppleNotificationOnce: first call records the digest, a repeat is deduped', async () => {
+    const db = getDb(env.DB);
+    const digest = `digest-${crypto.randomUUID()}`;
+
+    expect(await recordAppleNotificationOnce(db, digest)).toBe(true);
+    expect(await recordAppleNotificationOnce(db, digest)).toBe(false);
+
+    const rows = await db
+      .select({ id: appleNotificationReceipts.id })
+      .from(appleNotificationReceipts)
+      .where(eq(appleNotificationReceipts.digest, digest));
+    expect(rows).toHaveLength(1);
+  });
+
+  it('POST /auth/apple/notifications → a redelivered (duplicate) notification applies once and still 200s', async () => {
+    const { privateKey, jwks } = await makeKeyAndJwks(KID);
+    const sub = `sub-dedupe-${crypto.randomUUID()}`;
+    const token = await signNotification(privateKey, KID, {
+      type: 'account-delete',
+      sub,
+      event_time: Date.now(),
+    });
+    const digest = await sha256hex(token);
+    const bindings = { ...env, APPLE_CLIENT_IDS: AUD };
+
+    async function post() {
+      const ctx = createExecutionContext();
+      const res = await app.fetch(
+        new Request('https://api.test/auth/apple/notifications', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ payload: token }),
+        }),
+        bindings,
+        ctx,
+      );
+      await waitOnExecutionContext(ctx);
+      return res;
+    }
+
+    vi.stubGlobal(
+      'fetch',
+      async () => new Response(JSON.stringify({ keys: jwks }), { status: 200 }),
+    );
+    try {
+      const first = await post();
+      expect(first.status).toBe(200);
+      const second = await post();
+      expect(second.status).toBe(200);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+
+    // Only one receipt was ever persisted for this notification's digest — the
+    // second POST 200'd Apple (so it stops retrying) without re-applying the
+    // event a second time.
+    const db = getDb(env.DB);
+    const rows = await db
+      .select({ id: appleNotificationReceipts.id })
+      .from(appleNotificationReceipts)
+      .where(eq(appleNotificationReceipts.digest, digest));
+    expect(rows).toHaveLength(1);
   });
 });

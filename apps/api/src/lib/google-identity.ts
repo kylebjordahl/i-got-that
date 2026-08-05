@@ -102,9 +102,8 @@ export async function verifyGoogleIdentityToken(
     throw new Error('token audience mismatch');
   }
   const now = opts.now ?? Date.now();
-  if (typeof payload.exp === 'number' && payload.exp * 1000 < now) {
-    throw new Error('token expired');
-  }
+  if (typeof payload.exp !== 'number') throw new Error('token missing exp');
+  if (payload.exp * 1000 < now) throw new Error('token expired');
   if (typeof payload.sub !== 'string') throw new Error('identity token missing subject');
   return {
     sub: payload.sub,
