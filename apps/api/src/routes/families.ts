@@ -176,7 +176,10 @@ familyRoutes.post(
         .insert(familyMembers)
         .values({
           familyId: c.req.param('familyId'),
-          userId: parsed.data.userId ?? null,
+          // Members are always created unlinked — linking a user happens only
+          // through the invite-accept consent flow (see the `/invite` route
+          // below), never by an admin's say-so at creation time.
+          userId: null,
           relationName: parsed.data.relationName,
           isCaretaker: parsed.data.isCaretaker,
           isAdmin: parsed.data.isAdmin,

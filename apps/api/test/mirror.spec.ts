@@ -28,7 +28,7 @@ import {
   syncMemberMirror,
 } from '../src/services/mirror.js';
 import { hashCalendarEvent } from '../src/services/synthesis.js';
-import { authed, bearer, call, setupFamily } from './helpers.js';
+import { authed, bearer, call, linkMember, setupFamily } from './helpers.js';
 
 class FakeProvider implements DeliveryProvider {
   upserts: { event: DeliveryEvent; target: DeliveryTarget }[] = [];
@@ -699,16 +699,13 @@ describe('member calendar-target routes', () => {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ token: devToken }),
     });
-    const partnerUserId = ((await verify.json()) as { user: { id: string } }).user.id;
+    const { sessionToken: partnerToken } = (await verify.json()) as { sessionToken: string };
     const partnerRes = await call(
       `/families/${fam.familyId}/members`,
-      authed(fam.admin.token, {
-        relationName: 'partner',
-        isCaretaker: true,
-        userId: partnerUserId,
-      }),
+      authed(fam.admin.token, { relationName: 'partner', isCaretaker: true }),
     );
     const partnerId = ((await partnerRes.json()) as { member: { id: string } }).member.id;
+    await linkMember(fam.admin.token, fam.familyId, partnerId, partnerToken);
 
     const acct2 = await call(
       '/accounts',

@@ -13,7 +13,7 @@ import {
 } from '@igt/db';
 import { describe, expect, it } from 'vitest';
 import { synthesizeFeed } from '../src/services/synthesis.js';
-import { authed, bearer, call, login, patched, setupFamily } from './helpers.js';
+import { authed, bearer, call, linkMember, login, patched, setupFamily } from './helpers.js';
 
 /**
  * The shared family calendar: ONE input feed carrying several kids' events,
@@ -368,15 +368,12 @@ describe('routing decisions', () => {
   it('lets a non-admin route an event, but not write a rule for it', async () => {
     const f = await undecided('routed-perms@example.com');
     const bob = await login('routed-perms-bob@example.com');
-    await call(
+    const addBob = await call(
       `/families/${f.familyId}/members`,
-      authed(f.admin.token, {
-        relationName: 'uncle',
-        isCaretaker: true,
-        isAdmin: false,
-        userId: bob.userId,
-      }),
+      authed(f.admin.token, { relationName: 'uncle', isCaretaker: true, isAdmin: false }),
     );
+    const bobMemberId = ((await addBob.json()) as { member: { id: string } }).member.id;
+    await linkMember(f.admin.token, f.familyId, bobMemberId, bob.token);
 
     const withRule = await call(
       `/families/${f.familyId}/pending-decisions/${f.forLink(f.linkA.id).id}/resolve`,
