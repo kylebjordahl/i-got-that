@@ -15,7 +15,11 @@ import {
 import { wouldOrphanFamily } from '../services/families.js';
 import { enqueueReconcile } from '../services/mirror.js';
 import { rebuildMemberTasks } from '../services/task-gen.js';
-import { createMemberClaimInvite } from '../services/invites.js';
+import {
+  createMemberClaimInvite,
+  listFamilyInvites,
+  revokeInvite,
+} from '../services/invites.js';
 import { assignmentRuleRoutes } from './assignment-rules.js';
 import { feedRoutes } from './feeds.js';
 import { memberCalendarRoutes } from './member-calendars.js';
@@ -176,7 +180,10 @@ familyRoutes.post(
         .insert(familyMembers)
         .values({
           familyId: c.req.param('familyId'),
-          userId: parsed.data.userId ?? null,
+          // Members are always created unlinked — linking a user happens only
+          // through the invite-accept consent flow (see the `/invite` route
+          // below), never by an admin's say-so at creation time.
+          userId: null,
           relationName: parsed.data.relationName,
           isCaretaker: parsed.data.isCaretaker,
           isAdmin: parsed.data.isAdmin,
@@ -222,12 +229,47 @@ familyRoutes.post(
     const invite = await createMemberClaimInvite(db, me.familyId, memberId, me.id);
     // Compose the shareable deep-link URL from the deployment's public origin.
     // On iOS this opens the app (Universal Links); on web it drives the same
-    // join flow via the existing `?invite=` parser. Local dev / tests have no
+    // join flow via the existing `#invite=` parser. Local dev / tests have no
     // public origin ⇒ `url` is null and the client falls back to the raw token.
+    // The token rides in the URL FRAGMENT, not a query param — fragments never
+    // leave the browser (no Referer header, not logged server-side), unlike a
+    // `?invite=` query string.
     const url = c.env.PUBLIC_ORIGIN
-      ? `${c.env.PUBLIC_ORIGIN}/app/?invite=${invite.token}`
+      ? `${c.env.PUBLIC_ORIGIN}/app/#invite=${invite.token}`
       : null;
-    return c.json({ token: invite.token, expiresAt: invite.expiresAt, url }, 201);
+    return c.json(
+      { id: invite.id, token: invite.token, expiresAt: invite.expiresAt, url },
+      201,
+    );
+  },
+);
+
+/**
+ * List outstanding + historical member-claim invites for the family (admin).
+ * Never exposes the token itself — only the client that created the invite
+ * ever sees the raw value (`POST .../invite`'s response).
+ */
+familyRoutes.get('/:familyId/invites', requireFamilyMember, requireAdmin, async (c) => {
+  const db = getDb(c.env.DB);
+  const me = c.get('member');
+  const invites = await listFamilyInvites(db, me.familyId);
+  return c.json({ invites });
+});
+
+/**
+ * Revoke an invite (admin) — soft-delete via `status = 'revoked'` so the
+ * audit trail survives; the token can no longer be previewed/accepted.
+ */
+familyRoutes.delete(
+  '/:familyId/invites/:id',
+  requireFamilyMember,
+  requireAdmin,
+  async (c) => {
+    const db = getDb(c.env.DB);
+    const me = c.get('member');
+    const ok = await revokeInvite(db, me.familyId, c.req.param('id'));
+    if (!ok) return c.json({ error: 'not_found' }, 404);
+    return c.body(null, 204);
   },
 );
 

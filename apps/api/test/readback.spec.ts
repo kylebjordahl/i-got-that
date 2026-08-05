@@ -15,7 +15,7 @@ import { describe, expect, it } from 'vitest';
 import { storeSecret } from '../src/lib/secrets.js';
 import { readBackMember } from '../src/services/readback.js';
 import { buildMemberTasks } from '../src/services/task-gen.js';
-import { setupFamily } from './helpers.js';
+import { setupFamily, testKeys } from './helpers.js';
 
 const WINDOW = {
   windowStart: new Date('2026-07-06T00:00:00Z'),
@@ -36,7 +36,7 @@ async function googleTargetFixture(email: string) {
   const db = getDb(env.DB);
   const credRef = await storeSecret(
     db,
-    env.KEK,
+    testKeys(),
     null,
     JSON.stringify({ kind: 'oauth', refreshToken: 'rt-1' }),
   );
@@ -68,7 +68,7 @@ async function googleTargetFixture(email: string) {
 
 const opts = {
   ...WINDOW,
-  kek: env.KEK,
+  kek: testKeys(),
   googleRefresh: async () => 'access-token',
 };
 

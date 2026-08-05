@@ -15,6 +15,11 @@ No data is precious pre-launch; these make a clean slate cheap:
   school feed + baseline + override rules, synthesized events, claimable tasks
   (one pre-claimed so Plan shows the recursion), and pending decisions from
   unmatched feed events. Update it when API request shapes change.
+- `rotate-kek.ts` — one-shot KEK rotation sweep: re-encrypts `secrets` rows
+  still on an old envelope-encryption key version onto the current one
+  (`node tools/rotate-kek.ts`, `KEK_CURRENT_VERSION`/`KEK_V<n>` env vars).
+  Manual/deployed-env invocation only — see `docs/DEPLOYMENT.md` § "Rotating
+  the envelope-encryption KEK" for the full procedure.
 
 ## OpenAPI → Dart client (planned)
 

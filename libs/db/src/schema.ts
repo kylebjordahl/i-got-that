@@ -908,7 +908,9 @@ export const invites = sqliteTable(
       onDelete: 'cascade',
     }),
     email: text('email'),
-    token: text('token').notNull().unique(),
+    // Only the hash of the one-time token is stored (see auth_tokens/sessions
+    // below) — the raw value is returned once at creation and never persisted.
+    tokenHash: text('token_hash').notNull().unique(),
     grantIsCaretaker: integer('grant_is_caretaker', { mode: 'boolean' })
       .notNull()
       .default(true),

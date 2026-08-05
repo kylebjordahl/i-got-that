@@ -44,6 +44,7 @@ import { Hono } from 'hono';
 import type { Bindings, HonoEnv } from '../env.js';
 import { resolveAccountCredential } from '../lib/account-credentials.js';
 import { googleRefresherFor } from '../lib/google-oauth.js';
+import { buildKekKeySet } from '../lib/secrets.js';
 import {
   assertSafeOutboundUrl,
   createGuardedFetch,
@@ -77,7 +78,7 @@ async function probeFreeBusy(
   calendarId: string,
 ): Promise<string | null> {
   try {
-    const credential = await resolveAccountCredential(db, env.KEK, accountId);
+    const credential = await resolveAccountCredential(db, buildKekKeySet(env), accountId);
     if (!credential || credential.kind !== 'oauth') return 'no_account_credential';
     const refresh = googleRefresherFor(env);
     const accessToken =
@@ -841,6 +842,21 @@ feedRoutes.post('/:feedId/events/:eventId/restore', requireAdmin, async (c) => {
 // --- Refresh ------------------------------------------------------------------
 
 /**
+ * Seconds remaining before `lastRefreshRequestedAt` clears a feed's
+ * `refreshMinutes` cooldown, or 0 if it's already clear (including a feed
+ * that's never been refresh-requested).
+ */
+function refreshCooldownRemainingSeconds(
+  feed: { refreshMinutes: number; lastRefreshRequestedAt: Date | null },
+  now: Date,
+): number {
+  if (!feed.lastRefreshRequestedAt) return 0;
+  const cooldownMs = feed.refreshMinutes * 60_000;
+  const elapsedMs = now.getTime() - feed.lastRefreshRequestedAt.getTime();
+  return Math.max(0, Math.ceil((cooldownMs - elapsedMs) / 1000));
+}
+
+/**
  * Force-refresh a single feed now: ingest → synthesize → read-back (family,
  * so human edits on member target calendars aren't left stale between cron
  * ticks) → task-gen → claim true-up → mirror.
@@ -859,9 +875,16 @@ feedRoutes.post('/:feedId/refresh', async (c) => {
   )[0];
   if (!feed) return c.json({ error: 'not_found' }, 404);
 
+  const now = new Date();
+  const retryAfterSeconds = refreshCooldownRemainingSeconds(feed, now);
+  if (retryAfterSeconds > 0) {
+    c.header('Retry-After', String(retryAfterSeconds));
+    return c.json({ error: 'refresh_cooldown', retryAfterSeconds }, 429);
+  }
+
   await db
     .update(feeds)
-    .set({ lastRefreshRequestedAt: new Date() })
+    .set({ lastRefreshRequestedAt: now })
     .where(eq(feeds.id, feed.id));
 
   const ingest = await ingestFeed(db, feed, ingestSecrets(c.env));
@@ -889,6 +912,27 @@ feedRoutes.post('/:feedId/refresh', async (c) => {
 feedRoutes.post('/refresh-all', async (c) => {
   const db = getDb(c.env.DB);
   const familyId = c.get('member').familyId;
+
+  // Gate the whole call on the family's feeds' cooldowns: proceed as soon as
+  // at least one feed is due (the pipeline below refreshes all of them
+  // together, same as the cron tick), otherwise reject citing the soonest
+  // one to clear.
+  const now = new Date();
+  const existingFeeds = await db.select().from(feeds).where(eq(feeds.familyId, familyId));
+  const retryAfterSeconds = existingFeeds.length
+    ? Math.min(...existingFeeds.map((feed) => refreshCooldownRemainingSeconds(feed, now)))
+    : 0;
+  if (retryAfterSeconds > 0) {
+    c.header('Retry-After', String(retryAfterSeconds));
+    return c.json({ error: 'refresh_cooldown', retryAfterSeconds }, 429);
+  }
+  if (existingFeeds.length) {
+    await db
+      .update(feeds)
+      .set({ lastRefreshRequestedAt: now })
+      .where(eq(feeds.familyId, familyId));
+  }
+
   const ingest = await ingestFamilyFeeds(db, familyId, ingestSecrets(c.env));
 
   const familyFeeds = await db.select().from(feeds).where(eq(feeds.familyId, familyId));

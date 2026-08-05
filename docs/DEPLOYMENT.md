@@ -108,8 +108,19 @@ value in `apps/api/wrangler.jsonc` (the id is **not** secret — commit it).
 ### 6. The KEK and other Worker secrets
 
 Credentials (CalDAV passwords, Google tokens) are envelope-encrypted with a
-**KEK**. `wrangler.jsonc` ships a **dev-only** KEK in `vars`; production must use
-a real secret that overrides it:
+**KEK**, and separately `KEK` also signs the OAuth state cookie
+(`routes/auth.ts`'s `cookieSecret`, issue #143 — that reuse is intentionally
+left alone here). The two concerns now use different secrets:
+
+- **`KEK`** — cookie-signing only. Unversioned, one value per env.
+- **`KEK_V1`, `KEK_V2`, …** — envelope-encryption keys (`lib/secrets.ts`),
+  versioned so old ciphertext keeps decrypting after rotation. Each stored
+  `secrets` row remembers which version encrypted it (`key_version` column).
+  `KEK_CURRENT_VERSION` names which version encrypts *new* secrets (defaults
+  to `1` if unset — fine until you rotate for the first time).
+
+`wrangler.jsonc` ships **dev-only** values for both in `vars`; production must
+use real secrets that override them:
 
 ```bash
 # 32 random bytes, base64 — generate locally, never commit:
@@ -118,10 +129,15 @@ openssl rand -base64 32
 cd apps/api
 echo "<that-value>" | pnpm wrangler secret put KEK --env staging
 echo "<another>"    | pnpm wrangler secret put KEK --env production
+
+echo "<yet-another>" | pnpm wrangler secret put KEK_V1 --env staging
+echo "<and-another>" | pnpm wrangler secret put KEK_V1 --env production
 ```
 
-A `wrangler secret` takes precedence over the `vars` KEK at runtime. Use a
-**different** KEK per environment.
+A `wrangler secret` takes precedence over the same-named `vars` entry at
+runtime. Use **different** values per environment (and per KEK purpose —
+don't reuse the cookie `KEK` as `KEK_V1`, even though the checked-in dev
+`vars` do for convenience).
 
 > **Never set `ALLOW_DEV_TOKENS` on a deployed env.** It makes
 > `POST /auth/magic-link/request` return the raw magic-link token, which is an
@@ -129,6 +145,40 @@ A `wrangler secret` takes precedence over the `vars` KEK at runtime. Use a
 > **top-level** `vars` (local `wrangler dev` + tests) and named envs don't
 > inherit those, so staging/production are closed by default — keep it that way.
 > See `docs/AUTH.md`.
+
+#### Rotating the envelope-encryption KEK
+
+Rotation adds a new `KEK_V<n>` without ever invalidating already-stored
+secrets. Order matters — always set the new key *before* pointing new writes
+at it:
+
+1. Generate a new key (`openssl rand -base64 32`) and set it as
+   `KEK_V<n>` (n = current version + 1) via `wrangler secret put KEK_V<n>
+   --env <env>`, **without** touching `KEK_CURRENT_VERSION` yet. At this
+   point both the old and new keys are configured, but everything still
+   encrypts (and decrypts) with the old version.
+2. Bump `KEK_CURRENT_VERSION` to `<n>` (a `var`, or `wrangler secret put
+   KEK_CURRENT_VERSION --env <env>` also works — either is read the same way)
+   and deploy. New secrets now encrypt under `KEK_V<n>`; existing rows keep
+   decrypting fine because `decryptSecret` looks up the key by each row's own
+   `key_version`.
+3. Run the sweep script to re-encrypt every row still on an older version:
+   ```bash
+   CLOUDFLARE_ACCOUNT_ID=<account id> \
+   CLOUDFLARE_API_TOKEN=<token with D1 edit perms> \
+   D1_DATABASE_ID=<the deployed DB's database_id, from wrangler.jsonc> \
+   KEK_V1=<old key> KEK_V<n>=<new key> KEK_CURRENT_VERSION=<n> \
+     node tools/rotate-kek.ts
+   ```
+   It's safe to re-run — rows already on the current version are skipped, and
+   a failure decrypting/re-encrypting one row is logged and doesn't abort the
+   sweep.
+4. Once a re-run reports zero rows remaining below the current version,
+   remove the old `KEK_V<n-1>` secret (`wrangler secret delete KEK_V<n-1>
+   --env <env>`). Until then, keep it configured — `decryptSecret` still needs
+   it for any row the sweep hasn't reached, and a missing version throws a
+   distinct `KekVersionNotConfiguredError` (logged by
+   `resolveAccountCredential`) rather than silently failing.
 
 ### 7. Single-subdomain layout (one Worker serves API + web + redirect)
 

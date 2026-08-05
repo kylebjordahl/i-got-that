@@ -39,6 +39,7 @@ import { removeClaimEvent, upsertClaimEvent } from '../services/claim.js';
 import { reconcileMemberConflicts, scheduleStamp } from '../services/conflicts.js';
 import { enqueueReconcile, getProductionRegistry, syncFamilyMirror } from '../services/mirror.js';
 import { resynthesizeFeed } from '../services/pipeline.js';
+import { buildKekKeySet } from '../lib/secrets.js';
 import { hashCalendarEvent } from '../services/synthesis.js';
 import { buildMemberTasks } from '../services/task-gen.js';
 
@@ -1186,6 +1187,11 @@ taskRoutes.get('/source-events', async (c) => {
 taskRoutes.post('/mirror/resync', async (c) => {
   const db = getDb(c.env.DB);
   const me = c.get('member');
-  const result = await syncFamilyMirror(db, getProductionRegistry(c.env), c.env.KEK, me.familyId);
+  const result = await syncFamilyMirror(
+    db,
+    getProductionRegistry(c.env),
+    buildKekKeySet(c.env),
+    me.familyId,
+  );
   return c.json(result);
 });

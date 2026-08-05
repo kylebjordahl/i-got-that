@@ -25,6 +25,7 @@ import {
   purgeMemberMirror,
 } from '../services/mirror.js';
 import { readBackMember } from '../services/readback.js';
+import { buildKekKeySet } from '../lib/secrets.js';
 
 /**
  * A member's unified-calendar target: the ONE writable external calendar their
@@ -162,7 +163,7 @@ memberCalendarRoutes.put('/members/:memberId/calendar-target', async (c) => {
     if (!sameCalendar) {
       deferSync(
         c.executionCtx,
-        purgeMemberMirror(db, getProductionRegistry(c.env), c.env.KEK, prior),
+        purgeMemberMirror(db, getProductionRegistry(c.env), buildKekKeySet(c.env), prior),
       );
     }
     row = (
@@ -188,7 +189,7 @@ memberCalendarRoutes.put('/members/:memberId/calendar-target', async (c) => {
     // rather than waiting for the next cron tick.
     try {
       await readBackMember(db, row, {
-        kek: c.env.KEK,
+        kek: buildKekKeySet(c.env),
         googleRefresh: googleRefresherFor(c.env),
         fetchImpl: createGuardedFetch(c.env),
       });
@@ -228,7 +229,7 @@ memberCalendarRoutes.delete('/members/:memberId/calendar-target', async (c) => {
   // Cancel our remote events while the credential row still tells us where.
   deferSync(
     c.executionCtx,
-    purgeMemberMirror(db, getProductionRegistry(c.env), c.env.KEK, cal),
+    purgeMemberMirror(db, getProductionRegistry(c.env), buildKekKeySet(c.env), cal),
   );
   await db.delete(memberCalendars).where(eq(memberCalendars.id, cal.id));
 

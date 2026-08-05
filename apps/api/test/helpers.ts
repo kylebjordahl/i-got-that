@@ -5,12 +5,25 @@ import {
 } from 'cloudflare:test';
 import { expect } from 'vitest';
 import app from '../src/index.js';
+import { buildKekKeySet, type KekKeySet } from '../src/lib/secrets.js';
 
 export async function call(path: string, init?: RequestInit) {
   const ctx = createExecutionContext();
   const res = await app.fetch(new Request(`https://api.test${path}`, init), env, ctx);
   await waitOnExecutionContext(ctx);
   return res;
+}
+
+/**
+ * The test env's `KekKeySet` (built from the dev-only `KEK_V1` in
+ * `wrangler.jsonc`) — the versioned replacement for tests that used to pass
+ * `env.KEK` straight into `encryptSecret`/`storeSecret`/etc. `env.KEK` itself
+ * now only backs the state-cookie signing secret (issue #143).
+ */
+export function testKeys(): KekKeySet {
+  const keys = buildKekKeySet(env);
+  if (!keys) throw new Error('test env missing KEK_V1 — check wrangler.jsonc');
+  return keys;
 }
 
 export function authed(token: string, body?: unknown): RequestInit {
@@ -71,6 +84,27 @@ export async function login(
   };
   expect(sessionToken).toBeTruthy();
   return { token: sessionToken, userId: user.id };
+}
+
+/**
+ * Link a user to an existing (unlinked) family member the only sanctioned
+ * way: an admin issues a member-claim invite and the user accepts it.
+ * `POST /families/:familyId/members` never links a `userId` directly (#147).
+ */
+export async function linkMember(
+  adminToken: string,
+  familyId: string,
+  memberId: string,
+  userToken: string,
+): Promise<void> {
+  const issued = await call(
+    `/families/${familyId}/members/${memberId}/invite`,
+    authed(adminToken),
+  );
+  expect(issued.status).toBe(201);
+  const { token } = (await issued.json()) as { token: string };
+  const accepted = await call(`/invites/${token}/accept`, authed(userToken));
+  expect(accepted.status).toBe(200);
 }
 
 /** Create a family as the given user; returns the family id (creator is admin). */

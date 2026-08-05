@@ -4,7 +4,9 @@ import {
   type Db,
   eq,
   familyMembers,
+  gt,
   identities,
+  isNull,
   sessions,
   users,
 } from '@igt/db';
@@ -15,11 +17,45 @@ import { wouldOrphanFamily } from './families.js';
 
 const MAGIC_LINK_TTL_MS = 15 * 60 * 1000; // 15 minutes
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+/**
+ * Max unconsumed, unexpired magic-link tokens a single email may have
+ * outstanding at once — caps issuance (email-bombing a third party, sender
+ * reputation burn, `auth_tokens` row growth) without touching a legitimate
+ * user who fat-fingers "resend" a couple times.
+ */
+const MAGIC_LINK_MAX_OUTSTANDING = 3;
 
 export type SessionUser = typeof users.$inferSelect;
 
-/** Issue a one-time magic-link token for `email`; returns the raw token. */
+/** Thrown by `requestMagicLink` when `email` already has too many live tokens. */
+export class MagicLinkCapExceededError extends Error {
+  constructor(readonly email: string) {
+    super(`too many outstanding magic-link tokens for ${email}`);
+    this.name = 'MagicLinkCapExceededError';
+  }
+}
+
+/**
+ * Issue a one-time magic-link token for `email`; returns the raw token.
+ * Throws `MagicLinkCapExceededError` if `email` already has
+ * `MAGIC_LINK_MAX_OUTSTANDING` unconsumed, unexpired tokens outstanding.
+ */
 export async function requestMagicLink(db: Db, email: string): Promise<string> {
+  const outstanding = await db
+    .select({ id: authTokens.id })
+    .from(authTokens)
+    .where(
+      and(
+        eq(authTokens.email, email),
+        isNull(authTokens.consumedAt),
+        gt(authTokens.expiresAt, new Date()),
+      ),
+    )
+    .limit(MAGIC_LINK_MAX_OUTSTANDING);
+  if (outstanding.length >= MAGIC_LINK_MAX_OUTSTANDING) {
+    throw new MagicLinkCapExceededError(email);
+  }
+
   const rawToken = randomToken();
   const tokenHash = await sha256hex(rawToken);
   await db.insert(authTokens).values({
