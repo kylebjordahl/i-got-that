@@ -134,213 +134,216 @@ Future<void> showTaskActions(
     useRootNavigator: true,
     showDragHandle: true,
     isScrollControlled: true,
-    builder: (sheetCtx) => SingleChildScrollView(
-      padding: EdgeInsets.fromLTRB(
-        22,
-        4,
-        22,
-        28 + MediaQuery.of(sheetCtx).viewInsets.bottom,
-      ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              IconTile(icon: taskIcon(task.type), color: color, size: 44),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      '${sourceEvent?.displaySummary ?? taskTypeLabel(task.type)} · ${child?.relationName ?? 'child'}',
-                      style: AppText.sectionItemTitle,
-                    ),
-                    const SizedBox(height: 2),
-                    Text(
-                      '${taskCategory(task.type)} · $eventTime · $statusText',
-                      style: AppText.subtitle,
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-          if (hasLocation || hasDescription) ...[
-            const SizedBox(height: 14),
-            if (hasLocation)
-              _DetailRow(icon: Icons.location_on_outlined, text: location),
-            if (hasLocation && hasDescription) const SizedBox(height: 8),
-            if (hasDescription)
-              _DetailRow(icon: Icons.notes_rounded, text: description),
-          ],
-          if (autoRuleIds.isNotEmpty) ...[
-            const SizedBox(height: 14),
-            _AutoAssignedNote(ruleIds: autoRuleIds),
-          ],
-          if (isFeedTask) ...[
-            const SizedBox(height: 20),
-            Text('CHANGE TYPE', style: AppText.eyebrow()),
-            const SizedBox(height: 10),
+    builder: (sheetCtx) => SafeArea(
+      child: SingleChildScrollView(
+        padding: EdgeInsets.fromLTRB(
+          22,
+          4,
+          22,
+          28 + MediaQuery.of(sheetCtx).viewInsets.bottom,
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
             Row(
               children: [
-                for (final (seg, label, icon) in const [
-                  ('transition', 'Transition', Icons.swap_horiz_rounded),
-                  ('attendance', 'Attendance', Icons.groups_rounded),
-                  ('both', 'Both', Icons.dashboard_customize_rounded),
-                ]) ...[
-                  Expanded(
-                    child: _SegTile(
-                      label: label,
-                      icon: icon,
-                      selected: seg == currentSeg,
-                      onTap: seg == currentSeg
-                          ? null
-                          : () {
-                              Navigator.of(sheetCtx).pop();
-                              _run(
-                                context,
-                                ref,
-                                (api, fid) => api.convertTask(
-                                  fid,
-                                  task.id,
-                                  targetOf(seg),
-                                ),
-                                'Type updated',
-                              );
-                            },
+                IconTile(icon: taskIcon(task.type), color: color, size: 44),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        '${sourceEvent?.displaySummary ?? taskTypeLabel(task.type)} · ${child?.relationName ?? 'child'}',
+                        style: AppText.sectionItemTitle,
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        '${taskCategory(task.type)} · $eventTime · $statusText',
+                        style: AppText.subtitle,
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            if (hasLocation || hasDescription) ...[
+              const SizedBox(height: 14),
+              if (hasLocation)
+                _DetailRow(icon: Icons.location_on_outlined, text: location),
+              if (hasLocation && hasDescription) const SizedBox(height: 8),
+              if (hasDescription)
+                _DetailRow(icon: Icons.notes_rounded, text: description),
+            ],
+            if (autoRuleIds.isNotEmpty) ...[
+              const SizedBox(height: 14),
+              _AutoAssignedNote(ruleIds: autoRuleIds),
+            ],
+            if (isFeedTask) ...[
+              const SizedBox(height: 20),
+              Text('CHANGE TYPE', style: AppText.eyebrow()),
+              const SizedBox(height: 10),
+              Row(
+                children: [
+                  for (final (seg, label, icon) in const [
+                    ('transition', 'Transition', Icons.swap_horiz_rounded),
+                    ('attendance', 'Attendance', Icons.groups_rounded),
+                    ('both', 'Both', Icons.dashboard_customize_rounded),
+                  ]) ...[
+                    Expanded(
+                      child: _SegTile(
+                        label: label,
+                        icon: icon,
+                        selected: seg == currentSeg,
+                        onTap: seg == currentSeg
+                            ? null
+                            : () {
+                                Navigator.of(sheetCtx).pop();
+                                _run(
+                                  context,
+                                  ref,
+                                  (api, fid) => api.convertTask(
+                                    fid,
+                                    task.id,
+                                    targetOf(seg),
+                                  ),
+                                  'Type updated',
+                                );
+                              },
+                      ),
                     ),
-                  ),
-                  if (seg != 'both') const SizedBox(width: 8),
+                    if (seg != 'both') const SizedBox(width: 8),
+                  ],
                 ],
-              ],
-            ),
-          ],
-          if (transitions.isNotEmpty) ...[
-            const SizedBox(height: 20),
-            Text('DURATION', style: AppText.eyebrow()),
-            const SizedBox(height: 10),
-            for (final t in transitions)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 4),
-                child: _DurationField(
-                  task: t,
-                  // Label each field when the scope holds both edges (a block
-                  // tap); a lone tag/row needs no disambiguation.
-                  showLabel: transitions.length > 1,
-                  onSubmit: (minutes) {
-                    Navigator.of(sheetCtx).pop();
-                    _run(
-                      context,
-                      ref,
-                      (api, fid) => api.setTaskDuration(fid, t.id, minutes),
-                      'Duration updated',
-                    );
-                  },
-                ),
               ),
-          ],
-          if (travelTargets.isNotEmpty) ...[
-            const SizedBox(height: 20),
-            Text('TRAVEL TIME', style: AppText.eyebrow()),
-            const SizedBox(height: 10),
-            for (final (t, claim) in travelTargets)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 4),
-                child: _TravelTimeField(
-                  event: claim,
-                  label: travelTargets.length > 1 ? t.typeLabel : null,
-                  onSubmit: (minutes) {
-                    Navigator.of(sheetCtx).pop();
-                    _run(
-                      context,
-                      ref,
-                      (api, fid) =>
-                          api.setEventTravelTime(fid, claim.id, minutes),
-                      minutes == null
-                          ? 'Back to the estimate'
-                          : 'Travel time updated',
-                    );
-                  },
+            ],
+            if (transitions.isNotEmpty) ...[
+              const SizedBox(height: 20),
+              Text('DURATION', style: AppText.eyebrow()),
+              const SizedBox(height: 10),
+              for (final t in transitions)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 4),
+                  child: _DurationField(
+                    task: t,
+                    // Label each field when the scope holds both edges (a block
+                    // tap); a lone tag/row needs no disambiguation.
+                    showLabel: transitions.length > 1,
+                    onSubmit: (minutes) {
+                      Navigator.of(sheetCtx).pop();
+                      _run(
+                        context,
+                        ref,
+                        (api, fid) => api.setTaskDuration(fid, t.id, minutes),
+                        'Duration updated',
+                      );
+                    },
+                  ),
                 ),
-              ),
-          ],
-          const SizedBox(height: 20),
-          AppCard(
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
-            child: Column(
-              children: [
-                if (anyUnowned && canClaim) ...[
+            ],
+            if (travelTargets.isNotEmpty) ...[
+              const SizedBox(height: 20),
+              Text('TRAVEL TIME', style: AppText.eyebrow()),
+              const SizedBox(height: 10),
+              for (final (t, claim) in travelTargets)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 4),
+                  child: _TravelTimeField(
+                    event: claim,
+                    label: travelTargets.length > 1 ? t.typeLabel : null,
+                    onSubmit: (minutes) {
+                      Navigator.of(sheetCtx).pop();
+                      _run(
+                        context,
+                        ref,
+                        (api, fid) =>
+                            api.setEventTravelTime(fid, claim.id, minutes),
+                        minutes == null
+                            ? 'Back to the estimate'
+                            : 'Travel time updated',
+                      );
+                    },
+                  ),
+                ),
+            ],
+            const SizedBox(height: 20),
+            AppCard(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
+              child: Column(
+                children: [
+                  if (anyUnowned && canClaim) ...[
+                    _ActionRow(
+                      icon: Icons.check_circle_outline_rounded,
+                      iconColor: AppColors.indigo,
+                      label: 'Claim for myself',
+                      onTap: () {
+                        Navigator.of(sheetCtx).pop();
+                        _runScope(
+                          context,
+                          ref,
+                          scope.where((t) => t.status == 'unowned'),
+                          (api, fid, t) => api.assignTask(fid, t.id),
+                          'Claimed',
+                        );
+                      },
+                    ),
+                    const Divider(height: 18),
+                  ],
+                  if (canAssign &&
+                      caretakers.length > (allUnowned ? 0 : 1)) ...[
+                    _ActionRow(
+                      icon: Icons.person_add_alt_1_rounded,
+                      iconColor: AppColors.blue,
+                      label: allUnowned
+                          ? 'Assign to someone…'
+                          : 'Reassign to someone…',
+                      onTap: () {
+                        Navigator.of(sheetCtx).pop();
+                        _pickAndAssign(context, ref, scope, caretakers);
+                      },
+                    ),
+                    const Divider(height: 18),
+                  ],
+                  if (anyOwned && canAssign) ...[
+                    _ActionRow(
+                      icon: Icons.person_off_outlined,
+                      iconColor: AppColors.textSecondary,
+                      label: 'Unassign',
+                      onTap: () {
+                        Navigator.of(sheetCtx).pop();
+                        _runScope(
+                          context,
+                          ref,
+                          scope.where((t) => t.status == 'owned'),
+                          (api, fid, t) => api.unassignTask(fid, t.id),
+                          'Returned to the queue',
+                        );
+                      },
+                    ),
+                    const Divider(height: 18),
+                  ],
                   _ActionRow(
-                    icon: Icons.check_circle_outline_rounded,
-                    iconColor: AppColors.indigo,
-                    label: 'Claim for myself',
+                    icon: Icons.block_rounded,
+                    iconColor: AppColors.coral,
+                    label: 'Mark as not needed',
+                    destructive: true,
                     onTap: () {
                       Navigator.of(sheetCtx).pop();
                       _runScope(
                         context,
                         ref,
-                        scope.where((t) => t.status == 'unowned'),
-                        (api, fid, t) => api.assignTask(fid, t.id),
-                        'Claimed',
+                        scope,
+                        (api, fid, t) => api.dismissTask(fid, t.id),
+                        'Marked not needed',
                       );
                     },
                   ),
-                  const Divider(height: 18),
                 ],
-                if (canAssign && caretakers.length > (allUnowned ? 0 : 1)) ...[
-                  _ActionRow(
-                    icon: Icons.person_add_alt_1_rounded,
-                    iconColor: AppColors.blue,
-                    label: allUnowned
-                        ? 'Assign to someone…'
-                        : 'Reassign to someone…',
-                    onTap: () {
-                      Navigator.of(sheetCtx).pop();
-                      _pickAndAssign(context, ref, scope, caretakers);
-                    },
-                  ),
-                  const Divider(height: 18),
-                ],
-                if (anyOwned && canAssign) ...[
-                  _ActionRow(
-                    icon: Icons.person_off_outlined,
-                    iconColor: AppColors.textSecondary,
-                    label: 'Unassign',
-                    onTap: () {
-                      Navigator.of(sheetCtx).pop();
-                      _runScope(
-                        context,
-                        ref,
-                        scope.where((t) => t.status == 'owned'),
-                        (api, fid, t) => api.unassignTask(fid, t.id),
-                        'Returned to the queue',
-                      );
-                    },
-                  ),
-                  const Divider(height: 18),
-                ],
-                _ActionRow(
-                  icon: Icons.block_rounded,
-                  iconColor: AppColors.coral,
-                  label: 'Mark as not needed',
-                  destructive: true,
-                  onTap: () {
-                    Navigator.of(sheetCtx).pop();
-                    _runScope(
-                      context,
-                      ref,
-                      scope,
-                      (api, fid, t) => api.dismissTask(fid, t.id),
-                      'Marked not needed',
-                    );
-                  },
-                ),
-              ],
+              ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     ),
   );
@@ -412,99 +415,107 @@ Future<void> showEventDetails(
     useRootNavigator: true,
     showDragHandle: true,
     isScrollControlled: true,
-    builder: (sheetCtx) => SingleChildScrollView(
-      // Keyboard-aware: the travel-time field lifts the sheet above it.
-      padding: EdgeInsets.fromLTRB(
-        22,
-        4,
-        22,
-        28 + MediaQuery.of(sheetCtx).viewInsets.bottom,
-      ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              IconTile(icon: Icons.event_rounded, color: color, size: 44),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      member == null
-                          ? event.displaySummary
-                          : '${event.displaySummary} · ${member.relationName}',
-                      style: AppText.sectionItemTitle,
-                    ),
-                    const SizedBox(height: 2),
-                    Text(
-                      '$timeText${event.isHuman ? ' · manual' : ''}',
-                      style: AppText.subtitle,
-                    ),
-                  ],
+    builder: (sheetCtx) => SafeArea(
+      child: SingleChildScrollView(
+        // Keyboard-aware: the travel-time field lifts the sheet above it.
+        padding: EdgeInsets.fromLTRB(
+          22,
+          4,
+          22,
+          28 + MediaQuery.of(sheetCtx).viewInsets.bottom,
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                IconTile(icon: Icons.event_rounded, color: color, size: 44),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        member == null
+                            ? event.displaySummary
+                            : '${event.displaySummary} · ${member.relationName}',
+                        style: AppText.sectionItemTitle,
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        '$timeText${event.isHuman ? ' · manual' : ''}',
+                        style: AppText.subtitle,
+                      ),
+                    ],
+                  ),
                 ),
-              ),
-            ],
-          ),
-          if (hasLocation || hasDescription) ...[
-            const SizedBox(height: 14),
-            if (hasLocation)
-              _DetailRow(icon: Icons.location_on_outlined, text: location),
-            if (hasLocation && hasDescription) const SizedBox(height: 8),
-            if (hasDescription)
-              _DetailRow(icon: Icons.notes_rounded, text: description),
-          ],
-          // Travel time is a property of the trip *out to the target calendar*,
-          // so it's offered on the events we mirror — above all a claim, which
-          // is somebody's actual journey.
-          if (canSetTravel) ...[
-            const SizedBox(height: 20),
-            Text('TRAVEL TIME', style: AppText.eyebrow()),
-            const SizedBox(height: 10),
-            _TravelTimeField(
-              event: event,
-              onSubmit: (minutes) {
-                Navigator.of(sheetCtx).pop();
-                _run(
-                  context,
-                  ref,
-                  (api, fid) => api.setEventTravelTime(fid, event.id, minutes),
-                  minutes == null
-                      ? 'Back to the estimate'
-                      : 'Travel time updated',
-                );
-              },
+              ],
             ),
-          ],
-          const SizedBox(height: 18),
-          _DetailRow(icon: Icons.info_outline_rounded, text: reason),
-          // Only an eligible event can be rebuilt — for the three rule cases
-          // there's nothing this sheet could do that wouldn't be a lie.
-          if (event.canHaveTasks) ...[
-            const SizedBox(height: 18),
-            AppCard(
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
-              child: _ActionRow(
-                icon: Icons.restore_rounded,
-                iconColor: AppColors.indigo,
-                label: dismissed > 0
-                    ? 'Restore ${dismissed == 1 ? 'its task' : 'its $dismissed tasks'}'
-                    : "Rebuild this event's tasks",
-                onTap: () {
+            if (hasLocation || hasDescription) ...[
+              const SizedBox(height: 14),
+              if (hasLocation)
+                _DetailRow(icon: Icons.location_on_outlined, text: location),
+              if (hasLocation && hasDescription) const SizedBox(height: 8),
+              if (hasDescription)
+                _DetailRow(icon: Icons.notes_rounded, text: description),
+            ],
+            // Travel time is a property of the trip *out to the target calendar*,
+            // so it's offered on the events we mirror — above all a claim, which
+            // is somebody's actual journey.
+            if (canSetTravel) ...[
+              const SizedBox(height: 20),
+              Text('TRAVEL TIME', style: AppText.eyebrow()),
+              const SizedBox(height: 10),
+              _TravelTimeField(
+                event: event,
+                onSubmit: (minutes) {
                   Navigator.of(sheetCtx).pop();
                   _run(
                     context,
                     ref,
-                    (api, fid) => api.rebuildEventTasks(fid, event.id),
-                    dismissed > 0 ? 'Back in the claim queue' : 'Tasks rebuilt',
+                    (api, fid) =>
+                        api.setEventTravelTime(fid, event.id, minutes),
+                    minutes == null
+                        ? 'Back to the estimate'
+                        : 'Travel time updated',
                   );
                 },
               ),
-            ),
+            ],
+            const SizedBox(height: 18),
+            _DetailRow(icon: Icons.info_outline_rounded, text: reason),
+            // Only an eligible event can be rebuilt — for the three rule cases
+            // there's nothing this sheet could do that wouldn't be a lie.
+            if (event.canHaveTasks) ...[
+              const SizedBox(height: 18),
+              AppCard(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 4,
+                ),
+                child: _ActionRow(
+                  icon: Icons.restore_rounded,
+                  iconColor: AppColors.indigo,
+                  label: dismissed > 0
+                      ? 'Restore ${dismissed == 1 ? 'its task' : 'its $dismissed tasks'}'
+                      : "Rebuild this event's tasks",
+                  onTap: () {
+                    Navigator.of(sheetCtx).pop();
+                    _run(
+                      context,
+                      ref,
+                      (api, fid) => api.rebuildEventTasks(fid, event.id),
+                      dismissed > 0
+                          ? 'Back in the claim queue'
+                          : 'Tasks rebuilt',
+                    );
+                  },
+                ),
+              ),
+            ],
           ],
-        ],
+        ),
       ),
     ),
   );
@@ -525,43 +536,45 @@ Future<void> _pickAndAssign(
     context: context,
     useRootNavigator: true,
     showDragHandle: true,
-    builder: (sheetCtx) => SingleChildScrollView(
-      padding: const EdgeInsets.fromLTRB(22, 4, 22, 28),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text('Assign to', style: AppText.subPageTitle),
-          const SizedBox(height: 12),
-          for (final m in options)
-            InkWell(
-              onTap: () {
-                Navigator.of(sheetCtx).pop();
-                _runScope(
-                  context,
-                  ref,
-                  scope,
-                  (api, fid, t) => api.assignTask(fid, t.id, memberId: m.id),
-                  'Assigned to ${m.relationName}',
-                );
-              },
-              borderRadius: BorderRadius.circular(14),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(vertical: 8),
-                child: Row(
-                  children: [
-                    PersonAvatar(
-                      initial: initialFor(m.relationName),
-                      color: personColor(m),
-                      size: 40,
-                    ),
-                    const SizedBox(width: 14),
-                    Text(m.relationName, style: AppText.sectionItemTitle),
-                  ],
+    builder: (sheetCtx) => SafeArea(
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.fromLTRB(22, 4, 22, 28),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Assign to', style: AppText.subPageTitle),
+            const SizedBox(height: 12),
+            for (final m in options)
+              InkWell(
+                onTap: () {
+                  Navigator.of(sheetCtx).pop();
+                  _runScope(
+                    context,
+                    ref,
+                    scope,
+                    (api, fid, t) => api.assignTask(fid, t.id, memberId: m.id),
+                    'Assigned to ${m.relationName}',
+                  );
+                },
+                borderRadius: BorderRadius.circular(14),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 8),
+                  child: Row(
+                    children: [
+                      PersonAvatar(
+                        initial: initialFor(m.relationName),
+                        color: personColor(m),
+                        size: 40,
+                      ),
+                      const SizedBox(width: 14),
+                      Text(m.relationName, style: AppText.sectionItemTitle),
+                    ],
+                  ),
                 ),
               ),
-            ),
-        ],
+          ],
+        ),
       ),
     ),
   );
