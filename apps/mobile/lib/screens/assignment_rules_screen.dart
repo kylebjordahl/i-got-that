@@ -8,6 +8,7 @@ import '../theme/app_colors.dart';
 import '../theme/app_text.dart';
 import '../theme/person_colors.dart';
 import '../util/assignment_text.dart';
+import '../widgets/day_chip.dart';
 import '../widgets/primitives.dart';
 import '../widgets/settings.dart';
 
@@ -352,9 +353,15 @@ class _AssignmentRuleSheetState extends ConsumerState<_AssignmentRuleSheet> {
               children: [
                 Text('DAYS', style: AppText.eyebrow()),
                 const Spacer(),
-                _preset('Every day', () => _setDays({0, 1, 2, 3, 4, 5, 6})),
+                DayPreset(
+                  label: 'Every day',
+                  onTap: () => _setDays({0, 1, 2, 3, 4, 5, 6}),
+                ),
                 const SizedBox(width: 8),
-                _preset('Weekdays', () => _setDays({0, 1, 2, 3, 4})),
+                DayPreset(
+                  label: 'Weekdays',
+                  onTap: () => _setDays({0, 1, 2, 3, 4}),
+                ),
               ],
             ),
             const SizedBox(height: 10),
@@ -363,7 +370,7 @@ class _AssignmentRuleSheetState extends ConsumerState<_AssignmentRuleSheet> {
               runSpacing: 8,
               children: [
                 for (var i = 0; i < 7; i++)
-                  _DayChip(
+                  DayChip(
                     label: kWeekdayLabels[i],
                     selected: _weekdays.contains(i),
                     onTap: () => setState(
@@ -476,14 +483,6 @@ class _AssignmentRuleSheetState extends ConsumerState<_AssignmentRuleSheet> {
       ..clear()
       ..addAll(days);
   });
-
-  Widget _preset(String label, VoidCallback onTap) => GestureDetector(
-    onTap: onTap,
-    child: Text(
-      label,
-      style: font(kBodyFont, 12, 700, color: AppColors.indigo),
-    ),
-  );
 
   String _feedLabel(
     AssignmentLink l,
@@ -725,43 +724,6 @@ class _Segmented<T> extends StatelessWidget {
               ),
             ),
         ],
-      ),
-    );
-  }
-}
-
-class _DayChip extends StatelessWidget {
-  const _DayChip({
-    required this.label,
-    required this.selected,
-    required this.onTap,
-  });
-  final String label;
-  final bool selected;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 9),
-        decoration: BoxDecoration(
-          color: selected ? AppColors.amber : AppColors.bg,
-          borderRadius: BorderRadius.circular(999),
-          border: Border.all(
-            color: selected ? AppColors.amber : AppColors.border,
-          ),
-        ),
-        child: Text(
-          label,
-          style: font(
-            kBodyFont,
-            13,
-            600,
-            color: selected ? const Color(0xFF2A1E05) : AppColors.textSecondary,
-          ),
-        ),
       ),
     );
   }

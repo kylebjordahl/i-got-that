@@ -365,6 +365,62 @@ TestFlight build automatically for that environment's flavor — no further
 action needed per-release. Add internal/external testers in App Store Connect
 → TestFlight the first time each app's build lands.
 
+### 9. Push notifications (APNs)
+
+The daily "outstanding items" digest is sent straight from the Worker to APNs
+with a token-based (JWT) provider connection — one `.p8` auth key covers every
+bundle id and both APNs environments, and it doesn't expire annually the way a
+push certificate would.
+
+1. **Enable the Push Notifications capability** on *both* App IDs in the Apple
+   Developer portal — `com.kylebjordahl.igt` and `com.kylebjordahl.igt.staging`.
+
+2. **Create the APNs auth key**: Certificates, Identifiers & Profiles → Keys →
+   ✚ → check **Apple Push Notifications service (APNs)** → Continue → Register,
+   then **Download** the `.p8`. Apple only lets you download it once. Note the
+   **Key ID** (the 10 characters in `AuthKey_XXXXXXXXXX.p8`); the **Team ID** is
+   the same `WG5R9LUU9X` already in `wrangler.jsonc`.
+
+3. **Re-issue both App Store provisioning profiles** so they include the push
+   entitlement, and update the `IOS_STAGING_PROFILE_BASE64` /
+   `IOS_PROD_PROFILE_BASE64` repository secrets (step 8). ⚠️ Do this **with**
+   the change that adds `aps-environment` to `ios/Runner/Runner.entitlements` —
+   an entitlement the profile doesn't grant fails `testflight-build` at the
+   signing step.
+
+4. **Set the Worker secrets**, per environment:
+   ```bash
+   cd apps/api
+   wrangler secret put APNS_KEY_P8 --env staging   # paste the whole PEM, BEGIN/END lines included
+   wrangler secret put APNS_KEY_ID --env staging
+   # …then the same two with --env production
+   ```
+   `APNS_TEAM_ID` is a plain `var` in `wrangler.jsonc` (it isn't secret).
+
+`lib/apns.ts`'s `getPusher(env)` **fails closed**: unless all three of
+`APNS_KEY_P8` / `APNS_KEY_ID` / `APNS_TEAM_ID` are set it returns a capture-only
+`DevPusher` that logs the digest instead of sending it. So a half-configured
+environment degrades to "no pushes" rather than throwing on every cron tick.
+
+**Sandbox vs production.** A device token is only routable through the APNs host
+matching the `aps-environment` the build was signed with — cross them and every
+send is a `BadDeviceToken`. The value comes from a single `APS_ENVIRONMENT`
+xcconfig var per flavor (`development` for Debug, `production` for
+Profile/Release); `Runner.entitlements` signs with it and `Info.plist` surfaces
+it as `IGTApsEnvironment`, which the app reports when registering. One source of
+truth, so the two can't drift.
+
+**Local development can't send.** APNs speaks HTTP/2 only and `wrangler dev`
+can't negotiate it, so local runs always get the `DevPusher`. Verify real
+delivery on staging, on a **physical device** — the iOS Simulator never talks to
+real APNs (it only accepts drag-and-dropped `.apns` files).
+
+**Where it runs.** The cron tick (`*/15 * * * *`) sweeps due schedules in
+`scheduled.ts` → `dispatchDueDigests`, which claims each schedule's slot with a
+conditional UPDATE and enqueues onto the existing `DELIVERY_QUEUE` (no new
+Terraform-managed queue). Because the send time is compared against a 15-minute
+tick, the client's time picker snaps to quarter hours.
+
 ---
 
 ## Day-to-day flow

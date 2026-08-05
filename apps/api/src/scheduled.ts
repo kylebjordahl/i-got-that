@@ -7,6 +7,7 @@ import { reconcileClaimEvents } from './services/claim.js';
 import { reconcileFamilyConflicts } from './services/conflicts.js';
 import { getProductionRegistry, syncFamilyMirror } from './services/mirror.js';
 import { ingestFeed } from './services/ingest.js';
+import { dispatchDueDigests } from './services/notifications.js';
 import { readBackFamily } from './services/readback.js';
 import { buildKekKeySet } from './lib/secrets.js';
 import { synthesizeFeed } from './services/synthesis.js';
@@ -28,6 +29,12 @@ import { buildFamilyTasks } from './services/task-gen.js';
  *
  * The mirror true-up is cheap when nothing drifted (payloadHash skips
  * unchanged events), so it's safe to run every tick.
+ *
+ * Push-notification digests are dispatched alongside, not inside, that loop —
+ * a schedule belongs to a *user* and its digest spans every family they're in.
+ * It reads whatever state the pipeline has settled on, which is at most one
+ * tick stale; sequencing it behind the per-family work would mean awaiting all
+ * of it, which is exactly what `waitUntil` is here to avoid.
  */
 export async function scheduled(
   _event: ScheduledController,
@@ -56,6 +63,16 @@ export async function scheduled(
         if (count > 0) console.log(`swept ${count} orphaned secret(s)`);
       })
       .catch((err) => console.error('orphaned-secrets sweep failed', err)),
+  );
+
+  // Digests due this tick. Each claims its slot before enqueuing, so
+  // overlapping invocations can't double-send.
+  ctx.waitUntil(
+    dispatchDueDigests({ env, executionCtx: ctx }, new Date(now))
+      .then((count) => {
+        if (count > 0) console.log(`dispatched ${count} notification digest(s)`);
+      })
+      .catch((err) => console.error('digest dispatch failed', err)),
   );
 
   const allFamilies = await db.select().from(families);
