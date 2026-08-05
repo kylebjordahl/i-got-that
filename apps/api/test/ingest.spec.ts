@@ -2,7 +2,7 @@ import { env } from 'cloudflare:test';
 import { eq, externalAccounts, feeds, getDb, sourceEvents } from '@igt/db';
 import { describe, expect, it } from 'vitest';
 import { storeSecret } from '../src/lib/secrets.js';
-import { ingestFeed } from '../src/services/ingest.js';
+import { ingestFamilyFeeds, ingestFeed } from '../src/services/ingest.js';
 import { createFamily, login } from './helpers.js';
 
 describe('ingest: account-backed input feeds', () => {
@@ -186,6 +186,83 @@ describe('ingest: account-backed input feeds', () => {
     await expect(ingestFeed(db, feed, { kek: env.KEK })).rejects.toThrow();
     const after = (await db.select().from(feeds).where(eq(feeds.id, feed.id)).limit(1))[0]!;
     expect(after.status).toBe('error');
+  });
+
+  it('ingestFamilyFeeds keeps ingesting the rest of a family after one feed throws (refresh-all must not 500 for a broken sibling feed)', async () => {
+    const user = await login('ingest-family-partial@example.com');
+    const familyId = await createFamily(user.token, 'Ingest Partial');
+    const db = getDb(env.DB);
+
+    // Broken: account with no stored credential, like the test above.
+    const account = (
+      await db
+        .insert(externalAccounts)
+        .values({ userId: user.userId, kind: 'google', name: 'NoCred' })
+        .returning()
+    )[0]!;
+    const brokenFeed = (
+      await db
+        .insert(feeds)
+        .values({
+          familyId,
+          kind: 'google',
+          externalAccountId: account.id,
+          sourceCalendarId: 'primary',
+          mode: 'standard',
+        })
+        .returning()
+    )[0]!;
+
+    // Healthy: a plain ICS feed.
+    const ics = [
+      'BEGIN:VCALENDAR',
+      'VERSION:2.0',
+      'BEGIN:VEVENT',
+      'UID:keep@example.com',
+      'DTSTART:20260801T150000Z',
+      'DTEND:20260801T160000Z',
+      'SUMMARY:Keeps',
+      'END:VEVENT',
+      'END:VCALENDAR',
+    ].join('\r\n');
+    const fetchImpl = (async () => ({
+      ok: true,
+      status: 200,
+      headers: { get: () => null },
+      text: async () => ics,
+    })) as unknown as typeof fetch;
+    const workingFeed = (
+      await db
+        .insert(feeds)
+        .values({ familyId, kind: 'ics', url: 'https://example.invalid/cal.ics', mode: 'standard' })
+        .returning()
+    )[0]!;
+
+    const results = await ingestFamilyFeeds(db, familyId, {
+      fetchImpl,
+      kek: env.KEK,
+      windowStart: new Date('2026-07-01T00:00:00Z'),
+      windowEnd: new Date('2026-09-01T00:00:00Z'),
+    });
+
+    const broken = results.find((r) => r.feedId === brokenFeed.id)!;
+    expect(broken.fetched).toBe(false);
+    expect(broken.error).toBeTruthy();
+
+    const working = results.find((r) => r.feedId === workingFeed.id)!;
+    expect(working.fetched).toBe(true);
+    expect(working.processed).toBe(1);
+
+    const brokenAfter = (
+      await db.select().from(feeds).where(eq(feeds.id, brokenFeed.id)).limit(1)
+    )[0]!;
+    expect(brokenAfter.status).toBe('error');
+
+    const workingRows = await db
+      .select()
+      .from(sourceEvents)
+      .where(eq(sourceEvents.feedId, workingFeed.id));
+    expect(workingRows).toHaveLength(1);
   });
 
   it('deletes a source event whose UID no longer appears in a re-fetched ICS feed', async () => {
