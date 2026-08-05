@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import app from '../src/index.js';
 import { connectGoogleAccount } from '../src/lib/google-account.js';
 import { findOrCreateUserByGoogle, linkGoogleIdentity } from '../src/services/auth.js';
-import { login } from './helpers.js';
+import { login, testKeys } from './helpers.js';
 
 /** Env with the Google login/connect redirect flow configured (the base test
  *  env leaves GOOGLE_OAUTH_CLIENT_ID + PUBLIC_ORIGIN empty ⇒ 501). */
@@ -113,12 +113,12 @@ describe('Sign in with Google — services', () => {
   it('connects a Google Calendar account and rotates on re-consent', async () => {
     const db = getDb(env.DB);
     const u = await findOrCreateUserByGoogle(db, 'g-sub-cal', 'cal@example.com');
-    const first = await connectGoogleAccount(db, env.KEK, {
+    const first = await connectGoogleAccount(db, testKeys(), {
       userId: u.id,
       refreshToken: 'refresh-1',
       email: 'cal@example.com',
     });
-    const second = await connectGoogleAccount(db, env.KEK, {
+    const second = await connectGoogleAccount(db, testKeys(), {
       userId: u.id,
       refreshToken: 'refresh-2',
       email: 'cal@example.com',

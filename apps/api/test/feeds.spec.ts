@@ -20,6 +20,7 @@ import {
   patched,
   put,
   setupFamily,
+  testKeys,
 } from './helpers.js';
 
 const FEED_ORIGIN = 'https://feed.example.com';
@@ -316,7 +317,7 @@ describe('feed ingest', () => {
     const db = getDb(env.DB);
     const credRef = await storeSecret(
       db,
-      env.KEK,
+      testKeys(),
       null,
       // A pre-resolved access token — no live Google OAuth refresh needed.
       JSON.stringify({ kind: 'oauth', accessToken: 'test-access-token' }),

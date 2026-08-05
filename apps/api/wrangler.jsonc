@@ -27,9 +27,18 @@
         // in a deployed env — named envs below deliberately omit it, and they
         // do not inherit these top-level vars.
         "ALLOW_DEV_TOKENS": "true",
-        // DEV ONLY KEK (envelope-encryption key-encryption key). Production sets a
-        // real secret via `wrangler secret put KEK` / Terraform — never commit prod keys.
+        // DEV ONLY KEK. Historically the single envelope-encryption
+        // key-encryption key; now only backs the state-cookie signing secret
+        // (routes/auth.ts's cookieSecret) — see issue #143.
         "KEK": "2OmcakKhoLtzTqOq5ZrXq/e/7mXa8Gmav+dtCe/2ThM=",
+        // DEV ONLY KEK_V1 — the versioned envelope-encryption key
+        // (lib/secrets.ts), same value as the old single KEK for parity with
+        // pre-rotation deployments. Production sets a real secret per version
+        // via `wrangler secret put KEK_V1` / Terraform — never commit prod
+        // keys. KEK_CURRENT_VERSION is intentionally unset here: it defaults
+        // to 1, matching this single configured version. See
+        // docs/DEPLOYMENT.md § KEK rotation.
+        "KEK_V1": "2OmcakKhoLtzTqOq5ZrXq/e/7mXa8Gmav+dtCe/2ThM=",
         // Escape hatch for the outbound-URL (SSRF) policy in
         // src/lib/outbound-url.ts: comma-separated `host` / `host:port` entries
         // that user-supplied feed + CalDAV URLs may target even though the
@@ -80,7 +89,10 @@
     "env": {
         "staging": {
             // Named-env vars do NOT inherit from the top level — list them here.
-            // KEK is set per-env via `wrangler secret put KEK --env staging`.
+            // KEK is set per-env via `wrangler secret put KEK --env staging`
+            // (cookie-signing only, see `env.ts`); KEK_V1 (envelope encryption)
+            // via `wrangler secret put KEK_V1 --env staging` — see
+            // docs/DEPLOYMENT.md § KEK rotation.
             "vars": {
                 "ENVIRONMENT": "staging",
                 "PUBLIC_ORIGIN": "https://staging.igt.kylebjordahl.com",
@@ -140,7 +152,10 @@
             // "send_email": [{ "name": "EMAIL" }]  // enable with a paid plan
         },
         "production": {
-            // KEK is set per-env via `wrangler secret put KEK --env production`.
+            // KEK is set per-env via `wrangler secret put KEK --env production`
+            // (cookie-signing only, see `env.ts`); KEK_V1 (envelope encryption)
+            // via `wrangler secret put KEK_V1 --env production` — see
+            // docs/DEPLOYMENT.md § KEK rotation.
             "vars": {
                 "ENVIRONMENT": "production",
                 // Set to the production custom domain once provisioned (Terraform).

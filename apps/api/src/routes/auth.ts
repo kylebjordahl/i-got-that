@@ -12,6 +12,7 @@ import { verifyAppleIdentityToken, verifyAppleNotificationToken } from '../lib/a
 import { randomToken } from '../lib/crypto.js';
 import { connectGoogleAccount } from '../lib/google-account.js';
 import { verifyGoogleIdentityToken } from '../lib/google-identity.js';
+import { buildKekKeySet } from '../lib/secrets.js';
 import {
   buildGoogleAuthorizeUrl,
   decodeGoogleIdToken,
@@ -110,11 +111,12 @@ async function autoConnectGoogleCalendarNative(
   db: ReturnType<typeof getDb>,
   opts: { userId: string; serverAuthCode?: string; email?: string },
 ): Promise<void> {
-  if (!opts.serverAuthCode || !env.KEK || !googleOAuthConfigured(env)) return;
+  const keys = buildKekKeySet(env);
+  if (!opts.serverAuthCode || !keys || !googleOAuthConfigured(env)) return;
   try {
     const tokens = await exchangeGoogleCode(env, { code: opts.serverAuthCode });
     if (tokens.refreshToken) {
-      await connectGoogleAccount(db, env.KEK, {
+      await connectGoogleAccount(db, keys, {
         userId: opts.userId,
         refreshToken: tokens.refreshToken,
         email: opts.email,
@@ -461,9 +463,10 @@ authRoutes.get('/google/callback', async (c) => {
   }
 
   // Auto-connect the Google Calendar from the refresh token this consent yielded.
-  if (tokens.refreshToken && c.env.KEK) {
+  const kekKeys = buildKekKeySet(c.env);
+  if (tokens.refreshToken && kekKeys) {
     try {
-      await connectGoogleAccount(db, c.env.KEK, {
+      await connectGoogleAccount(db, kekKeys, {
         userId,
         refreshToken: tokens.refreshToken,
         email: identity.email,

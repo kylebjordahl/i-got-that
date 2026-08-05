@@ -29,7 +29,7 @@ import {
   outboundPolicy,
   UnsafeOutboundUrlError,
 } from '../lib/outbound-url.js';
-import { storeSecret } from '../lib/secrets.js';
+import { buildKekKeySet, storeSecret } from '../lib/secrets.js';
 
 /** iCloud's well-known CalDAV endpoint (used when no serverUrl is given). */
 const ICLOUD_CALDAV_URL = 'https://caldav.icloud.com';
@@ -77,7 +77,8 @@ accountRoutes.post('/google/authorize-url', async (c) => {
 accountRoutes.post('/', async (c) => {
   const parsed = CreateExternalAccountInput.safeParse(await c.req.json().catch(() => null));
   if (!parsed.success) return c.json({ error: 'invalid', issues: parsed.error.issues }, 400);
-  if (!c.env.KEK) return c.json({ error: 'kek_unconfigured' }, 500);
+  const keys = buildKekKeySet(c.env);
+  if (!keys) return c.json({ error: 'kek_unconfigured' }, 500);
 
   const db = getDb(c.env.DB);
   const user = c.get('user');
@@ -117,7 +118,7 @@ accountRoutes.post('/', async (c) => {
     payload = JSON.stringify({ kind: 'basic', username: d.username, password: d.password });
   }
 
-  const credentialsRef = await storeSecret(db, c.env.KEK, null, payload);
+  const credentialsRef = await storeSecret(db, keys, null, payload);
   const row = (
     await db
       .insert(externalAccounts)
@@ -157,7 +158,7 @@ accountRoutes.post('/:accountId/calendars', async (c) => {
   const account = await loadOwnAccount(db, user.id, c.req.param('accountId'));
   if (!account) return c.json({ error: 'not_found' }, 404);
 
-  const credential = await resolveAccountCredential(db, c.env.KEK, account.id);
+  const credential = await resolveAccountCredential(db, buildKekKeySet(c.env), account.id);
   if (!credential) return c.json({ error: 'no_credential' }, 400);
 
   try {

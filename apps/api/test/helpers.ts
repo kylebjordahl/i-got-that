@@ -5,12 +5,25 @@ import {
 } from 'cloudflare:test';
 import { expect } from 'vitest';
 import app from '../src/index.js';
+import { buildKekKeySet, type KekKeySet } from '../src/lib/secrets.js';
 
 export async function call(path: string, init?: RequestInit) {
   const ctx = createExecutionContext();
   const res = await app.fetch(new Request(`https://api.test${path}`, init), env, ctx);
   await waitOnExecutionContext(ctx);
   return res;
+}
+
+/**
+ * The test env's `KekKeySet` (built from the dev-only `KEK_V1` in
+ * `wrangler.jsonc`) — the versioned replacement for tests that used to pass
+ * `env.KEK` straight into `encryptSecret`/`storeSecret`/etc. `env.KEK` itself
+ * now only backs the state-cookie signing secret (issue #143).
+ */
+export function testKeys(): KekKeySet {
+  const keys = buildKekKeySet(env);
+  if (!keys) throw new Error('test env missing KEK_V1 — check wrangler.jsonc');
+  return keys;
 }
 
 export function authed(token: string, body?: unknown): RequestInit {
