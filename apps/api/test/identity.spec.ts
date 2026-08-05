@@ -3,8 +3,11 @@ import {
   env,
   waitOnExecutionContext,
 } from 'cloudflare:test';
+import { eq, getDb, invites as invitesTable } from '@igt/db';
 import { describe, expect, it } from 'vitest';
 import app from '../src/index.js';
+import { sha256hex } from '../src/lib/crypto.js';
+import { INVITE_TTL_MS } from '../src/services/invites.js';
 
 async function call(path: string, init?: RequestInit) {
   const ctx = createExecutionContext();
@@ -733,7 +736,8 @@ describe('member-claim invites', () => {
     const uncleId = ((await memberRes.json()) as { member: { id: string } }).member.id;
 
     // Same DB (env.DB), but issue the invite through an env that has a public
-    // origin set — the response should carry the composed `/app/?invite=` link.
+    // origin set — the response should carry the composed `/app/#invite=` link
+    // (the token rides in the URL fragment so it never hits Referer/server logs).
     const ctx = createExecutionContext();
     const res = await app.fetch(
       new Request(`https://api.test/families/${familyId}/members/${uncleId}/invite`, authed(alice.token)),
@@ -743,7 +747,158 @@ describe('member-claim invites', () => {
     await waitOnExecutionContext(ctx);
     expect(res.status).toBe(201);
     const { token, url } = (await res.json()) as { token: string; url: string };
-    expect(url).toBe(`https://staging.igt.example/app/?invite=${token}`);
+    expect(url).toBe(`https://staging.igt.example/app/#invite=${token}`);
+  });
+
+  it('stores only a token hash (never the raw token) and enforces the 48h TTL', async () => {
+    const alice = await login('inv-hash@example.com');
+    const famRes = await call('/families', authed(alice.token, { name: 'Hash Fam' }));
+    const familyId = ((await famRes.json()) as { family: { id: string } }).family.id;
+    const memberRes = await call(
+      `/families/${familyId}/members`,
+      authed(alice.token, { relationName: 'Aunt', isCaretaker: true }),
+    );
+    const auntId = ((await memberRes.json()) as { member: { id: string } }).member.id;
+
+    expect(INVITE_TTL_MS).toBe(48 * 60 * 60 * 1000);
+
+    const before = Date.now();
+    const issued = await call(`/families/${familyId}/members/${auntId}/invite`, authed(alice.token));
+    expect(issued.status).toBe(201);
+    const { id: inviteId, token, expiresAt } = (await issued.json()) as {
+      id: string;
+      token: string;
+      expiresAt: string;
+    };
+
+    // TTL is 48h (matched to the flow), not the old 14 days.
+    const ttl = new Date(expiresAt).getTime() - before;
+    expect(ttl).toBeGreaterThan(47 * 60 * 60 * 1000);
+    expect(ttl).toBeLessThan(49 * 60 * 60 * 1000);
+
+    // Only a SHA-256 hash of the token is persisted — `token` isn't even a
+    // column any more, and the stored hash is what `sha256hex(token)` yields.
+    const db = getDb(env.DB);
+    const row = (
+      await db.select().from(invitesTable).where(eq(invitesTable.id, inviteId)).limit(1)
+    )[0]!;
+    expect(row).not.toHaveProperty('token');
+    expect(row.tokenHash).toBe(await sha256hex(token));
+    expect(row.tokenHash).not.toBe(token);
+
+    // Lookup by the raw token still works end-to-end (hashed under the hood).
+    expect((await call(`/invites/${token}`)).status).toBe(200);
+
+    // Backdate expiresAt directly (simulating the TTL elapsing) and confirm
+    // both the preview and accept paths treat it as expired.
+    await db
+      .update(invitesTable)
+      .set({ expiresAt: new Date(Date.now() - 1000) })
+      .where(eq(invitesTable.id, inviteId));
+
+    const expiredPreview = await call(`/invites/${token}`);
+    expect(expiredPreview.status).toBe(200);
+    expect((await expiredPreview.json()) as unknown).toMatchObject({
+      invite: { status: 'expired' },
+    });
+
+    const bob = await login('inv-hash-bob@example.com');
+    const expiredAccept = await call(`/invites/${token}/accept`, authed(bob.token));
+    expect(expiredAccept.status).toBe(410);
+    expect((await expiredAccept.json()) as { error: string }).toMatchObject({
+      error: 'invite_expired',
+    });
+  });
+
+  it('lists and revokes invites (admin-only); a revoked invite is unusable', async () => {
+    const alice = await login('inv-revoke-alice@example.com');
+    const famRes = await call('/families', authed(alice.token, { name: 'Revoke Fam' }));
+    const familyId = ((await famRes.json()) as { family: { id: string } }).family.id;
+
+    const cousinRes = await call(
+      `/families/${familyId}/members`,
+      authed(alice.token, { relationName: 'Cousin', isCaretaker: true }),
+    );
+    const cousinId = ((await cousinRes.json()) as { member: { id: string } }).member.id;
+    const issued = await call(`/families/${familyId}/members/${cousinId}/invite`, authed(alice.token));
+    const { id: inviteId, token } = (await issued.json()) as { id: string; token: string };
+
+    // A non-admin family member (Bob, linked via his own invite) can't list or revoke.
+    const neighborRes = await call(
+      `/families/${familyId}/members`,
+      authed(alice.token, { relationName: 'Neighbor', isCaretaker: true }),
+    );
+    const neighborId = ((await neighborRes.json()) as { member: { id: string } }).member.id;
+    const neighborInvite = await call(
+      `/families/${familyId}/members/${neighborId}/invite`,
+      authed(alice.token),
+    );
+    const { token: neighborToken } = (await neighborInvite.json()) as { token: string };
+    const bob = await login('inv-revoke-bob@example.com');
+    await call(`/invites/${neighborToken}/accept`, authed(bob.token));
+
+    const bobHeaders = { headers: { Authorization: `Bearer ${bob.token}` } };
+    expect((await call(`/families/${familyId}/invites`, bobHeaders)).status).toBe(403);
+    expect(
+      (
+        await call(`/families/${familyId}/invites/${inviteId}`, {
+          method: 'DELETE',
+          headers: bobHeaders.headers,
+        })
+      ).status,
+    ).toBe(403);
+
+    // Unauthenticated is rejected too.
+    expect((await call(`/families/${familyId}/invites`)).status).toBe(401);
+
+    // Admin lists outstanding invites; the token itself is never exposed.
+    const aliceHeaders = { headers: { Authorization: `Bearer ${alice.token}` } };
+    const list = await call(`/families/${familyId}/invites`, aliceHeaders);
+    expect(list.status).toBe(200);
+    const { invites: listed } = (await list.json()) as {
+      invites: { id: string; status: string }[];
+    };
+    expect(listed.find((i) => i.id === inviteId)?.status).toBe('pending');
+    expect(JSON.stringify(listed)).not.toContain(token);
+
+    // Revoking an unknown id 404s.
+    expect(
+      (
+        await call(`/families/${familyId}/invites/does-not-exist`, {
+          method: 'DELETE',
+          headers: aliceHeaders.headers,
+        })
+      ).status,
+    ).toBe(404);
+
+    // Admin revokes the invite (soft-delete: status flips to 'revoked').
+    const revoke = await call(`/families/${familyId}/invites/${inviteId}`, {
+      method: 'DELETE',
+      headers: aliceHeaders.headers,
+    });
+    expect(revoke.status).toBe(204);
+
+    const list2 = await call(`/families/${familyId}/invites`, aliceHeaders);
+    const { invites: listed2 } = (await list2.json()) as {
+      invites: { id: string; status: string }[];
+    };
+    expect(listed2.find((i) => i.id === inviteId)?.status).toBe('revoked');
+
+    // The revoked token can no longer be accepted…
+    const carol = await login('inv-revoke-carol@example.com');
+    const accept = await call(`/invites/${token}/accept`, authed(carol.token));
+    expect(accept.status).toBe(410);
+    expect((await accept.json()) as { error: string }).toMatchObject({
+      error: 'invite_not_pending',
+    });
+
+    // …though preview still resolves (revoked, not "not found") so the UI can
+    // show a clear message rather than a generic 404.
+    const preview = await call(`/invites/${token}`);
+    expect(preview.status).toBe(200);
+    expect((await preview.json()) as unknown).toMatchObject({
+      invite: { status: 'revoked' },
+    });
   });
 });
 

@@ -60,11 +60,11 @@ app.get('/health/db', async (c) => {
 
 /**
  * Apple App Site Association — lets iOS associate this domain with the app so
- * invite links (`/app/?invite=…`) open the app via Universal Links instead of
+ * invite links (`/app/#invite=…`) open the app via Universal Links instead of
  * Safari. Served at the apex `/.well-known/…` path (see handler.fetch), never
  * under `/api`. Empty APPLE_APP_ID_PREFIX ⇒ 404 (feature off); query strings
- * aren't matched by iOS, so `/app/*` covers the invite and the app filters on
- * `?invite=` itself.
+ * and fragments aren't matched by iOS, so `/app/*` covers the invite and the
+ * app filters on `#invite=` itself.
  */
 app.get('/.well-known/apple-app-site-association', (c) => {
   const appIDs = (c.env.APPLE_APP_ID_PREFIX ?? '')

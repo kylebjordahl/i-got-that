@@ -271,7 +271,7 @@ class ApiClient {
     await _dio.delete('/families/$familyId/members/$memberId', options: _auth);
   }
 
-  /// Issue a member-claim invite (admin). Returns `{ token, expiresAt, url }`
+  /// Issue a member-claim invite (admin). Returns `{ id, token, expiresAt, url }`
   /// where `url` is the shareable deep link (null in local dev with no origin).
   Future<Map<String, dynamic>> issueMemberInvite(
     String familyId,
