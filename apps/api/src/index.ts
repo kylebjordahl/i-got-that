@@ -17,15 +17,29 @@ import { scheduled } from './scheduled.js';
  */
 const app = new Hono<HonoEnv>();
 
-// Allow the Flutter web client to call the API. Deployed envs serve the SPA
-// same-origin (under /api), so this only matters for local dev, where the
-// Flutter web dev server runs on a different port than `wrangler dev`. The
-// session cookie (see lib/session-cookie.ts) needs `credentials: true`, which
-// forbids a wildcard `origin` — reflect the request's Origin instead.
+/**
+ * Allow only known origins to make credentialed requests. Deployed envs serve
+ * the SPA same-origin (under /api on PUBLIC_ORIGIN), so in practice this only
+ * matters for local dev, where the Flutter web dev server runs on a
+ * different — and, since `flutter run -d chrome` picks a random port, not
+ * fixed — localhost port than `wrangler dev`. The session cookie (see
+ * lib/session-cookie.ts) needs `credentials: true`, which forbids a wildcard
+ * `origin`, so we allowlist instead of reflecting the caller's Origin.
+ */
+function isAllowedOrigin(origin: string, env: Bindings): boolean {
+  if (env.PUBLIC_ORIGIN && origin === env.PUBLIC_ORIGIN) return true;
+  if (env.ENVIRONMENT !== 'development') return false;
+  try {
+    return ['localhost', '127.0.0.1'].includes(new URL(origin).hostname);
+  } catch {
+    return false;
+  }
+}
+
 app.use(
   '*',
   cors({
-    origin: (origin) => origin,
+    origin: (origin, c) => (isAllowedOrigin(origin, c.env as Bindings) ? origin : null),
     credentials: true,
   }),
 );
