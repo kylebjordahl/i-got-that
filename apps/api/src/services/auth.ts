@@ -1,18 +1,23 @@
 import {
   and,
+  appleNotificationReceipts,
   authTokens,
   type Db,
   eq,
+  externalAccounts,
   familyMembers,
   gt,
   identities,
+  inArray,
   isNull,
+  secrets,
   sessions,
   users,
 } from '@igt/db';
 import type { IdentityProvider } from '@igt/domain';
 import type { AppleNotificationEvent } from '../lib/apple.js';
 import { randomToken, sha256hex } from '../lib/crypto.js';
+import { loadSecret } from '../lib/secrets.js';
 import { wouldOrphanFamily } from './families.js';
 
 const MAGIC_LINK_TTL_MS = 15 * 60 * 1000; // 15 minutes
@@ -149,11 +154,122 @@ export async function findOrCreateUserByGoogle(
 }
 
 /**
+ * Cleanup paired with deleting a user account: revoke any connected Google
+ * external account's refresh token upstream (best-effort, never blocking —
+ * logged and swallowed on failure), then delete the `secrets` rows their
+ * external accounts pointed at.
+ *
+ * `external_accounts.credentials_ref → secrets.id` is `ON DELETE SET NULL`,
+ * and a user-owned secret's `family_id` is null (no family to cascade it
+ * away) — so deleting the user (which *does* cascade-delete their
+ * `external_accounts` rows) leaves those `secrets` rows referenced by
+ * nothing. D1 has no multi-statement transactions, so the best we can do is
+ * order this carefully: read the credentials while they're still reachable,
+ * revoke, delete the user, then delete the now-orphaned secrets. A crash
+ * between steps leaves a small window; {@link sweepOrphanedSecrets} is the
+ * periodic backstop that closes it.
+ */
+export type AccountCleanupOptions = {
+  /** KEK for decrypting stored external-account credentials before revoke. */
+  kek?: string;
+  /** Best-effort upstream revoke for a Google account's stored refresh token. */
+  revokeGoogleToken?: (refreshToken: string) => Promise<void>;
+};
+
+async function deleteUserAndCleanupCredentials(
+  db: Db,
+  userId: string,
+  opts: AccountCleanupOptions,
+): Promise<void> {
+  const accounts = await db
+    .select({
+      id: externalAccounts.id,
+      kind: externalAccounts.kind,
+      credentialsRef: externalAccounts.credentialsRef,
+    })
+    .from(externalAccounts)
+    .where(eq(externalAccounts.userId, userId));
+
+  if (opts.revokeGoogleToken && opts.kek) {
+    for (const account of accounts) {
+      if (account.kind !== 'google' || !account.credentialsRef) continue;
+      try {
+        const raw = await loadSecret(db, opts.kek, account.credentialsRef);
+        const credential = raw
+          ? (JSON.parse(raw) as { kind?: string; refreshToken?: string })
+          : undefined;
+        if (credential?.kind === 'oauth' && credential.refreshToken) {
+          await opts.revokeGoogleToken(credential.refreshToken);
+        }
+      } catch (err) {
+        console.error(`google token revoke failed for account ${account.id}`, err);
+      }
+    }
+  }
+
+  await db.delete(users).where(eq(users.id, userId));
+
+  const secretIds = accounts
+    .map((a) => a.credentialsRef)
+    .filter((id): id is string => Boolean(id));
+  if (secretIds.length > 0) {
+    await db.delete(secrets).where(inArray(secrets.id, secretIds));
+  }
+}
+
+/**
+ * Periodic sweep for `secrets` rows a crash mid-{@link deleteUserAndCleanupCredentials}
+ * (or the equivalent account-disconnect path) could leave behind: user-owned
+ * (`family_id IS NULL`) rows no longer referenced by any
+ * `external_accounts.credentials_ref`. Family-owned secrets aren't swept —
+ * their family's own delete cascade already reaches them. Returns the number
+ * of rows deleted (for logging).
+ */
+export async function sweepOrphanedSecrets(db: Db): Promise<number> {
+  const [candidates, accounts] = await Promise.all([
+    db.select({ id: secrets.id }).from(secrets).where(isNull(secrets.familyId)),
+    db.select({ credentialsRef: externalAccounts.credentialsRef }).from(externalAccounts),
+  ]);
+  const referenced = new Set(
+    accounts.map((a) => a.credentialsRef).filter((id): id is string => Boolean(id)),
+  );
+  const orphanIds = candidates.map((c) => c.id).filter((id) => !referenced.has(id));
+  if (orphanIds.length === 0) return 0;
+  await db.delete(secrets).where(inArray(secrets.id, orphanIds));
+  return orphanIds.length;
+}
+
+/** How long an applied-notification digest is kept — comfortably longer than
+ *  `verifyAppleNotificationToken`'s freshness window, so a digest never needs
+ *  to outlive the window that could accept a matching replay anyway. */
+const NOTIFICATION_RECEIPT_TTL_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Replay-dedupe for Apple S2S notifications. Records a digest of the raw,
+ * verified JWS the first time it's seen; returns `true` the first time (the
+ * caller should apply the event) and `false` on a repeat (the caller no-ops
+ * but should still answer 200 — Apple retries redelivery on anything else).
+ */
+export async function recordAppleNotificationOnce(
+  db: Db,
+  digest: string,
+  now: number = Date.now(),
+): Promise<boolean> {
+  const inserted = await db
+    .insert(appleNotificationReceipts)
+    .values({ digest, expiresAt: new Date(now + NOTIFICATION_RECEIPT_TTL_MS) })
+    .onConflictDoNothing()
+    .returning({ id: appleNotificationReceipts.id });
+  return inserted.length > 0;
+}
+
+/**
  * Apply an Apple server-to-server account event. Idempotent and safe for unknown
  * subjects (Apple may notify about accounts we've never seen — we just no-op):
  *   - `consent-revoked` → sign the user out everywhere and drop the Apple
  *     identity (they must re-authorize to link again).
- *   - `account-delete`  → delete the user; the FK cascade removes their
+ *   - `account-delete`  → delete the user (plus the credential cleanup in
+ *     {@link deleteUserAndCleanupCredentials}); the FK cascade removes their
  *     identities + sessions and nulls their family_member links.
  *   - `email-*`         → a relay-address toggle; nothing we persist depends on
  *     it today, so it's a no-op (logged by the caller if desired).
@@ -161,6 +277,7 @@ export async function findOrCreateUserByGoogle(
 export async function handleAppleAccountEvent(
   db: Db,
   event: AppleNotificationEvent,
+  opts: AccountCleanupOptions = {},
 ): Promise<void> {
   const rows = await db
     .select({ userId: identities.userId, id: identities.id })
@@ -176,7 +293,7 @@ export async function handleAppleAccountEvent(
       await db.delete(identities).where(eq(identities.id, identity.id));
       break;
     case 'account-delete':
-      await db.delete(users).where(eq(users.id, identity.userId));
+      await deleteUserAndCleanupCredentials(db, identity.userId, opts);
       break;
     case 'email-disabled':
     case 'email-enabled':
@@ -376,9 +493,10 @@ export async function accountDeletionBlocked(db: Db, userId: string): Promise<bo
 export async function deleteUserAccount(
   db: Db,
   userId: string,
+  opts: AccountCleanupOptions = {},
 ): Promise<DeleteAccountResult> {
   if (await accountDeletionBlocked(db, userId)) return 'last_admin';
-  await db.delete(users).where(eq(users.id, userId));
+  await deleteUserAndCleanupCredentials(db, userId, opts);
   return 'ok';
 }
 

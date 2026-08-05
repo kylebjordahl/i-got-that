@@ -6,6 +6,7 @@ import {
   exchangeGoogleCode,
   googleOAuthConfigured,
   refreshGoogleAccessToken,
+  revokeGoogleToken,
 } from '../src/lib/google-oauth.js';
 
 /** Craft a base64url JWT (unsigned — we only decode the payload). */
@@ -99,6 +100,24 @@ describe('Google OAuth', () => {
     await expect(
       refreshGoogleAccessToken(env, 'rt', fakeFetch as typeof fetch),
     ).rejects.toThrow(/refresh failed/);
+  });
+
+  it('revokes a refresh token at Google\'s (unauthenticated) revoke endpoint', async () => {
+    let captured: { url: string; body: URLSearchParams } | null = null;
+    const fakeFetch = async (url: RequestInfo | URL, init?: RequestInit) => {
+      captured = { url: String(url), body: init!.body as URLSearchParams };
+      return new Response('', { status: 200 });
+    };
+    await revokeGoogleToken(env, 'rt-to-revoke', fakeFetch as typeof fetch);
+    expect(captured!.url).toBe('https://oauth2.googleapis.com/revoke');
+    expect(captured!.body.get('token')).toBe('rt-to-revoke');
+  });
+
+  it('throws on a non-2xx revoke response', async () => {
+    const fakeFetch = async () => new Response('nope', { status: 400 });
+    await expect(
+      revokeGoogleToken(env, 'rt', fakeFetch as typeof fetch),
+    ).rejects.toThrow(/revoke failed/);
   });
 
   it('passes through the id_token from the code exchange (login flow)', async () => {

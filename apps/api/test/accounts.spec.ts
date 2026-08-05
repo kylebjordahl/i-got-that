@@ -1,4 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { createExecutionContext, env, waitOnExecutionContext } from 'cloudflare:test';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import app from '../src/index.js';
 import { authed, bearer, call, createFamily, login } from './helpers.js';
 
 type Account = { id: string; kind: string; serverUrl: string | null };
@@ -107,5 +109,104 @@ describe('external accounts', () => {
       }),
     );
     expect(feedRes.status).toBe(404);
+  });
+});
+
+describe('Google external accounts — revoke on disconnect', () => {
+  /** Base test env leaves GOOGLE_OAUTH_CLIENT_ID/SECRET empty ⇒ google accounts 501. */
+  const googleEnv = {
+    ...env,
+    GOOGLE_OAUTH_CLIENT_ID: 'client-id-123',
+    GOOGLE_OAUTH_CLIENT_SECRET: 'client-secret-xyz',
+  };
+
+  async function fetchWith(
+    path: string,
+    bindings: typeof env,
+    init?: RequestInit,
+  ): Promise<Response> {
+    const ctx = createExecutionContext();
+    const res = await app.fetch(new Request(`https://api.test${path}`, init), bindings, ctx);
+    await waitOnExecutionContext(ctx);
+    return res;
+  }
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('disconnecting a connected Google account revokes its stored refresh token at Google', async () => {
+    const user = await login('acct-google-revoke@example.com');
+
+    // Connecting exchanges the auth code for tokens (including a refresh token).
+    vi.stubGlobal(
+      'fetch',
+      async () =>
+        new Response(
+          JSON.stringify({ access_token: 'at', refresh_token: 'the-refresh-token' }),
+          { status: 200 },
+        ),
+    );
+    const created = await fetchWith(
+      '/accounts',
+      googleEnv,
+      authed(user.token, {
+        kind: 'google',
+        name: 'My Google Cal',
+        authCode: 'auth-code-xyz',
+        redirectUri: 'https://app.example/cb',
+      }),
+    );
+    expect(created.status).toBe(201);
+    const accountId = ((await created.json()) as { account: Account }).account.id;
+    vi.unstubAllGlobals();
+
+    // Disconnecting should best-effort revoke the stored refresh token at Google.
+    let revokeCall: { url: string; body: URLSearchParams } | null = null;
+    vi.stubGlobal('fetch', async (url: RequestInfo | URL, init?: RequestInit) => {
+      revokeCall = { url: String(url), body: init!.body as URLSearchParams };
+      return new Response('', { status: 200 });
+    });
+    const del = await fetchWith(`/accounts/${accountId}`, googleEnv, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${user.token}` },
+    });
+    expect(del.status).toBe(200);
+    expect(revokeCall).not.toBeNull();
+    expect(revokeCall!.url).toBe('https://oauth2.googleapis.com/revoke');
+    expect(revokeCall!.body.get('token')).toBe('the-refresh-token');
+  });
+
+  it('a failed upstream revoke never blocks the disconnect', async () => {
+    const user = await login('acct-google-revoke-fail@example.com');
+
+    vi.stubGlobal(
+      'fetch',
+      async () =>
+        new Response(
+          JSON.stringify({ access_token: 'at', refresh_token: 'rt-2' }),
+          { status: 200 },
+        ),
+    );
+    const created = await fetchWith(
+      '/accounts',
+      googleEnv,
+      authed(user.token, {
+        kind: 'google',
+        name: 'My Google Cal 2',
+        authCode: 'auth-code-2',
+        redirectUri: 'https://app.example/cb',
+      }),
+    );
+    const accountId = ((await created.json()) as { account: Account }).account.id;
+    vi.unstubAllGlobals();
+
+    vi.stubGlobal('fetch', async () => new Response('server error', { status: 500 }));
+    const del = await fetchWith(`/accounts/${accountId}`, googleEnv, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${user.token}` },
+    });
+    expect(del.status).toBe(200);
+
+    const list = await fetchWith('/accounts', googleEnv, bearer(user.token));
+    expect(((await list.json()) as { accounts: Account[] }).accounts).toHaveLength(0);
   });
 });
