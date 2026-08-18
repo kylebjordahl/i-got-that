@@ -7,6 +7,7 @@ import '../theme/app_colors.dart';
 import '../theme/app_text.dart';
 import '../widgets/primitives.dart';
 import '../widgets/settings.dart';
+import '../widgets/time_fields.dart';
 
 /// Task rules (6k) — pick an active calendar (a source feed, or the member's
 /// own Unified calendar) and see its resolution order as one pipeline:
@@ -400,50 +401,41 @@ class _DefaultWindowFields extends StatefulWidget {
 }
 
 class _DefaultWindowFieldsState extends State<_DefaultWindowFields> {
-  late final _dropoff = TextEditingController(
-    text: '${widget.dropoffWindowMin}',
-  );
-  late final _pickup = TextEditingController(text: '${widget.pickupWindowMin}');
+  late int _dropoff = widget.dropoffWindowMin;
+  late int _pickup = widget.pickupWindowMin;
   bool _dirty = false;
 
-  @override
-  void dispose() {
-    _dropoff.dispose();
-    _pickup.dispose();
-    super.dispose();
-  }
-
   void _commit() {
-    final dropoff = int.tryParse(_dropoff.text.trim());
-    final pickup = int.tryParse(_pickup.text.trim());
-    if (dropoff == null || pickup == null) return;
-    widget.onSave(dropoff, pickup);
+    widget.onSave(_dropoff, _pickup);
     setState(() => _dirty = false);
   }
 
-  Widget _numField(TextEditingController c, String label) => TextField(
-    controller: c,
-    keyboardType: TextInputType.number,
-    onChanged: (_) => setState(() => _dirty = true),
-    onSubmitted: (_) => _commit(),
-    decoration: InputDecoration(labelText: label),
-  );
+  Widget _windowField(String label, int minutes, ValueChanged<int> onChanged) =>
+      DurationPickerField(
+        label: label,
+        minutes: minutes,
+        onChanged: (m) => setState(() {
+          onChanged(m);
+          _dirty = true;
+        }),
+      );
 
   @override
   Widget build(BuildContext context) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(
-          'The time window allowed for each task (in minutes).',
-          style: AppText.subtitle,
-        ),
+        Text('The time window allowed for each task.', style: AppText.subtitle),
         const SizedBox(height: 10),
         Row(
           children: [
-            Expanded(child: _numField(_dropoff, 'Drop-off')),
+            Expanded(
+              child: _windowField('Drop-off', _dropoff, (m) => _dropoff = m),
+            ),
             const SizedBox(width: 12),
-            Expanded(child: _numField(_pickup, 'Pickup')),
+            Expanded(
+              child: _windowField('Pickup', _pickup, (m) => _pickup = m),
+            ),
           ],
         ),
         if (_dirty) ...[
@@ -502,8 +494,8 @@ class _TaskRuleSheetState extends ConsumerState<_TaskRuleSheet> {
   late bool _allCalendars;
   late String _result;
   final _match = TextEditingController();
-  final _dropoff = TextEditingController(text: '15');
-  final _pickup = TextEditingController(text: '15');
+  int _dropoff = 15;
+  int _pickup = 15;
   bool _busy = false;
   String? _error;
 
@@ -516,15 +508,13 @@ class _TaskRuleSheetState extends ConsumerState<_TaskRuleSheet> {
     _allCalendars = ex?.scope == 'all_calendars';
     _result = ex?.resultType ?? 'transition';
     _match.text = ex?.matchValue ?? '';
-    _dropoff.text = '${ex?.dropoffWindowMin ?? 15}';
-    _pickup.text = '${ex?.pickupWindowMin ?? 15}';
+    _dropoff = ex?.dropoffWindowMin ?? 15;
+    _pickup = ex?.pickupWindowMin ?? 15;
   }
 
   @override
   void dispose() {
-    for (final c in [_match, _dropoff, _pickup]) {
-      c.dispose();
-    }
+    _match.dispose();
     super.dispose();
   }
 
@@ -538,12 +528,8 @@ class _TaskRuleSheetState extends ConsumerState<_TaskRuleSheet> {
       final api = ref.read(apiClientProvider);
       final scope = _allCalendars ? 'all_calendars' : 'this_calendar';
       final matchValue = _match.text.trim().isEmpty ? null : _match.text.trim();
-      final drop = _result == 'transition'
-          ? int.tryParse(_dropoff.text.trim())
-          : null;
-      final pick = _result == 'transition'
-          ? int.tryParse(_pickup.text.trim())
-          : null;
+      final drop = _result == 'transition' ? _dropoff : null;
+      final pick = _result == 'transition' ? _pickup : null;
       if (_editing) {
         await api.updateTaskRule(
           familyId,
@@ -678,15 +664,27 @@ class _TaskRuleSheetState extends ConsumerState<_TaskRuleSheet> {
                     ),
                     const SizedBox(height: 6),
                     Text(
-                      'The time window allowed for each task (in minutes).',
+                      'The time window allowed for each task.',
                       style: AppText.subtitle,
                     ),
                     const SizedBox(height: 12),
                     Row(
                       children: [
-                        Expanded(child: _numField(_dropoff, 'Drop-off')),
+                        Expanded(
+                          child: DurationPickerField(
+                            label: 'Drop-off',
+                            minutes: _dropoff,
+                            onChanged: (m) => setState(() => _dropoff = m),
+                          ),
+                        ),
                         const SizedBox(width: 12),
-                        Expanded(child: _numField(_pickup, 'Pickup')),
+                        Expanded(
+                          child: DurationPickerField(
+                            label: 'Pickup',
+                            minutes: _pickup,
+                            onChanged: (m) => setState(() => _pickup = m),
+                          ),
+                        ),
                       ],
                     ),
                   ],
@@ -720,12 +718,6 @@ class _TaskRuleSheetState extends ConsumerState<_TaskRuleSheet> {
       ),
     );
   }
-
-  Widget _numField(TextEditingController c, String label) => TextField(
-    controller: c,
-    keyboardType: TextInputType.number,
-    decoration: InputDecoration(labelText: label),
-  );
 }
 
 class _PillToggle extends StatelessWidget {
