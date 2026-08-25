@@ -101,7 +101,10 @@ ThemeData buildAppTheme() {
       thickness: 1,
     ),
     snackBarTheme: SnackBarThemeData(
-      backgroundColor: AppColors.card,
+      backgroundColor: Color.alphaBlend(
+        AppColors.tint(AppColors.indigo, 0.16),
+        AppColors.card,
+      ),
       contentTextStyle: font(kBodyFont, 13.5, 600),
       behavior: SnackBarBehavior.floating,
       elevation: 8,
