@@ -2,6 +2,7 @@ import { eq, families, familyMembers, getDb } from '@igt/db';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import type { Bindings, HonoEnv } from './env.js';
+import { kekStatus, kekUsable } from './lib/secrets.js';
 import { authMiddleware } from './middleware/auth.js';
 import { deliveryQueueConsumer } from './services/mirror.js';
 import { accountRoutes } from './routes/accounts.js';
@@ -45,14 +46,26 @@ app.use(
   }),
 );
 
-app.get('/health', (c) =>
-  c.json({
-    ok: true,
+/**
+ * Liveness + the one piece of configuration whose absence is otherwise silent.
+ * A missing/invalid envelope-encryption KEK (`KEK_V<n>`, see lib/secrets.ts)
+ * doesn't stop the Worker booting — it just makes every stored credential
+ * unreadable, so feeds and mirrors skip and connecting an account fails. Report
+ * it as a bare `ok`/`legacy`/`missing`/`invalid` (never any key material) so a
+ * deploy can be smoke-checked from outside; `ok` goes false only when the key is
+ * unusable, which is what the post-deploy check in
+ * .github/workflows/deploy.yml keys off — `legacy` works and stays healthy.
+ */
+app.get('/health', (c) => {
+  const kek = kekStatus(c.env);
+  return c.json({
+    ok: kekUsable(kek),
     service: 'igt-api',
     environment: c.env.ENVIRONMENT,
     time: new Date().toISOString(),
-  }),
-);
+    config: { secretsKek: kek },
+  });
+});
 
 app.get('/health/db', async (c) => {
   const row = await c.env.DB.prepare('select 1 as ok').first<{ ok: number }>();

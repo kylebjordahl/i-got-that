@@ -9,6 +9,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'support/duration_wheel.dart';
+
 /// Records the `types` passed to convertTask so tests can assert on it
 /// without a real network call.
 class _RecordingApiClient extends ApiClient {
@@ -288,10 +290,12 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('TRAVEL TIME'), findsOneWidget);
-    // The duration field has its own "Set"; travel is the last section.
-    await tester.enterText(find.byType(TextField).last, '25');
-    await tester.tap(find.widgetWithText(FilledButton, 'Set').last);
+    // No override yet, so the field reads as the server's estimate; tapping it
+    // opens the duration wheel (starting at the 15-minute fallback).
+    await tester.tap(find.text('Estimated'));
     await tester.pumpAndSettle();
+    // Ten notches down the minute wheel: 15 -> 25.
+    await pickDurationNotches(tester, 10);
 
     // Written to the claim, not to the source event the task came from.
     expect(api.lastTravelTime, (eventId: 'claim-3', minutes: 25));

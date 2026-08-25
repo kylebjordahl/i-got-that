@@ -116,44 +116,84 @@ value in `apps/api/wrangler.jsonc` (the id is **not** secret — commit it).
 ### 6. The KEK and other Worker secrets
 
 Credentials (CalDAV passwords, Google tokens) are envelope-encrypted with a
-**KEK**, and separately `KEK` also signs the OAuth state cookie
-(`routes/auth.ts`'s `cookieSecret`, issue #143 — that reuse is intentionally
-left alone here). The two concerns now use different secrets:
+**KEK**: `KEK_V1`, `KEK_V2`, … (`lib/secrets.ts`), versioned so old ciphertext
+keeps decrypting after a rotation. Each stored `secrets` row remembers which
+version encrypted it (`key_version` column), and `KEK_CURRENT_VERSION` names
+which version encrypts *new* secrets (defaults to `1` if unset — fine until you
+rotate for the first time).
 
-- **`KEK`** — cookie-signing only. Unversioned, one value per env.
-- **`KEK_V1`, `KEK_V2`, …** — envelope-encryption keys (`lib/secrets.ts`),
-  versioned so old ciphertext keeps decrypting after rotation. Each stored
-  `secrets` row remembers which version encrypted it (`key_version` column).
-  `KEK_CURRENT_VERSION` names which version encrypts *new* secrets (defaults
-  to `1` if unset — fine until you rotate for the first time).
+**Every deployed env needs a key for the current version.** Without one the
+Worker still boots and serves, but nothing can read or write a stored
+credential: connecting a calendar account fails with `503 kek_unconfigured`, and
+every feed and mirror silently skips. `GET /api/health` reports which key is in
+play as `config.secretsKek` — `ok` / `legacy` / `missing` / `invalid`, never any
+key material — and the deploy workflow refuses to ship an env with no key at
+all.
 
-`wrangler.jsonc` ships **dev-only** values for both in `vars`; production must
-use real secrets that override them:
+For **version 1 only**, the pre-versioning `KEK` counts as that key: if `KEK_V1`
+is unset but `KEK` is set, the Worker resolves version 1 through `KEK` and
+reports `legacy`. `KEK_V1` always wins when both exist. See "Deployments from
+≤ v0.8" below — that fallback exists because Worker secrets can't be read back.
+
+`wrangler.jsonc` ships a **dev-only** `KEK_V1` in the top-level `vars`. Named
+envs do **not** inherit those, so staging and production each need a real
+secret:
 
 ```bash
 # 32 random bytes, base64 — generate locally, never commit:
 openssl rand -base64 32
 
 cd apps/api
-echo "<that-value>" | pnpm wrangler secret put KEK --env staging
-echo "<another>"    | pnpm wrangler secret put KEK --env production
+echo "<that-value>" | pnpm wrangler secret put KEK_V1 --env staging
+echo "<another>"    | pnpm wrangler secret put KEK_V1 --env production
 
-echo "<yet-another>" | pnpm wrangler secret put KEK_V1 --env staging
-echo "<and-another>" | pnpm wrangler secret put KEK_V1 --env production
+# confirm it took, from outside:
+curl -s https://staging.igt.kylebjordahl.com/api/health   # → "secretsKek":"ok"
 ```
 
 A `wrangler secret` takes precedence over the same-named `vars` entry at
-runtime. Use **different** values per environment (and per KEK purpose —
-don't reuse the cookie `KEK` as `KEK_V1`, even though the checked-in dev
-`vars` do for convenience).
+runtime. Use a **different** value per environment, and a different one again
+from `COOKIE_SIGNING_KEY` below (the checked-in dev `vars` reuse values only
+for convenience).
+
+#### Deployments from ≤ v0.8 (the unversioned `KEK`)
+
+Envelope encryption used to run off a single unversioned `KEK`, and
+`encryptSecret` stamped every row `key_version = 1`. v0.9 split that into
+versioned `KEK_V<n>`. The documented migration was "set `KEK_V1` to the value
+your old `KEK` holds" — which is impossible: **Cloudflare Worker secrets are
+write-only.** `wrangler secret list` and the dashboard show names only, and
+there is no read endpoint, so nobody can recover that value to re-set it.
+
+The Worker *can* still read its own `KEK` binding, so it resolves version 1
+through `KEK` when `KEK_V1` is absent. Such an env needs **no action** — it
+reports `legacy` on `/health` and works normally.
+
+> ⚠️ **Never `wrangler secret delete KEK` on an env reporting `legacy`.** Its
+> value is unrecoverable and it is the only key that decrypts credentials stored
+> before v0.9. Deleting it orphans every one of them permanently — every
+> connected account would have to be reconnected by hand.
+
+To get such an env onto a key you control, **without** needing the old value:
+
+1. `echo "<new random>" | pnpm wrangler secret put KEK_V2 --env <env>`
+2. Set `KEK_CURRENT_VERSION` to `2` and deploy.
+
+New secrets are then stamped version 2 under a key you hold; the old version-1
+rows keep decrypting through the `KEK` fallback for as long as they exist. Note
+that `tools/rotate-kek.ts` **can't** finish the job here — it runs outside the
+Worker and needs the old key's value as input — so version-1 rows clear only as
+those accounts are reconnected. Keep `KEK` set until
+`select count(*) from secrets where key_version = 1` returns zero.
 
 **COOKIE_SIGNING_KEY**. The Apple/Google web login redirect flows (`/auth/apple/*`,
 `/auth/google/*`) stash a short-lived `state` (+ link-mode session reference) in a
 signed cookie between the "start" and "callback" hops. That signing key is
-**separate from KEK** — signing a cookie and wrapping stored credentials are
+**separate from the KEK** — signing a cookie and wrapping stored credentials are
 unrelated cryptographic operations with different rotation needs, and coupling
 them would mean rotating one drags the other along. `wrangler.jsonc` ships a
-**dev-only** value in `vars`, same as KEK; production must use a real secret:
+**dev-only** value in `vars`, same as `KEK_V1`; production must use a real
+secret:
 
 ```bash
 # 32 random bytes, base64 — generate locally, never commit:

@@ -70,11 +70,17 @@ class ApiClient {
   }
 
   /// Native Sign in with Apple: exchange the identity token from
-  /// `SignInWithApple.getAppleIDCredential` for a session.
-  Future<Map<String, dynamic>> signInWithApple(String identityToken) async {
+  /// `SignInWithApple.getAppleIDCredential` for a session. `nonce` is the raw
+  /// (unhashed) value whose SHA-256 digest was sent to Apple as the
+  /// authorize-request nonce — the server recomputes the digest and checks it
+  /// against the token's `nonce` claim.
+  Future<Map<String, dynamic>> signInWithApple(
+    String identityToken, {
+    String? nonce,
+  }) async {
     final res = await _dio.post(
       '/auth/apple',
-      data: {'identityToken': identityToken},
+      data: {'identityToken': identityToken, if (nonce != null) 'nonce': nonce},
     );
     final data = _obj(res);
     _sessionToken = data['sessionToken'] as String;
@@ -144,11 +150,12 @@ class ApiClient {
     );
   }
 
-  /// Thread a native Sign in with Apple identity onto the current user.
-  Future<void> linkApple(String identityToken) async {
+  /// Thread a native Sign in with Apple identity onto the current user. See
+  /// [signInWithApple] for what `nonce` is.
+  Future<void> linkApple(String identityToken, {String? nonce}) async {
     await _dio.post(
       '/auth/link/apple',
-      data: {'identityToken': identityToken},
+      data: {'identityToken': identityToken, if (nonce != null) 'nonce': nonce},
       options: _auth,
     );
   }

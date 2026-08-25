@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models.dart';
 import '../state/auth.dart';
@@ -12,6 +11,7 @@ import '../util/format.dart';
 import '../util/task_visuals.dart';
 import '../widgets/app_bottom_nav.dart';
 import '../widgets/primitives.dart';
+import '../widgets/time_fields.dart';
 
 /// Quick-actions for a timeline task (Home rows + Plan blocks/tags): change its
 /// type (transition / attendance / both), (re)assign or unassign it, or mark it
@@ -710,11 +710,11 @@ class _SegTile extends StatelessWidget {
   }
 }
 
-/// An editable window length for a single transition (pickup / drop-off) task.
-/// The value is signed minutes measured from the task's anchor — the parent
-/// event's start (drop-off) or end (pickup). A negative value runs the window
-/// the opposite direction (before the anchor). The subtext spells this out.
-class _DurationField extends StatefulWidget {
+/// The window length for a single transition (pickup / drop-off) task, picked
+/// off a wheel. The value is signed minutes measured from the task's anchor —
+/// the parent event's start (drop-off) or end (pickup) — and the sign is picked
+/// as a direction rather than typed as a minus.
+class _DurationField extends StatelessWidget {
   const _DurationField({
     required this.task,
     required this.showLabel,
@@ -725,79 +725,30 @@ class _DurationField extends StatefulWidget {
   final bool showLabel;
   final ValueChanged<int> onSubmit;
 
-  @override
-  State<_DurationField> createState() => _DurationFieldState();
-}
-
-class _DurationFieldState extends State<_DurationField> {
-  late final TextEditingController _controller = TextEditingController(
-    text: widget.task.signedDurationMin.toString(),
-  );
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
   /// The clock point the window hangs off of, in words.
-  String get _anchorWord => widget.task.type == 'dropoff' ? 'start' : 'end';
-
-  void _submit() {
-    final minutes = int.tryParse(_controller.text.trim());
-    if (minutes == null) return;
-    widget.onSubmit(minutes);
-  }
+  String get _anchorWord => task.type == 'dropoff' ? 'start' : 'end';
 
   @override
   Widget build(BuildContext context) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        if (widget.showLabel) ...[
-          Text(widget.task.typeLabel, style: AppText.subtitle),
+        if (showLabel) ...[
+          Text(task.typeLabel, style: AppText.subtitle),
           const SizedBox(height: 6),
         ],
-        Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Expanded(
-              child: TextField(
-                controller: _controller,
-                keyboardType: const TextInputType.numberWithOptions(
-                  signed: true,
-                ),
-                inputFormatters: [
-                  FilteringTextInputFormatter.allow(RegExp(r'^-?\d*')),
-                ],
-                onSubmitted: (_) => _submit(),
-                style: font(kBodyFont, 15, 600, color: AppColors.textPrimary),
-                decoration: const InputDecoration(
-                  suffixText: 'min',
-                  isDense: true,
-                ),
-              ),
-            ),
-            const SizedBox(width: 10),
-            FilledButton(
-              onPressed: _submit,
-              style: FilledButton.styleFrom(
-                backgroundColor: AppColors.tint(AppColors.indigo, 0.22),
-                foregroundColor: AppColors.indigo,
-                elevation: 0,
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 20,
-                  vertical: 14,
-                ),
-              ),
-              child: const Text('Set'),
-            ),
-          ],
+        DurationPickerField(
+          label: showLabel ? '${task.typeLabel} window' : 'Task window',
+          minutes: task.signedDurationMin,
+          directions: (
+            forward: 'after $_anchorWord',
+            backward: 'before $_anchorWord',
+          ),
+          onChanged: onSubmit,
         ),
         const SizedBox(height: 6),
         Text(
-          'Minutes from the event $_anchorWord. '
-          'Use a negative value to run it the opposite direction.',
+          'How long the window runs, measured from the event $_anchorWord.',
           style: AppText.subtitle,
         ),
       ],
@@ -811,9 +762,9 @@ class _DurationFieldState extends State<_DurationField> {
 /// The backend estimates this from where the caretaker is coming from — the
 /// last place their calendar accounts for, or their home address — which is a
 /// guess about distance and traffic made without a routing service. Someone who
-/// knows the run takes 25 minutes says so here and that stands. An empty field
-/// hands it back to the estimate; `0` says this trip needs no travel time.
-class _TravelTimeField extends StatefulWidget {
+/// knows the run takes 25 minutes says so here and that stands. Clearing the
+/// field hands it back to the estimate; `0` says this trip needs no travel time.
+class _TravelTimeField extends StatelessWidget {
   const _TravelTimeField({
     required this.event,
     required this.onSubmit,
@@ -829,35 +780,9 @@ class _TravelTimeField extends StatefulWidget {
   final ValueChanged<int?> onSubmit;
 
   @override
-  State<_TravelTimeField> createState() => _TravelTimeFieldState();
-}
-
-class _TravelTimeFieldState extends State<_TravelTimeField> {
-  late final TextEditingController _controller = TextEditingController(
-    text: widget.event.travelTimeOverrideMin?.toString() ?? '',
-  );
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
-  void _submit() {
-    final text = _controller.text.trim();
-    if (text.isEmpty) {
-      widget.onSubmit(null);
-      return;
-    }
-    final minutes = int.tryParse(text);
-    if (minutes == null || minutes < 0) return;
-    widget.onSubmit(minutes);
-  }
-
-  @override
   Widget build(BuildContext context) {
-    final overridden = widget.event.travelTimeOverrideMin != null;
-    final location = widget.event.location;
+    final overridden = event.travelTimeOverrideMin != null;
+    final location = event.location;
     // Apple hangs travel time off the event's location, so without one there's
     // nothing to reserve time *to* — say so rather than offering a dead field.
     if (location == null || location.isEmpty) {
@@ -870,49 +795,24 @@ class _TravelTimeFieldState extends State<_TravelTimeField> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        if (widget.label != null) ...[
-          Text(widget.label!, style: AppText.subtitle),
+        if (label != null) ...[
+          Text(label!, style: AppText.subtitle),
           const SizedBox(height: 6),
         ],
-        Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Expanded(
-              child: TextField(
-                controller: _controller,
-                keyboardType: TextInputType.number,
-                inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-                onSubmitted: (_) => _submit(),
-                style: font(kBodyFont, 15, 600, color: AppColors.textPrimary),
-                decoration: InputDecoration(
-                  hintText: overridden ? null : 'Estimated',
-                  suffixText: 'min',
-                  isDense: true,
-                ),
-              ),
-            ),
-            const SizedBox(width: 10),
-            FilledButton(
-              onPressed: _submit,
-              style: FilledButton.styleFrom(
-                backgroundColor: AppColors.tint(AppColors.indigo, 0.22),
-                foregroundColor: AppColors.indigo,
-                elevation: 0,
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 20,
-                  vertical: 14,
-                ),
-              ),
-              child: const Text('Set'),
-            ),
-          ],
+        DurationPickerField(
+          label: 'Travel time',
+          minutes: event.travelTimeOverrideMin,
+          emptyLabel: 'Estimated',
+          onChanged: onSubmit,
+          onCleared: () => onSubmit(null),
+          clearTooltip: 'Back to the estimate',
         ),
         const SizedBox(height: 6),
         Text(
           overridden
-              ? 'Your own number, used as-is. Clear the field to go back to the '
+              ? 'Your own number, used as-is. Clear it to go back to the '
                     'estimate; 0 means no travel time on this one.'
-              : 'Estimated from wherever you\'re coming from. Enter minutes to '
+              : 'Estimated from wherever you\'re coming from. Pick a length to '
                     'override it; 0 means no travel time on this one.',
           style: AppText.subtitle,
         ),
