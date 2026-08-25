@@ -260,6 +260,7 @@ class FamilyScreen extends ConsumerWidget {
     final current = ref.read(familyProvider).valueOrNull;
     await showModalBottomSheet<void>(
       context: context,
+      useSafeArea: true,
       useRootNavigator: true,
       showDragHandle: true,
       // `sheetCtx`, not the outer `context`: `context` here is the Family
@@ -305,6 +306,7 @@ class FamilyScreen extends ConsumerWidget {
 Future<void> showAddMemberSheet(BuildContext context, WidgetRef ref) {
   return showModalBottomSheet<void>(
     context: context,
+    useSafeArea: true,
     useRootNavigator: true,
     showDragHandle: true,
     builder: (sheetCtx) => Padding(

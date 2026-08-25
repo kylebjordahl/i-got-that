@@ -230,6 +230,7 @@ class DurationPickerField extends StatelessWidget {
       onTap: () async {
         final picked = await showModalBottomSheet<({int minutes})>(
           context: context,
+          useSafeArea: true,
           useRootNavigator: true,
           backgroundColor: AppColors.card,
           shape: const RoundedRectangleBorder(
@@ -319,6 +320,7 @@ Future<T?> _showWheelSheet<T>(
 }) {
   return showModalBottomSheet<T>(
     context: context,
+    useSafeArea: true,
     useRootNavigator: true,
     backgroundColor: AppColors.card,
     shape: const RoundedRectangleBorder(

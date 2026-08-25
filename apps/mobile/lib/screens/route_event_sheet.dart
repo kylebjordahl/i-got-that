@@ -26,6 +26,7 @@ Future<bool?> showRouteEventSheet(
 }) {
   return showModalBottomSheet<bool>(
     context: context,
+    useSafeArea: true,
     useRootNavigator: true,
     showDragHandle: true,
     isScrollControlled: true,
