@@ -125,10 +125,14 @@ rotate for the first time).
 **Every deployed env needs a key for the current version.** Without one the
 Worker still boots and serves, but nothing can read or write a stored
 credential: connecting a calendar account fails with `503 kek_unconfigured`, and
-every feed and mirror silently skips. `GET /api/health` reports which key is in
-play as `config.secretsKek` — `ok` / `legacy` / `missing` / `invalid`, never any
-key material — and the deploy workflow refuses to ship an env with no key at
-all.
+every feed and mirror silently skips. The deploy workflow refuses to ship an env
+with no key at all — it checks `wrangler secret list` before deploying — and
+`GET /api/health` reports which key is in play as `config.secretsKek`
+(`ok` / `legacy` / `missing` / `invalid`, never any key material).
+
+> Open `/api/health` in a **browser**, not with `curl`. The Cloudflare edge in
+> front of both hostnames answers a plain `curl` with `403` before the request
+> reaches the Worker, which is also why CI doesn't probe it after deploying.
 
 For **version 1 only**, the pre-versioning `KEK` counts as that key: if `KEK_V1`
 is unset but `KEK` is set, the Worker resolves version 1 through `KEK` and
@@ -146,10 +150,11 @@ openssl rand -base64 32
 cd apps/api
 echo "<that-value>" | pnpm wrangler secret put KEK_V1 --env staging
 echo "<another>"    | pnpm wrangler secret put KEK_V1 --env production
-
-# confirm it took, from outside:
-curl -s https://staging.igt.kylebjordahl.com/api/health   # → "secretsKek":"ok"
 ```
+
+Then confirm it took by opening
+<https://staging.igt.kylebjordahl.com/api/health> in a browser — expect
+`"secretsKek":"ok"`.
 
 A `wrangler secret` takes precedence over the same-named `vars` entry at
 runtime. Use a **different** value per environment, and a different one again
