@@ -15,21 +15,21 @@ export interface Bindings {
      */
     PUBLIC_ORIGIN?: string;
     /**
-     * base64 of 32 random bytes. Historically the single key-encryption key
-     * for envelope encryption (`lib/secrets.ts`); that role has moved to the
-     * versioned `KEK_V<n>` bindings below. `KEK` now only backs the state
-     * cookie's signing secret (`routes/auth.ts`'s `cookieSecret`) — see issue
-     * #143 for retiring that reuse.
-     */
-    KEK?: string;
-    /**
      * Versioned key-encryption keys for envelope-encrypted secrets
      * (`lib/secrets.ts`) — each `KEK_V<n>` is base64 of 32 random bytes, set
-     * via `wrangler secret put KEK_V<n> [--env <env>]`. Only `KEK_V1` needs to
-     * exist today (it carries the same value the single `KEK` used to). Add a
-     * `KEK_V<n>` field here (and set the matching secret) for each new version
-     * as you rotate — `lib/secrets.ts#buildKekKeySet` looks versions up by
-     * name, so no other code changes with each rotation. See
+     * via `wrangler secret put KEK_V<n> [--env <env>]`. **Required in every
+     * deployed env**: without the current version's key nothing can decrypt a
+     * stored credential, so connecting an account fails (503) and every feed
+     * and mirror skips. `GET /health` reports it as `config.secretsKek`.
+     *
+     * Only `KEK_V1` needs to exist today. A deployment that predates the split
+     * (≤ v0.8, when a single unversioned `KEK` did this job) must set `KEK_V1`
+     * to **that same old `KEK` value** — existing `secrets` rows are stamped
+     * `key_version = 1` and decrypt with nothing else.
+     *
+     * Add a `KEK_V<n>` field here (and set the matching secret) for each new
+     * version as you rotate — `lib/secrets.ts#buildKekKeySet` looks versions up
+     * by name, so no other code changes with each rotation. See
      * `docs/DEPLOYMENT.md` § KEK rotation.
      */
     KEK_V1?: string;
@@ -45,8 +45,8 @@ export interface Bindings {
     /**
      * base64 of 32 random bytes; the HMAC signing secret for the short-lived
      * Apple/Google OAuth `state` cookies (`routes/auth.ts`). Deliberately
-     * distinct from `KEK` — signing the state cookie and wrapping stored
-     * credentials are unrelated cryptographic purposes with different
+     * distinct from the `KEK_V<n>` keys — signing the state cookie and wrapping
+     * stored credentials are unrelated cryptographic purposes with different
      * rotation profiles, and the state cookie carries the link-mode session
      * reference used to graft an OAuth identity onto an account, so a shared
      * or predictable key would be a real account-takeover path. Unset ⇒ the

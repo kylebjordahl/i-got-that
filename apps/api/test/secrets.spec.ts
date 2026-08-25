@@ -5,6 +5,7 @@ import {
   decryptSecret,
   encryptSecret,
   InvalidKekError,
+  kekStatus,
   KekVersionNotConfiguredError,
   type KekKeySet,
 } from '../src/lib/secrets.js';
@@ -116,5 +117,24 @@ describe('buildKekKeySet', () => {
     expect(keys?.currentVersion).toBe(2);
     expect(keys?.getKey(1)).toBe(env.KEK_V1);
     expect(keys?.getKey(2)).toBeTruthy();
+  });
+});
+
+describe('kekStatus', () => {
+  it('is ok when the current version resolves to valid AES-256 material', () => {
+    expect(kekStatus(env)).toBe('ok');
+  });
+
+  it('is missing when the current version has no KEK_V<n>', () => {
+    expect(kekStatus({ ...env, KEK_CURRENT_VERSION: '7' })).toBe('missing');
+  });
+
+  it('is missing when KEK_CURRENT_VERSION is unusable (no version can resolve)', () => {
+    expect(kekStatus({ ...env, KEK_CURRENT_VERSION: 'not-a-number' })).toBe('missing');
+  });
+
+  it('is invalid when a key is set but is not 32 bytes of base64', () => {
+    expect(kekStatus({ ...env, KEK_V1: fakeKek(1).slice(0, 20) })).toBe('invalid');
+    expect(kekStatus({ ...env, KEK_V1: 'not-valid-base64!!' })).toBe('invalid');
   });
 });

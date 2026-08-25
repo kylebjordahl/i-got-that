@@ -116,44 +116,58 @@ value in `apps/api/wrangler.jsonc` (the id is **not** secret — commit it).
 ### 6. The KEK and other Worker secrets
 
 Credentials (CalDAV passwords, Google tokens) are envelope-encrypted with a
-**KEK**, and separately `KEK` also signs the OAuth state cookie
-(`routes/auth.ts`'s `cookieSecret`, issue #143 — that reuse is intentionally
-left alone here). The two concerns now use different secrets:
+**KEK**: `KEK_V1`, `KEK_V2`, … (`lib/secrets.ts`), versioned so old ciphertext
+keeps decrypting after a rotation. Each stored `secrets` row remembers which
+version encrypted it (`key_version` column), and `KEK_CURRENT_VERSION` names
+which version encrypts *new* secrets (defaults to `1` if unset — fine until you
+rotate for the first time).
 
-- **`KEK`** — cookie-signing only. Unversioned, one value per env.
-- **`KEK_V1`, `KEK_V2`, …** — envelope-encryption keys (`lib/secrets.ts`),
-  versioned so old ciphertext keeps decrypting after rotation. Each stored
-  `secrets` row remembers which version encrypted it (`key_version` column).
-  `KEK_CURRENT_VERSION` names which version encrypts *new* secrets (defaults
-  to `1` if unset — fine until you rotate for the first time).
+**`KEK_V<n>` for the current version is required in every deployed env.**
+Without it the Worker still boots and serves, but nothing can read or write a
+stored credential: connecting a calendar account fails with `503
+kek_unconfigured`, and every feed and mirror silently skips. `GET
+/api/health` reports this as `config.secretsKek` (`ok` / `missing` / `invalid`,
+never any key material) and the deploy workflow refuses to ship an env whose
+`KEK_V1` secret isn't set.
 
-`wrangler.jsonc` ships **dev-only** values for both in `vars`; production must
-use real secrets that override them:
+`wrangler.jsonc` ships a **dev-only** `KEK_V1` in the top-level `vars`. Named
+envs do **not** inherit those, so staging and production each need a real
+secret:
 
 ```bash
 # 32 random bytes, base64 — generate locally, never commit:
 openssl rand -base64 32
 
 cd apps/api
-echo "<that-value>" | pnpm wrangler secret put KEK --env staging
-echo "<another>"    | pnpm wrangler secret put KEK --env production
+echo "<that-value>" | pnpm wrangler secret put KEK_V1 --env staging
+echo "<another>"    | pnpm wrangler secret put KEK_V1 --env production
 
-echo "<yet-another>" | pnpm wrangler secret put KEK_V1 --env staging
-echo "<and-another>" | pnpm wrangler secret put KEK_V1 --env production
+# confirm it took, from outside:
+curl -s https://staging.igt.kylebjordahl.com/api/health   # → "secretsKek":"ok"
 ```
 
 A `wrangler secret` takes precedence over the same-named `vars` entry at
-runtime. Use **different** values per environment (and per KEK purpose —
-don't reuse the cookie `KEK` as `KEK_V1`, even though the checked-in dev
-`vars` do for convenience).
+runtime. Use a **different** value per environment, and a different one again
+from `COOKIE_SIGNING_KEY` below (the checked-in dev `vars` reuse values only
+for convenience).
+
+> **Upgrading a deployment from ≤ v0.8.** Envelope encryption used to run off a
+> single unversioned `KEK`; v0.9 split it into versioned `KEK_V<n>` and nothing
+> reads `KEK` any more. An env upgraded past that boundary keeps working right
+> up until something touches a credential, so set `KEK_V1` to **the same value
+> that env's old `KEK` held** before deploying — existing `secrets` rows are
+> stamped `key_version = 1` and decrypt with nothing else. (A fresh env with no
+> stored credentials can use a brand-new key.) The old `KEK` secret is then
+> unused and can be deleted: `pnpm wrangler secret delete KEK --env <env>`.
 
 **COOKIE_SIGNING_KEY**. The Apple/Google web login redirect flows (`/auth/apple/*`,
 `/auth/google/*`) stash a short-lived `state` (+ link-mode session reference) in a
 signed cookie between the "start" and "callback" hops. That signing key is
-**separate from KEK** — signing a cookie and wrapping stored credentials are
+**separate from the KEK** — signing a cookie and wrapping stored credentials are
 unrelated cryptographic operations with different rotation needs, and coupling
 them would mean rotating one drags the other along. `wrangler.jsonc` ships a
-**dev-only** value in `vars`, same as KEK; production must use a real secret:
+**dev-only** value in `vars`, same as `KEK_V1`; production must use a real
+secret:
 
 ```bash
 # 32 random bytes, base64 — generate locally, never commit:

@@ -64,7 +64,10 @@ function concat(a: Uint8Array, b: Uint8Array): Uint8Array {
   return out;
 }
 
-async function importKek(kekB64: string): Promise<CryptoKey> {
+/** Decode + validate raw KEK material, throwing `InvalidKekError` on either
+ *  failure. Split out of `importKek` so `kekStatus` can vet a configured key
+ *  without minting a CryptoKey. */
+function decodeKek(kekB64: string): Uint8Array {
   let bytes: Uint8Array;
   try {
     bytes = b64ToBytes(kekB64);
@@ -78,7 +81,11 @@ async function importKek(kekB64: string): Promise<CryptoKey> {
       `KEK must base64-decode to exactly ${KEK_BYTE_LENGTH} bytes (AES-256 key), got ${bytes.length}`,
     );
   }
-  return crypto.subtle.importKey('raw', bytes, 'AES-GCM', false, [
+  return bytes;
+}
+
+async function importKek(kekB64: string): Promise<CryptoKey> {
+  return crypto.subtle.importKey('raw', decodeKek(kekB64), 'AES-GCM', false, [
     'encrypt',
     'decrypt',
   ]);
@@ -118,6 +125,39 @@ export function buildKekKeySet(env: Bindings): KekKeySet | undefined {
   const getKey = (version: number): string | undefined => byName[`KEK_V${version}`];
   if (!getKey(currentVersion)) return undefined;
   return { currentVersion, getKey };
+}
+
+/**
+ * Whether this environment can envelope-encrypt at all, and if not, why:
+ *
+ * - `ok` — the current version's `KEK_V<n>` is set and is valid AES-256 material.
+ * - `missing` — no `KEK_V<n>` for the current version (the shape a deployment
+ *   upgraded past the `KEK` → `KEK_V1` split lands in until `KEK_V1` is set),
+ *   or a `KEK_CURRENT_VERSION` that isn't a positive integer.
+ * - `invalid` — a key is set but doesn't base64-decode to 32 bytes.
+ *
+ * Without a usable KEK every stored credential is unreadable and no new one can
+ * be stored, which otherwise shows up only as connect failing and feeds/mirrors
+ * quietly doing nothing. Surfaced (as this bare word, never any key material) on
+ * `GET /health` so a deploy can be checked from outside, and used to turn the
+ * connect-account failure into a diagnosable error instead of a bare 500.
+ */
+export function kekStatus(env: Bindings): 'ok' | 'missing' | 'invalid' {
+  let keys: KekKeySet | undefined;
+  try {
+    keys = buildKekKeySet(env);
+  } catch {
+    return 'missing'; // an unusable KEK_CURRENT_VERSION — no version resolves
+  }
+  if (!keys) return 'missing';
+  const material = keys.getKey(keys.currentVersion);
+  if (!material) return 'missing';
+  try {
+    decodeKek(material);
+  } catch {
+    return 'invalid';
+  }
+  return 'ok';
 }
 
 export interface EncryptedSecret {

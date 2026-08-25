@@ -27,20 +27,20 @@
         // in a deployed env — named envs below deliberately omit it, and they
         // do not inherit these top-level vars.
         "ALLOW_DEV_TOKENS": "true",
-        // DEV ONLY KEK. Historically the single envelope-encryption
-        // key-encryption key; now only backs the state-cookie signing secret
-        // (routes/auth.ts's cookieSecret) — see issue #143.
-        "KEK": "2OmcakKhoLtzTqOq5ZrXq/e/7mXa8Gmav+dtCe/2ThM=",
         // DEV ONLY KEK_V1 — the versioned envelope-encryption key
-        // (lib/secrets.ts), same value as the old single KEK for parity with
-        // pre-rotation deployments. Production sets a real secret per version
-        // via `wrangler secret put KEK_V1` / Terraform — never commit prod
-        // keys. KEK_CURRENT_VERSION is intentionally unset here: it defaults
-        // to 1, matching this single configured version. See
-        // docs/DEPLOYMENT.md § KEK rotation.
+        // (lib/secrets.ts), carrying the value the old single unversioned KEK
+        // used to, for parity with pre-rotation deployments. Every deployed env
+        // MUST set a real secret per version via `wrangler secret put KEK_V1
+        // --env <env>` — named envs don't inherit these vars, and an env
+        // without it can't read or write any stored credential (connect fails,
+        // feeds and mirrors skip). Never commit prod keys.
+        // KEK_CURRENT_VERSION is intentionally unset here: it defaults to 1,
+        // matching this single configured version. See docs/DEPLOYMENT.md
+        // § KEK rotation.
         "KEK_V1": "2OmcakKhoLtzTqOq5ZrXq/e/7mXa8Gmav+dtCe/2ThM=",
-        // DEV ONLY COOKIE_SIGNING_KEY (HMAC secret for the Apple/Google OAuth state
-        // cookies — deliberately separate from KEK). Production sets a real secret
+        // DEV ONLY COOKIE_SIGNING_KEY (HMAC secret for the Apple/Google OAuth
+        // state cookies — deliberately separate from the KEK_V<n> keys, which
+        // wrap stored credentials). Production sets a real secret
         // via `wrangler secret put COOKIE_SIGNING_KEY` — never commit prod keys.
         // Unset ⇒ the web Apple/Google start/callback routes 501 rather than
         // falling back to a constant. See docs/DEPLOYMENT.md.
@@ -95,10 +95,9 @@
     "env": {
         "staging": {
             // Named-env vars do NOT inherit from the top level — list them here.
-            // KEK is set per-env via `wrangler secret put KEK --env staging`
-            // (cookie-signing only, see `env.ts`); KEK_V1 (envelope encryption)
-            // via `wrangler secret put KEK_V1 --env staging` — see
-            // docs/DEPLOYMENT.md § KEK rotation.
+            // KEK_V1 (envelope encryption) is REQUIRED and set per-env via
+            // `wrangler secret put KEK_V1 --env staging`; the deploy workflow
+            // refuses to ship without it. See docs/DEPLOYMENT.md § KEK.
             "vars": {
                 "ENVIRONMENT": "staging",
                 "PUBLIC_ORIGIN": "https://staging.igt.kylebjordahl.com",
@@ -158,10 +157,9 @@
             // "send_email": [{ "name": "EMAIL" }]  // enable with a paid plan
         },
         "production": {
-            // KEK is set per-env via `wrangler secret put KEK --env production`
-            // (cookie-signing only, see `env.ts`); KEK_V1 (envelope encryption)
-            // via `wrangler secret put KEK_V1 --env production` — see
-            // docs/DEPLOYMENT.md § KEK rotation.
+            // KEK_V1 (envelope encryption) is REQUIRED and set per-env via
+            // `wrangler secret put KEK_V1 --env production`; the deploy
+            // workflow refuses to ship without it. See docs/DEPLOYMENT.md § KEK.
             "vars": {
                 "ENVIRONMENT": "production",
                 // Set to the production custom domain once provisioned (Terraform).
