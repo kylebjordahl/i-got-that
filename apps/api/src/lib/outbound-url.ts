@@ -240,6 +240,32 @@ const DEFAULT_MAX_BYTES = 8 * 1024 * 1024;
 /** Redirect hops followed before giving up (each one is re-vetted). */
 const MAX_REDIRECTS = 3;
 
+/**
+ * Keep every outbound hop out of Cloudflare's cache.
+ *
+ * A Worker's `fetch()` is not a bare socket: a cacheable GET is served from
+ * Cloudflare's cache, honouring whatever `Cache-Control` the origin sent. Calendar
+ * publishers routinely send hours of `max-age` on their `.ics`, and the entry
+ * even answers our conditional `If-None-Match` — so an event added to the source
+ * calendar last night could stay invisible all morning no matter how many times
+ * someone pressed "Refresh feeds". Everything the guard fronts is live user data
+ * being read or written (ICS feeds, CalDAV REPORT/PUT/DELETE, calendar APIs);
+ * none of it is ever correct to serve from a cache, so the bypass is unconditional
+ * rather than a per-caller flag. Freshness on the *feed's* side is still the
+ * stored ETag's job — see `ingest.ts` — this only stops our own layer from
+ * answering before the request gets out.
+ */
+const NO_STORE = { cache: 'no-store' } as const;
+
+/**
+ * `RequestInit` plus the standard `cache` member: workerd implements it
+ * (`no-store` / `no-cache`), but `@cloudflare/workers-types` doesn't declare it
+ * on its own `RequestInit`.
+ */
+interface CacheableRequestInit extends RequestInit {
+  cache?: 'no-store' | 'no-cache';
+}
+
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 /** Statuses whose `Response` may not carry a body (constructing one throws). */
 const NULL_BODY_STATUSES = new Set([101, 204, 205, 304]);
@@ -263,7 +289,8 @@ export interface GuardedFetchOptions {
  * - `authorization` is dropped when a redirect crosses origins, so the CalDAV
  *   basic credential doesn't follow the user's URL to a third party;
  * - the request is time-bounded and the response body is size-capped, so a
- *   hostile-but-permitted target can't hang or OOM the Worker.
+ *   hostile-but-permitted target can't hang or OOM the Worker;
+ * - every hop is `cache: 'no-store'` (see `NO_STORE` below).
  */
 export function createGuardedFetch(
   env: Pick<Bindings, 'ENVIRONMENT' | 'OUTBOUND_ALLOWED_HOSTS'>,
@@ -281,11 +308,13 @@ export function createGuardedFetch(
 
     for (let hop = 0; ; hop++) {
       const target = assertSafeOutboundUrl(url, policy);
-      const res = await baseFetch(target.href, {
+      const init: CacheableRequestInit = {
         ...current,
+        ...NO_STORE,
         signal,
         redirect: 'manual',
-      });
+      };
+      const res = await baseFetch(target.href, init);
 
       const location = res.headers.get('location');
       if (!REDIRECT_STATUSES.has(res.status) || !location) {

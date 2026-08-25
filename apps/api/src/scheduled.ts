@@ -1,4 +1,4 @@
-import { and, eq, families, feeds, getDb } from '@igt/db';
+import { eq, families, feeds, getDb } from '@igt/db';
 import type { Bindings } from './env.js';
 import { googleRefresherFor } from './lib/google-oauth.js';
 import { createGuardedFetch } from './lib/outbound-url.js';
@@ -6,7 +6,7 @@ import { sweepOrphanedSecrets } from './services/auth.js';
 import { reconcileClaimEvents } from './services/claim.js';
 import { reconcileFamilyConflicts } from './services/conflicts.js';
 import { getProductionRegistry, syncFamilyMirror } from './services/mirror.js';
-import { ingestFeed } from './services/ingest.js';
+import { ingestFeed, isFeedDue } from './services/ingest.js';
 import { readBackFamily } from './services/readback.js';
 import { buildKekKeySet } from './lib/secrets.js';
 import { synthesizeFeed } from './services/synthesis.js';
@@ -15,7 +15,8 @@ import { buildFamilyTasks } from './services/task-gen.js';
 /**
  * Cron tick, per family — the full pipeline in dependency order:
  *
- *   1. ingest + synthesize any feed whose refresh interval elapsed
+ *   1. ingest + synthesize any feed that's due — its refresh interval elapsed,
+ *      or, for a feed left in 'error', its retry backoff did
  *      (feeds → source_events → calendar_events + pending_decisions)
  *   2. read back each configured target calendar (human events land as
  *      first-class unified-calendar events) — before task-gen so they get
@@ -44,7 +45,7 @@ export async function scheduled(
     // each one at request time (these rows may predate the policy).
     fetchImpl: createGuardedFetch(env),
   };
-  const now = Date.now();
+  const now = new Date();
 
   // Backstop for the small best-effort window in account-deletion cleanup (D1
   // has no multi-statement transactions): reclaim any user-owned `secrets`
@@ -66,12 +67,19 @@ export async function scheduled(
           const familyFeeds = await db
             .select()
             .from(feeds)
-            .where(and(eq(feeds.familyId, fam.id), eq(feeds.status, 'active')));
+            .where(eq(feeds.familyId, fam.id));
           for (const feed of familyFeeds) {
-            const last = feed.lastSyncedAt?.getTime() ?? 0;
-            if (now - last >= feed.refreshMinutes * 60 * 1000) {
+            if (!isFeedDue(feed, now)) continue;
+            try {
               await ingestFeed(db, feed, secrets);
               await synthesizeFeed(db, feed);
+            } catch (err) {
+              // One unreachable feed must not cost the family its whole tick:
+              // the read-back, conflict, task-gen and mirror passes below don't
+              // depend on it, and skipping them would strand human edits and
+              // claims that have nothing to do with this feed. `ingestFeed` has
+              // already recorded why the row is in 'error'.
+              console.error(`feed ${feed.id} ingest failed`, err);
             }
           }
           await readBackFamily(db, fam.id, secrets);
