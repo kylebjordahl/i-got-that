@@ -1,6 +1,7 @@
 import Flutter
 import MapKit
 import UIKit
+import UserNotifications
 
 @main
 @objc class AppDelegate: FlutterAppDelegate, FlutterImplicitEngineDelegate {
@@ -8,6 +9,7 @@ import UIKit
     _ application: UIApplication,
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
   ) -> Bool {
+    UNUserNotificationCenter.current().delegate = self
     return super.application(application, didFinishLaunchingWithOptions: launchOptions)
   }
 
@@ -17,6 +19,164 @@ import UIKit
     if let registrar = registry.registrar(forPlugin: "GeocodingChannel") {
       GeocodingChannel.register(with: registrar)
     }
+    if let registrar = registry.registrar(forPlugin: "PushChannel") {
+      PushChannel.register(with: registrar)
+    }
+  }
+
+  // APNs hands the token back asynchronously, so `register` on the Dart side
+  // resolves here rather than at the call site.
+  override func application(
+    _ application: UIApplication,
+    didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data
+  ) {
+    PushChannel.didRegister(token: deviceToken.map { String(format: "%02x", $0) }.joined())
+    super.application(
+      application, didRegisterForRemoteNotificationsWithDeviceToken: deviceToken)
+  }
+
+  override func application(
+    _ application: UIApplication,
+    didFailToRegisterForRemoteNotificationsWithError error: Error
+  ) {
+    PushChannel.didFailToRegister(message: error.localizedDescription)
+    super.application(
+      application, didFailToRegisterForRemoteNotificationsWithError: error)
+  }
+}
+
+/// Remote push registration + permission, exposed to Flutter over the
+/// `igt/push` MethodChannel — the same shape as `GeocodingChannel` below.
+///
+/// Deliberately not a plugin dependency: the app only needs a device token and
+/// an authorization status, and the system draws the banner itself from the
+/// APNs `alert` payload. Notification *content* is decided server-side (see
+/// `services/digest.ts`), so there is nothing here to configure.
+enum PushChannel {
+  private static var channel: FlutterMethodChannel?
+  /// Pending `register` calls waiting on APNs. Registration is per-process, so
+  /// several Dart calls can be in flight against one round trip.
+  private static var pendingRegistrations: [FlutterResult] = []
+  /// A notification tapped before Flutter was listening (cold start).
+  private static var pendingTapPayload: [String: Any]?
+
+  static func register(with registrar: FlutterPluginRegistrar) {
+    let channel = FlutterMethodChannel(
+      name: "igt/push",
+      binaryMessenger: registrar.messenger()
+    )
+    self.channel = channel
+    channel.setMethodCallHandler { call, result in
+      switch call.method {
+      case "authorizationStatus":
+        UNUserNotificationCenter.current().getNotificationSettings { settings in
+          DispatchQueue.main.async { result(statusName(settings.authorizationStatus)) }
+        }
+      case "requestPermission":
+        UNUserNotificationCenter.current().requestAuthorization(
+          options: [.alert, .badge, .sound]
+        ) { granted, error in
+          DispatchQueue.main.async {
+            if let error = error {
+              result(
+                FlutterError(
+                  code: "permission_failed", message: error.localizedDescription,
+                  details: nil))
+            } else {
+              result(granted)
+            }
+          }
+        }
+      case "register":
+        // The token arrives in the AppDelegate callbacks above.
+        pendingRegistrations.append(result)
+        UIApplication.shared.registerForRemoteNotifications()
+      case "apsEnvironment":
+        result(
+          Bundle.main.object(forInfoDictionaryKey: "IGTApsEnvironment") as? String
+            ?? "production")
+      case "timezone":
+        // The IANA identifier (e.g. "America/Los_Angeles"). Dart only exposes
+        // an abbreviation, and the server needs a real zone to read a
+        // schedule's send time and day window in.
+        result(TimeZone.current.identifier)
+      case "openSettings":
+        // Once notifications are denied the app can't prompt again; Settings is
+        // the only way back.
+        if let url = URL(string: UIApplication.openSettingsURLString) {
+          UIApplication.shared.open(url)
+        }
+        result(nil)
+      case "takeInitialTap":
+        result(pendingTapPayload)
+        pendingTapPayload = nil
+      default:
+        result(FlutterMethodNotImplemented)
+      }
+    }
+  }
+
+  static func didRegister(token: String) {
+    let waiting = pendingRegistrations
+    pendingRegistrations = []
+    DispatchQueue.main.async { waiting.forEach { $0(token) } }
+  }
+
+  static func didFailToRegister(message: String) {
+    let waiting = pendingRegistrations
+    pendingRegistrations = []
+    DispatchQueue.main.async {
+      waiting.forEach {
+        $0(FlutterError(code: "registration_failed", message: message, details: nil))
+      }
+    }
+  }
+
+  /// A tapped notification. Held until Flutter asks for it if the channel isn't
+  /// up yet — a cold start from the lock screen gets here before the engine.
+  static func didTap(payload: [String: Any]) {
+    guard let channel = channel else {
+      pendingTapPayload = payload
+      return
+    }
+    channel.invokeMethod("onNotificationTap", arguments: payload)
+  }
+
+  private static func statusName(_ status: UNAuthorizationStatus) -> String {
+    switch status {
+    case .authorized: return "authorized"
+    case .provisional: return "provisional"
+    case .ephemeral: return "ephemeral"
+    case .denied: return "denied"
+    case .notDetermined: return "notDetermined"
+    @unknown default: return "notDetermined"
+    }
+  }
+}
+
+extension AppDelegate {
+  /// Show the banner even when the app is already open — a digest that arrives
+  /// while you're looking at yesterday's plan is exactly when it's useful.
+  override func userNotificationCenter(
+    _ center: UNUserNotificationCenter,
+    willPresent notification: UNNotification,
+    withCompletionHandler completionHandler:
+      @escaping (UNNotificationPresentationOptions) -> Void
+  ) {
+    completionHandler([.banner, .badge, .sound])
+  }
+
+  override func userNotificationCenter(
+    _ center: UNUserNotificationCenter,
+    didReceive response: UNNotificationResponse,
+    withCompletionHandler completionHandler: @escaping () -> Void
+  ) {
+    let userInfo = response.notification.request.content.userInfo
+    PushChannel.didTap(
+      payload: userInfo.reduce(into: [String: Any]()) { acc, entry in
+        if let key = entry.key as? String { acc[key] = entry.value }
+      })
+    completionHandler()
   }
 }
 

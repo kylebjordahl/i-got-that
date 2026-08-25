@@ -17,8 +17,7 @@ export async function call(path: string, init?: RequestInit) {
 /**
  * The test env's `KekKeySet` (built from the dev-only `KEK_V1` in
  * `wrangler.jsonc`) — the versioned replacement for tests that used to pass
- * `env.KEK` straight into `encryptSecret`/`storeSecret`/etc. `env.KEK` itself
- * now only backs the state-cookie signing secret (issue #143).
+ * the old single `env.KEK` straight into `encryptSecret`/`storeSecret`/etc.
  */
 export function testKeys(): KekKeySet {
   const keys = buildKekKeySet(env);

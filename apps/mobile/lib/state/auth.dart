@@ -1,3 +1,7 @@
+import 'dart:convert';
+import 'dart:math';
+
+import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
@@ -37,6 +41,20 @@ const _storage = FlutterSecureStorage();
 final apiClientProvider = Provider<ApiClient>(
   (ref) => ApiClient(baseUrl: apiBaseUrl),
 );
+
+/// A cryptographically random nonce for Sign in with Apple: we send its
+/// SHA-256 digest to Apple as the authorize-request `nonce` and keep the raw
+/// value to send to our own server, which recomputes the digest to verify the
+/// identity token wasn't captured from a different sign-in attempt.
+String _generateNonce([int length = 32]) {
+  const charset =
+      '0123456789ABCDEFGHIJKLMNOPQRSTUVXYZabcdefghijklmnopqrstuvwxyz-._';
+  final random = Random.secure();
+  return List.generate(
+    length,
+    (_) => charset[random.nextInt(charset.length)],
+  ).join();
+}
 
 class AuthState {
   const AuthState({
@@ -168,11 +186,15 @@ class AuthController extends StateNotifier<AuthState> {
       startWebRedirect('$apiBaseUrl/auth/google/start?link=1');
 
   /// Native (iOS): request an Apple ID credential from the OS sheet and post
-  /// its identity token to `/auth/apple` to obtain a session.
+  /// its identity token (+ the raw nonce behind the digest Apple echoed back)
+  /// to `/auth/apple` to obtain a session.
   Future<void> loginWithAppleNative() async {
-    final identityToken = await _requestAppleIdentityToken();
-    if (identityToken == null) return; // user dismissed the sheet
-    final res = await _api.signInWithApple(identityToken);
+    final cred = await _requestAppleIdentityToken();
+    if (cred == null) return; // user dismissed the sheet
+    final res = await _api.signInWithApple(
+      cred.identityToken,
+      nonce: cred.rawNonce,
+    );
     final token = res['sessionToken'] as String;
     state = AuthState(
       sessionToken: token,
@@ -185,14 +207,21 @@ class AuthController extends StateNotifier<AuthState> {
   /// fresh identity token to `/auth/link/apple`. The session is unchanged; the
   /// caller refreshes the identity list.
   Future<void> linkWithAppleNative() async {
-    final identityToken = await _requestAppleIdentityToken();
-    if (identityToken == null) return; // user dismissed the sheet
-    await _api.linkApple(identityToken);
+    final cred = await _requestAppleIdentityToken();
+    if (cred == null) return; // user dismissed the sheet
+    await _api.linkApple(cred.identityToken, nonce: cred.rawNonce);
   }
 
-  /// Drive the native Apple OS sheet and return the identity token, or null if
-  /// the user dismissed it.
-  Future<String?> _requestAppleIdentityToken() async {
+  /// Drive the native Apple OS sheet and return the identity token plus the
+  /// raw nonce that produced the digest sent to Apple, or null if the user
+  /// dismissed it. Apple never returns the raw nonce — it only echoes the
+  /// digest into the identity token's `nonce` claim — so the server needs the
+  /// raw value from us to recompute and verify it (replay protection; see
+  /// apps/api/src/lib/apple.ts).
+  Future<({String identityToken, String rawNonce})?>
+  _requestAppleIdentityToken() async {
+    final rawNonce = _generateNonce();
+    final hashedNonce = sha256.convert(utf8.encode(rawNonce)).toString();
     AuthorizationCredentialAppleID cred;
     try {
       cred = await SignInWithApple.getAppleIDCredential(
@@ -200,6 +229,7 @@ class AuthController extends StateNotifier<AuthState> {
           AppleIDAuthorizationScopes.email,
           AppleIDAuthorizationScopes.fullName,
         ],
+        nonce: hashedNonce,
       );
     } on SignInWithAppleAuthorizationException catch (e) {
       // User dismissed the OS sheet — not an error worth surfacing.
@@ -210,7 +240,7 @@ class AuthController extends StateNotifier<AuthState> {
     if (identityToken == null) {
       throw Exception('Apple did not return an identity token.');
     }
-    return identityToken;
+    return (identityToken: identityToken, rawNonce: rawNonce);
   }
 
   /// Native (iOS): drive Google's native sign-in sheet and post the ID token

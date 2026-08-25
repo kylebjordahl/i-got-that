@@ -6,6 +6,25 @@ import 'dio_credentials.dart';
 /// Used by [ApiClient.updateLinkRule] for clearable nullable columns.
 const Object _unset = Object();
 
+/// Thrown when a feed refresh is rejected because one ran too recently. Not an
+/// error condition for the user — the data is already fresh, they just pressed
+/// the button again sooner than the backend's debounce window.
+class FeedRefreshCooldown implements Exception {
+  const FeedRefreshCooldown({required this.retryAfter});
+
+  final Duration retryAfter;
+
+  /// Snackbar-ready phrasing, e.g. "Already up to date — try again in 42s."
+  String get message {
+    final seconds = retryAfter.inSeconds;
+    if (seconds <= 0) return 'Already up to date.';
+    return 'Already up to date — try again in ${seconds}s.';
+  }
+
+  @override
+  String toString() => message;
+}
+
 /// Thin typed wrapper over the backend HTTP API. Replaced by an OpenAPI-
 /// generated client once the spec is emitted from libs/domain (see /tools).
 class ApiClient {
@@ -51,11 +70,17 @@ class ApiClient {
   }
 
   /// Native Sign in with Apple: exchange the identity token from
-  /// `SignInWithApple.getAppleIDCredential` for a session.
-  Future<Map<String, dynamic>> signInWithApple(String identityToken) async {
+  /// `SignInWithApple.getAppleIDCredential` for a session. `nonce` is the raw
+  /// (unhashed) value whose SHA-256 digest was sent to Apple as the
+  /// authorize-request nonce — the server recomputes the digest and checks it
+  /// against the token's `nonce` claim.
+  Future<Map<String, dynamic>> signInWithApple(
+    String identityToken, {
+    String? nonce,
+  }) async {
     final res = await _dio.post(
       '/auth/apple',
-      data: {'identityToken': identityToken},
+      data: {'identityToken': identityToken, if (nonce != null) 'nonce': nonce},
     );
     final data = _obj(res);
     _sessionToken = data['sessionToken'] as String;
@@ -125,11 +150,12 @@ class ApiClient {
     );
   }
 
-  /// Thread a native Sign in with Apple identity onto the current user.
-  Future<void> linkApple(String identityToken) async {
+  /// Thread a native Sign in with Apple identity onto the current user. See
+  /// [signInWithApple] for what `nonce` is.
+  Future<void> linkApple(String identityToken, {String? nonce}) async {
     await _dio.post(
       '/auth/link/apple',
-      data: {'identityToken': identityToken},
+      data: {'identityToken': identityToken, if (nonce != null) 'nonce': nonce},
       options: _auth,
     );
   }
@@ -598,21 +624,32 @@ class ApiClient {
   Future<Map<String, dynamic>> refreshFeed(
     String familyId,
     String feedId,
-  ) async => _obj(
-    await _dio.post(
-      '/families/$familyId/feeds/$feedId/refresh',
-      data: <String, dynamic>{},
-      options: _auth,
-    ),
-  );
+  ) async => _refresh('/families/$familyId/feeds/$feedId/refresh');
 
-  Future<Map<String, dynamic>> refreshAllFeeds(String familyId) async => _obj(
-    await _dio.post(
-      '/families/$familyId/feeds/refresh-all',
-      data: <String, dynamic>{},
-      options: _auth,
-    ),
-  );
+  Future<Map<String, dynamic>> refreshAllFeeds(String familyId) async =>
+      _refresh('/families/$familyId/feeds/refresh-all');
+
+  /// POSTs a refresh endpoint, translating the backend's `refresh_cooldown`
+  /// 429 into [FeedRefreshCooldown] so callers can treat a too-soon re-press
+  /// as "already up to date" rather than as a failure.
+  Future<Map<String, dynamic>> _refresh(String path) async {
+    try {
+      return _obj(
+        await _dio.post(path, data: <String, dynamic>{}, options: _auth),
+      );
+    } on DioException catch (e) {
+      final data = e.response?.data;
+      if (e.response?.statusCode == 429 &&
+          data is Map &&
+          data['error'] == 'refresh_cooldown') {
+        final seconds = data['retryAfterSeconds'];
+        throw FeedRefreshCooldown(
+          retryAfter: Duration(seconds: seconds is int ? seconds : 0),
+        );
+      }
+      rethrow;
+    }
+  }
 
   // --- Tasks -------------------------------------------------------------
 
@@ -1152,4 +1189,122 @@ class ApiClient {
       options: _auth,
     );
   }
+
+  // --- Push notifications (user-owned, not family-scoped) --------------------
+
+  /// Register or refresh this device's APNs token. Idempotent on the token —
+  /// re-posting under a different account moves the device rather than
+  /// duplicating it.
+  Future<void> registerPushDevice({
+    required String deviceToken,
+    required String bundleId,
+    required String environment, // 'sandbox' | 'production'
+    String? timezone,
+  }) async {
+    await _dio.post(
+      '/notifications/devices',
+      data: {
+        'deviceToken': deviceToken,
+        'bundleId': bundleId,
+        'environment': environment,
+        if (timezone != null) 'timezone': timezone,
+      },
+      options: _auth,
+    );
+  }
+
+  /// Drop this device's registration — on sign-out, or when push is turned off.
+  Future<void> unregisterPushDevice(String deviceToken) async {
+    await _dio.delete(
+      '/notifications/devices',
+      data: {'deviceToken': deviceToken},
+      options: _auth,
+    );
+  }
+
+  Future<List<dynamic>> listPushDevices() async => _list(
+    await _dio.get('/notifications/devices', options: _auth),
+    'devices',
+  );
+
+  Future<List<dynamic>> listNotificationSchedules() async => _list(
+    await _dio.get('/notifications/schedules', options: _auth),
+    'schedules',
+  );
+
+  Future<Map<String, dynamic>> createNotificationSchedule({
+    required String label,
+    required String sendAt,
+    required String timezone,
+    required int weekdayMask,
+    required int startOffsetDays,
+    required int horizonDays,
+    required List<String> categories,
+    required bool skipWhenEmpty,
+  }) async {
+    final res = await _dio.post(
+      '/notifications/schedules',
+      data: {
+        'label': label,
+        'sendAt': sendAt,
+        'timezone': timezone,
+        'weekdayMask': weekdayMask,
+        'startOffsetDays': startOffsetDays,
+        'horizonDays': horizonDays,
+        'categories': categories,
+        'skipWhenEmpty': skipWhenEmpty,
+      },
+      options: _auth,
+    );
+    return _obj(res)['schedule'] as Map<String, dynamic>;
+  }
+
+  /// Partial update; omitted fields keep their current value.
+  Future<Map<String, dynamic>> updateNotificationSchedule(
+    String scheduleId, {
+    String? label,
+    bool? enabled,
+    String? sendAt,
+    String? timezone,
+    int? weekdayMask,
+    int? startOffsetDays,
+    int? horizonDays,
+    List<String>? categories,
+    bool? skipWhenEmpty,
+  }) async {
+    final res = await _dio.patch(
+      '/notifications/schedules/$scheduleId',
+      data: {
+        if (label != null) 'label': label,
+        if (enabled != null) 'enabled': enabled,
+        if (sendAt != null) 'sendAt': sendAt,
+        if (timezone != null) 'timezone': timezone,
+        if (weekdayMask != null) 'weekdayMask': weekdayMask,
+        if (startOffsetDays != null) 'startOffsetDays': startOffsetDays,
+        if (horizonDays != null) 'horizonDays': horizonDays,
+        if (categories != null) 'categories': categories,
+        if (skipWhenEmpty != null) 'skipWhenEmpty': skipWhenEmpty,
+      },
+      options: _auth,
+    );
+    return _obj(res)['schedule'] as Map<String, dynamic>;
+  }
+
+  Future<void> deleteNotificationSchedule(String scheduleId) async {
+    await _dio.delete('/notifications/schedules/$scheduleId', options: _auth);
+  }
+
+  /// Send this schedule's digest now. Returns the computed digest as well as
+  /// the delivery outcome, so the UI can preview what the notification would
+  /// say even where the push itself can't be verified (web, simulator, or a
+  /// deployment without the APNs secrets set).
+  Future<Map<String, dynamic>> testNotificationSchedule(
+    String scheduleId,
+  ) async => _obj(
+    await _dio.post(
+      '/notifications/schedules/$scheduleId/test',
+      data: <String, dynamic>{},
+      options: _auth,
+    ),
+  );
 }

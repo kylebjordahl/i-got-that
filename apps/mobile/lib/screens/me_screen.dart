@@ -4,18 +4,22 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import '../models.dart';
+import '../services/push.dart';
 import '../state/auth.dart';
 import '../state/family.dart';
 import '../state/nav.dart';
+import '../state/notifications.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_text.dart';
 import '../theme/person_colors.dart';
+import '../util/notification_text.dart';
 import '../widgets/app_bottom_nav.dart';
 import '../widgets/primitives.dart';
 import '../widgets/settings.dart';
 import '../widgets/slide_to_confirm.dart';
 import 'connect_account_wizard.dart';
 import 'dialogs.dart';
+import 'notification_schedule_screen.dart';
 
 /// Me — the signed-in user's own account (a 4th nav tab). Account-level calendar
 /// connections live here and are reused as delivery targets by every family.
@@ -39,7 +43,12 @@ class MeScreen extends ConsumerWidget {
         const <LoginIdentity>[];
     final name = me?.relationName ?? 'Me';
     final color = me == null ? AppColors.indigo : personColor(me);
-    final pushOn = ref.watch(pushNotificationsProvider);
+    final push =
+        ref.watch(pushControllerProvider).valueOrNull ??
+        const PushState(
+          authorization: PushAuthorization.notDetermined,
+          registered: false,
+        );
 
     return ListView(
       padding: const EdgeInsets.fromLTRB(22, 14, 22, 130),
@@ -213,15 +222,6 @@ class MeScreen extends ConsumerWidget {
                 ),
               ],
               const Divider(height: 20),
-              SwitchRow(
-                icon: Icons.notifications_none_rounded,
-                iconColor: AppColors.blue,
-                title: 'Push notifications',
-                value: pushOn,
-                onChanged: (v) =>
-                    ref.read(pushNotificationsProvider.notifier).state = v,
-              ),
-              const Divider(height: 20),
               SettingRow(
                 icon: Icons.help_outline_rounded,
                 iconColor: AppColors.textMuted,
@@ -231,6 +231,18 @@ class MeScreen extends ConsumerWidget {
             ],
           ),
         ),
+        if (push.supported) ...[
+          const SizedBox(height: 24),
+          const SectionEyebrow('Notifications', color: AppColors.blue),
+          const SizedBox(height: 8),
+          Text(
+            'A push when there is something outstanding for the day ahead — '
+            'across every family you are in.',
+            style: AppText.subtitle,
+          ),
+          const SizedBox(height: 12),
+          const _NotificationsCard(),
+        ],
         if (me?.isAdmin ?? false) ...[
           const SizedBox(height: 24),
           const SectionEyebrow('Family logistics', color: AppColors.coral),
@@ -266,6 +278,7 @@ class MeScreen extends ConsumerWidget {
   ) {
     showModalBottomSheet<void>(
       context: context,
+      useSafeArea: true,
       useRootNavigator: true,
       showDragHandle: true,
       // `sheetCtx`, not the outer `context`: `context` here is the Me screen's
@@ -531,6 +544,12 @@ class MeScreen extends ConsumerWidget {
       ),
     );
     if (ok == true) {
+      // Drop this device's push registration first — otherwise the next user
+      // to sign in on the same phone keeps receiving the previous one's
+      // digests until they enable push themselves. API-only (see
+      // [PushController.unregisterDevice]) so a platform-channel round trip
+      // can never hold up signing out.
+      await ref.read(pushControllerProvider.notifier).unregisterDevice();
       ref.read(navIndexProvider.notifier).state = 0;
       ref.read(authControllerProvider.notifier).logout();
     }
@@ -581,6 +600,107 @@ class MeScreen extends ConsumerWidget {
     'icloud' => AppColors.indigo,
     _ => AppColors.purple,
   };
+}
+
+/// Push notifications: the device-level master switch, then the user's digest
+/// schedules. Hidden entirely on web, where there's no APNs to register with.
+class _NotificationsCard extends ConsumerWidget {
+  const _NotificationsCard();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final pushAsync = ref.watch(pushControllerProvider);
+    final push = pushAsync.valueOrNull;
+    final busy = pushAsync.isLoading;
+    final schedules =
+        ref.watch(notificationSchedulesProvider).valueOrNull ??
+        const <NotificationSchedule>[];
+    final on = push?.isOn ?? false;
+
+    return AppCard(
+      child: Column(
+        children: [
+          SwitchRow(
+            icon: Icons.notifications_none_rounded,
+            iconColor: AppColors.blue,
+            title: 'Push notifications',
+            subtitle: busy ? 'Working…' : null,
+            value: on,
+            onChanged: busy
+                ? null
+                : (v) async {
+                    final controller = ref.read(
+                      pushControllerProvider.notifier,
+                    );
+                    if (v) {
+                      await controller.enable();
+                    } else {
+                      await controller.disable();
+                    }
+                  },
+          ),
+          // iOS only ever prompts once, so a denial can't be undone in-app.
+          if (push?.needsSettings ?? false) ...[
+            const Divider(height: 20),
+            SettingRow(
+              icon: Icons.settings_rounded,
+              iconColor: AppColors.coral,
+              title: 'Enable in iOS Settings',
+              subtitle: 'Notifications are turned off for this app',
+              onTap: () =>
+                  ref.read(pushControllerProvider.notifier).openSettings(),
+            ),
+          ],
+          if (push?.error != null) ...[
+            const Divider(height: 20),
+            Text(
+              push!.error!,
+              style: font(kBodyFont, 12, 500, color: AppColors.coral),
+            ),
+          ],
+          if (on) ...[
+            for (final schedule in schedules) ...[
+              const Divider(height: 20),
+              SettingRow(
+                icon: Icons.schedule_rounded,
+                iconColor: schedule.enabled
+                    ? AppColors.indigo
+                    : AppColors.textMuted,
+                title: schedule.label,
+                subtitle: describeSchedule(context, schedule),
+                onTap: () => _openEditor(context, ref, schedule),
+              ),
+            ],
+            const Divider(height: 20),
+            SettingRow(
+              icon: Icons.add_rounded,
+              iconColor: AppColors.indigo,
+              title: schedules.isEmpty
+                  ? 'Add your first notification'
+                  : 'Add a notification',
+              onTap: () => _openEditor(context, ref, null),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Future<void> _openEditor(
+    BuildContext context,
+    WidgetRef ref,
+    NotificationSchedule? schedule,
+  ) async {
+    final timezone = await ref.read(pushServiceProvider).timezone();
+    if (!context.mounted) return;
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute(
+        builder: (_) =>
+            NotificationScheduleScreen(schedule: schedule, timezone: timezone),
+      ),
+    );
+    ref.invalidate(notificationSchedulesProvider);
+  }
 }
 
 /// The family task-threading window (moved here from the removed Family

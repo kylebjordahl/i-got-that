@@ -101,10 +101,17 @@ ThemeData buildAppTheme() {
       thickness: 1,
     ),
     snackBarTheme: SnackBarThemeData(
-      backgroundColor: AppColors.card,
-      contentTextStyle: font(kBodyFont, 13.5, 500),
+      backgroundColor: Color.alphaBlend(
+        AppColors.tint(AppColors.indigo, 0.16),
+        AppColors.card,
+      ),
+      contentTextStyle: font(kBodyFont, 13.5, 600),
       behavior: SnackBarBehavior.floating,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      elevation: 8,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(14),
+        side: const BorderSide(color: AppColors.dividerStrong),
+      ),
     ),
     popupMenuTheme: PopupMenuThemeData(
       color: AppColors.card,
@@ -114,6 +121,38 @@ ThemeData buildAppTheme() {
         side: const BorderSide(color: AppColors.border),
       ),
       textStyle: font(kBodyFont, 14, 500, color: AppColors.textPrimary),
+    ),
+    // The web/Android half of the time pickers (see `widgets/time_fields.dart`;
+    // iOS gets the Cupertino wheel instead). Material's dialog otherwise lands
+    // on the M3 scheme's own purples rather than the app's indigo.
+    timePickerTheme: TimePickerThemeData(
+      backgroundColor: AppColors.card,
+      dialBackgroundColor: AppColors.bg,
+      dialHandColor: AppColors.indigo,
+      dialTextColor: WidgetStateColor.resolveWith(
+        (s) => s.contains(WidgetState.selected)
+            ? const Color(0xFF17162B)
+            : AppColors.textPrimary,
+      ),
+      hourMinuteColor: WidgetStateColor.resolveWith(
+        (s) => s.contains(WidgetState.selected)
+            ? AppColors.tint(AppColors.indigo, 0.28)
+            : AppColors.bg,
+      ),
+      hourMinuteTextColor: AppColors.textPrimary,
+      dayPeriodColor: WidgetStateColor.resolveWith(
+        (s) => s.contains(WidgetState.selected)
+            ? AppColors.tint(AppColors.indigo, 0.28)
+            : Colors.transparent,
+      ),
+      dayPeriodTextColor: WidgetStateColor.resolveWith(
+        (s) => s.contains(WidgetState.selected)
+            ? AppColors.indigo
+            : AppColors.textSecondary,
+      ),
+      dayPeriodBorderSide: const BorderSide(color: AppColors.border),
+      helpTextStyle: AppText.eyebrow(),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
     ),
     textButtonTheme: TextButtonThemeData(
       style: TextButton.styleFrom(

@@ -16,3 +16,11 @@ GOOGLE_IOS_URL_SCHEME=com.googleusercontent.apps.503268168924-gk8d4c4dfjtkmi2ol3
 // Calendar" wizard (distinct from Sign in with Google above) — must match the
 // API's GOOGLE_IOS_OAUTH_CALLBACK_SCHEME for this env (wrangler.jsonc).
 GOOGLE_OAUTH_CALLBACK_SCHEME=com.kylebjordahl.igt.oauth
+
+// APNs environment this build's `aps-environment` entitlement is signed with
+// (Runner.entitlements reads $(APS_ENVIRONMENT), and Info.plist surfaces the
+// same value as IGTApsEnvironment so the app reports the matching APNs host to
+// the server). Debug builds are signed with a development profile, whose tokens
+// only route via api.sandbox.push.apple.com; archives — TestFlight included —
+// use the production host.
+APS_ENVIRONMENT=development

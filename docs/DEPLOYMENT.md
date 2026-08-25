@@ -117,44 +117,89 @@ value in `apps/api/wrangler.jsonc` (the id is **not** secret — commit it).
 ### 6. The KEK and other Worker secrets
 
 Credentials (CalDAV passwords, Google tokens) are envelope-encrypted with a
-**KEK**, and separately `KEK` also signs the OAuth state cookie
-(`routes/auth.ts`'s `cookieSecret`, issue #143 — that reuse is intentionally
-left alone here). The two concerns now use different secrets:
+**KEK**: `KEK_V1`, `KEK_V2`, … (`lib/secrets.ts`), versioned so old ciphertext
+keeps decrypting after a rotation. Each stored `secrets` row remembers which
+version encrypted it (`key_version` column), and `KEK_CURRENT_VERSION` names
+which version encrypts *new* secrets (defaults to `1` if unset — fine until you
+rotate for the first time).
 
-- **`KEK`** — cookie-signing only. Unversioned, one value per env.
-- **`KEK_V1`, `KEK_V2`, …** — envelope-encryption keys (`lib/secrets.ts`),
-  versioned so old ciphertext keeps decrypting after rotation. Each stored
-  `secrets` row remembers which version encrypted it (`key_version` column).
-  `KEK_CURRENT_VERSION` names which version encrypts *new* secrets (defaults
-  to `1` if unset — fine until you rotate for the first time).
+**Every deployed env needs a key for the current version.** Without one the
+Worker still boots and serves, but nothing can read or write a stored
+credential: connecting a calendar account fails with `503 kek_unconfigured`, and
+every feed and mirror silently skips. The deploy workflow refuses to ship an env
+with no key at all — it checks `wrangler secret list` before deploying — and
+`GET /api/health` reports which key is in play as `config.secretsKek`
+(`ok` / `legacy` / `missing` / `invalid`, never any key material).
 
-`wrangler.jsonc` ships **dev-only** values for both in `vars`; production must
-use real secrets that override them:
+> Open `/api/health` in a **browser**, not with `curl`. The Cloudflare edge in
+> front of both hostnames answers a plain `curl` with `403` before the request
+> reaches the Worker, which is also why CI doesn't probe it after deploying.
+
+For **version 1 only**, the pre-versioning `KEK` counts as that key: if `KEK_V1`
+is unset but `KEK` is set, the Worker resolves version 1 through `KEK` and
+reports `legacy`. `KEK_V1` always wins when both exist. See "Deployments from
+≤ v0.8" below — that fallback exists because Worker secrets can't be read back.
+
+`wrangler.jsonc` ships a **dev-only** `KEK_V1` in the top-level `vars`. Named
+envs do **not** inherit those, so staging and production each need a real
+secret:
 
 ```bash
 # 32 random bytes, base64 — generate locally, never commit:
 openssl rand -base64 32
 
 cd apps/api
-echo "<that-value>" | pnpm wrangler secret put KEK --env staging
-echo "<another>"    | pnpm wrangler secret put KEK --env production
-
-echo "<yet-another>" | pnpm wrangler secret put KEK_V1 --env staging
-echo "<and-another>" | pnpm wrangler secret put KEK_V1 --env production
+echo "<that-value>" | pnpm wrangler secret put KEK_V1 --env staging
+echo "<another>"    | pnpm wrangler secret put KEK_V1 --env production
 ```
 
+Then confirm it took by opening
+<https://staging.igt.kylebjordahl.com/api/health> in a browser — expect
+`"secretsKek":"ok"`.
+
 A `wrangler secret` takes precedence over the same-named `vars` entry at
-runtime. Use **different** values per environment (and per KEK purpose —
-don't reuse the cookie `KEK` as `KEK_V1`, even though the checked-in dev
-`vars` do for convenience).
+runtime. Use a **different** value per environment, and a different one again
+from `COOKIE_SIGNING_KEY` below (the checked-in dev `vars` reuse values only
+for convenience).
+
+#### Deployments from ≤ v0.8 (the unversioned `KEK`)
+
+Envelope encryption used to run off a single unversioned `KEK`, and
+`encryptSecret` stamped every row `key_version = 1`. v0.9 split that into
+versioned `KEK_V<n>`. The documented migration was "set `KEK_V1` to the value
+your old `KEK` holds" — which is impossible: **Cloudflare Worker secrets are
+write-only.** `wrangler secret list` and the dashboard show names only, and
+there is no read endpoint, so nobody can recover that value to re-set it.
+
+The Worker *can* still read its own `KEK` binding, so it resolves version 1
+through `KEK` when `KEK_V1` is absent. Such an env needs **no action** — it
+reports `legacy` on `/health` and works normally.
+
+> ⚠️ **Never `wrangler secret delete KEK` on an env reporting `legacy`.** Its
+> value is unrecoverable and it is the only key that decrypts credentials stored
+> before v0.9. Deleting it orphans every one of them permanently — every
+> connected account would have to be reconnected by hand.
+
+To get such an env onto a key you control, **without** needing the old value:
+
+1. `echo "<new random>" | pnpm wrangler secret put KEK_V2 --env <env>`
+2. Set `KEK_CURRENT_VERSION` to `2` and deploy.
+
+New secrets are then stamped version 2 under a key you hold; the old version-1
+rows keep decrypting through the `KEK` fallback for as long as they exist. Note
+that `tools/rotate-kek.ts` **can't** finish the job here — it runs outside the
+Worker and needs the old key's value as input — so version-1 rows clear only as
+those accounts are reconnected. Keep `KEK` set until
+`select count(*) from secrets where key_version = 1` returns zero.
 
 **COOKIE_SIGNING_KEY**. The Apple/Google web login redirect flows (`/auth/apple/*`,
 `/auth/google/*`) stash a short-lived `state` (+ link-mode session reference) in a
 signed cookie between the "start" and "callback" hops. That signing key is
-**separate from KEK** — signing a cookie and wrapping stored credentials are
+**separate from the KEK** — signing a cookie and wrapping stored credentials are
 unrelated cryptographic operations with different rotation needs, and coupling
 them would mean rotating one drags the other along. `wrangler.jsonc` ships a
-**dev-only** value in `vars`, same as KEK; production must use a real secret:
+**dev-only** value in `vars`, same as `KEK_V1`; production must use a real
+secret:
 
 ```bash
 # 32 random bytes, base64 — generate locally, never commit:
@@ -378,12 +423,75 @@ reaches the Worker at all:
 - `POST /api/families/*/feeds/*refresh*` (both the per-feed and refresh-all
   endpoints) — 2 requests/min/IP
 
+Each rule's `action_parameters.response` returns the same JSON body the
+Worker itself would (`{"error":"too_many_requests"}` / `{"error":
+"refresh_cooldown","retryAfterSeconds":60}`), not Cloudflare's default HTML
+block page — the mobile client's `FeedRefreshCooldown` handling only
+recognizes that shape, so an edge-level block still shows the friendly
+"already up to date" message instead of a raw error.
+
 Unlike the D1/Queue resources above, this rule is **zone-scoped**, so it
 needs the zone backing your custom domain (§7) — set `cloudflare_zone_id` in
 your `*.tfvars` (find it on the zone's Overview page in the dashboard) and
 make sure the API token has the **Zone · Zone WAF · Edit** permission from
 §1. If you haven't set up a custom domain yet, this resource has nothing to
 attach to — hold off on `terraform apply` for it until §7 is done.
+
+### 10. Push notifications (APNs)
+
+The daily "outstanding items" digest is sent straight from the Worker to APNs
+with a token-based (JWT) provider connection — one `.p8` auth key covers every
+bundle id and both APNs environments, and it doesn't expire annually the way a
+push certificate would.
+
+1. **Enable the Push Notifications capability** on *both* App IDs in the Apple
+   Developer portal — `com.kylebjordahl.igt` and `com.kylebjordahl.igt.staging`.
+
+2. **Create the APNs auth key**: Certificates, Identifiers & Profiles → Keys →
+   ✚ → check **Apple Push Notifications service (APNs)** → Continue → Register,
+   then **Download** the `.p8`. Apple only lets you download it once. Note the
+   **Key ID** (the 10 characters in `AuthKey_XXXXXXXXXX.p8`); the **Team ID** is
+   the same `WG5R9LUU9X` already in `wrangler.jsonc`.
+
+3. **Re-issue both App Store provisioning profiles** so they include the push
+   entitlement, and update the `IOS_STAGING_PROFILE_BASE64` /
+   `IOS_PROD_PROFILE_BASE64` repository secrets (step 8). ⚠️ Do this **with**
+   the change that adds `aps-environment` to `ios/Runner/Runner.entitlements` —
+   an entitlement the profile doesn't grant fails `testflight-build` at the
+   signing step.
+
+4. **Set the Worker secrets**, per environment:
+   ```bash
+   cd apps/api
+   wrangler secret put APNS_KEY_P8 --env staging   # paste the whole PEM, BEGIN/END lines included
+   wrangler secret put APNS_KEY_ID --env staging
+   # …then the same two with --env production
+   ```
+   `APNS_TEAM_ID` is a plain `var` in `wrangler.jsonc` (it isn't secret).
+
+`lib/apns.ts`'s `getPusher(env)` **fails closed**: unless all three of
+`APNS_KEY_P8` / `APNS_KEY_ID` / `APNS_TEAM_ID` are set it returns a capture-only
+`DevPusher` that logs the digest instead of sending it. So a half-configured
+environment degrades to "no pushes" rather than throwing on every cron tick.
+
+**Sandbox vs production.** A device token is only routable through the APNs host
+matching the `aps-environment` the build was signed with — cross them and every
+send is a `BadDeviceToken`. The value comes from a single `APS_ENVIRONMENT`
+xcconfig var per flavor (`development` for Debug, `production` for
+Profile/Release); `Runner.entitlements` signs with it and `Info.plist` surfaces
+it as `IGTApsEnvironment`, which the app reports when registering. One source of
+truth, so the two can't drift.
+
+**Local development can't send.** APNs speaks HTTP/2 only and `wrangler dev`
+can't negotiate it, so local runs always get the `DevPusher`. Verify real
+delivery on staging, on a **physical device** — the iOS Simulator never talks to
+real APNs (it only accepts drag-and-dropped `.apns` files).
+
+**Where it runs.** The cron tick (`*/15 * * * *`) sweeps due schedules in
+`scheduled.ts` → `dispatchDueDigests`, which claims each schedule's slot with a
+conditional UPDATE and enqueues onto the existing `DELIVERY_QUEUE` (no new
+Terraform-managed queue). Because the send time is compared against a 15-minute
+tick, the client's time picker snaps to quarter hours.
 
 ---
 

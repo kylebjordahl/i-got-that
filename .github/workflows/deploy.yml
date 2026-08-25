@@ -255,6 +255,58 @@ jobs:
           terraform init -backend-config="$TF_BACKEND"
           terraform apply -auto-approve
 
+      # Named envs don't inherit the top-level dev `vars`, so anything the code
+      # needs at runtime has to exist as a per-env secret — and an absent one
+      # doesn't fail the deploy, it boots fine and misbehaves later.
+      #
+      # Only the envelope-encryption key blocks the deploy, because it's the one
+      # whose absence is *silent*: no key ⇒ every stored credential is
+      # unreadable, connecting an account 503s, and feeds and mirrors just skip.
+      # The rest fail closed and loudly (a 501 naming the feature), so a missing
+      # one disables that feature rather than corrupting anything — worth a
+      # warning, never worth blocking a deploy that fixes something else.
+      - name: Verify required Worker secrets are set
+        working-directory: apps/api
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          # Matched as whole words against the raw listing rather than parsed:
+          # `wrangler secret list` has rendered both JSON and a table across
+          # versions, and a name is a name in either. `_` is word-constituent,
+          # so KEK_V1 doesn't match KEK_V10 and KEK doesn't match KEK_V1.
+          listing="$(pnpm wrangler secret list --env "$WRANGLER_ENV")"
+          echo "$listing"
+          has() { printf '%s\n' "$listing" | grep -qw "$1"; }
+
+          # Fails closed at runtime with a 501 that names the feature.
+          for optional in COOKIE_SIGNING_KEY GOOGLE_OAUTH_CLIENT_SECRET; do
+            has "$optional" || echo "::warning::'$WRANGLER_ENV' has no $optional." \
+              "The features that need it answer 501 until it's set:" \
+              "cd apps/api && echo '<value>' | pnpm wrangler secret put" \
+              "$optional --env $WRANGLER_ENV (see docs/DEPLOYMENT.md § 6)."
+          done
+
+          # Envelope encryption needs KEK_V1 *or* the pre-split KEK it falls back
+          # to (lib/secrets.ts) — an env that predates versioning can't produce
+          # KEK_V1, because Worker secrets can't be read back out.
+          if has KEK_V1; then
+            :
+          elif has KEK; then
+            echo "::warning::'$WRANGLER_ENV' has no KEK_V1 and is running envelope" \
+                 "encryption on the legacy unversioned KEK. That works — but do NOT" \
+                 "delete that secret; its value can't be recovered and it is the only" \
+                 "key that decrypts credentials stored before versioning."
+          else
+            echo "::error::'$WRANGLER_ENV' has no envelope-encryption key — neither" \
+                 "KEK_V1 nor the legacy KEK. Every stored credential would be" \
+                 "unreadable and connecting an account would fail. Set one with:" \
+                 "cd apps/api && echo '<value>' | pnpm wrangler secret put KEK_V1" \
+                 "--env $WRANGLER_ENV (see docs/DEPLOYMENT.md § 6). Refusing to deploy."
+            exit 1
+          fi
+
       - name: Apply D1 migrations + deploy Worker
         working-directory: apps/api
         env:
@@ -263,6 +315,14 @@ jobs:
         run: |
           pnpm wrangler d1 migrations apply "$D1_DATABASE" --env "$WRANGLER_ENV" --remote
           pnpm wrangler deploy --env "$WRANGLER_ENV"
+
+      # No post-deploy probe of the public origin: the Cloudflare edge in front
+      # of both hostnames answers a plain curl with 403 (bot protection / an
+      # Access policy) before the Worker ever sees it, so the probe could only
+      # ever report on its own reachability. `GET /api/health` still reports
+      # `config.secretsKek` for a human to check in a browser — see
+      # docs/DEPLOYMENT.md § 6. The pre-deploy secret check above is the gate,
+      # and it goes through the Cloudflare API rather than the public origin.
 
   # Building/signing/uploading in `testflight` below is the expensive part of
   # deploying to TestFlight (and the reason that job needs macOS runners), so

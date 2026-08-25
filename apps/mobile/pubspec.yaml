@@ -22,6 +22,8 @@ dependencies:
   flutter_secure_storage: ^9.2.2
   package_info_plus: ^8.1.0
   sign_in_with_apple: ^6.0.0
+  # SHA-256 for the Apple Sign In nonce (raw nonce -> digest sent to Apple).
+  crypto: ^3.0.3
   google_sign_in: ^6.2.1
   # Drives the system browser (ASWebAuthenticationSession on iOS) for the
   # "connect a Google Calendar" wizard's native OAuth flow, capturing the

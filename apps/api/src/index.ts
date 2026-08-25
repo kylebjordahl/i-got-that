@@ -2,12 +2,14 @@ import { eq, families, familyMembers, getDb } from '@igt/db';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import type { Bindings, HonoEnv } from './env.js';
+import { kekStatus, kekUsable } from './lib/secrets.js';
 import { authMiddleware } from './middleware/auth.js';
 import { deliveryQueueConsumer } from './services/mirror.js';
 import { accountRoutes } from './routes/accounts.js';
 import { authRoutes } from './routes/auth.js';
 import { familyRoutes } from './routes/families.js';
 import { inviteRoutes } from './routes/invites.js';
+import { notificationRoutes } from './routes/notifications.js';
 import { scheduled } from './scheduled.js';
 
 /**
@@ -44,14 +46,28 @@ app.use(
   }),
 );
 
-app.get('/health', (c) =>
-  c.json({
-    ok: true,
+/**
+ * Liveness + the one piece of configuration whose absence is otherwise silent.
+ * A missing/invalid envelope-encryption KEK (`KEK_V<n>`, see lib/secrets.ts)
+ * doesn't stop the Worker booting — it just makes every stored credential
+ * unreadable, so feeds and mirrors skip and connecting an account fails. Report
+ * it as a bare `ok`/`legacy`/`missing`/`invalid` (never any key material) so a
+ * deploy can be checked from outside; `ok` goes false only when the key is
+ * unusable — `legacy` (the pre-split `KEK` fallback) works and stays healthy.
+ *
+ * Read by a human, in a browser: CI doesn't probe this, because the Cloudflare
+ * edge 403s a plain curl at both public hostnames. See docs/DEPLOYMENT.md § 6.
+ */
+app.get('/health', (c) => {
+  const kek = kekStatus(c.env);
+  return c.json({
+    ok: kekUsable(kek),
     service: 'igt-api',
     environment: c.env.ENVIRONMENT,
     time: new Date().toISOString(),
-  }),
-);
+    config: { secretsKek: kek },
+  });
+});
 
 app.get('/health/db', async (c) => {
   const row = await c.env.DB.prepare('select 1 as ok').first<{ ok: number }>();
@@ -89,6 +105,10 @@ app.route('/invites', inviteRoutes);
 // User-owned external calendar accounts (Google/iCloud/CalDAV) — private to the
 // user and reusable across their families; not family-scoped.
 app.route('/accounts', accountRoutes);
+
+// User-owned push devices + digest schedules — also not family-scoped: a digest
+// aggregates across every family the user belongs to.
+app.route('/notifications', notificationRoutes);
 
 /** Current user + the families they belong to (with their member record). */
 app.get('/me', authMiddleware, async (c) => {

@@ -1,6 +1,7 @@
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../api/client.dart';
 import '../models.dart';
 import '../state/auth.dart';
 import '../state/family.dart';
@@ -330,16 +331,33 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
     return true;
   }
 
+  void _invalidateAfterRefresh() {
+    ref.invalidate(allTasksProvider);
+    ref.invalidate(unownedTasksProvider);
+    ref.invalidate(calendarEventsProvider);
+    ref.invalidate(pendingDecisionsProvider);
+  }
+
   Future<void> _refreshFeeds() async {
     setState(() => _refreshingFeeds = true);
     try {
       final familyId = await ref.read(familyProvider.future);
       await ref.read(apiClientProvider).refreshAllFeeds(familyId);
-      ref.invalidate(allTasksProvider);
-      ref.invalidate(unownedTasksProvider);
-      ref.invalidate(calendarEventsProvider);
-      ref.invalidate(pendingDecisionsProvider);
+      _invalidateAfterRefresh();
       await ref.read(allTasksProvider.future);
+    } on FeedRefreshCooldown catch (e) {
+      // A re-press inside the debounce window: the backend skipped the
+      // pipeline, but re-pull anyway so the user still sees current data.
+      _invalidateAfterRefresh();
+      await ref.read(allTasksProvider.future);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(e.message),
+            margin: snackBarMarginAboveNav(context),
+          ),
+        );
+      }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -1266,6 +1284,7 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
 
     showModalBottomSheet<void>(
       context: context,
+      useSafeArea: true,
       useRootNavigator: true,
       showDragHandle: true,
       isScrollControlled: true,

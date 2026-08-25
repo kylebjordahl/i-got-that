@@ -10,6 +10,7 @@ import '../widgets/app_bottom_nav.dart';
 import '../widgets/location_picker.dart';
 import '../widgets/primitives.dart';
 import '../widgets/settings.dart';
+import '../widgets/time_fields.dart';
 
 const _weekdayLabels = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
@@ -39,8 +40,8 @@ class _FeedBaselineScreenState extends ConsumerState<FeedBaselineScreen> {
   late FeedItem _feed = widget.feed;
   final Set<int> _weekdays = {0, 1, 2, 3, 4};
   final _location = TextEditingController();
-  final _dayStart = TextEditingController(text: '08:30');
-  final _dayEnd = TextEditingController(text: '14:45');
+  TimeOfDay _dayStart = const TimeOfDay(hour: 8, minute: 30);
+  TimeOfDay _dayEnd = const TimeOfDay(hour: 14, minute: 45);
   GeoLocation? _locationGeo;
   bool _busy = false;
   String? _error;
@@ -60,15 +61,13 @@ class _FeedBaselineScreenState extends ConsumerState<FeedBaselineScreen> {
       ]);
     _location.text = ex.location ?? '';
     _locationGeo = ex.locationGeo;
-    _dayStart.text = ex.dayStart ?? '08:30';
-    _dayEnd.text = ex.dayEnd ?? '14:45';
+    _dayStart = parseClockTime(ex.dayStart) ?? _dayStart;
+    _dayEnd = parseClockTime(ex.dayEnd) ?? _dayEnd;
   }
 
   @override
   void dispose() {
-    for (final c in [_location, _dayStart, _dayEnd]) {
-      c.dispose();
-    }
+    _location.dispose();
     super.dispose();
   }
 
@@ -142,8 +141,8 @@ class _FeedBaselineScreenState extends ConsumerState<FeedBaselineScreen> {
             _feed.id,
             widget.existingLink.id,
             weekdayMask: _isException ? _weekdayMask : null,
-            dayStart: _isException ? _dayStart.text.trim() : null,
-            dayEnd: _isException ? _dayEnd.text.trim() : null,
+            dayStart: _isException ? formatClockTime(_dayStart) : null,
+            dayEnd: _isException ? formatClockTime(_dayEnd) : null,
             location: _location.text.trim().isEmpty
                 ? null
                 : _location.text.trim(),
@@ -323,11 +322,20 @@ class _FeedBaselineScreenState extends ConsumerState<FeedBaselineScreen> {
                           Row(
                             children: [
                               Expanded(
-                                child: _field(_dayStart, 'Day starts', 'HH:MM'),
+                                child: ClockTimePickerField(
+                                  label: 'Day starts',
+                                  value: _dayStart,
+                                  onChanged: (t) =>
+                                      setState(() => _dayStart = t),
+                                ),
                               ),
                               const SizedBox(width: 12),
                               Expanded(
-                                child: _field(_dayEnd, 'Day ends', 'HH:MM'),
+                                child: ClockTimePickerField(
+                                  label: 'Day ends',
+                                  value: _dayEnd,
+                                  onChanged: (t) => setState(() => _dayEnd = t),
+                                ),
                               ),
                             ],
                           ),
@@ -408,12 +416,6 @@ class _FeedBaselineScreenState extends ConsumerState<FeedBaselineScreen> {
       ),
     );
   }
-
-  Widget _field(TextEditingController c, String label, String hint) =>
-      TextField(
-        controller: c,
-        decoration: InputDecoration(labelText: label, hintText: hint),
-      );
 }
 
 /// The link's rule pipeline (schedule only; first match wins): incoming event →
@@ -635,6 +637,7 @@ Future<void> showOverrideRuleSheet(
 }) {
   return showModalBottomSheet<void>(
     context: context,
+    useSafeArea: true,
     useRootNavigator: true,
     showDragHandle: true,
     isScrollControlled: true,
@@ -672,8 +675,8 @@ class _OverrideRuleSheetState extends ConsumerState<_OverrideRuleSheet> {
   late String _matchOp; // contains | regex
   late String _outcome; // cancel_day | modify_day | add_event | ignore
   final _value = TextEditingController();
-  final _newStart = TextEditingController();
-  final _newEnd = TextEditingController();
+  TimeOfDay? _newStart;
+  TimeOfDay? _newEnd;
   bool _busy = false;
   String? _error;
 
@@ -687,23 +690,21 @@ class _OverrideRuleSheetState extends ConsumerState<_OverrideRuleSheet> {
     _matchOp = ex?.matchOp == 'regex' ? 'regex' : 'contains';
     _outcome = ex?.outcome ?? (_routing ? 'keep' : 'cancel_day');
     _value.text = ex?.matchValue ?? widget.prefillMatchValue ?? '';
-    _newStart.text = (ex?.params?['dayStart'] as String?) ?? '';
-    _newEnd.text = (ex?.params?['dayEnd'] as String?) ?? '';
+    _newStart = parseClockTime(ex?.params?['dayStart'] as String?);
+    _newEnd = parseClockTime(ex?.params?['dayEnd'] as String?);
   }
 
   @override
   void dispose() {
-    for (final c in [_value, _newStart, _newEnd]) {
-      c.dispose();
-    }
+    _value.dispose();
     super.dispose();
   }
 
   Map<String, dynamic>? get _params {
     if (_outcome != 'modify_day') return null;
     return {
-      if (_newStart.text.trim().isNotEmpty) 'dayStart': _newStart.text.trim(),
-      if (_newEnd.text.trim().isNotEmpty) 'dayEnd': _newEnd.text.trim(),
+      if (_newStart != null) 'dayStart': formatClockTime(_newStart!),
+      if (_newEnd != null) 'dayEnd': formatClockTime(_newEnd!),
     };
   }
 
@@ -908,22 +909,30 @@ class _OverrideRuleSheetState extends ConsumerState<_OverrideRuleSheet> {
               Row(
                 children: [
                   Expanded(
-                    child: TextField(
-                      controller: _newStart,
-                      decoration: const InputDecoration(
-                        labelText: 'New day starts',
-                        hintText: 'HH:MM',
-                      ),
+                    child: ClockTimePickerField(
+                      label: 'New day starts',
+                      value: _newStart,
+                      // Either end can be left alone: a late start on a normal
+                      // finish is a `dayStart`-only override.
+                      emptyLabel: 'Unchanged',
+                      fallback:
+                          parseClockTime(widget.link.dayStart) ??
+                          const TimeOfDay(hour: 8, minute: 30),
+                      onChanged: (t) => setState(() => _newStart = t),
+                      onCleared: () => setState(() => _newStart = null),
                     ),
                   ),
                   const SizedBox(width: 12),
                   Expanded(
-                    child: TextField(
-                      controller: _newEnd,
-                      decoration: const InputDecoration(
-                        labelText: 'New day ends',
-                        hintText: 'HH:MM',
-                      ),
+                    child: ClockTimePickerField(
+                      label: 'New day ends',
+                      value: _newEnd,
+                      emptyLabel: 'Unchanged',
+                      fallback:
+                          parseClockTime(widget.link.dayEnd) ??
+                          const TimeOfDay(hour: 14, minute: 45),
+                      onChanged: (t) => setState(() => _newEnd = t),
+                      onCleared: () => setState(() => _newEnd = null),
                     ),
                   ),
                 ],

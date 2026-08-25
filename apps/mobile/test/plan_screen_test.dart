@@ -1104,9 +1104,9 @@ void main() {
     await tester.tap(find.text('8:30 AM – 3:00 PM'));
     await tester.pumpAndSettle();
 
-    // The management sheet opens: change the event's type, and claim both the
+    // The management sheet opens: toggle the event's type, and claim both the
     // drop-off and pick-up at once.
-    expect(find.text('CHANGE TYPE'), findsOneWidget);
+    expect(find.text('TYPE'), findsOneWidget);
     expect(find.text('Claim for myself'), findsOneWidget);
     expect(find.text('Mark as not needed'), findsOneWidget);
   });

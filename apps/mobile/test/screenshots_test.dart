@@ -1,18 +1,24 @@
 import 'dart:io';
 import 'dart:ui' as ui;
 
+import 'package:caretaker_app/api/client.dart';
 import 'package:caretaker_app/models.dart';
 import 'package:caretaker_app/screens/assignment_rules_screen.dart';
+import 'package:caretaker_app/screens/me_screen.dart';
+import 'package:caretaker_app/screens/notification_schedule_screen.dart';
+import 'package:caretaker_app/services/push.dart';
+import 'package:caretaker_app/state/auth.dart';
 import 'package:caretaker_app/state/family.dart';
+import 'package:caretaker_app/state/notifications.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-/// Renders the new assignment-rules UI (issue #24) to PNGs for the PR
-/// description. Not a behavioural test — skipped unless SCREENSHOT_DIR is set,
-/// so it never runs in CI. Run locally with:
+/// Renders UI to PNGs for PR descriptions — the assignment-rules screens
+/// (issue #24) and the notification settings. Not a behavioural test — skipped
+/// unless SCREENSHOT_DIR is set, so it never runs in CI. Run locally with:
 ///   SCREENSHOT_DIR=/tmp/shots fvm flutter test test/screenshots_test.dart
 void main() {
   final outDir = Platform.environment['SCREENSHOT_DIR'];
@@ -138,4 +144,124 @@ void main() {
     await tester.pumpAndSettle();
     await capture(tester, key, '02-assignment-rule-sheet');
   });
+
+  testWidgets('render notification settings screens', (tester) async {
+    if (outDir == null) return; // no-op unless explicitly requested
+    await loadFonts();
+    tester.view.devicePixelRatio = 1.0;
+    tester.view.physicalSize = const Size(400, 900);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final api = _ShotApiClient();
+    final key = GlobalKey();
+    Widget app(Widget home) => ProviderScope(
+      overrides: [
+        apiClientProvider.overrideWithValue(api),
+        pushServiceProvider.overrideWithValue(_ShotPush()),
+        currentMemberProvider.overrideWith(
+          (ref) async => m('me', 'Mom', caretaker: true, color: '#7C6CF0'),
+        ),
+        familyInfoProvider.overrideWith(
+          (ref) async => (name: 'Jordahl', count: 2),
+        ),
+        accountsProvider.overrideWith((ref) async => const <ExternalAccount>[]),
+        loginIdentitiesProvider.overrideWith(
+          (ref) async => const <LoginIdentity>[],
+        ),
+      ],
+      child: RepaintBoundary(
+        key: key,
+        child: MaterialApp(
+          debugShowCheckedModeBanner: false,
+          theme: ThemeData.dark(useMaterial3: true).copyWith(
+            scaffoldBackgroundColor: const Color(0xFF15121B),
+            canvasColor: const Color(0xFF15121B),
+          ),
+          home: home,
+        ),
+      ),
+    );
+
+    await tester.pumpWidget(app(const Scaffold(body: MeScreen())));
+    await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(find.text('Push notifications'), 200);
+    await tester.pumpAndSettle();
+    await capture(tester, key, '03-me-notifications');
+
+    await tester.pumpWidget(
+      app(
+        NotificationScheduleScreen(
+          schedule: NotificationSchedule.fromJson(_shotSchedule),
+          timezone: 'America/Los_Angeles',
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await capture(tester, key, '04-notification-editor');
+  });
+}
+
+const _shotSchedule = {
+  'id': 's1',
+  'label': 'Evening brief',
+  'enabled': true,
+  'sendAt': '20:00',
+  'timezone': 'America/Los_Angeles',
+  'weekdayMask': 31,
+  'startOffsetDays': 1,
+  'horizonDays': 1,
+  'categories': ['conflicts', 'pending_decisions', 'unclaimed_tasks'],
+  'skipWhenEmpty': true,
+};
+
+/// Push is "on" for the shots, with no platform channel behind it.
+class _ShotPush implements PushService {
+  @override
+  bool get isSupported => true;
+  @override
+  Future<PushAuthorization> authorizationStatus() async =>
+      PushAuthorization.authorized;
+  @override
+  Future<bool> requestPermission() async => true;
+  @override
+  Future<String> register() async => 'a' * 64;
+  @override
+  Future<String> apsEnvironment() async => 'sandbox';
+  @override
+  Future<String?> timezone() async => 'America/Los_Angeles';
+  @override
+  Future<void> openSettings() async {}
+  @override
+  Future<Map<String, dynamic>?> takeInitialTap() async => null;
+  @override
+  void onTap(void Function(Map<String, dynamic>) handler) {}
+}
+
+class _ShotApiClient extends ApiClient {
+  _ShotApiClient() : super(baseUrl: 'http://shots');
+
+  @override
+  Future<Map<String, dynamic>> me() async => {
+    'user': {'email': 'mom@example.com'},
+  };
+
+  @override
+  Future<List<dynamic>> listPushDevices() async => [
+    {'deviceToken': 'a' * 64},
+  ];
+
+  @override
+  Future<List<dynamic>> listNotificationSchedules() async => [
+    _shotSchedule,
+    {
+      ..._shotSchedule,
+      'id': 's2',
+      'label': 'Morning check',
+      'sendAt': '07:00',
+      'weekdayMask': 127,
+      'startOffsetDays': 0,
+      'categories': ['my_tasks'],
+    },
+  ];
 }

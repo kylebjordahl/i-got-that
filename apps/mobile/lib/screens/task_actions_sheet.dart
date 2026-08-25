@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models.dart';
 import '../state/auth.dart';
@@ -12,10 +11,12 @@ import '../util/format.dart';
 import '../util/task_visuals.dart';
 import '../widgets/app_bottom_nav.dart';
 import '../widgets/primitives.dart';
+import '../widgets/settings.dart';
+import '../widgets/time_fields.dart';
 
 /// Quick-actions for a timeline task (Home rows + Plan blocks/tags): change its
-/// type (transition / attendance / both), (re)assign or unassign it, or mark it
-/// not needed.
+/// type (drop off / attend / pick up, any combination), (re)assign or unassign
+/// it, or mark it not needed.
 ///
 /// [scopeTasks] scopes the assign / unassign / dismiss actions: pass the whole
 /// event group (a Plan block tap) to act on the drop-off *and* pick-up at once,
@@ -52,23 +53,17 @@ Future<void> showTaskActions(
   final anyOwned = scope.any((t) => t.status == 'owned');
   final allUnowned = scope.every((t) => t.status == 'unowned');
 
-  // Derive the current change-type segment from the whole event group.
+  // The task's current type(s), derived from the whole event group.
   final all = ref.read(allTasksProvider).valueOrNull ?? const <TaskItem>[];
   final group = all
       .where((t) => t.calendarEventId == task.calendarEventId)
       .toList();
   final types = (group.isEmpty ? [task] : group).map((t) => t.type).toSet();
-  final hasAtt = types.contains('attendance');
-  final hasTrans = types.contains('pickup') || types.contains('dropoff');
-  final currentSeg = hasAtt && hasTrans
-      ? 'both'
-      : (hasAtt ? 'attendance' : 'transition');
-
-  List<String> targetOf(String seg) => switch (seg) {
-    'attendance' => ['attendance'],
-    'both' => const ['dropoff', 'pickup', 'attendance'],
-    _ => const ['dropoff', 'pickup'],
-  };
+  // A tag/row tap scopes to just [task], but its event has other legs too —
+  // the TYPE switches below still edit all of them, so callers need a nudge
+  // that they're not just retyping this one drop-off or pick-up.
+  final isSingleLegOfGroup =
+      group.length > 1 && (scopeTasks == null || scopeTasks.isEmpty);
 
   final owners = scope
       .where((t) => t.status == 'owned')
@@ -131,6 +126,7 @@ Future<void> showTaskActions(
 
   await showModalBottomSheet<void>(
     context: context,
+    useSafeArea: true,
     useRootNavigator: true,
     showDragHandle: true,
     isScrollControlled: true,
@@ -182,41 +178,57 @@ Future<void> showTaskActions(
             ],
             if (isFeedTask) ...[
               const SizedBox(height: 20),
-              Text('CHANGE TYPE', style: AppText.eyebrow()),
-              const SizedBox(height: 10),
-              Row(
-                children: [
-                  for (final (seg, label, icon) in const [
-                    ('transition', 'Transition', Icons.swap_horiz_rounded),
-                    ('attendance', 'Attendance', Icons.groups_rounded),
-                    ('both', 'Both', Icons.dashboard_customize_rounded),
-                  ]) ...[
-                    Expanded(
-                      child: _SegTile(
-                        label: label,
-                        icon: icon,
-                        selected: seg == currentSeg,
-                        onTap: seg == currentSeg
-                            ? null
-                            : () {
-                                Navigator.of(sheetCtx).pop();
-                                _run(
-                                  context,
-                                  ref,
-                                  (api, fid) => api.convertTask(
-                                    fid,
-                                    task.id,
-                                    targetOf(seg),
-                                  ),
-                                  'Type updated',
-                                );
-                              },
-                      ),
-                    ),
-                    if (seg != 'both') const SizedBox(width: 8),
-                  ],
-                ],
-              ),
+              Text('TYPE', style: AppText.eyebrow()),
+              const SizedBox(height: 6),
+              for (final (type, label, icon, color) in const [
+                (
+                  'dropoff',
+                  'Drop off',
+                  Icons.login_rounded,
+                  AppColors.feedBlue,
+                ),
+                (
+                  'attendance',
+                  'Attend',
+                  Icons.groups_rounded,
+                  AppColors.purple,
+                ),
+                ('pickup', 'Pick up', Icons.logout_rounded, AppColors.blue),
+              ])
+                SwitchRow(
+                  icon: icon,
+                  iconColor: color,
+                  title: label,
+                  value: types.contains(type),
+                  // A task always needs at least one type, so the last one
+                  // switched on can't be switched off.
+                  onChanged: types.length == 1 && types.contains(type)
+                      ? null
+                      : (enabled) {
+                          final next = Set<String>.from(types);
+                          if (enabled) {
+                            next.add(type);
+                          } else {
+                            next.remove(type);
+                          }
+                          Navigator.of(sheetCtx).pop();
+                          _run(
+                            context,
+                            ref,
+                            (api, fid) =>
+                                api.convertTask(fid, task.id, next.toList()),
+                            'Type updated',
+                          );
+                        },
+                ),
+              if (isSingleLegOfGroup) ...[
+                const SizedBox(height: 6),
+                Text(
+                  'This changes the type for the whole event, not just this '
+                  'one leg.',
+                  style: AppText.subtitle,
+                ),
+              ],
             ],
             if (transitions.isNotEmpty) ...[
               const SizedBox(height: 20),
@@ -412,6 +424,7 @@ Future<void> showEventDetails(
 
   await showModalBottomSheet<void>(
     context: context,
+    useSafeArea: true,
     useRootNavigator: true,
     showDragHandle: true,
     isScrollControlled: true,
@@ -534,6 +547,7 @@ Future<void> _pickAndAssign(
       .toList();
   await showModalBottomSheet<void>(
     context: context,
+    useSafeArea: true,
     useRootNavigator: true,
     showDragHandle: true,
     builder: (sheetCtx) => SafeArea(
@@ -652,69 +666,11 @@ Future<void> _runScope(
   }
 }
 
-/// A change-type segment tile.
-class _SegTile extends StatelessWidget {
-  const _SegTile({
-    required this.label,
-    required this.icon,
-    required this.selected,
-    required this.onTap,
-  });
-
-  final String label;
-  final IconData icon;
-  final bool selected;
-  final VoidCallback? onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return Material(
-      color: selected ? AppColors.tint(AppColors.indigo, 0.18) : AppColors.card,
-      borderRadius: BorderRadius.circular(15),
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(15),
-        child: Container(
-          padding: const EdgeInsets.symmetric(vertical: 14),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(15),
-            border: Border.all(
-              color: selected ? AppColors.indigo : AppColors.border,
-              width: selected ? 1.5 : 1,
-            ),
-          ),
-          child: Column(
-            children: [
-              Icon(
-                icon,
-                size: 22,
-                color: selected ? AppColors.indigo : AppColors.textSecondary,
-              ),
-              const SizedBox(height: 7),
-              Text(
-                label,
-                style: font(
-                  kBodyFont,
-                  12.5,
-                  600,
-                  color: selected
-                      ? AppColors.textPrimary
-                      : AppColors.textSecondary,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-/// An editable window length for a single transition (pickup / drop-off) task.
-/// The value is signed minutes measured from the task's anchor — the parent
-/// event's start (drop-off) or end (pickup). A negative value runs the window
-/// the opposite direction (before the anchor). The subtext spells this out.
-class _DurationField extends StatefulWidget {
+/// The window length for a single transition (pickup / drop-off) task, picked
+/// off a wheel. The value is signed minutes measured from the task's anchor —
+/// the parent event's start (drop-off) or end (pickup) — and the sign is picked
+/// as a direction rather than typed as a minus.
+class _DurationField extends StatelessWidget {
   const _DurationField({
     required this.task,
     required this.showLabel,
@@ -725,79 +681,30 @@ class _DurationField extends StatefulWidget {
   final bool showLabel;
   final ValueChanged<int> onSubmit;
 
-  @override
-  State<_DurationField> createState() => _DurationFieldState();
-}
-
-class _DurationFieldState extends State<_DurationField> {
-  late final TextEditingController _controller = TextEditingController(
-    text: widget.task.signedDurationMin.toString(),
-  );
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
   /// The clock point the window hangs off of, in words.
-  String get _anchorWord => widget.task.type == 'dropoff' ? 'start' : 'end';
-
-  void _submit() {
-    final minutes = int.tryParse(_controller.text.trim());
-    if (minutes == null) return;
-    widget.onSubmit(minutes);
-  }
+  String get _anchorWord => task.type == 'dropoff' ? 'start' : 'end';
 
   @override
   Widget build(BuildContext context) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        if (widget.showLabel) ...[
-          Text(widget.task.typeLabel, style: AppText.subtitle),
+        if (showLabel) ...[
+          Text(task.typeLabel, style: AppText.subtitle),
           const SizedBox(height: 6),
         ],
-        Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Expanded(
-              child: TextField(
-                controller: _controller,
-                keyboardType: const TextInputType.numberWithOptions(
-                  signed: true,
-                ),
-                inputFormatters: [
-                  FilteringTextInputFormatter.allow(RegExp(r'^-?\d*')),
-                ],
-                onSubmitted: (_) => _submit(),
-                style: font(kBodyFont, 15, 600, color: AppColors.textPrimary),
-                decoration: const InputDecoration(
-                  suffixText: 'min',
-                  isDense: true,
-                ),
-              ),
-            ),
-            const SizedBox(width: 10),
-            FilledButton(
-              onPressed: _submit,
-              style: FilledButton.styleFrom(
-                backgroundColor: AppColors.tint(AppColors.indigo, 0.22),
-                foregroundColor: AppColors.indigo,
-                elevation: 0,
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 20,
-                  vertical: 14,
-                ),
-              ),
-              child: const Text('Set'),
-            ),
-          ],
+        DurationPickerField(
+          label: showLabel ? '${task.typeLabel} window' : 'Task window',
+          minutes: task.signedDurationMin,
+          directions: (
+            forward: 'after $_anchorWord',
+            backward: 'before $_anchorWord',
+          ),
+          onChanged: onSubmit,
         ),
         const SizedBox(height: 6),
         Text(
-          'Minutes from the event $_anchorWord. '
-          'Use a negative value to run it the opposite direction.',
+          'How long the window runs, measured from the event $_anchorWord.',
           style: AppText.subtitle,
         ),
       ],
@@ -811,9 +718,9 @@ class _DurationFieldState extends State<_DurationField> {
 /// The backend estimates this from where the caretaker is coming from — the
 /// last place their calendar accounts for, or their home address — which is a
 /// guess about distance and traffic made without a routing service. Someone who
-/// knows the run takes 25 minutes says so here and that stands. An empty field
-/// hands it back to the estimate; `0` says this trip needs no travel time.
-class _TravelTimeField extends StatefulWidget {
+/// knows the run takes 25 minutes says so here and that stands. Clearing the
+/// field hands it back to the estimate; `0` says this trip needs no travel time.
+class _TravelTimeField extends StatelessWidget {
   const _TravelTimeField({
     required this.event,
     required this.onSubmit,
@@ -829,35 +736,9 @@ class _TravelTimeField extends StatefulWidget {
   final ValueChanged<int?> onSubmit;
 
   @override
-  State<_TravelTimeField> createState() => _TravelTimeFieldState();
-}
-
-class _TravelTimeFieldState extends State<_TravelTimeField> {
-  late final TextEditingController _controller = TextEditingController(
-    text: widget.event.travelTimeOverrideMin?.toString() ?? '',
-  );
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
-  void _submit() {
-    final text = _controller.text.trim();
-    if (text.isEmpty) {
-      widget.onSubmit(null);
-      return;
-    }
-    final minutes = int.tryParse(text);
-    if (minutes == null || minutes < 0) return;
-    widget.onSubmit(minutes);
-  }
-
-  @override
   Widget build(BuildContext context) {
-    final overridden = widget.event.travelTimeOverrideMin != null;
-    final location = widget.event.location;
+    final overridden = event.travelTimeOverrideMin != null;
+    final location = event.location;
     // Apple hangs travel time off the event's location, so without one there's
     // nothing to reserve time *to* — say so rather than offering a dead field.
     if (location == null || location.isEmpty) {
@@ -870,49 +751,24 @@ class _TravelTimeFieldState extends State<_TravelTimeField> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        if (widget.label != null) ...[
-          Text(widget.label!, style: AppText.subtitle),
+        if (label != null) ...[
+          Text(label!, style: AppText.subtitle),
           const SizedBox(height: 6),
         ],
-        Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Expanded(
-              child: TextField(
-                controller: _controller,
-                keyboardType: TextInputType.number,
-                inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-                onSubmitted: (_) => _submit(),
-                style: font(kBodyFont, 15, 600, color: AppColors.textPrimary),
-                decoration: InputDecoration(
-                  hintText: overridden ? null : 'Estimated',
-                  suffixText: 'min',
-                  isDense: true,
-                ),
-              ),
-            ),
-            const SizedBox(width: 10),
-            FilledButton(
-              onPressed: _submit,
-              style: FilledButton.styleFrom(
-                backgroundColor: AppColors.tint(AppColors.indigo, 0.22),
-                foregroundColor: AppColors.indigo,
-                elevation: 0,
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 20,
-                  vertical: 14,
-                ),
-              ),
-              child: const Text('Set'),
-            ),
-          ],
+        DurationPickerField(
+          label: 'Travel time',
+          minutes: event.travelTimeOverrideMin,
+          emptyLabel: 'Estimated',
+          onChanged: onSubmit,
+          onCleared: () => onSubmit(null),
+          clearTooltip: 'Back to the estimate',
         ),
         const SizedBox(height: 6),
         Text(
           overridden
-              ? 'Your own number, used as-is. Clear the field to go back to the '
+              ? 'Your own number, used as-is. Clear it to go back to the '
                     'estimate; 0 means no travel time on this one.'
-              : 'Estimated from wherever you\'re coming from. Enter minutes to '
+              : 'Estimated from wherever you\'re coming from. Pick a length to '
                     'override it; 0 means no travel time on this one.',
           style: AppText.subtitle,
         ),

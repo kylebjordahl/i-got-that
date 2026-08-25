@@ -18,8 +18,13 @@ import { authed, bearer, call, setupFamily } from './helpers.js';
 
 type Db = ReturnType<typeof getDb>;
 
-const START = new Date('2026-08-06T15:30:00Z');
-const END = new Date('2026-08-06T17:00:00Z');
+// Tomorrow, not a fixed date: `reconcileMemberConflicts` only sees events
+// inside the live synthesis window (`[startOfUtcDay(now), +30d]`), so a pinned
+// day stops conflicting the moment it falls out of that window — the suite then
+// fails on a date nobody changed.
+const DAY = new Date(Date.now() + 86_400_000).toISOString().slice(0, 10);
+const START = new Date(`${DAY}T15:30:00Z`);
+const END = new Date(`${DAY}T17:00:00Z`);
 
 /** A feed + active link for the child, typed attendance-by-default. */
 async function linkedFeed(
@@ -244,7 +249,7 @@ describe("rebuilding an event's tasks", () => {
     const db = getDb(env.DB);
     const { link } = await linkedFeed(db, fam.familyId, fam.childId);
     const masked = await insertEvent(db, fam.familyId, fam.childId, {
-      synthKey: `bl:${link.id}:2026-08-06`,
+      synthKey: `bl:${link.id}:${DAY}`,
       linkId: link.id,
       maskedAt: new Date(),
     });
@@ -452,15 +457,15 @@ describe('un-masking an event after a conflict', () => {
 
     // A baseline school day, and a manual appointment that outranks it.
     const baseline = await insertEvent(db, fam.familyId, fam.childId, {
-      synthKey: `bl:${link.id}:2026-08-06`,
+      synthKey: `bl:${link.id}:${DAY}`,
       linkId: link.id,
       summary: 'School day',
     });
     await insertEvent(db, fam.familyId, fam.childId, {
       synthKey: 'ext:ortho:',
       provenance: 'human',
-      dtstart: new Date('2026-08-06T16:00:00Z'),
-      dtend: new Date('2026-08-06T16:30:00Z'),
+      dtstart: new Date(`${DAY}T16:00:00Z`),
+      dtend: new Date(`${DAY}T16:30:00Z`),
       summary: 'Orthodontist',
     });
     await reconcileMemberConflicts(db, fam.childId);

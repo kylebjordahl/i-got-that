@@ -9,6 +9,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'support/duration_wheel.dart';
+
 /// Records the `types` passed to convertTask so tests can assert on it
 /// without a real network call.
 class _RecordingApiClient extends ApiClient {
@@ -92,22 +94,28 @@ void main() {
     // The unowned row is rendered.
     expect(find.byType(TaskRow), findsOneWidget);
 
-    // Tapping opens the quick-actions sheet: change-type segments + actions.
+    // Tapping opens the quick-actions sheet: type toggles + actions.
     await tester.tap(find.byType(TaskRow));
     await tester.pumpAndSettle();
-    expect(find.text('CHANGE TYPE'), findsOneWidget);
-    expect(find.text('Transition'), findsOneWidget); // segment tile
-    expect(find.text('Attendance'), findsOneWidget);
-    expect(find.text('Both'), findsOneWidget);
+    expect(find.text('TYPE'), findsOneWidget);
+    expect(find.text('Drop off'), findsOneWidget);
+    expect(find.text('Attend'), findsOneWidget);
+    expect(find.text('Pick up'), findsOneWidget);
     expect(
       find.text('Claim for myself'),
       findsOneWidget,
     ); // unowned + caretaker
     expect(find.text('Mark as not needed'), findsOneWidget);
+
+    // The task's only type is drop-off, so its switch can't be turned off.
+    final switches = tester.widgetList<Switch>(find.byType(Switch)).toList();
+    expect(switches[0].onChanged, isNull); // Drop off
+    expect(switches[1].onChanged, isNotNull); // Attend
+    expect(switches[2].onChanged, isNotNull); // Pick up
   });
 
   testWidgets(
-    'converting an attendance task to Transition requests both drop-off and pick-up',
+    'switching on drop off for an attendance task adds it alongside attendance',
     (tester) async {
       final me = _m('dad', 'Dad', caretaker: true, admin: true);
       final attendanceTask = TaskItem(
@@ -149,10 +157,66 @@ void main() {
       await tester.tap(find.byType(TaskRow));
       await tester.pumpAndSettle();
 
-      await tester.tap(find.text('Transition'));
+      // Drop off, Attend, Pick up — turn on the first (off) switch.
+      await tester.tap(find.byType(Switch).first);
       await tester.pumpAndSettle();
 
-      expect(api.lastConvertTypes, ['dropoff', 'pickup']);
+      expect(Set<String>.from(api.lastConvertTypes!), {
+        'attendance',
+        'dropoff',
+      });
+    },
+  );
+
+  testWidgets(
+    'tapping one leg of a multi-task event notes the toggle covers the whole event',
+    (tester) async {
+      final me = _m('dad', 'Dad', caretaker: true, admin: true);
+      final pickup = TaskItem(
+        id: 't3',
+        familyMemberId: 'theo',
+        type: 'pickup',
+        start: DateTime.now().add(const Duration(hours: 4)),
+        status: 'unowned',
+        createdVia: 'generated',
+        calendarEventId: 'e1',
+      );
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            membersProvider.overrideWith(
+              (ref) async => [me, _m('theo', 'Theo', child: true)],
+            ),
+            currentMemberProvider.overrideWith((ref) async => me),
+            // The dropoff row is what's tapped, but the group (allTasksProvider)
+            // also holds its sibling pickup — the same event's other leg.
+            unownedTasksProvider.overrideWith((ref) async => [_task]),
+            allTasksProvider.overrideWith((ref) async => [_task, pickup]),
+            pendingDecisionsProvider.overrideWith((ref) async => const []),
+            conflictsProvider.overrideWith((ref) async => const []),
+            calendarEventsProvider.overrideWith((ref) async => const []),
+            threadingThresholdProvider.overrideWith((ref) async => 30),
+          ],
+          child: MaterialApp(
+            theme: buildAppTheme(),
+            themeMode: ThemeMode.dark,
+            home: const Scaffold(body: HomeScreen()),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byType(TaskRow).first);
+      await tester.pumpAndSettle();
+
+      expect(
+        find.text(
+          'This changes the type for the whole event, not just this '
+          'one leg.',
+        ),
+        findsOneWidget,
+      );
     },
   );
 
@@ -288,10 +352,12 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('TRAVEL TIME'), findsOneWidget);
-    // The duration field has its own "Set"; travel is the last section.
-    await tester.enterText(find.byType(TextField).last, '25');
-    await tester.tap(find.widgetWithText(FilledButton, 'Set').last);
+    // No override yet, so the field reads as the server's estimate; tapping it
+    // opens the duration wheel (starting at the 15-minute fallback).
+    await tester.tap(find.text('Estimated'));
     await tester.pumpAndSettle();
+    // Ten notches down the minute wheel: 15 -> 25.
+    await pickDurationNotches(tester, 10);
 
     // Written to the claim, not to the source event the task came from.
     expect(api.lastTravelTime, (eventId: 'claim-3', minutes: 25));
