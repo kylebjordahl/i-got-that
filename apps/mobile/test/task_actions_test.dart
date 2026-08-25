@@ -94,22 +94,28 @@ void main() {
     // The unowned row is rendered.
     expect(find.byType(TaskRow), findsOneWidget);
 
-    // Tapping opens the quick-actions sheet: change-type segments + actions.
+    // Tapping opens the quick-actions sheet: type toggles + actions.
     await tester.tap(find.byType(TaskRow));
     await tester.pumpAndSettle();
-    expect(find.text('CHANGE TYPE'), findsOneWidget);
-    expect(find.text('Transition'), findsOneWidget); // segment tile
-    expect(find.text('Attendance'), findsOneWidget);
-    expect(find.text('Both'), findsOneWidget);
+    expect(find.text('TYPE'), findsOneWidget);
+    expect(find.text('Drop off'), findsOneWidget);
+    expect(find.text('Attend'), findsOneWidget);
+    expect(find.text('Pick up'), findsOneWidget);
     expect(
       find.text('Claim for myself'),
       findsOneWidget,
     ); // unowned + caretaker
     expect(find.text('Mark as not needed'), findsOneWidget);
+
+    // The task's only type is drop-off, so its switch can't be turned off.
+    final switches = tester.widgetList<Switch>(find.byType(Switch)).toList();
+    expect(switches[0].onChanged, isNull); // Drop off
+    expect(switches[1].onChanged, isNotNull); // Attend
+    expect(switches[2].onChanged, isNotNull); // Pick up
   });
 
   testWidgets(
-    'converting an attendance task to Transition requests both drop-off and pick-up',
+    'switching on drop off for an attendance task adds it alongside attendance',
     (tester) async {
       final me = _m('dad', 'Dad', caretaker: true, admin: true);
       final attendanceTask = TaskItem(
@@ -151,10 +157,14 @@ void main() {
       await tester.tap(find.byType(TaskRow));
       await tester.pumpAndSettle();
 
-      await tester.tap(find.text('Transition'));
+      // Drop off, Attend, Pick up — turn on the first (off) switch.
+      await tester.tap(find.byType(Switch).first);
       await tester.pumpAndSettle();
 
-      expect(api.lastConvertTypes, ['dropoff', 'pickup']);
+      expect(Set<String>.from(api.lastConvertTypes!), {
+        'attendance',
+        'dropoff',
+      });
     },
   );
 
