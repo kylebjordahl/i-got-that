@@ -49,8 +49,11 @@ crosses the Workspace boundary to obtain it.
 **Kill switch:** unshare the calendar at work (or have the admin do it). The
 next sync's `freebusy.query` fails per-calendar (`notFound` — Google
 deliberately doesn't distinguish "unshared" from "nonexistent"), the feed flips
-to `status: 'error'`, and no further reads occur. Deleting the feed removes all
-stored intervals (FK cascades), and the next mirror reconcile cancels any
+to `status: 'error'`, and nothing further is read from it: the cron still
+retries on a backoff (see "feed health" in [AGENTS.md](../AGENTS.md)), but each
+retry gets the same `notFound` and no intervals come back. To stop the retries
+entirely, pause the feed (`status: 'paused'`) or delete it — deleting removes
+all stored intervals (FK cascades), and the next mirror reconcile cancels any
 mirrored copies.
 
 ## Setup (per member)

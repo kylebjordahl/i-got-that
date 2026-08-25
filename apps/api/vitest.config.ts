@@ -25,7 +25,7 @@ export default defineWorkersConfig(async () => {
           singleWorker: true,
           wrangler: { configPath: './wrangler.jsonc' },
           miniflare: {
-            compatibilityFlags: ['nodejs_compat'],
+            compatibilityFlags: ['nodejs_compat', 'cache_option_enabled'],
             bindings: { TEST_MIGRATIONS: migrations },
           },
         },

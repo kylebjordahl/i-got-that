@@ -6,7 +6,12 @@
     "name": "igt-api",
     "main": "src/index.ts",
     "compatibility_date": "2024-09-23",
-    "compatibility_flags": ["nodejs_compat"],
+    // `cache_option_enabled`: allow `fetch(url, { cache: 'no-store' })`, which
+    // the outbound guard uses to keep feed reads out of Cloudflare's cache
+    // (see lib/outbound-url.ts). It is on by default from compat date
+    // 2024-11-11; named explicitly so enabling it isn't tangled up with every
+    // other behaviour change a date bump would bring in.
+    "compatibility_flags": ["nodejs_compat", "cache_option_enabled"],
     "observability": { "enabled": true },
     "triggers": {
         // Tick every 15 min; the scheduled handler ingests feeds whose

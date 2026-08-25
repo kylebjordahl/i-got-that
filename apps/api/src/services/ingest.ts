@@ -21,6 +21,17 @@ export interface IngestOptions {
   kek?: KekKeySet;
   /** Exchange a Google refresh token for an access token (host holds the client secret). */
   googleRefresh?: (refreshToken: string) => Promise<string>;
+  /**
+   * A user pressed "Refresh feeds": read the source unconditionally.
+   *
+   * The background poll is happy to be told "nothing changed" — that's what the
+   * stored ETag is for. A person pressing refresh has just changed something
+   * and is watching for it, so the one thing that request must not do is come
+   * back from a cache. `If-None-Match` is dropped (a CDN in front of the feed
+   * answers it from its own copy, so a stale 304 can outlive the edit that
+   * prompted the tap) and intermediaries are asked to revalidate.
+   */
+  force?: boolean;
 }
 
 export interface IngestResult {
@@ -199,26 +210,13 @@ async function ingestIcsFeed(
   opts: IngestOptions,
 ): Promise<IngestResult> {
   const fetchImpl = opts.fetchImpl ?? fetch;
-  if (!feed.url) {
-    await db.update(feeds).set({ status: 'error' }).where(eq(feeds.id, feed.id));
-    throw new Error(`feed ${feed.id}: ics feed has no url`);
-  }
+  if (!feed.url) throw new Error(`feed ${feed.id}: ics feed has no url`);
 
   const headers: Record<string, string> = {};
-  if (feed.etag) headers['If-None-Match'] = feed.etag;
+  if (opts.force) headers['cache-control'] = 'no-cache';
+  else if (feed.etag) headers['If-None-Match'] = feed.etag;
 
-  let res: Awaited<ReturnType<typeof fetchImpl>>;
-  try {
-    res = await fetchImpl(feed.url, { headers });
-  } catch (err) {
-    // A connection-level failure (DNS, TLS, timeout) — or a rejection by the
-    // outbound-URL policy, for a row stored before that policy existed — never
-    // reaches the status-code branches below, so it must mark the feed 'error'
-    // here too; otherwise callers gating on feed.status keep retrying it on
-    // every call.
-    await db.update(feeds).set({ status: 'error' }).where(eq(feeds.id, feed.id));
-    throw err;
-  }
+  const res = await fetchImpl(feed.url, { headers });
 
   if (res.status === 304) {
     await db
@@ -227,21 +225,11 @@ async function ingestIcsFeed(
       .where(eq(feeds.id, feed.id));
     return { feedId: feed.id, fetched: false, processed: 0 };
   }
-  if (!res.ok) {
-    await db.update(feeds).set({ status: 'error' }).where(eq(feeds.id, feed.id));
-    throw new Error(`feed ${feed.id} fetch failed: ${res.status}`);
-  }
+  if (!res.ok) throw new Error(`feed ${feed.id} fetch failed: ${res.status}`);
 
-  let text: string;
-  try {
-    // Bounded by the guarded fetch's body cap, which surfaces here (the read,
-    // not the request, is where an oversized "ICS" gets caught) — same
-    // treatment as a connection failure so the feed doesn't retry forever.
-    text = await res.text();
-  } catch (err) {
-    await db.update(feeds).set({ status: 'error' }).where(eq(feeds.id, feed.id));
-    throw err;
-  }
+  // Bounded by the guarded fetch's body cap, which surfaces here — the read,
+  // not the request, is where an oversized "ICS" gets caught.
+  const text = await res.text();
   const etag = res.headers.get('etag');
   const windowStart = opts.windowStart ?? new Date();
   const windowEnd = opts.windowEnd ?? new Date(windowStart.getTime() + DEFAULT_WINDOW_MS);
@@ -294,60 +282,50 @@ async function ingestAccountFeed(
     // of its own (see fetchCalDavOccurrences's per-object detection).
     defaultTimezone: feed.timezone ?? undefined,
   };
-  const fail = async (message: string): Promise<never> => {
-    await db.update(feeds).set({ status: 'error' }).where(eq(feeds.id, feed.id));
-    throw new Error(message);
-  };
-
-  if (!feed.sourceCalendarId) return fail(`feed ${feed.id}: missing source calendar`);
+  if (!feed.sourceCalendarId) throw new Error(`feed ${feed.id}: missing source calendar`);
   const credential = await resolveAccountCredential(db, opts.kek, feed.externalAccountId);
-  if (!credential) return fail(`feed ${feed.id}: no account credential`);
+  if (!credential) throw new Error(`feed ${feed.id}: no account credential`);
 
   let occurrences: Occurrence[];
   let timezone: string | null;
   // Busy feeds reconcile (delete stale interval keys) over the exact window
   // they fetched, so the window is pinned here rather than in the reader.
   let busyWindow: { windowStart: Date; windowEnd: Date } | null = null;
-  try {
-    if (feed.kind === 'caldav') {
-      if (credential.kind !== 'basic') throw new Error('caldav feed requires a basic credential');
-      ({ occurrences, timezone } = await fetchCalDavOccurrences(
-        {
-          collectionUrl: feed.sourceCalendarId,
-          username: credential.username,
-          password: credential.password,
-        },
-        window,
+  if (feed.kind === 'caldav') {
+    if (credential.kind !== 'basic') throw new Error('caldav feed requires a basic credential');
+    ({ occurrences, timezone } = await fetchCalDavOccurrences(
+      {
+        collectionUrl: feed.sourceCalendarId,
+        username: credential.username,
+        password: credential.password,
+      },
+      window,
+      opts.fetchImpl,
+    ));
+  } else {
+    if (credential.kind !== 'oauth') throw new Error('google feed requires an oauth credential');
+    const accessToken =
+      credential.accessToken ??
+      (credential.refreshToken && opts.googleRefresh
+        ? await opts.googleRefresh(credential.refreshToken)
+        : undefined);
+    if (!accessToken) throw new Error('google feed has no usable access token');
+    if (feed.mode === 'busy') {
+      busyWindow = busyIngestWindow(opts);
+      ({ occurrences, timezone } = await fetchGoogleFreeBusy(
+        accessToken,
+        feed.sourceCalendarId,
+        busyWindow,
         opts.fetchImpl,
       ));
     } else {
-      if (credential.kind !== 'oauth') throw new Error('google feed requires an oauth credential');
-      const accessToken =
-        credential.accessToken ??
-        (credential.refreshToken && opts.googleRefresh
-          ? await opts.googleRefresh(credential.refreshToken)
-          : undefined);
-      if (!accessToken) throw new Error('google feed has no usable access token');
-      if (feed.mode === 'busy') {
-        busyWindow = busyIngestWindow(opts);
-        ({ occurrences, timezone } = await fetchGoogleFreeBusy(
-          accessToken,
-          feed.sourceCalendarId,
-          busyWindow,
-          opts.fetchImpl,
-        ));
-      } else {
-        ({ occurrences, timezone } = await fetchGoogleOccurrences(
-          accessToken,
-          feed.sourceCalendarId,
-          window,
-          opts.fetchImpl,
-        ));
-      }
+      ({ occurrences, timezone } = await fetchGoogleOccurrences(
+        accessToken,
+        feed.sourceCalendarId,
+        window,
+        opts.fetchImpl,
+      ));
     }
-  } catch (err) {
-    await db.update(feeds).set({ status: 'error' }).where(eq(feeds.id, feed.id));
-    throw err;
   }
 
   await upsertOccurrences(db, feed, occurrences);
@@ -360,27 +338,99 @@ async function ingestAccountFeed(
   return { feedId: feed.id, fetched: true, processed: occurrences.length };
 }
 
+/** Cap on a stored failure message — enough to diagnose, not enough to bloat the row. */
+const MAX_ERROR_MESSAGE_LENGTH = 500;
+
+/**
+ * How long the cron waits before retrying a feed whose last ingest failed:
+ * 15 min (the next tick), then 30, 60, 120, 240, and 6 h thereafter.
+ *
+ * A feed in 'error' used to be skipped by the cron outright, which made a
+ * *transient* failure permanent: nothing re-ingested the feed until someone
+ * happened to press "Refresh feeds", so every event added upstream after the
+ * blip was simply never seen. The events already in `source_events` kept being
+ * synthesized, so the calendar looked fine — it just silently stopped growing,
+ * and what you notice missing first is whatever you added most recently.
+ */
+const RETRY_BACKOFF_MS = [15, 30, 60, 120, 240, 360].map((m) => m * 60_000);
+
+/** The retry delay owed after `failures` consecutive failed ingests. */
+function retryBackoffMs(failures: number): number {
+  const step = Math.min(Math.max(failures, 1), RETRY_BACKOFF_MS.length) - 1;
+  return RETRY_BACKOFF_MS[step]!;
+}
+
+/**
+ * Is this feed due for a background (cron) ingest?
+ *
+ * - `paused` is a user decision — never poll it.
+ * - `error` paces off `lastAttemptedAt` with the backoff above, because
+ *   `lastSyncedAt` doesn't move on a failure and so can't pace anything.
+ * - otherwise it's the feed's own poll interval since the last *successful*
+ *   sync.
+ */
+export function isFeedDue(
+  feed: Pick<
+    FeedRow,
+    'status' | 'refreshMinutes' | 'lastSyncedAt' | 'lastAttemptedAt' | 'consecutiveFailures'
+  >,
+  now: Date,
+): boolean {
+  if (feed.status === 'paused') return false;
+  if (feed.status === 'error') {
+    const lastAttempt = feed.lastAttemptedAt?.getTime() ?? 0;
+    return now.getTime() - lastAttempt >= retryBackoffMs(feed.consecutiveFailures);
+  }
+  const lastSync = feed.lastSyncedAt?.getTime() ?? 0;
+  return now.getTime() - lastSync >= feed.refreshMinutes * 60_000;
+}
+
 /**
  * Ingest one input feed: an ICS URL, or a calendar drawn from a connected
  * external account (CalDAV/Google). Both paths upsert `source_events` so Phase 3
  * task-building is identical regardless of source.
+ *
+ * Every attempt is stamped on the feed row — `lastAttemptedAt` always, and on
+ * failure the count and message behind `status: 'error'`. The readers' job is
+ * just to read and throw; recording *why* a feed is stuck (and how long to wait
+ * before trying again) happens once, here, so no path can fail silently.
  */
 export async function ingestFeed(
   db: Db,
   feed: FeedRow,
   opts: IngestOptions = {},
 ): Promise<IngestResult> {
-  if (feed.kind === 'caldav' || feed.kind === 'google') {
-    return ingestAccountFeed(db, feed, opts);
+  const attemptedAt = new Date();
+  try {
+    const result =
+      feed.kind === 'caldav' || feed.kind === 'google'
+        ? await ingestAccountFeed(db, feed, opts)
+        : await ingestIcsFeed(db, feed, opts);
+    await db
+      .update(feeds)
+      .set({ lastAttemptedAt: attemptedAt, consecutiveFailures: 0, lastErrorMessage: null })
+      .where(eq(feeds.id, feed.id));
+    return result;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    await db
+      .update(feeds)
+      .set({
+        status: 'error',
+        lastAttemptedAt: attemptedAt,
+        consecutiveFailures: feed.consecutiveFailures + 1,
+        lastErrorMessage: message.slice(0, MAX_ERROR_MESSAGE_LENGTH),
+      })
+      .where(eq(feeds.id, feed.id));
+    throw err;
   }
-  return ingestIcsFeed(db, feed, opts);
 }
 
 /**
- * Ingest every active feed in a family (used by force-refresh-all). One feed's
- * failure (e.g. a revoked Google refresh token) must not abort the rest of the
- * family's refresh — ingestFeed already marks that feed row 'error', so just
- * record the message here and keep going.
+ * Ingest every feed in a family (used by force-refresh-all). One feed's failure
+ * (e.g. a revoked Google refresh token) must not abort the rest of the family's
+ * refresh — ingestFeed already records why that feed row is in 'error', so just
+ * carry the message back to the caller here and keep going.
  */
 export async function ingestFamilyFeeds(
   db: Db,

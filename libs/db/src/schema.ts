@@ -228,6 +228,16 @@ export const feeds = sqliteTable(
     lastRefreshRequestedAt: integer('last_refresh_requested_at', {
       mode: 'timestamp_ms',
     }),
+    // When ingest last *attempted* this feed, success or failure. `lastSyncedAt`
+    // only moves on success, so it can't pace retries: without this a feed that
+    // errors has no timestamp the cron can back off from.
+    lastAttemptedAt: integer('last_attempted_at', { mode: 'timestamp_ms' }),
+    // Failed ingests since the last successful one (0 whenever the last attempt
+    // succeeded). Drives the cron's retry backoff for a feed in 'error'.
+    consecutiveFailures: integer('consecutive_failures').notNull().default(0),
+    // Why the last attempt failed, so a stuck feed is visible instead of just
+    // silently serving whatever it had ingested before. Null when healthy.
+    lastErrorMessage: text('last_error_message'),
     status: text('status', { enum: FeedStatus.options })
       .notNull()
       .default('active'),
