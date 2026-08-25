@@ -7,6 +7,7 @@ import {
   uniqueIndex,
 } from 'drizzle-orm/sqlite-core';
 import {
+  ApnsEnvironment,
   AttendanceRequirement,
   ConflictStatus,
   EventProvenance,
@@ -20,11 +21,13 @@ import {
   InviteType,
   MirrorMethod,
   MirrorStatus,
+  NotificationCategory,
   OverrideMatchField,
   OverrideMatchOp,
   OverrideOutcome,
   PendingDecisionKind,
   PendingDecisionStatus,
+  PushPlatform,
   TaskCreatedVia,
   TaskResultType,
   TaskRuleScope,
@@ -703,6 +706,10 @@ export const tasks = sqliteTable(
   (t) => ({
     familyStatusIdx: index('tasks_family_status_idx').on(t.familyId, t.status),
     calendarEventIdx: index('tasks_calendar_event_idx').on(t.calendarEventId),
+    // The notification digest asks for a *date-windowed* slice of a family's
+    // tasks ("what's outstanding tomorrow"), which the status index above can't
+    // serve — it has nothing on `dtstart`.
+    familyStartIdx: index('tasks_family_start_idx').on(t.familyId, t.dtstart),
   }),
 );
 
@@ -997,6 +1004,107 @@ export const appleNotificationReceipts = sqliteTable('apple_notification_receipt
   createdAt: createdAt(),
 });
 
+// --- Push notifications --------------------------------------------------
+
+/**
+ * One row per app install that has an APNs token. Owned by the **user**, not a
+ * family member: a device belongs to the person who signed in, and a digest
+ * spans every family they belong to.
+ *
+ * `deviceToken` is unique on purpose — APNs re-issues the same token to the
+ * same install, and signing a second account into one phone must *move* the
+ * device rather than leave the previous user's digests arriving on it. The
+ * register route therefore upserts by token and re-points `userId`.
+ *
+ * `environment` picks the APNs host, and it is not cosmetic: a token minted by
+ * a build entitled `aps-environment: development` is only routable via the
+ * sandbox host (and vice versa) — cross them and every send is a
+ * `BadDeviceToken`.
+ */
+export const pushDevices = sqliteTable(
+  'push_devices',
+  {
+    id: id(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    // Lowercase hex, as reported by didRegisterForRemoteNotifications.
+    deviceToken: text('device_token').notNull(),
+    // The app's bundle id — sent as the `apns-topic` header for this device,
+    // so staging and production installs can coexist under one user.
+    bundleId: text('bundle_id').notNull(),
+    environment: text('environment', { enum: ApnsEnvironment.options }).notNull(),
+    platform: text('platform', { enum: PushPlatform.options })
+      .notNull()
+      .default('ios'),
+    // The device's IANA zone at last registration. Seeds a new schedule's
+    // timezone — nothing else in the schema knows where a user is.
+    timezone: text('timezone'),
+    lastSeenAt: integer('last_seen_at', { mode: 'timestamp_ms' }),
+    // Stamped when APNs rejects the token for good (410 Unregistered, or 400
+    // BadDeviceToken / DeviceTokenNotForTopic). Kept rather than deleted so a
+    // re-register can revive the same row and we can see churn.
+    disabledAt: integer('disabled_at', { mode: 'timestamp_ms' }),
+    createdAt: createdAt(),
+  },
+  (t) => ({
+    tokenUq: uniqueIndex('push_devices_token_uq').on(t.deviceToken),
+    userIdx: index('push_devices_user_idx').on(t.userId),
+  }),
+);
+
+/**
+ * A recurring digest of outstanding items: "what still needs a human before
+ * tomorrow". One push per firing, aggregated across all of the user's families.
+ *
+ * The send time and the day window are both read in `timezone` — there is no
+ * user- or family-level zone anywhere else in this schema (only `feeds.timezone`
+ * and `member_calendars.timezone`, which describe *sources*), so the schedule
+ * carries its own, seeded from the registering device.
+ *
+ * `lastSentSlot` is the idempotency key: the local `YYYY-MM-DDTHH:MM` this
+ * schedule was last dispatched for. The dispatcher claims a slot with a
+ * conditional UPDATE, which is what makes overlapping cron ticks safe, and what
+ * makes the fall-back DST repeat of an hour a no-op.
+ */
+export const notificationSchedules = sqliteTable(
+  'notification_schedules',
+  {
+    id: id(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    label: text('label').notNull().default('Daily brief'),
+    enabled: integer('enabled', { mode: 'boolean' }).notNull().default(true),
+    // 'HH:MM' wall clock in `timezone`.
+    sendAt: text('send_at').notNull(),
+    timezone: text('timezone').notNull(),
+    // Mon=bit0 … Sun=bit6 — the same convention as `assignment_rules`
+    // (weekdayBit() in @igt/classification), so the client's day chips are shared.
+    weekdayMask: integer('weekday_mask').notNull().default(127),
+    // Window = [startOfLocalDay(now) + startOffsetDays, + horizonDays days),
+    // with the start clamped to `now` when startOffsetDays is 0.
+    startOffsetDays: integer('start_offset_days').notNull().default(1),
+    horizonDays: integer('horizon_days').notNull().default(1),
+    // JSON array of NotificationCategory.
+    categories: text('categories', { mode: 'json' })
+      .notNull()
+      .$type<NotificationCategory[]>(),
+    // Stay silent when the window turns up nothing, rather than pushing a zero.
+    skipWhenEmpty: integer('skip_when_empty', { mode: 'boolean' })
+      .notNull()
+      .default(true),
+    lastSentSlot: text('last_sent_slot'),
+    lastSentAt: integer('last_sent_at', { mode: 'timestamp_ms' }),
+    createdAt: createdAt(),
+  },
+  (t) => ({
+    userIdx: index('notification_schedules_user_idx').on(t.userId),
+    // The dispatcher's sweep: only enabled rows are ever candidates.
+    enabledIdx: index('notification_schedules_enabled_idx').on(t.enabled),
+  }),
+);
+
 export const schema = {
   users,
   identities,
@@ -1019,6 +1127,8 @@ export const schema = {
   authTokens,
   sessions,
   appleNotificationReceipts,
+  pushDevices,
+  notificationSchedules,
 };
 
 // Keep `sql` referenced for future raw defaults without tripping lint.

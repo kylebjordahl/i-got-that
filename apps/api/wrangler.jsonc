@@ -32,20 +32,22 @@
         // in a deployed env — named envs below deliberately omit it, and they
         // do not inherit these top-level vars.
         "ALLOW_DEV_TOKENS": "true",
-        // DEV ONLY KEK. Historically the single envelope-encryption
-        // key-encryption key; now only backs the state-cookie signing secret
-        // (routes/auth.ts's cookieSecret) — see issue #143.
-        "KEK": "2OmcakKhoLtzTqOq5ZrXq/e/7mXa8Gmav+dtCe/2ThM=",
         // DEV ONLY KEK_V1 — the versioned envelope-encryption key
-        // (lib/secrets.ts), same value as the old single KEK for parity with
-        // pre-rotation deployments. Production sets a real secret per version
-        // via `wrangler secret put KEK_V1` / Terraform — never commit prod
-        // keys. KEK_CURRENT_VERSION is intentionally unset here: it defaults
-        // to 1, matching this single configured version. See
-        // docs/DEPLOYMENT.md § KEK rotation.
+        // (lib/secrets.ts), carrying the value the old single unversioned KEK
+        // used to, for parity with pre-rotation deployments. Every deployed env
+        // needs a real per-version secret (`wrangler secret put KEK_V1 --env
+        // <env>`) — named envs don't inherit these vars, and an env with no key
+        // for the current version can't read or write any stored credential
+        // (connect fails, feeds and mirrors skip). An env predating versioning
+        // instead resolves version 1 through its unversioned `KEK` secret; see
+        // docs/DEPLOYMENT.md § 6. Never commit prod keys.
+        // KEK_CURRENT_VERSION is intentionally unset here: it defaults to 1,
+        // matching this single configured version. See docs/DEPLOYMENT.md
+        // § KEK rotation.
         "KEK_V1": "2OmcakKhoLtzTqOq5ZrXq/e/7mXa8Gmav+dtCe/2ThM=",
-        // DEV ONLY COOKIE_SIGNING_KEY (HMAC secret for the Apple/Google OAuth state
-        // cookies — deliberately separate from KEK). Production sets a real secret
+        // DEV ONLY COOKIE_SIGNING_KEY (HMAC secret for the Apple/Google OAuth
+        // state cookies — deliberately separate from the KEK_V<n> keys, which
+        // wrap stored credentials). Production sets a real secret
         // via `wrangler secret put COOKIE_SIGNING_KEY` — never commit prod keys.
         // Unset ⇒ the web Apple/Google start/callback routes 501 rather than
         // falling back to a constant. See docs/DEPLOYMENT.md.
@@ -82,6 +84,13 @@
         // Served at /.well-known/apple-app-site-association. Empty ⇒ Universal
         // Links off (web fallback still works). Set per env below. See docs/AUTH.md.
         "APPLE_APP_ID_PREFIX": "",
+        // Apple Developer Team ID owning the APNs auth key. Not secret. The key
+        // itself (APNS_KEY_P8) and its Key ID (APNS_KEY_ID) are set per env via
+        // `wrangler secret put` — all three must be present or push digests are
+        // logged instead of sent (lib/apns.ts falls back to the DevPusher).
+        // Empty locally: APNs speaks HTTP/2 only and `wrangler dev` can't reach
+        // it. See docs/DEPLOYMENT.md § Push notifications.
+        "APNS_TEAM_ID": "",
     },
     "d1_databases": [
         {
@@ -100,10 +109,11 @@
     "env": {
         "staging": {
             // Named-env vars do NOT inherit from the top level — list them here.
-            // KEK is set per-env via `wrangler secret put KEK --env staging`
-            // (cookie-signing only, see `env.ts`); KEK_V1 (envelope encryption)
-            // via `wrangler secret put KEK_V1 --env staging` — see
-            // docs/DEPLOYMENT.md § KEK rotation.
+            // KEK_V1 (envelope encryption) is set per-env via `wrangler secret
+            // put KEK_V1 --env staging`; an env predating versioning falls back to
+            // its unversioned KEK for version 1 instead — NEVER delete that
+            // secret, its value can't be read back. The deploy workflow refuses
+            // to ship an env with neither. See docs/DEPLOYMENT.md § 6.
             "vars": {
                 "ENVIRONMENT": "staging",
                 "PUBLIC_ORIGIN": "https://staging.igt.kylebjordahl.com",
@@ -117,6 +127,9 @@
                 "GOOGLE_IOS_OAUTH_CALLBACK_SCHEME": "com.kylebjordahl.igt.staging.oauth",
                 // Fill in your 10-char Apple Team ID: "<TeamID>.com.kylebjordahl.igt.staging".
                 "APPLE_APP_ID_PREFIX": "WG5R9LUU9X.com.kylebjordahl.igt.staging",
+                // APNS_KEY_P8 + APNS_KEY_ID are secrets (`wrangler secret put
+                // APNS_KEY_P8 --env staging`); the team id is not.
+                "APNS_TEAM_ID": "WG5R9LUU9X",
             },
             // The whole subdomain routes to this Worker (custom_domain provisions DNS
             // + cert; the parent zone must be on Cloudflare). The Worker serves the
@@ -163,10 +176,11 @@
             // "send_email": [{ "name": "EMAIL" }]  // enable with a paid plan
         },
         "production": {
-            // KEK is set per-env via `wrangler secret put KEK --env production`
-            // (cookie-signing only, see `env.ts`); KEK_V1 (envelope encryption)
-            // via `wrangler secret put KEK_V1 --env production` — see
-            // docs/DEPLOYMENT.md § KEK rotation.
+            // KEK_V1 (envelope encryption) is set per-env via `wrangler secret
+            // put KEK_V1 --env production`; an env predating versioning falls
+            // back to its unversioned KEK for version 1 instead — NEVER delete
+            // that secret, its value can't be read back. The deploy workflow
+            // refuses to ship an env with neither. See docs/DEPLOYMENT.md § 6.
             "vars": {
                 "ENVIRONMENT": "production",
                 // Set to the production custom domain once provisioned (Terraform).
@@ -181,6 +195,9 @@
                 "GOOGLE_IOS_OAUTH_CALLBACK_SCHEME": "com.kylebjordahl.igt.oauth",
                 // Fill in your 10-char Apple Team ID: "<TeamID>.com.kylebjordahl.igt".
                 "APPLE_APP_ID_PREFIX": "WG5R9LUU9X.com.kylebjordahl.igt",
+                // APNS_KEY_P8 + APNS_KEY_ID are secrets (`wrangler secret put
+                // APNS_KEY_P8 --env production`); the team id is not.
+                "APNS_TEAM_ID": "WG5R9LUU9X",
             },
             // Single-origin layout, mirroring staging (see §7 of docs/DEPLOYMENT.md):
             // custom_domain provisions DNS + cert on the parent Cloudflare zone.

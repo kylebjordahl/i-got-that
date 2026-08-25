@@ -112,6 +112,82 @@ describe('external accounts', () => {
   });
 });
 
+/**
+ * A deployed env that never had `KEK_V1` set (the shape a deployment upgraded
+ * past the unversioned-`KEK` split lands in) can't store a credential at all.
+ * That's a deployment gap, so it has to answer as one — the failure used to be
+ * an opaque 500 that reached the client as a raw exception dump.
+ */
+describe('external accounts — unusable envelope-encryption KEK', () => {
+  async function fetchWith(bindings: typeof env, init: RequestInit) {
+    const ctx = createExecutionContext();
+    const res = await app.fetch(new Request('https://api.test/accounts', init), bindings, ctx);
+    await waitOnExecutionContext(ctx);
+    return res;
+  }
+
+  const body = (token: string) =>
+    authed(token, {
+      kind: 'caldav',
+      name: 'My CalDAV',
+      serverUrl: 'https://dav.example.com',
+      username: 'u',
+      password: 'p',
+    });
+
+  it('refuses to connect with 503 + reason when no KEK_V<n> is configured', async () => {
+    const user = await login('acct-no-kek@example.com');
+    // KEK_CURRENT_VERSION with no matching KEK_V<n> — same resolution failure
+    // as a deployed env that has neither a versioned key nor the legacy one.
+    const res = await fetchWith({ ...env, KEK_CURRENT_VERSION: '9' }, body(user.token));
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'kek_unconfigured', reason: 'missing' });
+  });
+
+  it('still connects on a pre-v0.9 env that has only the unversioned KEK', async () => {
+    const user = await login('acct-legacy-kek@example.com');
+    const legacyEnv = { ...env, KEK: env.KEK_V1, KEK_V1: undefined } as unknown as typeof env;
+    const res = await fetchWith(legacyEnv, body(user.token));
+    expect(res.status).toBe(201);
+  });
+
+  it('refuses to connect with 503 + reason when the KEK is not valid AES-256 material', async () => {
+    const user = await login('acct-bad-kek@example.com');
+    const res = await fetchWith({ ...env, KEK_V1: 'not-a-32-byte-key' }, body(user.token));
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'kek_unconfigured', reason: 'invalid' });
+  });
+
+  it('does not burn the single-use Google auth code when the KEK is unusable', async () => {
+    const user = await login('acct-no-kek-google@example.com');
+    let exchanged = false;
+    vi.stubGlobal('fetch', async () => {
+      exchanged = true;
+      return new Response(JSON.stringify({ access_token: 'at', refresh_token: 'rt' }), {
+        status: 200,
+      });
+    });
+    const googleEnvNoKek = {
+      ...env,
+      KEK_CURRENT_VERSION: '9',
+      GOOGLE_OAUTH_CLIENT_ID: 'client-id-123',
+      GOOGLE_OAUTH_CLIENT_SECRET: 'client-secret-xyz',
+    };
+    const res = await fetchWith(
+      googleEnvNoKek,
+      authed(user.token, {
+        kind: 'google',
+        name: 'My Google Cal',
+        authCode: 'auth-code-xyz',
+        redirectUri: 'https://app.example/cb',
+      }),
+    );
+    vi.unstubAllGlobals();
+    expect(res.status).toBe(503);
+    expect(exchanged).toBe(false);
+  });
+});
+
 describe('Google external accounts — revoke on disconnect', () => {
   /** Base test env leaves GOOGLE_OAUTH_CLIENT_ID/SECRET empty ⇒ google accounts 501. */
   const googleEnv = {

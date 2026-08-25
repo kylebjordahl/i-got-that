@@ -30,7 +30,7 @@ import {
   outboundPolicy,
   UnsafeOutboundUrlError,
 } from '../lib/outbound-url.js';
-import { buildKekKeySet, storeSecret } from '../lib/secrets.js';
+import { buildKekKeySet, kekStatus, kekUsable, storeSecret } from '../lib/secrets.js';
 
 /** iCloud's well-known CalDAV endpoint (used when no serverUrl is given). */
 const ICLOUD_CALDAV_URL = 'https://caldav.icloud.com';
@@ -78,8 +78,19 @@ accountRoutes.post('/google/authorize-url', async (c) => {
 accountRoutes.post('/', async (c) => {
   const parsed = CreateExternalAccountInput.safeParse(await c.req.json().catch(() => null));
   if (!parsed.success) return c.json({ error: 'invalid', issues: parsed.error.issues }, 400);
-  const keys = buildKekKeySet(c.env);
-  if (!keys) return c.json({ error: 'kek_unconfigured' }, 500);
+  // No usable KEK ⇒ we can't store the credential. That's a deployment gap, not
+  // a bad request, and every other KEK call site degrades silently — so answer
+  // 503 with the reason rather than letting it read as a broken endpoint. Runs
+  // before the OAuth code exchange so a doomed connect doesn't burn the
+  // single-use `authCode` (the user can retry once the env is fixed).
+  const kek = kekStatus(c.env);
+  if (!kekUsable(kek)) {
+    console.error(
+      `POST /accounts: envelope-encryption KEK is ${kek} — set KEK_V<n> (see docs/DEPLOYMENT.md § KEK); refusing to connect an account`,
+    );
+    return c.json({ error: 'kek_unconfigured', reason: kek }, 503);
+  }
+  const keys = buildKekKeySet(c.env)!;
 
   const db = getDb(c.env.DB);
   const user = c.get('user');

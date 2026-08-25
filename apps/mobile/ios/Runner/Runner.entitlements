@@ -6,6 +6,13 @@
 	<array>
 		<string>Default</string>
 	</array>
+	<!-- Push notifications (the daily "outstanding items" digest). Set per flavor
+	     from ios/Flutter/*.xcconfig: `development` for Debug, `production` for
+	     archives. The value MUST match the provisioning profile the build is
+	     signed with, so both App IDs need the Push Notifications capability and
+	     re-issued profiles — see docs/DEPLOYMENT.md § Push notifications. -->
+	<key>aps-environment</key>
+	<string>$(APS_ENVIRONMENT)</string>
 	<key>com.apple.developer.associated-domains</key>
 	<array>
 		<string>applinks:staging.igt.kylebjordahl.com</string>

@@ -64,7 +64,10 @@ function concat(a: Uint8Array, b: Uint8Array): Uint8Array {
   return out;
 }
 
-async function importKek(kekB64: string): Promise<CryptoKey> {
+/** Decode + validate raw KEK material, throwing `InvalidKekError` on either
+ *  failure. Split out of `importKek` so `kekStatus` can vet a configured key
+ *  without minting a CryptoKey. */
+function decodeKek(kekB64: string): Uint8Array {
   let bytes: Uint8Array;
   try {
     bytes = b64ToBytes(kekB64);
@@ -78,7 +81,11 @@ async function importKek(kekB64: string): Promise<CryptoKey> {
       `KEK must base64-decode to exactly ${KEK_BYTE_LENGTH} bytes (AES-256 key), got ${bytes.length}`,
     );
   }
-  return crypto.subtle.importKey('raw', bytes, 'AES-GCM', false, [
+  return bytes;
+}
+
+async function importKek(kekB64: string): Promise<CryptoKey> {
+  return crypto.subtle.importKey('raw', decodeKek(kekB64), 'AES-GCM', false, [
     'encrypt',
     'decrypt',
   ]);
@@ -98,16 +105,45 @@ export interface KekKeySet {
 }
 
 /**
+ * The version that secrets written before versioning existed carry. Back then
+ * `encryptSecret` hardcoded `keyVersion = 1` and wrapped the DEK with the single
+ * unversioned `KEK`, so `KEK` *is* version 1's key wherever `KEK_V1` was never
+ * set — see `legacyAwareGetKey`.
+ */
+const LEGACY_KEK_VERSION = 1;
+
+/**
+ * Look a version's key up by name, falling back to the unversioned `KEK` for
+ * version 1.
+ *
+ * The fallback is what makes the versioning split survivable. Cloudflare Worker
+ * secrets are write-only: an operator who set `KEK` before the split can never
+ * read its value back to re-set it as `KEK_V1`, and the rows it wrapped are
+ * stamped `key_version = 1` and decrypt with nothing else. The Worker itself can
+ * still read the binding, so resolving version 1 through `KEK` is the only way
+ * such a deployment keeps access to its own stored credentials.
+ *
+ * `KEK_V1` always wins when both are set, so an env that migrated properly is
+ * unaffected, and a later rotation to `KEK_V2` leaves this covering only the old
+ * rows that still need it.
+ */
+function legacyAwareGetKey(env: Bindings, version: number): string | undefined {
+  // `KEK_V<n>` is open-ended (a new version per rotation) — env.ts only
+  // declares KEK_V1 today, so this reads by name rather than through a
+  // hardcoded field list.
+  const byName = env as unknown as Record<string, string | undefined>;
+  const versioned = byName[`KEK_V${version}`];
+  if (versioned) return versioned;
+  return version === LEGACY_KEK_VERSION ? env.KEK : undefined;
+}
+
+/**
  * Build a `KekKeySet` from the Worker's bindings. Returns `undefined` when
  * the *current* version's key isn't configured — the same "nothing works"
  * fallback the single `env.KEK` had, so every existing `if (!kek) …` call-site
  * guard behaves the same when no rotation is in play.
  */
 export function buildKekKeySet(env: Bindings): KekKeySet | undefined {
-  // `KEK_V<n>` is open-ended (a new version per rotation) — env.ts only
-  // declares KEK_V1 today, so this reads by name rather than through a
-  // hardcoded field list.
-  const byName = env as unknown as Record<string, string | undefined>;
   const rawVersion = env.KEK_CURRENT_VERSION;
   const currentVersion = rawVersion === undefined ? 1 : Number(rawVersion);
   if (!Number.isInteger(currentVersion) || currentVersion < 1) {
@@ -115,9 +151,54 @@ export function buildKekKeySet(env: Bindings): KekKeySet | undefined {
       `KEK_CURRENT_VERSION must be a positive integer if set, got ${JSON.stringify(rawVersion)}`,
     );
   }
-  const getKey = (version: number): string | undefined => byName[`KEK_V${version}`];
+  const getKey = (version: number): string | undefined => legacyAwareGetKey(env, version);
   if (!getKey(currentVersion)) return undefined;
   return { currentVersion, getKey };
+}
+
+/**
+ * Whether this environment can envelope-encrypt at all, which key it's doing it
+ * with, and if it can't, why:
+ *
+ * - `ok` — the current version's `KEK_V<n>` is set and is valid AES-256 material.
+ * - `legacy` — working, but off the unversioned `KEK` fallback for version 1
+ *   (see `legacyAwareGetKey`). Functional and safe to run on indefinitely; worth
+ *   surfacing because the env is one `wrangler secret delete KEK` away from
+ *   losing every credential it has stored.
+ * - `missing` — no key for the current version at all, or a
+ *   `KEK_CURRENT_VERSION` that isn't a positive integer.
+ * - `invalid` — a key is set but doesn't base64-decode to 32 bytes.
+ *
+ * Without a usable KEK every stored credential is unreadable and no new one can
+ * be stored, which otherwise shows up only as connect failing and feeds/mirrors
+ * quietly doing nothing. Surfaced (as this bare word, never any key material) on
+ * `GET /health` so a deploy can be checked from outside, and used to turn the
+ * connect-account failure into a diagnosable error instead of a bare 500.
+ */
+export type KekStatus = 'ok' | 'legacy' | 'missing' | 'invalid';
+
+/** Whether a `KekStatus` means credentials can actually be read and written. */
+export function kekUsable(status: KekStatus): boolean {
+  return status === 'ok' || status === 'legacy';
+}
+
+export function kekStatus(env: Bindings): KekStatus {
+  let keys: KekKeySet | undefined;
+  try {
+    keys = buildKekKeySet(env);
+  } catch {
+    return 'missing'; // an unusable KEK_CURRENT_VERSION — no version resolves
+  }
+  if (!keys) return 'missing';
+  const material = keys.getKey(keys.currentVersion);
+  if (!material) return 'missing';
+  try {
+    decodeKek(material);
+  } catch {
+    return 'invalid';
+  }
+  const byName = env as unknown as Record<string, string | undefined>;
+  return byName[`KEK_V${keys.currentVersion}`] ? 'ok' : 'legacy';
 }
 
 export interface EncryptedSecret {

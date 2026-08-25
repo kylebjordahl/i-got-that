@@ -11,11 +11,12 @@ import '../util/format.dart';
 import '../util/task_visuals.dart';
 import '../widgets/app_bottom_nav.dart';
 import '../widgets/primitives.dart';
+import '../widgets/settings.dart';
 import '../widgets/time_fields.dart';
 
 /// Quick-actions for a timeline task (Home rows + Plan blocks/tags): change its
-/// type (transition / attendance / both), (re)assign or unassign it, or mark it
-/// not needed.
+/// type (drop off / attend / pick up, any combination), (re)assign or unassign
+/// it, or mark it not needed.
 ///
 /// [scopeTasks] scopes the assign / unassign / dismiss actions: pass the whole
 /// event group (a Plan block tap) to act on the drop-off *and* pick-up at once,
@@ -52,23 +53,17 @@ Future<void> showTaskActions(
   final anyOwned = scope.any((t) => t.status == 'owned');
   final allUnowned = scope.every((t) => t.status == 'unowned');
 
-  // Derive the current change-type segment from the whole event group.
+  // The task's current type(s), derived from the whole event group.
   final all = ref.read(allTasksProvider).valueOrNull ?? const <TaskItem>[];
   final group = all
       .where((t) => t.calendarEventId == task.calendarEventId)
       .toList();
   final types = (group.isEmpty ? [task] : group).map((t) => t.type).toSet();
-  final hasAtt = types.contains('attendance');
-  final hasTrans = types.contains('pickup') || types.contains('dropoff');
-  final currentSeg = hasAtt && hasTrans
-      ? 'both'
-      : (hasAtt ? 'attendance' : 'transition');
-
-  List<String> targetOf(String seg) => switch (seg) {
-    'attendance' => ['attendance'],
-    'both' => const ['dropoff', 'pickup', 'attendance'],
-    _ => const ['dropoff', 'pickup'],
-  };
+  // A tag/row tap scopes to just [task], but its event has other legs too —
+  // the TYPE switches below still edit all of them, so callers need a nudge
+  // that they're not just retyping this one drop-off or pick-up.
+  final isSingleLegOfGroup =
+      group.length > 1 && (scopeTasks == null || scopeTasks.isEmpty);
 
   final owners = scope
       .where((t) => t.status == 'owned')
@@ -131,6 +126,7 @@ Future<void> showTaskActions(
 
   await showModalBottomSheet<void>(
     context: context,
+    useSafeArea: true,
     useRootNavigator: true,
     showDragHandle: true,
     isScrollControlled: true,
@@ -182,41 +178,57 @@ Future<void> showTaskActions(
             ],
             if (isFeedTask) ...[
               const SizedBox(height: 20),
-              Text('CHANGE TYPE', style: AppText.eyebrow()),
-              const SizedBox(height: 10),
-              Row(
-                children: [
-                  for (final (seg, label, icon) in const [
-                    ('transition', 'Transition', Icons.swap_horiz_rounded),
-                    ('attendance', 'Attendance', Icons.groups_rounded),
-                    ('both', 'Both', Icons.dashboard_customize_rounded),
-                  ]) ...[
-                    Expanded(
-                      child: _SegTile(
-                        label: label,
-                        icon: icon,
-                        selected: seg == currentSeg,
-                        onTap: seg == currentSeg
-                            ? null
-                            : () {
-                                Navigator.of(sheetCtx).pop();
-                                _run(
-                                  context,
-                                  ref,
-                                  (api, fid) => api.convertTask(
-                                    fid,
-                                    task.id,
-                                    targetOf(seg),
-                                  ),
-                                  'Type updated',
-                                );
-                              },
-                      ),
-                    ),
-                    if (seg != 'both') const SizedBox(width: 8),
-                  ],
-                ],
-              ),
+              Text('TYPE', style: AppText.eyebrow()),
+              const SizedBox(height: 6),
+              for (final (type, label, icon, color) in const [
+                (
+                  'dropoff',
+                  'Drop off',
+                  Icons.login_rounded,
+                  AppColors.feedBlue,
+                ),
+                (
+                  'attendance',
+                  'Attend',
+                  Icons.groups_rounded,
+                  AppColors.purple,
+                ),
+                ('pickup', 'Pick up', Icons.logout_rounded, AppColors.blue),
+              ])
+                SwitchRow(
+                  icon: icon,
+                  iconColor: color,
+                  title: label,
+                  value: types.contains(type),
+                  // A task always needs at least one type, so the last one
+                  // switched on can't be switched off.
+                  onChanged: types.length == 1 && types.contains(type)
+                      ? null
+                      : (enabled) {
+                          final next = Set<String>.from(types);
+                          if (enabled) {
+                            next.add(type);
+                          } else {
+                            next.remove(type);
+                          }
+                          Navigator.of(sheetCtx).pop();
+                          _run(
+                            context,
+                            ref,
+                            (api, fid) =>
+                                api.convertTask(fid, task.id, next.toList()),
+                            'Type updated',
+                          );
+                        },
+                ),
+              if (isSingleLegOfGroup) ...[
+                const SizedBox(height: 6),
+                Text(
+                  'This changes the type for the whole event, not just this '
+                  'one leg.',
+                  style: AppText.subtitle,
+                ),
+              ],
             ],
             if (transitions.isNotEmpty) ...[
               const SizedBox(height: 20),
@@ -412,6 +424,7 @@ Future<void> showEventDetails(
 
   await showModalBottomSheet<void>(
     context: context,
+    useSafeArea: true,
     useRootNavigator: true,
     showDragHandle: true,
     isScrollControlled: true,
@@ -534,6 +547,7 @@ Future<void> _pickAndAssign(
       .toList();
   await showModalBottomSheet<void>(
     context: context,
+    useSafeArea: true,
     useRootNavigator: true,
     showDragHandle: true,
     builder: (sheetCtx) => SafeArea(
@@ -649,64 +663,6 @@ Future<void> _runScope(
         ),
       );
     }
-  }
-}
-
-/// A change-type segment tile.
-class _SegTile extends StatelessWidget {
-  const _SegTile({
-    required this.label,
-    required this.icon,
-    required this.selected,
-    required this.onTap,
-  });
-
-  final String label;
-  final IconData icon;
-  final bool selected;
-  final VoidCallback? onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return Material(
-      color: selected ? AppColors.tint(AppColors.indigo, 0.18) : AppColors.card,
-      borderRadius: BorderRadius.circular(15),
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(15),
-        child: Container(
-          padding: const EdgeInsets.symmetric(vertical: 14),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(15),
-            border: Border.all(
-              color: selected ? AppColors.indigo : AppColors.border,
-              width: selected ? 1.5 : 1,
-            ),
-          ),
-          child: Column(
-            children: [
-              Icon(
-                icon,
-                size: 22,
-                color: selected ? AppColors.indigo : AppColors.textSecondary,
-              ),
-              const SizedBox(height: 7),
-              Text(
-                label,
-                style: font(
-                  kBodyFont,
-                  12.5,
-                  600,
-                  color: selected
-                      ? AppColors.textPrimary
-                      : AppColors.textSecondary,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
   }
 }
 

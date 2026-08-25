@@ -5,6 +5,8 @@ import {
   decryptSecret,
   encryptSecret,
   InvalidKekError,
+  kekStatus,
+  kekUsable,
   KekVersionNotConfiguredError,
   type KekKeySet,
 } from '../src/lib/secrets.js';
@@ -116,5 +118,88 @@ describe('buildKekKeySet', () => {
     expect(keys?.currentVersion).toBe(2);
     expect(keys?.getKey(1)).toBe(env.KEK_V1);
     expect(keys?.getKey(2)).toBeTruthy();
+  });
+});
+
+/**
+ * Worker secrets are write-only, so an env that set the pre-versioning `KEK`
+ * can never re-set that value as `KEK_V1` — and its stored rows are stamped
+ * `key_version = 1` and decrypt with nothing else. Version 1 therefore resolves
+ * through `KEK` when `KEK_V1` is absent.
+ */
+describe('buildKekKeySet — legacy unversioned KEK fallback', () => {
+  /** A pre-v0.9 env: `KEK` set, `KEK_V1` never set. */
+  const legacyEnv = { ...env, KEK: fakeKek(9), KEK_V1: undefined } as unknown as typeof env;
+
+  it('resolves version 1 through KEK when KEK_V1 is unset', () => {
+    const keys = buildKekKeySet(legacyEnv);
+    expect(keys?.currentVersion).toBe(1);
+    expect(keys?.getKey(1)).toBe(fakeKek(9));
+  });
+
+  it('round-trips a secret stored under the old unversioned key', async () => {
+    const keys = buildKekKeySet(legacyEnv)!;
+    const enc = await encryptSecret(keys, 'pre-split credential');
+    // Still stamped version 1 — exactly what pre-v0.9 encryptSecret wrote.
+    expect(enc.keyVersion).toBe(1);
+    expect(await decryptSecret(keys, enc)).toBe('pre-split credential');
+  });
+
+  it('prefers KEK_V1 over KEK when both are set', () => {
+    const keys = buildKekKeySet({ ...env, KEK: fakeKek(9) });
+    expect(keys?.getKey(1)).toBe(env.KEK_V1);
+  });
+
+  it('never stands in for a version other than 1', () => {
+    const keys = buildKekKeySet({ ...env, KEK: fakeKek(9), KEK_CURRENT_VERSION: '2' });
+    expect(keys).toBeUndefined();
+  });
+
+  it('keeps decrypting version-1 rows after rotating onto a KEK_V2 the operator owns', async () => {
+    // The documented exit path for an env that can't recover its old KEK:
+    // add KEK_V2, bump the current version, leave KEK in place for old rows.
+    const legacyKeys = buildKekKeySet(legacyEnv)!;
+    const old = await encryptSecret(legacyKeys, 'stored before the rotation');
+
+    const rotated = buildKekKeySet({
+      ...legacyEnv,
+      KEK_CURRENT_VERSION: '2',
+      // @ts-expect-error — KEK_V2 isn't declared on ProvidedEnv; read by name.
+      KEK_V2: fakeKek(2),
+    })!;
+    expect(await decryptSecret(rotated, old)).toBe('stored before the rotation');
+    expect((await encryptSecret(rotated, 'new')).keyVersion).toBe(2);
+  });
+});
+
+describe('kekStatus', () => {
+  it('is ok when the current version resolves to valid AES-256 material', () => {
+    expect(kekStatus(env)).toBe('ok');
+  });
+
+  it('is legacy when version 1 resolves only through the unversioned KEK', () => {
+    const legacyEnv = { ...env, KEK: fakeKek(9), KEK_V1: undefined } as unknown as typeof env;
+    expect(kekStatus(legacyEnv)).toBe('legacy');
+    expect(kekUsable(kekStatus(legacyEnv))).toBe(true);
+  });
+
+  it('is missing when the current version has no key at all', () => {
+    expect(kekStatus({ ...env, KEK_CURRENT_VERSION: '7' })).toBe('missing');
+    expect(kekUsable('missing')).toBe(false);
+  });
+
+  it('is missing when KEK_CURRENT_VERSION is unusable (no version can resolve)', () => {
+    expect(kekStatus({ ...env, KEK_CURRENT_VERSION: 'not-a-number' })).toBe('missing');
+  });
+
+  it('is invalid when a key is set but is not 32 bytes of base64', () => {
+    expect(kekStatus({ ...env, KEK_V1: fakeKek(1).slice(0, 20) })).toBe('invalid');
+    expect(kekStatus({ ...env, KEK_V1: 'not-valid-base64!!' })).toBe('invalid');
+    expect(kekUsable('invalid')).toBe(false);
+  });
+
+  it('is invalid when the legacy KEK is set but malformed', () => {
+    const bad = { ...env, KEK: 'not-valid-base64!!', KEK_V1: undefined } as unknown as typeof env;
+    expect(kekStatus(bad)).toBe('invalid');
   });
 });

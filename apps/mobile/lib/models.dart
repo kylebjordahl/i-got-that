@@ -994,3 +994,97 @@ class SourceEventItem {
     );
   }
 }
+
+/// A bucket of outstanding work a notification schedule reports on. Mirrors the
+/// server's `NotificationCategory` and Home's own sections.
+enum NotificationCategory {
+  conflicts('conflicts', 'Double-bookings', 'double-bookings'),
+  pendingDecisions(
+    'pending_decisions',
+    'Events to sort out',
+    'events to sort out',
+  ),
+  unclaimedTasks('unclaimed_tasks', 'Unclaimed tasks', 'unclaimed tasks'),
+  myTasks('my_tasks', "Tasks I'm covering", 'what I’m covering');
+
+  const NotificationCategory(this.wire, this.label, this.shortLabel);
+
+  /// The value the API uses.
+  final String wire;
+  final String label;
+
+  /// Mid-sentence form, for the one-line schedule summary. Not just a
+  /// lowercased [label] — "tasks i'm covering" reads wrong.
+  final String shortLabel;
+
+  static NotificationCategory? fromWire(String wire) =>
+      NotificationCategory.values.where((c) => c.wire == wire).firstOrNull;
+}
+
+/// A recurring digest of outstanding items, delivered as one push per firing
+/// and aggregated across every family the user belongs to.
+class NotificationSchedule {
+  NotificationSchedule({
+    required this.id,
+    required this.label,
+    required this.enabled,
+    required this.sendAt,
+    required this.timezone,
+    required this.weekdayMask,
+    required this.startOffsetDays,
+    required this.horizonDays,
+    required this.categories,
+    required this.skipWhenEmpty,
+    this.lastSentAt,
+  });
+
+  final String id;
+  final String label;
+  final bool enabled;
+
+  /// `HH:MM` wall clock, read in [timezone].
+  final String sendAt;
+  final String timezone;
+
+  /// Mon=bit0 … Sun=bit6 — the same convention as assignment rules, so the day
+  /// chips are shared with the assignment-rule editor.
+  final int weekdayMask;
+
+  /// 0 = the window opens today, 1 = tomorrow.
+  final int startOffsetDays;
+
+  /// How many local days the window spans.
+  final int horizonDays;
+  final List<NotificationCategory> categories;
+  final bool skipWhenEmpty;
+  final DateTime? lastSentAt;
+
+  /// Selected weekdays as bit indices (Mon=0), for the day chips.
+  List<int> get weekdays => [
+    for (var i = 0; i < 7; i++)
+      if (weekdayMask & (1 << i) != 0) i,
+  ];
+
+  bool get isEveryDay => weekdayMask == 127;
+  bool get isWeekdaysOnly => weekdayMask == 31;
+
+  factory NotificationSchedule.fromJson(Map<String, dynamic> j) =>
+      NotificationSchedule(
+        id: j['id'] as String,
+        label: j['label'] as String? ?? 'Daily brief',
+        enabled: j['enabled'] as bool? ?? true,
+        sendAt: j['sendAt'] as String,
+        timezone: j['timezone'] as String,
+        weekdayMask: j['weekdayMask'] as int? ?? 127,
+        startOffsetDays: j['startOffsetDays'] as int? ?? 1,
+        horizonDays: j['horizonDays'] as int? ?? 1,
+        categories: [
+          for (final c in (j['categories'] as List<dynamic>? ?? const []))
+            if (NotificationCategory.fromWire(c as String) case final cat?) cat,
+        ],
+        skipWhenEmpty: j['skipWhenEmpty'] as bool? ?? true,
+        lastSentAt: j['lastSentAt'] == null
+            ? null
+            : parseTimestamp(j['lastSentAt']),
+      );
+}

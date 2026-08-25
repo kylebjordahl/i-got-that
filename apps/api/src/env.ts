@@ -15,21 +15,31 @@ export interface Bindings {
      */
     PUBLIC_ORIGIN?: string;
     /**
-     * base64 of 32 random bytes. Historically the single key-encryption key
-     * for envelope encryption (`lib/secrets.ts`); that role has moved to the
-     * versioned `KEK_V<n>` bindings below. `KEK` now only backs the state
-     * cookie's signing secret (`routes/auth.ts`'s `cookieSecret`) — see issue
-     * #143 for retiring that reuse.
+     * The original, unversioned key-encryption key — base64 of 32 random bytes.
+     * Superseded by `KEK_V<n>` below, and read now only as the **version-1
+     * fallback**: secrets written before that split are stamped
+     * `key_version = 1` and wrapped with this value, so an env that has `KEK`
+     * but no `KEK_V1` keeps working (see `lib/secrets.ts#buildKekKeySet`).
+     *
+     * Deliberately not removed. Worker secrets are write-only — nobody can read
+     * `KEK`'s value back out of Cloudflare to re-set it as `KEK_V1` — so for a
+     * deployment that predates the split, this binding is the *only* thing that
+     * can still decrypt its stored credentials. Dropping it, or deleting the
+     * secret, orphans every credential in that env permanently.
      */
     KEK?: string;
     /**
      * Versioned key-encryption keys for envelope-encrypted secrets
      * (`lib/secrets.ts`) — each `KEK_V<n>` is base64 of 32 random bytes, set
-     * via `wrangler secret put KEK_V<n> [--env <env>]`. Only `KEK_V1` needs to
-     * exist today (it carries the same value the single `KEK` used to). Add a
-     * `KEK_V<n>` field here (and set the matching secret) for each new version
-     * as you rotate — `lib/secrets.ts#buildKekKeySet` looks versions up by
-     * name, so no other code changes with each rotation. See
+     * via `wrangler secret put KEK_V<n> [--env <env>]`. Every deployed env needs
+     * the current version's key (or, for version 1, the legacy `KEK` above):
+     * without it nothing can decrypt a stored credential, so connecting an
+     * account fails (503) and every feed and mirror skips. `GET /health` reports
+     * which of the two is in play as `config.secretsKek` (`ok` vs `legacy`).
+     *
+     * Add a `KEK_V<n>` field here (and set the matching secret) for each new
+     * version as you rotate — `lib/secrets.ts#buildKekKeySet` looks versions up
+     * by name, so no other code changes with each rotation. See
      * `docs/DEPLOYMENT.md` § KEK rotation.
      */
     KEK_V1?: string;
@@ -45,8 +55,8 @@ export interface Bindings {
     /**
      * base64 of 32 random bytes; the HMAC signing secret for the short-lived
      * Apple/Google OAuth `state` cookies (`routes/auth.ts`). Deliberately
-     * distinct from `KEK` — signing the state cookie and wrapping stored
-     * credentials are unrelated cryptographic purposes with different
+     * distinct from the `KEK_V<n>` keys — signing the state cookie and wrapping
+     * stored credentials are unrelated cryptographic purposes with different
      * rotation profiles, and the state cookie carries the link-mode session
      * reference used to graft an OAuth identity onto an account, so a shared
      * or predictable key would be a real account-takeover path. Unset ⇒ the
@@ -122,6 +132,20 @@ export interface Bindings {
      * Unset ⇒ that route 501s (the wizard still works via manual copy/paste).
      */
     GOOGLE_IOS_OAUTH_CALLBACK_SCHEME?: string;
+    /**
+     * Contents of the Apple `.p8` APNs auth key (the whole PEM, BEGIN/END lines
+     * included), set via `wrangler secret put APNS_KEY_P8 [--env <env>]`. One
+     * key signs for every bundle id and both APNs environments. Together with
+     * APNS_KEY_ID + APNS_TEAM_ID this is what switches `lib/apns.ts` from the
+     * capture-only `DevPusher` to real sends — any of the three missing and
+     * digests are logged rather than pushed. See docs/DEPLOYMENT.md § Push
+     * notifications.
+     */
+    APNS_KEY_P8?: string;
+    /** The APNs auth key's 10-character Key ID (from the key's filename). */
+    APNS_KEY_ID?: string;
+    /** Apple Developer Team ID that owns the APNs key and the App IDs. */
+    APNS_TEAM_ID?: string;
     /**
      * Comma-separated Apple App ID prefixes (`<TeamID>.<bundleId>`) for iOS
      * Universal Links, served in the apple-app-site-association file at
