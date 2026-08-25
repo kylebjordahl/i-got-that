@@ -169,6 +169,58 @@ void main() {
   );
 
   testWidgets(
+    'tapping one leg of a multi-task event notes the toggle covers the whole event',
+    (tester) async {
+      final me = _m('dad', 'Dad', caretaker: true, admin: true);
+      final pickup = TaskItem(
+        id: 't3',
+        familyMemberId: 'theo',
+        type: 'pickup',
+        start: DateTime.now().add(const Duration(hours: 4)),
+        status: 'unowned',
+        createdVia: 'generated',
+        calendarEventId: 'e1',
+      );
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            membersProvider.overrideWith(
+              (ref) async => [me, _m('theo', 'Theo', child: true)],
+            ),
+            currentMemberProvider.overrideWith((ref) async => me),
+            // The dropoff row is what's tapped, but the group (allTasksProvider)
+            // also holds its sibling pickup — the same event's other leg.
+            unownedTasksProvider.overrideWith((ref) async => [_task]),
+            allTasksProvider.overrideWith((ref) async => [_task, pickup]),
+            pendingDecisionsProvider.overrideWith((ref) async => const []),
+            conflictsProvider.overrideWith((ref) async => const []),
+            calendarEventsProvider.overrideWith((ref) async => const []),
+            threadingThresholdProvider.overrideWith((ref) async => 30),
+          ],
+          child: MaterialApp(
+            theme: buildAppTheme(),
+            themeMode: ThemeMode.dark,
+            home: const Scaffold(body: HomeScreen()),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byType(TaskRow).first);
+      await tester.pumpAndSettle();
+
+      expect(
+        find.text(
+          'This changes the type for the whole event, not just this '
+          'one leg.',
+        ),
+        findsOneWidget,
+      );
+    },
+  );
+
+  testWidgets(
     'an auto-assigned task is marked on the row and names its rule in the sheet',
     (tester) async {
       final me = _m('dad', 'Dad', caretaker: true, admin: true);
