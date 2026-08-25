@@ -316,33 +316,13 @@ jobs:
           pnpm wrangler d1 migrations apply "$D1_DATABASE" --env "$WRANGLER_ENV" --remote
           pnpm wrangler deploy --env "$WRANGLER_ENV"
 
-      # Belt and braces to the pre-deploy secret check: a secret can be *set*
-      # and still be unusable (not base64, wrong length). /health reports
-      # `config.secretsKek` as ok/legacy/missing/invalid — never any key
-      # material. `legacy` is working (the pre-split KEK fallback), so only
-      # missing/invalid fail.
-      - name: Smoke-check deployed Worker config
-        env:
-          PUBLIC_ORIGIN: "https://${{ inputs.environment == 'production' && 'igt' || 'staging.igt' }}.kylebjordahl.com"
-        run: |
-          set -euo pipefail
-          body="$(curl -fsS --retry 5 --retry-delay 5 --retry-all-errors "$PUBLIC_ORIGIN/api/health")"
-          echo "$body"
-          kek="$(printf '%s' "$body" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>
-                   console.log(JSON.parse(s).config?.secretsKek ?? "unknown"))')"
-          case "$kek" in
-            ok) ;;
-            legacy)
-              echo "::warning::'$WRANGLER_ENV' is encrypting under the legacy unversioned" \
-                   "KEK. Working, but don't delete that secret — see docs/DEPLOYMENT.md § 6."
-              ;;
-            *)
-              echo "::error::Deployed '$WRANGLER_ENV' Worker reports envelope-encryption KEK '$kek'." \
-                   "Connecting calendar accounts will fail and feeds/mirrors will skip." \
-                   "Fix KEK_V<n> (see docs/DEPLOYMENT.md § 6)."
-              exit 1
-              ;;
-          esac
+      # No post-deploy probe of the public origin: the Cloudflare edge in front
+      # of both hostnames answers a plain curl with 403 (bot protection / an
+      # Access policy) before the Worker ever sees it, so the probe could only
+      # ever report on its own reachability. `GET /api/health` still reports
+      # `config.secretsKek` for a human to check in a browser — see
+      # docs/DEPLOYMENT.md § 6. The pre-deploy secret check above is the gate,
+      # and it goes through the Cloudflare API rather than the public origin.
 
   # Building/signing/uploading in `testflight` below is the expensive part of
   # deploying to TestFlight (and the reason that job needs macOS runners), so

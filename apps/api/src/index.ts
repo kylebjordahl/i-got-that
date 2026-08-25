@@ -52,9 +52,11 @@ app.use(
  * doesn't stop the Worker booting — it just makes every stored credential
  * unreadable, so feeds and mirrors skip and connecting an account fails. Report
  * it as a bare `ok`/`legacy`/`missing`/`invalid` (never any key material) so a
- * deploy can be smoke-checked from outside; `ok` goes false only when the key is
- * unusable, which is what the post-deploy check in
- * .github/workflows/deploy.yml keys off — `legacy` works and stays healthy.
+ * deploy can be checked from outside; `ok` goes false only when the key is
+ * unusable — `legacy` (the pre-split `KEK` fallback) works and stays healthy.
+ *
+ * Read by a human, in a browser: CI doesn't probe this, because the Cloudflare
+ * edge 403s a plain curl at both public hostnames. See docs/DEPLOYMENT.md § 6.
  */
 app.get('/health', (c) => {
   const kek = kekStatus(c.env);
