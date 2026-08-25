@@ -1284,6 +1284,7 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
 
     showModalBottomSheet<void>(
       context: context,
+      useSafeArea: true,
       useRootNavigator: true,
       showDragHandle: true,
       isScrollControlled: true,

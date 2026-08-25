@@ -212,6 +212,7 @@ Future<bool?> showAssignmentRuleSheet(
 }) {
   return showModalBottomSheet<bool>(
     context: context,
+    useSafeArea: true,
     useRootNavigator: true,
     showDragHandle: true,
     isScrollControlled: true,

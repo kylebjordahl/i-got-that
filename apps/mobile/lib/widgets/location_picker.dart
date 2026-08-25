@@ -38,6 +38,7 @@ class LocationPickerField extends StatelessWidget {
   Future<void> _openSearch(BuildContext context) async {
     final place = await showModalBottomSheet<GeoPlace>(
       context: context,
+      useSafeArea: true,
       isScrollControlled: true,
       useRootNavigator: true,
       backgroundColor: AppColors.card,

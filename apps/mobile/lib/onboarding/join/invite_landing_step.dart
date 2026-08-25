@@ -99,6 +99,7 @@ class _InviteLandingStepState extends ConsumerState<InviteLandingStep> {
     final controller = TextEditingController();
     return showModalBottomSheet<String>(
       context: context,
+      useSafeArea: true,
       backgroundColor: AppColors.card,
       isScrollControlled: true,
       shape: const RoundedRectangleBorder(
