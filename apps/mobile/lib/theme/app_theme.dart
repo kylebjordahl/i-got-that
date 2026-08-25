@@ -102,9 +102,13 @@ ThemeData buildAppTheme() {
     ),
     snackBarTheme: SnackBarThemeData(
       backgroundColor: AppColors.card,
-      contentTextStyle: font(kBodyFont, 13.5, 500),
+      contentTextStyle: font(kBodyFont, 13.5, 600),
       behavior: SnackBarBehavior.floating,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      elevation: 8,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(14),
+        side: const BorderSide(color: AppColors.dividerStrong),
+      ),
     ),
     popupMenuTheme: PopupMenuThemeData(
       color: AppColors.card,
