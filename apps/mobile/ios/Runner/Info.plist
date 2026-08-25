@@ -52,6 +52,12 @@
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
 	<key>GIDClientID</key>
 	<string>$(GOOGLE_IOS_CLIENT_ID)</string>
+	<!-- The same value Runner.entitlements signs `aps-environment` with, surfaced
+	     at runtime so PushChannel can tell the server which APNs host this
+	     build's device tokens route through. Reading it from one xcconfig var
+	     is what stops the two from ever disagreeing. -->
+	<key>IGTApsEnvironment</key>
+	<string>$(APS_ENVIRONMENT)</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
 	<key>LSRequiresIPhoneOS</key>

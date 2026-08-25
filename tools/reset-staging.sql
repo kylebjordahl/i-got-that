@@ -6,6 +6,8 @@
 --
 -- DROP TABLE performs no foreign-key checks, so table order is irrelevant.
 
+DROP TABLE IF EXISTS notification_schedules;
+DROP TABLE IF EXISTS push_devices;
 DROP TABLE IF EXISTS event_mirrors;
 DROP TABLE IF EXISTS calendar_events;
 DROP TABLE IF EXISTS member_calendars;

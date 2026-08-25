@@ -27,6 +27,7 @@ import { googleRefresherFor } from '../lib/google-oauth.js';
 import { createGuardedFetch } from '../lib/outbound-url.js';
 import { resolveAccountCredential } from '../lib/account-credentials.js';
 import { buildKekKeySet, type KekKeySet } from '../lib/secrets.js';
+import { deliverDigest, type PushDigestJob } from './notifications.js';
 
 type CalendarEventRow = typeof calendarEvents.$inferSelect;
 type MemberCalendarRow = typeof memberCalendars.$inferSelect;
@@ -61,16 +62,24 @@ export function deferSync(
 }
 
 /** A unit of mirror work placed on the queue (or run inline as a fallback). */
-export type DeliveryJob =
+export type MirrorJob =
   | { kind: 'member'; memberId: string }
   | { kind: 'family'; familyId: string };
+
+/**
+ * Everything the delivery queue carries. Push digests ride the same queue as
+ * mirror reconciles rather than getting their own: they want the identical
+ * retry/backoff/DLQ behaviour, and sharing it means no new Terraform-managed
+ * queue and no new binding to keep in sync.
+ */
+export type DeliveryJob = MirrorJob | PushDigestJob;
 
 type ReconcileCtx = {
   env: Bindings;
   executionCtx: { waitUntil(p: Promise<unknown>): void };
 };
 
-function runJob(env: Bindings, job: DeliveryJob): Promise<SyncResult> {
+function runJob(env: Bindings, job: MirrorJob): Promise<SyncResult> {
   const db = getDb(env.DB);
   const registry = getProductionRegistry(env);
   const keys = buildKekKeySet(env);
@@ -86,7 +95,7 @@ function runJob(env: Bindings, job: DeliveryJob): Promise<SyncResult> {
  * so behaviour is identical, just not durable. Never await a reconcile in a
  * request path.
  */
-export function enqueueReconcile(c: ReconcileCtx, job: DeliveryJob): void {
+export function enqueueReconcile(c: ReconcileCtx, job: MirrorJob): void {
   const queue = c.env.DELIVERY_QUEUE;
   if (queue) {
     c.executionCtx.waitUntil(
@@ -108,6 +117,12 @@ export async function deliveryQueueConsumer(
 ): Promise<void> {
   for (const message of batch.messages) {
     try {
+      if (message.body.kind === 'push-digest') {
+        const { retry } = await deliverDigest(env, message.body);
+        if (retry) message.retry();
+        else message.ack();
+        continue;
+      }
       const result = await runJob(env, message.body);
       if (result.errors.length > 0) {
         // A per-target failure (e.g. iCloud briefly unreachable) → retry later.

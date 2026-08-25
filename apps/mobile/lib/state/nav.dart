@@ -6,10 +6,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 /// pop back to the shell.
 final navIndexProvider = StateProvider<int>((_) => 0);
 
-/// App-wide push-notification preference (Me screen). UI-only for now — no
-/// backend permission is wired yet.
-final pushNotificationsProvider = StateProvider<bool>((_) => true);
-
 /// The inner content Navigator hosting [AppShell] and everything pushed on
 /// top of it (member detail, feed setup, etc.) — see `_AuthedRoot` in
 /// main.dart. Keyed so [PersistentAppNav], which lives one Stack layer above

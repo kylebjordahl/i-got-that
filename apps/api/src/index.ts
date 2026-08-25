@@ -9,6 +9,7 @@ import { accountRoutes } from './routes/accounts.js';
 import { authRoutes } from './routes/auth.js';
 import { familyRoutes } from './routes/families.js';
 import { inviteRoutes } from './routes/invites.js';
+import { notificationRoutes } from './routes/notifications.js';
 import { scheduled } from './scheduled.js';
 
 /**
@@ -102,6 +103,10 @@ app.route('/invites', inviteRoutes);
 // User-owned external calendar accounts (Google/iCloud/CalDAV) — private to the
 // user and reusable across their families; not family-scoped.
 app.route('/accounts', accountRoutes);
+
+// User-owned push devices + digest schedules — also not family-scoped: a digest
+// aggregates across every family the user belongs to.
+app.route('/notifications', notificationRoutes);
 
 /** Current user + the families they belong to (with their member record). */
 app.get('/me', authMiddleware, async (c) => {

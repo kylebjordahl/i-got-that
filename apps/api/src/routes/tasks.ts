@@ -36,7 +36,11 @@ import { Hono } from 'hono';
 import type { HonoEnv } from '../env.js';
 import { requireFamilyMember } from '../middleware/auth.js';
 import { removeClaimEvent, upsertClaimEvent } from '../services/claim.js';
-import { reconcileMemberConflicts, scheduleStamp } from '../services/conflicts.js';
+import {
+  hydrateConflicts,
+  reconcileMemberConflicts,
+  scheduleStamp,
+} from '../services/conflicts.js';
 import { enqueueReconcile, getProductionRegistry, syncFamilyMirror } from '../services/mirror.js';
 import { resynthesizeFeed } from '../services/pipeline.js';
 import { buildKekKeySet } from '../lib/secrets.js';
@@ -730,49 +734,25 @@ taskRoutes.get('/conflicts', async (c) => {
     .orderBy(asc(conflicts.createdAt));
   if (rows.length === 0) return c.json({ conflicts: [] });
 
-  const memberIds = [...new Set(rows.map((r) => r.familyMemberId))];
-  const evs = await db
-    .select({
-      familyMemberId: calendarEvents.familyMemberId,
-      synthKey: calendarEvents.synthKey,
-      summary: calendarEvents.summary,
-      location: calendarEvents.location,
-      locationGeo: calendarEvents.locationGeo,
-      dtstart: calendarEvents.dtstart,
-      dtend: calendarEvents.dtend,
-      allDay: calendarEvents.allDay,
-    })
-    .from(calendarEvents)
-    .where(
-      and(
-        eq(calendarEvents.familyId, familyId),
-        inArray(calendarEvents.familyMemberId, memberIds),
-      ),
-    );
-  const evByKey = new Map(evs.map((e) => [`${e.familyMemberId}|${e.synthKey}`, e]));
-
-  const out = rows
-    .map((r) => {
-      const loser = evByKey.get(`${r.familyMemberId}|${r.loserKey}`) ?? null;
-      const winner = evByKey.get(`${r.familyMemberId}|${r.winnerKey}`) ?? null;
-      return {
-        id: r.id,
-        familyMemberId: r.familyMemberId,
-        status: r.status,
-        createdAt: r.createdAt,
-        loser,
-        winner,
-        // Splitting the loser around the winner means leaving one place and
-        // coming back to it, so both buffers are the same trip. Suggested only
-        // when both ends are geocoded — the sheet leaves the handles at zero
-        // otherwise rather than inventing a number.
-        suggestedTravelMin:
-          loser?.locationGeo && winner?.locationGeo
-            ? estimateTravelMinutes(loser.locationGeo, winner.locationGeo)
-            : null,
-      };
-    })
-    .filter((r) => r.loser && r.winner);
+  // Rows whose events have vanished are dropped by the hydrator (they clear on
+  // the next reconcile).
+  const hydrated = await hydrateConflicts(db, [familyId], rows);
+  const out = hydrated.map(({ conflict: r, loser, winner }) => ({
+    id: r.id,
+    familyMemberId: r.familyMemberId,
+    status: r.status,
+    createdAt: r.createdAt,
+    loser,
+    winner,
+    // Splitting the loser around the winner means leaving one place and
+    // coming back to it, so both buffers are the same trip. Suggested only
+    // when both ends are geocoded — the sheet leaves the handles at zero
+    // otherwise rather than inventing a number.
+    suggestedTravelMin:
+      loser.locationGeo && winner.locationGeo
+        ? estimateTravelMinutes(loser.locationGeo, winner.locationGeo)
+        : null,
+  }));
   return c.json({ conflicts: out });
 });
 
