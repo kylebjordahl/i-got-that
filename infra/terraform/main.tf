@@ -91,6 +91,15 @@ resource "cloudflare_ruleset" "rate_limiting" {
       expression  = "(http.request.method eq \"POST\" and starts_with(http.request.uri.path, \"/api/auth/\"))"
       action      = "block"
       enabled     = true
+      # Body matches the Worker's own 429 shape (apps/api/src/routes/auth.ts)
+      # so a client can't tell an edge block from an app-layer rejection.
+      action_parameters = {
+        response = {
+          status_code  = 429
+          content_type = "application/json"
+          content      = jsonencode({ error = "too_many_requests" })
+        }
+      }
       ratelimit = {
         characteristics     = ["ip.src"]
         period              = 60
@@ -103,6 +112,17 @@ resource "cloudflare_ruleset" "rate_limiting" {
       expression  = "(http.request.method eq \"POST\" and http.request.uri.path matches \"^/api/families/[^/]+/feeds/.*refresh.*$\")"
       action      = "block"
       enabled     = true
+      # Body matches the Worker's own refresh_cooldown 429 shape
+      # (apps/api/src/routes/feeds.ts) so the mobile client's
+      # FeedRefreshCooldown handling still recognizes an edge block and shows
+      # the friendly "already up to date" message instead of a raw error.
+      action_parameters = {
+        response = {
+          status_code  = 429
+          content_type = "application/json"
+          content      = jsonencode({ error = "refresh_cooldown", retryAfterSeconds = 60 })
+        }
+      }
       ratelimit = {
         characteristics     = ["ip.src"]
         period              = 60
