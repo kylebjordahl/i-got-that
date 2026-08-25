@@ -59,6 +59,11 @@ Future<void> showTaskActions(
       .where((t) => t.calendarEventId == task.calendarEventId)
       .toList();
   final types = (group.isEmpty ? [task] : group).map((t) => t.type).toSet();
+  // A tag/row tap scopes to just [task], but its event has other legs too —
+  // the TYPE switches below still edit all of them, so callers need a nudge
+  // that they're not just retyping this one drop-off or pick-up.
+  final isSingleLegOfGroup =
+      group.length > 1 && (scopeTasks == null || scopeTasks.isEmpty);
 
   final owners = scope
       .where((t) => t.status == 'owned')
@@ -216,6 +221,14 @@ Future<void> showTaskActions(
                           );
                         },
                 ),
+              if (isSingleLegOfGroup) ...[
+                const SizedBox(height: 6),
+                Text(
+                  'This changes the type for the whole event, not just this '
+                  'one leg.',
+                  style: AppText.subtitle,
+                ),
+              ],
             ],
             if (transitions.isNotEmpty) ...[
               const SizedBox(height: 20),
