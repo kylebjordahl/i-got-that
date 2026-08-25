@@ -465,6 +465,7 @@ Future<bool?> showTaskRuleSheet(
 }) {
   return showModalBottomSheet<bool>(
     context: context,
+    useSafeArea: true,
     useRootNavigator: true,
     showDragHandle: true,
     isScrollControlled: true,

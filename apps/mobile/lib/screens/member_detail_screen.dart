@@ -737,6 +737,7 @@ class _FamilyLogisticsSection extends ConsumerWidget {
   Future<void> _showHomeAddressSheet(BuildContext context) {
     return showModalBottomSheet<void>(
       context: context,
+      useSafeArea: true,
       useRootNavigator: true,
       showDragHandle: true,
       isScrollControlled: true,
@@ -995,6 +996,7 @@ class _UnifiedCalendarSection extends ConsumerWidget {
     if (accounts.isEmpty) return;
     await showModalBottomSheet<void>(
       context: context,
+      useSafeArea: true,
       useRootNavigator: true,
       showDragHandle: true,
       isScrollControlled: true,

@@ -131,6 +131,7 @@ Future<void> showTaskActions(
 
   await showModalBottomSheet<void>(
     context: context,
+    useSafeArea: true,
     useRootNavigator: true,
     showDragHandle: true,
     isScrollControlled: true,
@@ -412,6 +413,7 @@ Future<void> showEventDetails(
 
   await showModalBottomSheet<void>(
     context: context,
+    useSafeArea: true,
     useRootNavigator: true,
     showDragHandle: true,
     isScrollControlled: true,
@@ -534,6 +536,7 @@ Future<void> _pickAndAssign(
       .toList();
   await showModalBottomSheet<void>(
     context: context,
+    useSafeArea: true,
     useRootNavigator: true,
     showDragHandle: true,
     builder: (sheetCtx) => SafeArea(

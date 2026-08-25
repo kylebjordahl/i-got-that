@@ -127,6 +127,7 @@ Future<void> _showAddSourceSheet(
 ) async {
   await showModalBottomSheet<void>(
     context: context,
+    useSafeArea: true,
     useRootNavigator: true,
     isScrollControlled: true,
     backgroundColor: Colors.transparent,

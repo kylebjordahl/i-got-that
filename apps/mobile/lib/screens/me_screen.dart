@@ -278,6 +278,7 @@ class MeScreen extends ConsumerWidget {
   ) {
     showModalBottomSheet<void>(
       context: context,
+      useSafeArea: true,
       useRootNavigator: true,
       showDragHandle: true,
       // `sheetCtx`, not the outer `context`: `context` here is the Me screen's

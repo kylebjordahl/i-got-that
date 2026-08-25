@@ -22,6 +22,7 @@ Future<bool> showOnboardingAddMemberSheet(
 }) async {
   final ok = await showModalBottomSheet<bool>(
     context: context,
+    useSafeArea: true,
     useRootNavigator: true,
     isScrollControlled: true,
     backgroundColor: Colors.transparent,

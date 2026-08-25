@@ -637,6 +637,7 @@ Future<void> showOverrideRuleSheet(
 }) {
   return showModalBottomSheet<void>(
     context: context,
+    useSafeArea: true,
     useRootNavigator: true,
     showDragHandle: true,
     isScrollControlled: true,
