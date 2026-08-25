@@ -271,13 +271,27 @@ jobs:
           # Matched as whole words against the raw listing rather than parsed:
           # `wrangler secret list` has rendered both JSON and a table across
           # versions, and a name is a name in either. `_` is word-constituent,
-          # so KEK_V1 doesn't match KEK_V10.
+          # so KEK_V1 doesn't match KEK_V10 and KEK doesn't match KEK_V1.
           listing="$(pnpm wrangler secret list --env "$WRANGLER_ENV")"
           echo "$listing"
+          has() { printf '%s\n' "$listing" | grep -qw "$1"; }
           missing=""
-          for required in KEK_V1 COOKIE_SIGNING_KEY GOOGLE_OAUTH_CLIENT_SECRET; do
-            printf '%s\n' "$listing" | grep -qw "$required" || missing="$missing $required"
+          for required in COOKIE_SIGNING_KEY GOOGLE_OAUTH_CLIENT_SECRET; do
+            has "$required" || missing="$missing $required"
           done
+          # Envelope encryption needs KEK_V1 *or* the pre-split KEK it falls back
+          # to (lib/secrets.ts) — an env that predates versioning can't produce
+          # KEK_V1, because Worker secrets can't be read back out.
+          if has KEK_V1; then
+            :
+          elif has KEK; then
+            echo "::warning::'$WRANGLER_ENV' has no KEK_V1 and is running envelope" \
+                 "encryption on the legacy unversioned KEK. That works — but do NOT" \
+                 "delete that secret; its value can't be recovered and it is the only" \
+                 "key that decrypts credentials stored before versioning."
+          else
+            missing="$missing KEK_V1"
+          fi
           if [ -n "$missing" ]; then
             echo "::error::Missing Worker secret(s) for '$WRANGLER_ENV':$missing." \
                  "Set each with: cd apps/api && echo '<value>' |" \
@@ -297,8 +311,9 @@ jobs:
 
       # Belt and braces to the pre-deploy secret check: a secret can be *set*
       # and still be unusable (not base64, wrong length). /health reports
-      # `config.secretsKek` as ok/missing/invalid — never any key material — and
-      # flips `ok` false when it isn't `ok`.
+      # `config.secretsKek` as ok/legacy/missing/invalid — never any key
+      # material. `legacy` is working (the pre-split KEK fallback), so only
+      # missing/invalid fail.
       - name: Smoke-check deployed Worker config
         env:
           PUBLIC_ORIGIN: "https://${{ inputs.environment == 'production' && 'igt' || 'staging.igt' }}.kylebjordahl.com"
@@ -308,12 +323,19 @@ jobs:
           echo "$body"
           kek="$(printf '%s' "$body" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>
                    console.log(JSON.parse(s).config?.secretsKek ?? "unknown"))')"
-          if [ "$kek" != "ok" ]; then
-            echo "::error::Deployed '$WRANGLER_ENV' Worker reports envelope-encryption KEK '$kek'." \
-                 "Connecting calendar accounts will fail and feeds/mirrors will skip." \
-                 "Fix KEK_V<n> (see docs/DEPLOYMENT.md § 6)."
-            exit 1
-          fi
+          case "$kek" in
+            ok) ;;
+            legacy)
+              echo "::warning::'$WRANGLER_ENV' is encrypting under the legacy unversioned" \
+                   "KEK. Working, but don't delete that secret — see docs/DEPLOYMENT.md § 6."
+              ;;
+            *)
+              echo "::error::Deployed '$WRANGLER_ENV' Worker reports envelope-encryption KEK '$kek'." \
+                   "Connecting calendar accounts will fail and feeds/mirrors will skip." \
+                   "Fix KEK_V<n> (see docs/DEPLOYMENT.md § 6)."
+              exit 1
+              ;;
+          esac
 
   # Building/signing/uploading in `testflight` below is the expensive part of
   # deploying to TestFlight (and the reason that job needs macOS runners), so

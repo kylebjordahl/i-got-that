@@ -138,10 +138,17 @@ describe('external accounts — unusable envelope-encryption KEK', () => {
   it('refuses to connect with 503 + reason when no KEK_V<n> is configured', async () => {
     const user = await login('acct-no-kek@example.com');
     // KEK_CURRENT_VERSION with no matching KEK_V<n> — same resolution failure
-    // as a deployed env that simply never set KEK_V1.
+    // as a deployed env that has neither a versioned key nor the legacy one.
     const res = await fetchWith({ ...env, KEK_CURRENT_VERSION: '9' }, body(user.token));
     expect(res.status).toBe(503);
     expect(await res.json()).toEqual({ error: 'kek_unconfigured', reason: 'missing' });
+  });
+
+  it('still connects on a pre-v0.9 env that has only the unversioned KEK', async () => {
+    const user = await login('acct-legacy-kek@example.com');
+    const legacyEnv = { ...env, KEK: env.KEK_V1, KEK_V1: undefined } as unknown as typeof env;
+    const res = await fetchWith(legacyEnv, body(user.token));
+    expect(res.status).toBe(201);
   });
 
   it('refuses to connect with 503 + reason when the KEK is not valid AES-256 material', async () => {

@@ -15,17 +15,27 @@ export interface Bindings {
      */
     PUBLIC_ORIGIN?: string;
     /**
+     * The original, unversioned key-encryption key — base64 of 32 random bytes.
+     * Superseded by `KEK_V<n>` below, and read now only as the **version-1
+     * fallback**: secrets written before that split are stamped
+     * `key_version = 1` and wrapped with this value, so an env that has `KEK`
+     * but no `KEK_V1` keeps working (see `lib/secrets.ts#buildKekKeySet`).
+     *
+     * Deliberately not removed. Worker secrets are write-only — nobody can read
+     * `KEK`'s value back out of Cloudflare to re-set it as `KEK_V1` — so for a
+     * deployment that predates the split, this binding is the *only* thing that
+     * can still decrypt its stored credentials. Dropping it, or deleting the
+     * secret, orphans every credential in that env permanently.
+     */
+    KEK?: string;
+    /**
      * Versioned key-encryption keys for envelope-encrypted secrets
      * (`lib/secrets.ts`) — each `KEK_V<n>` is base64 of 32 random bytes, set
-     * via `wrangler secret put KEK_V<n> [--env <env>]`. **Required in every
-     * deployed env**: without the current version's key nothing can decrypt a
-     * stored credential, so connecting an account fails (503) and every feed
-     * and mirror skips. `GET /health` reports it as `config.secretsKek`.
-     *
-     * Only `KEK_V1` needs to exist today. A deployment that predates the split
-     * (≤ v0.8, when a single unversioned `KEK` did this job) must set `KEK_V1`
-     * to **that same old `KEK` value** — existing `secrets` rows are stamped
-     * `key_version = 1` and decrypt with nothing else.
+     * via `wrangler secret put KEK_V<n> [--env <env>]`. Every deployed env needs
+     * the current version's key (or, for version 1, the legacy `KEK` above):
+     * without it nothing can decrypt a stored credential, so connecting an
+     * account fails (503) and every feed and mirror skips. `GET /health` reports
+     * which of the two is in play as `config.secretsKek` (`ok` vs `legacy`).
      *
      * Add a `KEK_V<n>` field here (and set the matching secret) for each new
      * version as you rotate — `lib/secrets.ts#buildKekKeySet` looks versions up

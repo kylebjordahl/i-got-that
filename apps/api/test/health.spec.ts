@@ -45,6 +45,19 @@ describe('api health', () => {
     expect(body.ok).toBe(false);
   });
 
+  it('stays healthy, flagged legacy, on the pre-v0.9 unversioned KEK', async () => {
+    const ctx = createExecutionContext();
+    const res = await app.fetch(
+      new Request('https://api.test/health'),
+      { ...env, KEK: env.KEK_V1, KEK_V1: undefined } as unknown as typeof env,
+      ctx,
+    );
+    await waitOnExecutionContext(ctx);
+    const body = (await res.json()) as Health;
+    expect(body.config.secretsKek).toBe('legacy');
+    expect(body.ok).toBe(true);
+  });
+
   it('reports a KEK that is set but not valid AES-256 material', async () => {
     const ctx = createExecutionContext();
     const res = await app.fetch(

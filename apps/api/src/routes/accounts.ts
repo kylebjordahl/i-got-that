@@ -30,7 +30,7 @@ import {
   outboundPolicy,
   UnsafeOutboundUrlError,
 } from '../lib/outbound-url.js';
-import { buildKekKeySet, kekStatus, storeSecret } from '../lib/secrets.js';
+import { buildKekKeySet, kekStatus, kekUsable, storeSecret } from '../lib/secrets.js';
 
 /** iCloud's well-known CalDAV endpoint (used when no serverUrl is given). */
 const ICLOUD_CALDAV_URL = 'https://caldav.icloud.com';
@@ -84,7 +84,7 @@ accountRoutes.post('/', async (c) => {
   // before the OAuth code exchange so a doomed connect doesn't burn the
   // single-use `authCode` (the user can retry once the env is fixed).
   const kek = kekStatus(c.env);
-  if (kek !== 'ok') {
+  if (!kekUsable(kek)) {
     console.error(
       `POST /accounts: envelope-encryption KEK is ${kek} — set KEK_V<n> (see docs/DEPLOYMENT.md § KEK); refusing to connect an account`,
     );
