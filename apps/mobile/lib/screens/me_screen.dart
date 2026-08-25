@@ -666,7 +666,7 @@ class _NotificationsCard extends ConsumerWidget {
                     ? AppColors.indigo
                     : AppColors.textMuted,
                 title: schedule.label,
-                subtitle: describeSchedule(schedule),
+                subtitle: describeSchedule(context, schedule),
                 onTap: () => _openEditor(context, ref, schedule),
               ),
             ],

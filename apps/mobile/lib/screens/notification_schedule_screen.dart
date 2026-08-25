@@ -9,6 +9,7 @@ import '../util/assignment_text.dart' show kWeekdayLabels;
 import '../widgets/day_chip.dart';
 import '../widgets/primitives.dart';
 import '../widgets/settings.dart';
+import '../widgets/time_fields.dart';
 
 /// Editor for one notification schedule — when the digest goes out, which days
 /// it covers, and which kinds of outstanding work it counts.
@@ -49,11 +50,7 @@ class _NotificationScheduleScreenState
     super.initState();
     final s = widget.schedule;
     _label = TextEditingController(text: s?.label ?? 'Daily brief');
-    final parts = (s?.sendAt ?? '20:00').split(':');
-    _sendAt = TimeOfDay(
-      hour: int.tryParse(parts.first) ?? 20,
-      minute: int.tryParse(parts.last) ?? 0,
-    );
+    _sendAt = parseClockTime(s?.sendAt) ?? const TimeOfDay(hour: 20, minute: 0);
     _weekdays = {...?s?.weekdays};
     if (_weekdays.isEmpty) _weekdays = {0, 1, 2, 3, 4, 5, 6};
     _startOffsetDays = s?.startOffsetDays ?? 1;
@@ -77,9 +74,7 @@ class _NotificationScheduleScreenState
 
   int get _weekdayMask => _weekdays.fold(0, (m, b) => m | (1 << b));
 
-  String get _sendAtWire =>
-      '${_sendAt.hour.toString().padLeft(2, '0')}:'
-      '${_sendAt.minute.toString().padLeft(2, '0')}';
+  String get _sendAtWire => formatClockTime(_sendAt);
 
   String get _timezone => widget.schedule?.timezone ?? widget.timezone ?? 'UTC';
 
@@ -99,21 +94,14 @@ class _NotificationScheduleScreenState
     return 'Covers $_horizonDays days, starting ${_startOffsetDays == 0 ? 'today' : start}.';
   }
 
-  Future<void> _pickTime() async {
-    final picked = await showTimePicker(
-      context: context,
-      initialTime: _sendAt,
-      helpText: 'Send at',
-    );
-    if (picked == null) return;
-    // Snap to the quarter hour the cron can actually honour.
+  /// Round to the quarter hour the dispatching cron can actually honour.
+  /// Neither platform picker offers a minute interval, so the snap happens on
+  /// the way out rather than being enforced by the wheel.
+  static TimeOfDay _snapToQuarterHour(TimeOfDay picked) {
     final snapped = (picked.minute / 15).round() * 15;
-    setState(
-      () => _sendAt = TimeOfDay(
-        hour: snapped == 60 ? (picked.hour + 1) % 24 : picked.hour,
-        minute: snapped == 60 ? 0 : snapped,
-      ),
-    );
+    return snapped == 60
+        ? TimeOfDay(hour: (picked.hour + 1) % 24, minute: 0)
+        : TimeOfDay(hour: picked.hour, minute: snapped);
   }
 
   Future<void> _save() async {
@@ -254,14 +242,12 @@ class _NotificationScheduleScreenState
 
                   Text('WHEN', style: AppText.eyebrow()),
                   const SizedBox(height: 10),
-                  AppCard(
-                    child: SettingRow(
-                      icon: Icons.schedule_rounded,
-                      iconColor: AppColors.indigo,
-                      title: _sendAt.format(context),
-                      subtitle: 'Sent to the quarter hour',
-                      onTap: _pickTime,
-                    ),
+                  ClockTimePickerField(
+                    label: 'Send at',
+                    value: _sendAt,
+                    helperText: 'Sent to the quarter hour',
+                    onChanged: (picked) =>
+                        setState(() => _sendAt = _snapToQuarterHour(picked)),
                   ),
                   const SizedBox(height: 18),
 

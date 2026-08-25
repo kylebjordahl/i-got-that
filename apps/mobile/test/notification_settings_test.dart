@@ -412,38 +412,58 @@ void main() {
   });
 
   group('describeSchedule', () {
-    test('summarises days, time, coverage and category count', () {
+    /// The summary formats the send time through the viewer's own clock
+    /// convention, so it needs a real BuildContext under a MaterialApp.
+    Future<String> describe(
+      WidgetTester tester,
+      Map<String, dynamic> json,
+    ) async {
+      late String summary;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Builder(
+            builder: (context) {
+              summary = describeSchedule(
+                context,
+                NotificationSchedule.fromJson(json),
+              );
+              return const SizedBox.shrink();
+            },
+          ),
+        ),
+      );
+      return summary;
+    }
+
+    testWidgets('summarises days, time, coverage and category count', (
+      tester,
+    ) async {
       expect(
-        describeSchedule(NotificationSchedule.fromJson(scheduleJson())),
+        await describe(tester, scheduleJson()),
         'Weekdays · 8:00 PM · tomorrow · unclaimed tasks',
       );
       expect(
-        describeSchedule(
-          NotificationSchedule.fromJson(
-            scheduleJson(
-              weekdayMask: 127,
-              sendAt: '07:30',
-              startOffsetDays: 0,
-              horizonDays: 2,
-              categories: const ['conflicts', 'my_tasks'],
-            ),
+        await describe(
+          tester,
+          scheduleJson(
+            weekdayMask: 127,
+            sendAt: '07:30',
+            startOffsetDays: 0,
+            horizonDays: 2,
+            categories: const ['conflicts', 'my_tasks'],
           ),
         ),
         'Every day · 7:30 AM · 2 days from today · 2 kinds',
       );
     });
 
-    test('renders midnight and noon as 12, not 0', () {
+    testWidgets('renders midnight and noon as 12, not 0', (tester) async {
       expect(
-        describeSchedule(
-          NotificationSchedule.fromJson(scheduleJson(sendAt: '00:15')),
-        ),
+        await describe(tester, scheduleJson(sendAt: '00:15')),
         startsWith('Weekdays · 12:15 AM'),
       );
       expect(
-        describeSchedule(
-          NotificationSchedule.fromJson(scheduleJson(sendAt: '12:00')),
-        ),
+        await describe(tester, scheduleJson(sendAt: '12:00')),
         startsWith('Weekdays · 12:00 PM'),
       );
     });

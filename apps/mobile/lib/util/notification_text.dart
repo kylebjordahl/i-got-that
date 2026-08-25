@@ -1,12 +1,16 @@
+import 'package:flutter/widgets.dart';
 import '../models.dart';
+import '../widgets/time_fields.dart';
 import 'assignment_text.dart' show kWeekdayLabels;
 
 /// One-line summary of a schedule for the Me screen row: when it goes out, what
 /// it covers, and how many kinds of thing it counts.
 ///
-/// e.g. "Weekdays · 8:00 PM · tomorrow · 3 kinds"
-String describeSchedule(NotificationSchedule s) {
-  final parts = <String>[_days(s), _time(s.sendAt), _coverage(s)];
+/// e.g. "Weekdays · 8:00 PM · tomorrow · 3 kinds". Takes a [BuildContext] so the
+/// send time reads in the viewer's own clock convention — the stored `HH:MM` is
+/// an API detail, not what anyone should be shown.
+String describeSchedule(BuildContext context, NotificationSchedule s) {
+  final parts = <String>[_days(s), _time(context, s.sendAt), _coverage(s)];
   if (s.categories.length != NotificationCategory.values.length) {
     parts.add(
       s.categories.length == 1
@@ -26,15 +30,9 @@ String _days(NotificationSchedule s) {
   return days.map((d) => kWeekdayLabels[d]).join(', ');
 }
 
-/// 24h `HH:MM` from the API rendered as a 12-hour clock, matching the rest of
-/// the app's time copy.
-String _time(String sendAt) {
-  final parts = sendAt.split(':');
-  final hour = int.tryParse(parts.first) ?? 0;
-  final minute = parts.length > 1 ? parts[1] : '00';
-  final suffix = hour < 12 ? 'AM' : 'PM';
-  final display = hour % 12 == 0 ? 12 : hour % 12;
-  return '$display:$minute $suffix';
+String _time(BuildContext context, String sendAt) {
+  final time = parseClockTime(sendAt);
+  return time == null ? sendAt : formatClockTimeForDisplay(context, time);
 }
 
 String _coverage(NotificationSchedule s) {
