@@ -13,13 +13,67 @@ async function call(path: string, init?: RequestInit) {
   return res;
 }
 
+type Health = {
+  ok: boolean;
+  service: string;
+  config: { secretsKek: string };
+};
+
 describe('api health', () => {
   it('GET /health returns ok', async () => {
     const res = await call('/health');
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { ok: boolean; service: string };
+    const body = (await res.json()) as Health;
     expect(body.ok).toBe(true);
     expect(body.service).toBe('igt-api');
+    expect(body.config.secretsKek).toBe('ok');
+  });
+
+  // The deploy workflow smoke-checks this: an env missing (or holding bad)
+  // KEK_V<n> still boots and serves, but can't read or write any stored
+  // credential — connecting an account fails and feeds/mirrors silently skip.
+  it('reports an unconfigured envelope-encryption KEK instead of looking healthy', async () => {
+    const ctx = createExecutionContext();
+    const res = await app.fetch(
+      new Request('https://api.test/health'),
+      { ...env, KEK_CURRENT_VERSION: '9' },
+      ctx,
+    );
+    await waitOnExecutionContext(ctx);
+    const body = (await res.json()) as Health;
+    expect(body.config.secretsKek).toBe('missing');
+    expect(body.ok).toBe(false);
+  });
+
+  it('stays healthy, flagged legacy, on the pre-v0.9 unversioned KEK', async () => {
+    const ctx = createExecutionContext();
+    const res = await app.fetch(
+      new Request('https://api.test/health'),
+      { ...env, KEK: env.KEK_V1, KEK_V1: undefined } as unknown as typeof env,
+      ctx,
+    );
+    await waitOnExecutionContext(ctx);
+    const body = (await res.json()) as Health;
+    expect(body.config.secretsKek).toBe('legacy');
+    expect(body.ok).toBe(true);
+  });
+
+  it('reports a KEK that is set but not valid AES-256 material', async () => {
+    const ctx = createExecutionContext();
+    const res = await app.fetch(
+      new Request('https://api.test/health'),
+      { ...env, KEK_V1: 'not-a-32-byte-key' },
+      ctx,
+    );
+    await waitOnExecutionContext(ctx);
+    const body = (await res.json()) as Health;
+    expect(body.config.secretsKek).toBe('invalid');
+    expect(body.ok).toBe(false);
+  });
+
+  it('never puts key material in the health payload', async () => {
+    const res = await call('/health');
+    expect(await res.text()).not.toContain(env.KEK_V1);
   });
 
   it('GET /health/db reaches the D1 binding', async () => {

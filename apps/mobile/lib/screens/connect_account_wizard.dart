@@ -1,3 +1,4 @@
+import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -119,7 +120,7 @@ class _ConnectAccountWizardState extends ConsumerState<ConnectAccountWizard> {
           );
       await _finishConnected(res);
     } catch (e) {
-      setState(() => _error = '$e');
+      setState(() => _error = _connectError(e));
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -161,10 +162,40 @@ class _ConnectAccountWizardState extends ConsumerState<ConnectAccountWizard> {
           );
       await _finishConnected(res);
     } catch (e) {
-      setState(() => _error = '$e');
+      setState(() => _error = _connectError(e));
     } finally {
       if (mounted) setState(() => _busy = false);
     }
+  }
+
+  /// Turn a failed connect into something a person can act on. The API answers
+  /// with a stable `error` code (see apps/api/src/routes/accounts.ts); anything
+  /// unrecognised falls back to the status line rather than the raw
+  /// `DioException` dump, which fills the screen and says nothing useful.
+  String _connectError(Object e) {
+    final res = e is DioException ? e.response : null;
+    final data = res?.data;
+    final code = data is Map ? data['error'] : null;
+    final fallback = res == null
+        ? 'Could not connect: $e'
+        : 'Could not connect (HTTP ${res.statusCode}).';
+    return switch (code) {
+      'kek_unconfigured' =>
+        "This environment can't store calendar credentials yet — the server is "
+            'missing its encryption key. Nothing you did is wrong; this needs a '
+            'server-side fix.',
+      'google_oauth_not_configured' =>
+        'Google Calendar connections are not configured on this server.',
+      'google_no_refresh_token' =>
+        'Google did not grant offline access. Remove I Got That from your '
+            'Google account permissions, then try connecting again.',
+      'google_exchange_failed' =>
+        'Google rejected the sign-in. That usually means the code expired — '
+            'please try again.',
+      'unsafe_url' => 'That server URL is not allowed.',
+      'invalid' => 'Some details are missing or invalid.',
+      _ => fallback,
+    };
   }
 
   /// Shared post-connect step for both [_connect] (CalDAV) and
