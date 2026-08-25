@@ -243,7 +243,16 @@ feedRoutes.patch('/:feedId', requireAdmin, async (c) => {
   if (d.mode !== undefined) set.mode = d.mode;
   if (routingChanged) set.routed = routed;
   if (d.refreshMinutes !== undefined) set.refreshMinutes = d.refreshMinutes;
-  if (d.status !== undefined) set.status = d.status;
+  if (d.status !== undefined) {
+    set.status = d.status;
+    // Taking a feed out of 'error' by hand is a fresh start: leaving the
+    // failure count behind would have the cron's backoff still pacing the next
+    // poll off a fault the admin has just declared fixed.
+    if (d.status !== 'error') {
+      set.consecutiveFailures = 0;
+      set.lastErrorMessage = null;
+    }
+  }
   if (d.timezone !== undefined) set.timezone = d.timezone;
   if (timezoneChanged) {
     // The ICS document itself may be byte-for-byte unchanged (this is a
@@ -294,6 +303,9 @@ feedRoutes.get('/', async (c) => {
       lastSyncedAt: feeds.lastSyncedAt,
       lastRefreshRequestedAt: feeds.lastRefreshRequestedAt,
       status: feeds.status,
+      // Why a feed is in 'error'. Without it a feed that has quietly stopped
+      // ingesting is indistinguishable from one with nothing new to report.
+      lastErrorMessage: feeds.lastErrorMessage,
       createdAt: feeds.createdAt,
       // Account-backed feeds only: the connected account's kind, so the
       // client can distinguish "iCloud Calendar" from a generic "CalDAV
@@ -900,7 +912,7 @@ feedRoutes.post('/:feedId/refresh', async (c) => {
     .set({ lastRefreshRequestedAt: now })
     .where(eq(feeds.id, feed.id));
 
-  const ingest = await ingestFeed(db, feed, ingestSecrets(c.env));
+  const ingest = await ingestFeed(db, feed, { ...ingestSecrets(c.env), force: true });
   const synthesis = await synthesizeFeed(db, feed);
   await readBackFamily(db, familyId, ingestSecrets(c.env));
   const links = await db
@@ -951,7 +963,10 @@ feedRoutes.post('/refresh-all', async (c) => {
       .where(eq(feeds.familyId, familyId));
   }
 
-  const ingest = await ingestFamilyFeeds(db, familyId, ingestSecrets(c.env));
+  const ingest = await ingestFamilyFeeds(db, familyId, {
+    ...ingestSecrets(c.env),
+    force: true,
+  });
 
   const familyFeeds = await db.select().from(feeds).where(eq(feeds.familyId, familyId));
   const synthesis = [];
