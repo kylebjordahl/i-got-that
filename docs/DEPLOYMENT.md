@@ -432,10 +432,25 @@ recognizes that shape, so an edge-level block still shows the friendly
 
 Unlike the D1/Queue resources above, this rule is **zone-scoped**, so it
 needs the zone backing your custom domain (§7) — set `cloudflare_zone_id` in
-your `*.tfvars` (find it on the zone's Overview page in the dashboard) and
-make sure the API token has the **Zone · Zone WAF · Edit** permission from
-§1. If you haven't set up a custom domain yet, this resource has nothing to
-attach to — hold off on `terraform apply` for it until §7 is done.
+your `*.tfvars` for a local apply (find it on the zone's Overview page in the
+dashboard) and make sure the API token has the **Zone · Zone WAF · Edit**
+permission from §1. If you haven't set up a custom domain yet, this resource
+has nothing to attach to — hold off on `terraform apply` for it until §7 is
+done.
+
+**CI needs this too, as a repo secret**: `deploy.yml` passes it to Terraform
+as `TF_VAR_cloudflare_zone_id: ${{ secrets.CLOUDFLARE_ZONE_ID }}`. Since
+staging and production share one parent zone (§7), a single repo-level
+`CLOUDFLARE_ZONE_ID` secret covers both — set it once (Settings → Secrets and
+variables → Actions). The `cloudflare_zone_id` variable has no default, and
+the `terraform apply` step runs with `-input=false`, so a missing secret now
+fails the "Terraform apply" step immediately with a clear "no value for
+required variable" error instead of hanging: Terraform's interactive prompt
+for a missing required variable blocks forever on a GitHub Actions runner,
+which has no stdin to answer it — that's what happened before `-input=false`
+was added, when this variable was introduced without the CI secret to back
+it and staging deploys hung for over an hour with no error until manually
+cancelled.
 
 ### 10. Push notifications (APNs)
 
