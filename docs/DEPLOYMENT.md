@@ -414,21 +414,33 @@ action needed per-release. Add internal/external testers in App Store Connect
 ### 9. Edge rate limiting (Cloudflare Rate Limiting rules)
 
 The Worker already enforces app-layer, per-identity rate limits and refresh
-cooldowns (`apps/api/src/lib/rate-limit.ts`, issue #142 items 2-5). Terraform
-adds a cheap edge-layer backstop (`cloudflare_ruleset.rate_limiting`,
-`infra/terraform/main.tf`) that blocks abusive traffic by source IP before it
-reaches the Worker at all:
+cooldowns (`apps/api/src/routes/auth.ts`'s `MagicLinkCapExceededError`,
+`apps/api/src/routes/feeds.ts`'s 60s manual-refresh cooldown — issue #142
+items 2-5). Terraform adds a cheap edge-layer backstop
+(`cloudflare_ruleset.rate_limiting`, `infra/terraform/main.tf`) that blocks
+abusive traffic by source IP before it reaches the Worker at all:
 
-- `POST /api/auth/*` — 5 requests/min/IP
-- `POST /api/families/*/feeds/*refresh*` (both the per-feed and refresh-all
-  endpoints) — 2 requests/min/IP
+- `POST /api/auth/*` **or** `POST /api/families/*/feeds/*refresh*` (both the
+  per-feed and refresh-all endpoints) — 5 requests/min/IP, one combined rule.
 
-Each rule's `action_parameters.response` returns the same JSON body the
-Worker itself would (`{"error":"too_many_requests"}` / `{"error":
-"refresh_cooldown","retryAfterSeconds":60}`), not Cloudflare's default HTML
-block page — the mobile client's `FeedRefreshCooldown` handling only
-recognizes that shape, so an edge-level block still shows the friendly
-"already up to date" message instead of a raw error.
+This was originally two rules (auth at 5/min, feed-refresh at 2/min), but
+this zone's plan caps the `http_ratelimit` phase at **1** custom rule —
+Cloudflare rejects a 2nd with a 400 (code 50001, "exceeded the maximum
+number of rules in the phase http_ratelimit: 2 out of 1"). Consolidated into
+one rule at the less-restrictive threshold; the app-layer cooldown above is
+already tighter than 5/min for feed-refresh specifically, so it catches
+refresh abuse first in practice and this rule stays a coarse backstop for
+both endpoint groups. Bump to a plan tier with more `http_ratelimit` rules
+if the two ever need to diverge again.
+
+`action_parameters.response` returns the same generic JSON body the Worker's
+own auth rejection would (`{"error":"too_many_requests"}`), not Cloudflare's
+default HTML block page — a feed-refresh client tripping this edge rule
+(rather than the app-layer cooldown, which returns the friendlier
+`{"error":"refresh_cooldown","retryAfterSeconds":60}` shape the mobile
+client's `FeedRefreshCooldown` handling recognizes) sees a raw error instead
+of the "already up to date" message; expected to be rare given the ordering
+above.
 
 Unlike the D1/Queue resources above, this rule is **zone-scoped**, so it
 needs the zone backing your custom domain (§7) — set `cloudflare_zone_id` in
