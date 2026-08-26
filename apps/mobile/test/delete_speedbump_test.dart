@@ -6,7 +6,6 @@ import 'package:caretaker_app/state/auth.dart';
 import 'package:caretaker_app/state/family.dart';
 import 'package:caretaker_app/theme/app_theme.dart';
 import 'package:caretaker_app/widgets/slide_to_confirm.dart';
-import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -17,13 +16,17 @@ import 'package:flutter_test/flutter_test.dart';
 class _FakeApiClient extends ApiClient {
   _FakeApiClient() : super(baseUrl: 'http://test');
   bool deletedAccount = false;
+  bool forcedDeleteAccount = false;
   String? deletedFamilyId;
   String? leftFamilyId;
-  String? deleteAccountErrorCode;
 
   /// Controls the up-front eligibility check the delete-account sheet does
   /// before showing its slide control.
   bool accountIsDeletable = true;
+
+  /// What the disconnect-account sheet's up-front audit reports — the
+  /// calendar-account equivalent of [accountIsDeletable].
+  AccountUsage accountUsageResult = AccountUsage(feeds: [], targets: []);
 
   @override
   Future<Map<String, dynamic>> me() async => {
@@ -49,18 +52,13 @@ class _FakeApiClient extends ApiClient {
   }
 
   @override
-  Future<void> deleteAccount(String accountId) async {
-    if (deleteAccountErrorCode != null) {
-      throw DioException(
-        requestOptions: RequestOptions(path: '/accounts/$accountId'),
-        response: Response(
-          requestOptions: RequestOptions(path: '/accounts/$accountId'),
-          statusCode: 409,
-          data: {'error': deleteAccountErrorCode},
-        ),
-      );
-    }
+  Future<AccountUsage> accountUsage(String accountId) async =>
+      accountUsageResult;
+
+  @override
+  Future<void> deleteAccount(String accountId, {bool force = false}) async {
     deletedAccount = true;
+    forcedDeleteAccount = force;
   }
 }
 
@@ -213,9 +211,16 @@ void main() {
   );
 
   testWidgets(
-    'disconnecting a calendar account still in use by a feed shows the in_use message, not the raw error',
+    'disconnecting a calendar account still linked to a feed shows the audit '
+    'by name up front, then force-disconnects it via the slide',
     (tester) async {
-      final api = _FakeApiClient()..deleteAccountErrorCode = 'in_use';
+      final api = _FakeApiClient()
+        ..accountUsageResult = AccountUsage(
+          feeds: [
+            AccountUsageFeed(id: 'feed-1', name: 'Home', members: ['Sarah']),
+          ],
+          targets: [],
+        );
       final me = Member(
         id: 'me',
         relationName: 'Me',
@@ -256,16 +261,16 @@ void main() {
       await tester.tap(find.text('Google'));
       await tester.pumpAndSettle();
 
-      await tester.tap(find.text('Disconnect'));
-      await tester.pumpAndSettle();
-
+      // The audit names the actual linked feed and member up front, in the
+      // sheet itself — not a toast surfaced after a failed attempt.
+      expect(find.textContaining('Home'), findsOneWidget);
+      expect(find.textContaining('Sarah'), findsOneWidget);
       expect(api.deletedAccount, isFalse);
-      expect(
-        find.text(
-          'Still in use by a feed or delivery method — remove those first.',
-        ),
-        findsOneWidget,
-      );
+
+      await slideToConfirm(tester);
+
+      expect(api.deletedAccount, isTrue);
+      expect(api.forcedDeleteAccount, isTrue);
     },
   );
 

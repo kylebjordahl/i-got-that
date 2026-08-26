@@ -74,6 +74,77 @@ describe('external accounts', () => {
       headers: { Authorization: `Bearer ${user.token}` },
     });
     expect(del.status).toBe(409);
+    const body = (await del.json()) as { error: string; feeds: unknown[]; targets: unknown[] };
+    expect(body.error).toBe('in_use');
+    expect(body.feeds).toHaveLength(1);
+    expect(body.targets).toHaveLength(0);
+  });
+
+  it('audits what a blocked account is linked to, then force-disconnects it in one call', async () => {
+    const user = await login('acct-force@example.com');
+    const familyId = await createFamily(user.token, 'Force Fam');
+    const created = await createCalDavAccount(user.token);
+    const accountId = ((await created.json()) as { account: Account }).account.id;
+
+    const memberRes = await call(
+      `/families/${familyId}/members`,
+      authed(user.token, { relationName: 'kiddo', requiresCaretaker: true }),
+    );
+    const { member } = (await memberRes.json()) as { member: { id: string } };
+
+    const feedRes = await call(
+      `/families/${familyId}/feeds`,
+      authed(user.token, {
+        kind: 'caldav',
+        externalAccountId: accountId,
+        sourceCalendarId: 'https://dav.example.com/cal/home/',
+        sourceCalendarName: 'Home',
+        mode: 'standard',
+      }),
+    );
+    const { feed } = (await feedRes.json()) as { feed: { id: string } };
+
+    // Linking a member triggers the feed's first (best-effort) ingest —
+    // stub the CalDAV REPORT dance so it resolves with zero events instead
+    // of hitting the real (fake) host.
+    vi.stubGlobal('fetch', async (_url: RequestInfo | URL, _init?: RequestInit) => {
+      return new Response(
+        '<?xml version="1.0"?><D:multistatus xmlns:D="DAV:"></D:multistatus>',
+        { status: 207, headers: { 'content-type': 'application/xml; charset=utf-8' } },
+      );
+    });
+    const linkRes = await call(
+      `/families/${familyId}/feeds/${feed.id}/member-links`,
+      authed(user.token, { familyMemberId: member.id }),
+    );
+    vi.unstubAllGlobals();
+    expect(linkRes.status).toBe(201);
+
+    const usage = await call(`/accounts/${accountId}/usage`, bearer(user.token));
+    expect(usage.status).toBe(200);
+    const usageBody = (await usage.json()) as {
+      feeds: { id: string; name: string | null; members: string[] }[];
+      targets: unknown[];
+    };
+    expect(usageBody.feeds).toEqual([{ id: feed.id, name: 'Home', members: ['kiddo'] }]);
+
+    const blocked = await call(`/accounts/${accountId}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${user.token}` },
+    });
+    expect(blocked.status).toBe(409);
+
+    const forced = await call(`/accounts/${accountId}?force=true`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${user.token}` },
+    });
+    expect(forced.status).toBe(200);
+
+    const feedsAfter = await call(`/families/${familyId}/feeds`, bearer(user.token));
+    const { feeds: feedsList } = (await feedsAfter.json()) as {
+      feeds: { id: string; status: string }[];
+    };
+    expect(feedsList.find((f) => f.id === feed.id)?.status).toBe('paused');
   });
 
   it('deletes an unused account', async () => {

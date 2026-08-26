@@ -111,6 +111,67 @@ class ExternalAccount {
   );
 }
 
+/// One input feed still drawing from an account pending disconnect, and every
+/// member it feeds — the audit shown before a forced disconnect turns it off.
+class AccountUsageFeed {
+  AccountUsageFeed({
+    required this.id,
+    required this.name,
+    required this.members,
+  });
+
+  final String id;
+  final String? name;
+  final List<String> members;
+
+  factory AccountUsageFeed.fromJson(Map<String, dynamic> j) => AccountUsageFeed(
+    id: j['id'] as String,
+    name: j['name'] as String?,
+    members: (j['members'] as List).cast<String>(),
+  );
+}
+
+/// One delivery target still drawing from an account pending disconnect.
+class AccountUsageTarget {
+  AccountUsageTarget({
+    required this.id,
+    required this.name,
+    required this.member,
+  });
+
+  final String id;
+  final String? name;
+  final String member;
+
+  factory AccountUsageTarget.fromJson(Map<String, dynamic> j) =>
+      AccountUsageTarget(
+        id: j['id'] as String,
+        name: j['name'] as String?,
+        member: j['member'] as String,
+      );
+}
+
+/// Everything still linked to an account — the disconnect confirm sheet's
+/// audit, and (via `force=true`) the exact set a disconnect turns off.
+class AccountUsage {
+  AccountUsage({required this.feeds, required this.targets});
+
+  final List<AccountUsageFeed> feeds;
+  final List<AccountUsageTarget> targets;
+
+  bool get isEmpty => feeds.isEmpty && targets.isEmpty;
+  int get itemCount => feeds.length + targets.length;
+
+  factory AccountUsage.fromJson(Map<String, dynamic> j) => AccountUsage(
+    feeds: (j['feeds'] as List)
+        .map((e) => AccountUsageFeed.fromJson(e as Map<String, dynamic>))
+        .toList(),
+    targets: (j['targets'] as List)
+        .map((e) => AccountUsageTarget.fromJson(e as Map<String, dynamic>))
+        .toList(),
+  );
+}
+
 /// A login method threaded to the current user (Sign in with Apple, or a
 /// magic-link email). Multiple identities resolve to one account — see
 /// docs/AUTH.md.
