@@ -395,6 +395,12 @@ export const UpdateFeedInput = z.object({
   status: FeedStatus.optional(),
   /** See `IanaTimezone`. `null` clears an existing manual override. */
   timezone: IanaTimezone.nullable().optional(),
+  /**
+   * The feed's display name (e.g. a busy feed's user-chosen block label, "Busy
+   * (work)"). Feeds a member is linked to are relabeled immediately, not just
+   * on the next sync.
+   */
+  sourceCalendarName: z.string().min(1).max(256).optional(),
 });
 export type UpdateFeedInput = z.infer<typeof UpdateFeedInput>;
 

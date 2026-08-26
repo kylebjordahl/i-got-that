@@ -523,19 +523,23 @@ class ApiClient {
     );
   }
 
-  /// Update a feed's mode ('standard' | 'exception') or its routing (shared
-  /// family calendar, standard feeds only). Either change resynthesizes.
+  /// Update a feed's mode ('standard' | 'exception'), its routing (shared
+  /// family calendar, standard feeds only), or its display name (e.g. a busy
+  /// feed's user-chosen block label). Any of these resynthesizes.
   Future<void> updateFeed(
     String familyId,
     String feedId, {
     String? mode,
     bool? routed,
+    String? sourceCalendarName,
   }) async {
     await _dio.patch(
       '/families/$familyId/feeds/$feedId',
       data: {
         if (mode != null) 'mode': mode,
         if (routed != null) 'routed': routed,
+        if (sourceCalendarName != null)
+          'sourceCalendarName': sourceCalendarName,
       },
       options: _auth,
     );

@@ -324,17 +324,18 @@ class FeedItem {
   /// A routed shared family calendar (routing only applies to standard feeds).
   bool get isRouted => mode == 'standard' && routed;
 
-  FeedItem copyWith({String? mode, bool? routed}) => FeedItem(
-    id: id,
-    kind: kind,
-    mode: mode ?? this.mode,
-    routed: routed ?? this.routed,
-    url: url,
-    sourceCalendarName: sourceCalendarName,
-    timezone: timezone,
-    status: status,
-    accountKind: accountKind,
-  );
+  FeedItem copyWith({String? mode, bool? routed, String? sourceCalendarName}) =>
+      FeedItem(
+        id: id,
+        kind: kind,
+        mode: mode ?? this.mode,
+        routed: routed ?? this.routed,
+        url: url,
+        sourceCalendarName: sourceCalendarName ?? this.sourceCalendarName,
+        timezone: timezone,
+        status: status,
+        accountKind: accountKind,
+      );
 
   String get displayName =>
       sourceCalendarName ??
