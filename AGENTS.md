@@ -186,16 +186,19 @@ paths in particular).
   `X-APPLE-TRAVEL-ADVISORY-BEHAVIOR:AUTOMATIC` alone only governs the "time to
   leave" alert. Drop `locationGeo` anywhere along that chain and travel time
   silently stops working, which is why every content hash on the path folds it
-  in. The duration itself is derived in `mirror.ts` for claimed drop-off/pickup
-  events: it finds where the caretaker is coming *from* — the last thing on
+  in. The duration itself is derived in `mirror.ts` for every claimed event —
+  drop-off, pickup and attendance alike, since all three are a trip the
+  caretaker makes, while a synthesized event is the child's day and never
+  gets one: it finds where the caretaker is coming *from* — the last thing on
   their own calendar (human read-back events included), or
   `family_members.home_location_geo` when the gap is long enough that they've
   plainly been elsewhere — and runs `estimateTravelMinutes` (pure, in
   `@igt/classification`: haversine × road factor ÷ a distance-dependent speed).
   There is no routing service server-side and no traffic; it's a seed of about
   the right size, which is all Apple needs to draw the block and then recompute
-  the leave-by time itself. With no origin at all it falls back to the family's
-  transition window. A human's own answer
+  the leave-by time itself. With no origin at all a transition falls back to the
+  family's drop-off/pickup window; an attendance claim, whose span is the event
+  rather than the journey, takes a flat 15-minute default. A human's own answer
   (`calendar_events.travel_time_override_min`, set from the event's detail
   sheet) beats all of that — `0` means no block, null hands it back to the
   estimate — and it lives outside `contentHash` on purpose, so healing an event

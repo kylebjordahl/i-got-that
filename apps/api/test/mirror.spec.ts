@@ -401,6 +401,69 @@ describe('mirror reconcile (syncMemberMirror)', () => {
     expect(travelFor(fromHome.id)!).toBeGreaterThan(travelFor(fromMeeting.id)!);
   });
 
+  it('measures a claimed attendance event the same way — it is a trip too', async () => {
+    const fam = await setupFamily('mirror-travel-attendance@example.com');
+    const db = getDb(env.DB);
+    await connectTarget(db, fam, fam.adminMemberId);
+
+    const home = { lat: 37.4419, lon: -122.143, title: 'Home' };
+    const field = { lat: 37.7955, lon: -122.3937, title: 'Elm Park Fields' };
+    await db
+      .update(familyMembers)
+      .set({ homeLocation: 'Home', homeLocationGeo: home })
+      .where(eq(familyMembers.id, fam.adminMemberId));
+
+    // Claiming attendance copies the source event wholesale onto the
+    // caretaker's calendar — they still have to drive to the game.
+    const task = (
+      await db
+        .insert(tasks)
+        .values({
+          familyId: fam.familyId,
+          familyMemberId: fam.childId,
+          type: 'attendance',
+          attendanceRequirement: 'any',
+          dtstart: new Date('2026-07-06T15:30:00Z'),
+          dtend: new Date('2026-07-06T17:00:00Z'),
+          status: 'owned',
+          ownerMemberId: fam.adminMemberId,
+          createdVia: 'generated',
+        })
+        .returning()
+    )[0]!;
+    const claimed = await insertEvent(db, fam.familyId, fam.adminMemberId, {
+      synthKey: `task:${task.id}`,
+      provenance: 'claimed_task',
+      summary: 'Soccer practice',
+      taskId: task.id,
+      dtstart: new Date('2026-07-06T15:30:00Z'),
+      dtend: new Date('2026-07-06T17:00:00Z'),
+      location: 'Elm Park Fields',
+      locationGeo: field,
+    });
+    // An all-day claim has no moment to arrive at, so it still gets nothing.
+    const allDay = await insertEvent(db, fam.familyId, fam.adminMemberId, {
+      synthKey: 'task:allday',
+      provenance: 'claimed_task',
+      summary: 'Field trip',
+      taskId: task.id,
+      allDay: true,
+      dtstart: new Date('2026-07-08T00:00:00Z'),
+      dtend: new Date('2026-07-09T00:00:00Z'),
+      location: 'Elm Park Fields',
+      locationGeo: field,
+    });
+
+    const fake = new FakeProvider('caldav');
+    const registry = new DeliveryProviderRegistry().register(fake);
+    await syncMemberMirror(db, registry, testKeys(), fam.adminMemberId);
+    const travelFor = (eventId: string) =>
+      fake.upserts.find((u) => u.event.uid === `igt-${eventId}`)?.event.travelTimeMinutes;
+
+    expect(travelFor(claimed.id)).toBe(estimateTravelMinutes(home, field));
+    expect(travelFor(allDay.id)).toBeUndefined();
+  });
+
   it("falls back to the claim's own window when there's nowhere to measure from", async () => {
     const fam = await setupFamily('mirror-travel@example.com');
     const db = getDb(env.DB);
@@ -457,10 +520,18 @@ describe('mirror reconcile (syncMemberMirror)', () => {
       dtend: new Date('2026-07-08T15:50:00Z'),
       locationGeo: null,
     });
-    // An attendance claim spans its event; it isn't a trip to a fixed moment.
+    // An attendance claim is a trip too, but its span is the event it covers,
+    // not the journey — a 6-hour game must not reserve a 6-hour travel block,
+    // so with nothing to measure from it takes the flat default.
     const attendance = await claim('attendance', {
       dtstart: new Date('2026-07-09T15:30:00Z'),
       dtend: new Date('2026-07-09T21:45:00Z'),
+    });
+    // Nowhere to route to ⇒ no block, attendance included.
+    const attendanceTextOnly = await claim('attendance', {
+      dtstart: new Date('2026-07-10T15:30:00Z'),
+      dtend: new Date('2026-07-10T21:45:00Z'),
+      locationGeo: null,
     });
 
     const fake = new FakeProvider('caldav');
@@ -472,7 +543,8 @@ describe('mirror reconcile (syncMemberMirror)', () => {
     expect(travelFor(windowed.id)).toBe(20);
     expect(travelFor(instant.id)).toBe(15);
     expect(travelFor(textOnly.id)).toBeUndefined();
-    expect(travelFor(attendance.id)).toBeUndefined();
+    expect(travelFor(attendance.id)).toBe(15);
+    expect(travelFor(attendanceTextOnly.id)).toBeUndefined();
   });
 
   it('lets an explicit travel-time override beat every estimate', async () => {
