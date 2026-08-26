@@ -364,7 +364,9 @@ class MeScreen extends ConsumerWidget {
           ? 'Slide to disconnect'
           : 'Slide to disconnect & turn off ${usage.itemCount}',
       onConfirmed: () async {
-        await ref.read(apiClientProvider).deleteAccount(a.id, force: !usage.isEmpty);
+        await ref
+            .read(apiClientProvider)
+            .deleteAccount(a.id, force: !usage.isEmpty);
         ref.invalidate(accountsProvider);
       },
       errorMessage: (e) => 'Failed: $e',

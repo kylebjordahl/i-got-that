@@ -52,7 +52,8 @@ class _FakeApiClient extends ApiClient {
   }
 
   @override
-  Future<AccountUsage> accountUsage(String accountId) async => accountUsageResult;
+  Future<AccountUsage> accountUsage(String accountId) async =>
+      accountUsageResult;
 
   @override
   Future<void> deleteAccount(String accountId, {bool force = false}) async {

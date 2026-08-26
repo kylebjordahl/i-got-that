@@ -114,7 +114,11 @@ class ExternalAccount {
 /// One input feed still drawing from an account pending disconnect, and every
 /// member it feeds — the audit shown before a forced disconnect turns it off.
 class AccountUsageFeed {
-  AccountUsageFeed({required this.id, required this.name, required this.members});
+  AccountUsageFeed({
+    required this.id,
+    required this.name,
+    required this.members,
+  });
 
   final String id;
   final String? name;
@@ -129,17 +133,22 @@ class AccountUsageFeed {
 
 /// One delivery target still drawing from an account pending disconnect.
 class AccountUsageTarget {
-  AccountUsageTarget({required this.id, required this.name, required this.member});
+  AccountUsageTarget({
+    required this.id,
+    required this.name,
+    required this.member,
+  });
 
   final String id;
   final String? name;
   final String member;
 
-  factory AccountUsageTarget.fromJson(Map<String, dynamic> j) => AccountUsageTarget(
-    id: j['id'] as String,
-    name: j['name'] as String?,
-    member: j['member'] as String,
-  );
+  factory AccountUsageTarget.fromJson(Map<String, dynamic> j) =>
+      AccountUsageTarget(
+        id: j['id'] as String,
+        name: j['name'] as String?,
+        member: j['member'] as String,
+      );
 }
 
 /// Everything still linked to an account — the disconnect confirm sheet's
