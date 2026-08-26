@@ -101,7 +101,11 @@ resource "cloudflare_ruleset" "rate_limiting" {
         }
       }
       ratelimit = {
-        characteristics     = ["ip.src"]
+        # cf.colo.id is required alongside ip.src: rate-limit counting on this
+        # API only happens at the colocation level, and a characteristics list
+        # without it is rejected outright (400, code 20155) rather than
+        # falling back to some default scope.
+        characteristics     = ["ip.src", "cf.colo.id"]
         period              = 60
         requests_per_period = 5
         mitigation_timeout  = 60
@@ -124,7 +128,7 @@ resource "cloudflare_ruleset" "rate_limiting" {
         }
       }
       ratelimit = {
-        characteristics     = ["ip.src"]
+        characteristics     = ["ip.src", "cf.colo.id"]
         period              = 60
         requests_per_period = 2
         mitigation_timeout  = 60
