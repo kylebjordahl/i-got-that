@@ -39,6 +39,7 @@ Routing / KV later). Keep binding names in sync between the two.
    - **Account · Email Routing · Edit** *(only once you wire inbound RSVP email)*
    - **Zone · DNS · Edit** + **Zone · Workers Routes · Edit** *(only if you put
      the API on a custom domain — see §6)*
+   - **Zone · Zone WAF · Edit** (edge rate limiting rules — see §9)
    Scope it to your account (and the specific zone, if using a custom domain).
 
 ### 2. GitHub repository secrets
@@ -410,7 +411,33 @@ TestFlight build automatically for that environment's flavor — no further
 action needed per-release. Add internal/external testers in App Store Connect
 → TestFlight the first time each app's build lands.
 
-### 9. Push notifications (APNs)
+### 9. Edge rate limiting (Cloudflare Rate Limiting rules)
+
+The Worker already enforces app-layer, per-identity rate limits and refresh
+cooldowns (`apps/api/src/lib/rate-limit.ts`, issue #142 items 2-5). Terraform
+adds a cheap edge-layer backstop (`cloudflare_ruleset.rate_limiting`,
+`infra/terraform/main.tf`) that blocks abusive traffic by source IP before it
+reaches the Worker at all:
+
+- `POST /api/auth/*` — 5 requests/min/IP
+- `POST /api/families/*/feeds/*refresh*` (both the per-feed and refresh-all
+  endpoints) — 2 requests/min/IP
+
+Each rule's `action_parameters.response` returns the same JSON body the
+Worker itself would (`{"error":"too_many_requests"}` / `{"error":
+"refresh_cooldown","retryAfterSeconds":60}`), not Cloudflare's default HTML
+block page — the mobile client's `FeedRefreshCooldown` handling only
+recognizes that shape, so an edge-level block still shows the friendly
+"already up to date" message instead of a raw error.
+
+Unlike the D1/Queue resources above, this rule is **zone-scoped**, so it
+needs the zone backing your custom domain (§7) — set `cloudflare_zone_id` in
+your `*.tfvars` (find it on the zone's Overview page in the dashboard) and
+make sure the API token has the **Zone · Zone WAF · Edit** permission from
+§1. If you haven't set up a custom domain yet, this resource has nothing to
+attach to — hold off on `terraform apply` for it until §7 is done.
+
+### 10. Push notifications (APNs)
 
 The daily "outstanding items" digest is sent straight from the Worker to APNs
 with a token-based (JWT) provider connection — one `.p8` auth key covers every
