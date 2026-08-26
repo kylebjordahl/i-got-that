@@ -39,8 +39,10 @@ exactly this and nothing more.
 
 **What the platform stores:** the intervals (`source_events` rows keyed
 `fb:<start>/<end>`, all text fields null) and a user-chosen label for the
-blocks (e.g. "Busy (work)", stored as the feed's `sourceCalendarName`). Nothing
-else exists to store. The member may additionally *declare* where this
+blocks (e.g. "Busy (work)", stored as the feed's `sourceCalendarName` —
+editable any time after setup via `PATCH /feeds/:feedId`, which relabels
+already-synthesized blocks immediately rather than waiting for the next
+sync). Nothing else exists to store. The member may additionally *declare* where this
 calendar's busy time is spent — a location (optionally geocoded) on their feed
 link, e.g. "the office" — which is their own annotation, typed into this app;
 it neither comes from nor is checked against the work calendar, and nothing new
