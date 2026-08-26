@@ -586,4 +586,37 @@ describe('busy feeds: routes', () => {
     );
     expect(patch3.status).toBe(200);
   });
+
+  it('renames a busy feed and relabels its already-synthesized blocks', async () => {
+    const t = await setupBusyFeed('busy-rename@example.com');
+    await ingestFeed(t.db, t.feed, {
+      fetchImpl: freeBusyFetch([{ start: at(2, 15), end: at(2, 16, 30) }]),
+      kek: testKeys(),
+    });
+    await synthesizeFeed(t.db, t.feed);
+    const before = await t.db
+      .select()
+      .from(calendarEvents)
+      .where(eq(calendarEvents.linkId, t.link.id));
+    expect(before[0]!.summary).toBe('Busy (work)');
+
+    const res = await call(
+      `/families/${t.familyId}/feeds/${t.feed.id}`,
+      patched(t.admin.token, { sourceCalendarName: 'Busy (personal cal)' }),
+    );
+    expect(res.status).toBe(200);
+    const { feed: renamed } = (await res.json()) as {
+      feed: { sourceCalendarName: string | null };
+    };
+    expect(renamed.sourceCalendarName).toBe('Busy (personal cal)');
+
+    // The rename resynthesizes, so the already-generated block is relabeled
+    // immediately rather than waiting for the next sync.
+    const after = await t.db
+      .select()
+      .from(calendarEvents)
+      .where(eq(calendarEvents.linkId, t.link.id));
+    expect(after).toHaveLength(1);
+    expect(after[0]!.summary).toBe('Busy (personal cal)');
+  });
 });
