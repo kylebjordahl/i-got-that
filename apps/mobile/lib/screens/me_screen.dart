@@ -340,51 +340,48 @@ class MeScreen extends ConsumerWidget {
     );
   }
 
+  /// Audits what's linked to the account up front (like
+  /// [_confirmDeleteAccount]'s precomputed block) so a disconnect that would
+  /// otherwise 409 instead shows exactly what's attached — by name, not just
+  /// "a feed or delivery method" — and offers to turn all of it off in the
+  /// same slide, rather than sending the user off to unlink each one first.
   Future<void> _disconnect(
     BuildContext context,
     WidgetRef ref,
     ExternalAccount a,
   ) async {
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('Disconnect account?'),
-        content: Text(
-          'Remove ${a.kindLabel} (${a.username ?? a.name})? This only '
-          'works if no feeds or delivery methods still use it.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(dialogContext).pop(false),
-            child: const Text('Cancel'),
-          ),
-          PillButton(
-            label: 'Disconnect',
-            variant: PillVariant.white,
-            onPressed: () => Navigator.of(dialogContext).pop(true),
-          ),
-        ],
-      ),
+    final usage = await ref.read(apiClientProvider).accountUsage(a.id);
+    if (!context.mounted) return;
+    final label = '${a.kindLabel} (${a.username ?? a.name})';
+    return showSlideToConfirmSheet(
+      context,
+      title: 'Disconnect account?',
+      description: usage.isEmpty
+          ? "Remove $label? This can't be undone."
+          : '$label is still linked to:\n${_usageBullets(usage)}\n\n'
+                "Disconnecting will turn all of these off. This can't be undone.",
+      slideLabel: usage.isEmpty
+          ? 'Slide to disconnect'
+          : 'Slide to disconnect & turn off ${usage.itemCount}',
+      onConfirmed: () async {
+        await ref
+            .read(apiClientProvider)
+            .deleteAccount(a.id, force: !usage.isEmpty);
+        ref.invalidate(accountsProvider);
+      },
+      errorMessage: (e) => 'Failed: $e',
     );
-    if (ok != true) return;
-    try {
-      await ref.read(apiClientProvider).deleteAccount(a.id);
-      ref.invalidate(accountsProvider);
-    } catch (e) {
-      final data = e is DioException ? e.response?.data : null;
-      final code = (data as Map<String, dynamic>?)?['error'];
-      final message = code == 'in_use'
-          ? 'Still in use by a feed or delivery method — remove those first.'
-          : 'Failed: $e';
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(message),
-            margin: snackBarMarginAboveNav(context),
-          ),
-        );
-      }
-    }
+  }
+
+  String _usageBullets(AccountUsage usage) {
+    final lines = <String>[
+      for (final f in usage.feeds)
+        '• ${f.name ?? 'An input feed'} — feeds '
+            '${f.members.isEmpty ? 'no one yet' : f.members.join(', ')}',
+      for (final t in usage.targets)
+        '• ${t.name ?? 'A delivery calendar'} — for ${t.member}',
+    ];
+    return lines.join('\n');
   }
 
   Future<void> _unlinkIdentity(

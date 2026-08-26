@@ -3,6 +3,8 @@ import {
   type Db,
   eq,
   externalAccounts,
+  familyMemberFeeds,
+  familyMembers,
   feeds,
   getDb,
   memberCalendars,
@@ -222,24 +224,92 @@ accountRoutes.post('/:accountId/calendars', async (c) => {
   }
 });
 
-/** Disconnect an account (owner only). Blocked (409) while any feed/target uses it. */
+/**
+ * What's linked to an account (owner only) — lets the client show the
+ * disconnect audit up front, before the user ever taps disconnect and hits
+ * the 409.
+ */
+accountRoutes.get('/:accountId/usage', async (c) => {
+  const db = getDb(c.env.DB);
+  const user = c.get('user');
+  const account = await loadOwnAccount(db, user.id, c.req.param('accountId'));
+  if (!account) return c.json({ error: 'not_found' }, 404);
+  return c.json(await loadAccountUsage(db, account.id));
+});
+
+/**
+ * What's currently linked to an account: the audit shown before a blocked
+ * disconnect, and the exact set a `force` disconnect turns off. Grouped by
+ * feed/target so the client can name each item and who it's for, instead of
+ * just reporting that *something* is still attached.
+ */
+async function loadAccountUsage(db: Db, accountId: string) {
+  // LEFT JOIN: a feed already counts as "in use" as soon as it exists (its
+  // member links, if any, are drawn separately and can lag behind creation).
+  const feedLinks = await db
+    .select({
+      id: feeds.id,
+      name: feeds.sourceCalendarName,
+      memberRelation: familyMembers.relationName,
+    })
+    .from(feeds)
+    .leftJoin(familyMemberFeeds, eq(familyMemberFeeds.feedId, feeds.id))
+    .leftJoin(familyMembers, eq(familyMembers.id, familyMemberFeeds.familyMemberId))
+    .where(eq(feeds.externalAccountId, accountId));
+
+  // One feed can feed several members (e.g. a shared family calendar) — fold
+  // those rows into a single entry with every member it's linked to.
+  const feedsById = new Map<string, { id: string; name: string | null; members: string[] }>();
+  for (const row of feedLinks) {
+    const entry = feedsById.get(row.id) ?? { id: row.id, name: row.name, members: [] };
+    if (row.memberRelation) entry.members.push(row.memberRelation);
+    feedsById.set(row.id, entry);
+  }
+
+  const targetLinks = await db
+    .select({
+      id: memberCalendars.id,
+      name: memberCalendars.targetCalendarName,
+      memberRelation: familyMembers.relationName,
+    })
+    .from(memberCalendars)
+    .innerJoin(familyMembers, eq(familyMembers.id, memberCalendars.familyMemberId))
+    .where(eq(memberCalendars.targetExternalAccountId, accountId));
+
+  return {
+    feeds: [...feedsById.values()],
+    targets: targetLinks.map((t) => ({ id: t.id, name: t.name, member: t.memberRelation })),
+  };
+}
+
+/**
+ * Disconnect an account (owner only). Blocked (409, with the audit of what's
+ * still attached) unless `force=true`, in which case every linked feed is
+ * paused and every linked delivery target deactivated in the same request —
+ * a single confirmed action instead of sending the user off to unlink each
+ * one first. Deliberately explicit rather than leaning on the FKs' `set null`
+ * alone: a feed left pointing nowhere just errors out silently on its next
+ * sync (see ingestAccountFeed) instead of reading as "the user turned this
+ * off."
+ */
 accountRoutes.delete('/:accountId', async (c) => {
   const db = getDb(c.env.DB);
   const user = c.get('user');
   const account = await loadOwnAccount(db, user.id, c.req.param('accountId'));
   if (!account) return c.json({ error: 'not_found' }, 404);
 
-  const usedByFeed = (
-    await db.select({ id: feeds.id }).from(feeds).where(eq(feeds.externalAccountId, account.id)).limit(1)
-  )[0];
-  const usedByTarget = (
+  const usage = await loadAccountUsage(db, account.id);
+  const inUse = usage.feeds.length > 0 || usage.targets.length > 0;
+  const force = c.req.query('force') === 'true';
+  if (inUse && !force) return c.json({ error: 'in_use', ...usage }, 409);
+
+  if (inUse) {
+    await db.update(feeds).set({ status: 'paused' }).where(eq(feeds.externalAccountId, account.id));
     await db
-      .select({ id: memberCalendars.id })
-      .from(memberCalendars)
-      .where(eq(memberCalendars.targetExternalAccountId, account.id))
-      .limit(1)
-  )[0];
-  if (usedByFeed || usedByTarget) return c.json({ error: 'in_use' }, 409);
+      .update(memberCalendars)
+      .set({ active: false })
+      .where(eq(memberCalendars.targetExternalAccountId, account.id));
+  }
 
   // Best-effort: revoke the upstream Google grant before dropping our own
   // copy, so disconnecting here also disconnects at Google. Never blocks the
