@@ -150,6 +150,31 @@ paths in particular).
   It refuses the three cases where having no tasks is the *rule* (paused member,
   `fb:` busy block, `claimed_task`), which `/calendar-events` also reports per
   event as `taskIneligibleReason` so the client can say which it is.
+- **A feed that can't be read must never go quiet.** Everything downstream of
+  `source_events` keeps working off the rows already there, so a feed that has
+  stopped ingesting looks *healthy* — the calendar is full, it just silently
+  stops growing, and what you notice missing is whatever you added most
+  recently. Three things keep that from happening, and all three are
+  load-bearing: `ingestFeed` records every attempt on the row
+  (`lastAttemptedAt`, `consecutiveFailures`, `lastErrorMessage`) so a stuck
+  feed can say why; the cron polls **every** feed that `isFeedDue` says is due
+  — an `error` feed on a growing backoff off `lastAttemptedAt`, since
+  `lastSyncedAt` doesn't move on a failure — so a transient blip can't park a
+  feed forever; and one feed's failure is caught per-feed in `scheduled.ts` so
+  it can't cost the family the read-back/task-gen/mirror passes that don't
+  depend on it. Only `paused` (a user's decision) is ever skipped outright.
+- **Nothing on the outbound path may be served from cache.** A Worker's
+  `fetch()` is not a bare socket — a cacheable GET comes from Cloudflare's
+  cache, honouring the origin's `Cache-Control`, and that entry answers our
+  conditional `If-None-Match` too. Calendar publishers routinely put hours of
+  `max-age` on their `.ics`, which is enough for an event added last night to
+  stay invisible all morning however many times someone presses "Refresh
+  feeds". `createGuardedFetch` sends every hop `cache: 'no-store'` (which is
+  why `cache_option_enabled` is in the compat flags), and a user-pressed
+  refresh additionally passes `force` to `ingestFeed`, which drops
+  `If-None-Match` and sends `Cache-Control: no-cache` so no intermediary can
+  answer it either. The background poll still uses the stored ETag — being
+  told "nothing changed" is exactly what it's for.
 - **CalDAV** does a direct authenticated `PUT`/`DELETE` to the discovered
   collection URL (`libs/delivery/src/caldav.ts`), not tsdav's create-only helper.
 - **Travel time is coordinate-driven, end to end.** `locationGeo` rides from the
