@@ -36,6 +36,12 @@ on:
         required: true
       CLOUDFLARE_ACCOUNT_ID:
         required: true
+      # Zone backing the custom domain (same zone for staging + production —
+      # see docs/DEPLOYMENT.md §7/§9), needed by the zone-scoped rate-limiting
+      # ruleset in infra/terraform/main.tf. Required: that resource is
+      # unconditional, so every apply needs it.
+      CLOUDFLARE_ZONE_ID:
+        required: true
       AWS_ACCESS_KEY_ID:
         required: true
       AWS_SECRET_ACCESS_KEY:
@@ -248,12 +254,19 @@ jobs:
         env:
           TF_VAR_cloudflare_api_token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           TF_VAR_cloudflare_account_id: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          TF_VAR_cloudflare_zone_id: ${{ secrets.CLOUDFLARE_ZONE_ID }}
           TF_VAR_environment: ${{ inputs.environment }}
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         run: |
-          terraform init -backend-config="$TF_BACKEND"
-          terraform apply -auto-approve
+          # -input=false on both: a required var/backend-config value that
+          # isn't supplied must fail fast with a clear error, never fall back
+          # to an interactive prompt — this runner has no stdin, so a prompt
+          # just hangs forever with no error and no timeout (see the outage
+          # where a new required var, cloudflare_zone_id, wasn't yet wired
+          # through TF_VAR_ here and the apply step sat for over an hour).
+          terraform init -backend-config="$TF_BACKEND" -input=false
+          terraform apply -auto-approve -input=false
 
       # Named envs don't inherit the top-level dev `vars`, so anything the code
       # needs at runtime has to exist as a per-env secret — and an absent one
