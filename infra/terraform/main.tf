@@ -66,3 +66,69 @@ resource "cloudflare_queue" "delivery_dlq" {
 # registering the sending domain against your pinned cloudflare provider version
 # (it may still need a one-time Dashboard/API step). The DNS records above are
 # standard `cloudflare_dns_record` resources.
+
+# --- Edge rate limiting (issue #142) --------------------------------------
+#
+# App-layer per-identity limiting, refresh cooldowns, and magic-link issuance
+# caps already live in the Worker (apps/api/src/lib/rate-limit.ts); this adds
+# a cheap edge-layer backstop that rejects abusive traffic by source IP
+# before it ever reaches the Worker. Zone-scoped (unlike the account-scoped
+# resources above) — needs a Zone · Zone WAF · Edit permission on the API
+# token in addition to the account scopes in docs/DEPLOYMENT.md §1. Confirm
+# the resource schema against the pinned cloudflare provider version before
+# apply.
+
+resource "cloudflare_ruleset" "rate_limiting" {
+  zone_id     = var.cloudflare_zone_id
+  name        = "${var.name_prefix}-rate-limiting-${local.suffix}"
+  description = "Edge rate limits for auth + feed-refresh endpoints (issue #142)."
+  kind        = "zone"
+  phase       = "http_ratelimit"
+
+  rules = [
+    {
+      description = "Auth endpoints: 5 requests/min/IP"
+      expression  = "(http.request.method eq \"POST\" and starts_with(http.request.uri.path, \"/api/auth/\"))"
+      action      = "block"
+      enabled     = true
+      # Body matches the Worker's own 429 shape (apps/api/src/routes/auth.ts)
+      # so a client can't tell an edge block from an app-layer rejection.
+      action_parameters = {
+        response = {
+          status_code  = 429
+          content_type = "application/json"
+          content      = jsonencode({ error = "too_many_requests" })
+        }
+      }
+      ratelimit = {
+        characteristics     = ["ip.src"]
+        period              = 60
+        requests_per_period = 5
+        mitigation_timeout  = 60
+      }
+    },
+    {
+      description = "Feed refresh (single + refresh-all): 2 requests/min/IP"
+      expression  = "(http.request.method eq \"POST\" and http.request.uri.path matches \"^/api/families/[^/]+/feeds/.*refresh.*$\")"
+      action      = "block"
+      enabled     = true
+      # Body matches the Worker's own refresh_cooldown 429 shape
+      # (apps/api/src/routes/feeds.ts) so the mobile client's
+      # FeedRefreshCooldown handling still recognizes an edge block and shows
+      # the friendly "already up to date" message instead of a raw error.
+      action_parameters = {
+        response = {
+          status_code  = 429
+          content_type = "application/json"
+          content      = jsonencode({ error = "refresh_cooldown", retryAfterSeconds = 60 })
+        }
+      }
+      ratelimit = {
+        characteristics     = ["ip.src"]
+        period              = 60
+        requests_per_period = 2
+        mitigation_timeout  = 60
+      }
+    }
+  ]
+}
