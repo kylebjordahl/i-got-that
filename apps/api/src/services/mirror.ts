@@ -207,18 +207,22 @@ function tripOrigin(
  * would be a block to nowhere — but free text is enough here, because the
  * duration no longer has to be computed from coordinates.
  *
- * Failing that, only claimed drop-off/pickup events get one: a transition is a
- * trip to a place at a fixed moment, which is exactly what Apple's travel time
- * is for (an attendance claim spans its event, and a synthesized event is the
- * child's own day, not a caretaker's journey). The estimate needs coordinates
- * on the destination — free text gives Apple nothing dependable to route to —
- * and can't apply to an all-day block.
+ * Failing that, every claim a caretaker took on gets one — drop-off, pickup and
+ * attendance alike. All three are a journey the caretaker makes to a place for
+ * a time they can't miss, which is exactly what Apple's travel time is for; a
+ * *synthesized* event never does, because that's the child's own day, not
+ * anyone's journey. The estimate needs coordinates on the destination — free
+ * text gives Apple nothing dependable to route to — and can't apply to an
+ * all-day block.
  *
  * With an origin (see `tripOrigin`) the length is an actual distance estimate.
- * Without one it falls back to the family's own transition window, which is at
- * least their answer to "how much slack does this handoff need". Either way
- * it's a seed: Apple recomputes the leave-by time from live traffic against the
- * destination's coordinates.
+ * Without one a transition falls back to the family's own drop-off/pickup
+ * window, which is at least their answer to "how much slack does this handoff
+ * need". An attendance claim has no such answer to borrow — its span is the
+ * event it covers, not the trip there, and reserving a two-hour travel block
+ * for a two-hour game would be worse than saying nothing — so it takes the flat
+ * default instead. Either way it's a seed: Apple recomputes the leave-by time
+ * from live traffic against the destination's coordinates.
  */
 function travelTimeMinutes(
   event: CalendarEventRow,
@@ -230,14 +234,17 @@ function travelTimeMinutes(
     return hasSomewhereToGo ? event.travelTimeOverrideMin : 0;
   }
   if (event.provenance !== 'claimed_task') return 0;
-  if (taskType !== 'dropoff' && taskType !== 'pickup') return 0;
+  if (taskType !== 'dropoff' && taskType !== 'pickup' && taskType !== 'attendance') {
+    return 0;
+  }
   if (!event.locationGeo || event.allDay) return 0;
   // Only now is the calendar worth scanning for where they're coming from.
   const origin = resolveOrigin();
   if (origin) return estimateTravelMinutes(origin, event.locationGeo);
-  const windowMin = event.dtend
-    ? Math.round((event.dtend.getTime() - event.dtstart.getTime()) / 60_000)
-    : 0;
+  const windowMin =
+    taskType !== 'attendance' && event.dtend
+      ? Math.round((event.dtend.getTime() - event.dtstart.getTime()) / 60_000)
+      : 0;
   return Math.min(windowMin > 0 ? windowMin : DEFAULT_TRAVEL_MIN, MAX_WINDOW_TRAVEL_MIN);
 }
 
@@ -302,7 +309,7 @@ async function linkTimezones(db: Db, familyId: string): Promise<Map<string, stri
 
 /** What a `claimed_task` event needs from the task behind it. */
 interface ClaimedTaskMeta {
-  /** 'dropoff' | 'pickup' | 'attendance' — decides whether travel time applies. */
+  /** 'dropoff' | 'pickup' | 'attendance' — shapes the travel-time estimate. */
   type: string;
   /**
    * IANA timezone, for `claimed_task` events — those have no `linkId` of their
