@@ -6,6 +6,7 @@ import '../state/notifications.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_text.dart';
 import '../util/assignment_text.dart' show kWeekdayLabels;
+import '../widgets/app_bottom_nav.dart' show kBottomNavClearance;
 import '../widgets/day_chip.dart';
 import '../widgets/primitives.dart';
 import '../widgets/settings.dart';
@@ -225,7 +226,12 @@ class _NotificationScheduleScreenState
             ),
             Expanded(
               child: ListView(
-                padding: const EdgeInsets.fromLTRB(22, 0, 22, 40),
+                padding: const EdgeInsets.fromLTRB(
+                  22,
+                  0,
+                  22,
+                  40 + kBottomNavClearance,
+                ),
                 children: [
                   Text('NAME', style: AppText.eyebrow()),
                   const SizedBox(height: 10),

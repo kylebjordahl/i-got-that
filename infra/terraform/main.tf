@@ -70,29 +70,44 @@ resource "cloudflare_queue" "delivery_dlq" {
 # --- Edge rate limiting (issue #142) --------------------------------------
 #
 # App-layer per-identity limiting, refresh cooldowns, and magic-link issuance
-# caps already live in the Worker (apps/api/src/lib/rate-limit.ts); this adds
-# a cheap edge-layer backstop that rejects abusive traffic by source IP
-# before it ever reaches the Worker. Zone-scoped (unlike the account-scoped
-# resources above) — needs a Zone · Zone WAF · Edit permission on the API
-# token in addition to the account scopes in docs/DEPLOYMENT.md §1. Confirm
-# the resource schema against the pinned cloudflare provider version before
-# apply.
+# caps already live in the Worker (apps/api/src/routes/auth.ts's
+# MagicLinkCapExceededError, apps/api/src/routes/feeds.ts's 60s manual-refresh
+# cooldown); this adds a cheap edge-layer backstop that rejects abusive
+# traffic by source IP before it ever reaches the Worker. Zone-scoped (unlike
+# the account-scoped resources above) — needs a Zone · Zone WAF · Edit
+# permission on the API token in addition to the account scopes in
+# docs/DEPLOYMENT.md §1. Confirm the resource schema against the pinned
+# provider version before apply.
+#
+# One rule, not one per endpoint group: this zone's plan caps the
+# http_ratelimit phase at 1 custom rule (Cloudflare rejects a 2nd with 400,
+# code 50001, "exceeded the maximum number of rules in the phase
+# http_ratelimit: 2 out of 1") — a plan-tier limit, not something Terraform
+# config can route around. So this single rule takes the less-restrictive
+# threshold (auth's 5/min) across both endpoint groups, and leans on the
+# Worker's own app-layer limits above for the tighter per-endpoint
+# enforcement (feed-refresh's 60s cooldown is already stricter than 5/min, so
+# in practice the app layer catches refresh abuse first and this rule is a
+# coarse backstop for both).
 
 resource "cloudflare_ruleset" "rate_limiting" {
   zone_id     = var.cloudflare_zone_id
   name        = "${var.name_prefix}-rate-limiting-${local.suffix}"
-  description = "Edge rate limits for auth + feed-refresh endpoints (issue #142)."
+  description = "Edge rate limit backstop for auth + feed-refresh endpoints (issue #142)."
   kind        = "zone"
   phase       = "http_ratelimit"
 
   rules = [
     {
-      description = "Auth endpoints: 5 requests/min/IP"
-      expression  = "(http.request.method eq \"POST\" and starts_with(http.request.uri.path, \"/api/auth/\"))"
+      description = "Auth + feed-refresh endpoints: 5 requests/min/IP"
+      expression  = "(http.request.method eq \"POST\" and (starts_with(http.request.uri.path, \"/api/auth/\") or http.request.uri.path matches \"^/api/families/[^/]+/feeds/.*refresh.*$\"))"
       action      = "block"
       enabled     = true
-      # Body matches the Worker's own 429 shape (apps/api/src/routes/auth.ts)
-      # so a client can't tell an edge block from an app-layer rejection.
+      # Matches the Worker's own generic 429 shape (apps/api/src/routes/auth.ts)
+      # so a client can't tell an edge block from an app-layer rejection. Feed
+      # refresh's app-layer cooldown returns a different, friendlier shape
+      # (refresh_cooldown) — this rule shouldn't usually be the one a
+      # feed-refresh client actually hits, per the comment above.
       action_parameters = {
         response = {
           status_code  = 429
@@ -101,32 +116,13 @@ resource "cloudflare_ruleset" "rate_limiting" {
         }
       }
       ratelimit = {
-        characteristics     = ["ip.src"]
+        # cf.colo.id is required alongside ip.src: rate-limit counting on this
+        # API only happens at the colocation level, and a characteristics list
+        # without it is rejected outright (400, code 20155) rather than
+        # falling back to some default scope.
+        characteristics     = ["ip.src", "cf.colo.id"]
         period              = 60
         requests_per_period = 5
-        mitigation_timeout  = 60
-      }
-    },
-    {
-      description = "Feed refresh (single + refresh-all): 2 requests/min/IP"
-      expression  = "(http.request.method eq \"POST\" and http.request.uri.path matches \"^/api/families/[^/]+/feeds/.*refresh.*$\")"
-      action      = "block"
-      enabled     = true
-      # Body matches the Worker's own refresh_cooldown 429 shape
-      # (apps/api/src/routes/feeds.ts) so the mobile client's
-      # FeedRefreshCooldown handling still recognizes an edge block and shows
-      # the friendly "already up to date" message instead of a raw error.
-      action_parameters = {
-        response = {
-          status_code  = 429
-          content_type = "application/json"
-          content      = jsonencode({ error = "refresh_cooldown", retryAfterSeconds = 60 })
-        }
-      }
-      ratelimit = {
-        characteristics     = ["ip.src"]
-        period              = 60
-        requests_per_period = 2
         mitigation_timeout  = 60
       }
     }

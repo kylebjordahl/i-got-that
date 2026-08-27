@@ -192,12 +192,14 @@ feedRoutes.post('/', requireAdmin, async (c) => {
 
 /**
  * Update an input feed's config (admin). Only `mode` / `routed` /
- * `refreshMinutes` / `status` / `timezone` are editable — the source (ICS url
- * or the account's target calendar) is immutable; change it by deleting and
- * recreating the feed. A mode or routing change resynthesizes the feed (both
- * drive the whole pipeline shape); a timezone change re-ingests it
- * (source_events' own dtstart/dtend may need reinterpreting, not just
- * resynthesizing).
+ * `refreshMinutes` / `status` / `timezone` / `sourceCalendarName` are
+ * editable — the source (ICS url or the account's target calendar) is
+ * immutable; change it by deleting and recreating the feed. A mode or
+ * routing change resynthesizes the feed (both drive the whole pipeline
+ * shape); a timezone change re-ingests it (source_events' own dtstart/dtend
+ * may need reinterpreting, not just resynthesizing); a name change
+ * resynthesizes so already-generated baseline/busy events pick up the new
+ * label right away.
  */
 feedRoutes.patch('/:feedId', requireAdmin, async (c) => {
   const parsed = UpdateFeedInput.safeParse(await c.req.json().catch(() => null));
@@ -254,6 +256,9 @@ feedRoutes.patch('/:feedId', requireAdmin, async (c) => {
     }
   }
   if (d.timezone !== undefined) set.timezone = d.timezone;
+  const nameChanged =
+    d.sourceCalendarName !== undefined && d.sourceCalendarName !== feed.sourceCalendarName;
+  if (nameChanged) set.sourceCalendarName = d.sourceCalendarName;
   if (timezoneChanged) {
     // The ICS document itself may be byte-for-byte unchanged (this is a
     // manual correction, not a source-side edit) — clear the etag so the
@@ -274,7 +279,12 @@ feedRoutes.patch('/:feedId', requireAdmin, async (c) => {
     }
     updated = (await db.select().from(feeds).where(eq(feeds.id, feed.id)).limit(1))[0]!;
   }
-  if ((d.mode !== undefined && d.mode !== feed.mode) || routingChanged || timezoneChanged) {
+  if (
+    (d.mode !== undefined && d.mode !== feed.mode) ||
+    routingChanged ||
+    timezoneChanged ||
+    nameChanged
+  ) {
     await db
       .update(sourceEvents)
       .set({ synthesizedHash: null })

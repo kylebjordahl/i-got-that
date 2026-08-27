@@ -357,10 +357,23 @@ class ApiClient {
     return _obj(res);
   }
 
+  /// What's currently linked to an account — the audit shown before a
+  /// disconnect that would otherwise be blocked.
+  Future<AccountUsage> accountUsage(String accountId) async {
+    final res = await _dio.get('/accounts/$accountId/usage', options: _auth);
+    return AccountUsage.fromJson(_obj(res));
+  }
+
   /// Disconnect a connected calendar account. The server blocks (409
-  /// `in_use`) while any feed or delivery target still points at it.
-  Future<void> deleteAccount(String accountId) async {
-    await _dio.delete('/accounts/$accountId', options: _auth);
+  /// `in_use`) while any feed or delivery target still points at it, unless
+  /// [force] is set — which also pauses those feeds and turns off those
+  /// delivery targets in the same request.
+  Future<void> deleteAccount(String accountId, {bool force = false}) async {
+    await _dio.delete(
+      '/accounts/$accountId',
+      queryParameters: force ? {'force': 'true'} : null,
+      options: _auth,
+    );
   }
 
   /// The calendars available in a connected account: a list of `{ id, name }`.
@@ -510,19 +523,23 @@ class ApiClient {
     );
   }
 
-  /// Update a feed's mode ('standard' | 'exception') or its routing (shared
-  /// family calendar, standard feeds only). Either change resynthesizes.
+  /// Update a feed's mode ('standard' | 'exception'), its routing (shared
+  /// family calendar, standard feeds only), or its display name (e.g. a busy
+  /// feed's user-chosen block label). Any of these resynthesizes.
   Future<void> updateFeed(
     String familyId,
     String feedId, {
     String? mode,
     bool? routed,
+    String? sourceCalendarName,
   }) async {
     await _dio.patch(
       '/families/$familyId/feeds/$feedId',
       data: {
         if (mode != null) 'mode': mode,
         if (routed != null) 'routed': routed,
+        if (sourceCalendarName != null)
+          'sourceCalendarName': sourceCalendarName,
       },
       options: _auth,
     );

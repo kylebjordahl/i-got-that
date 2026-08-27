@@ -105,6 +105,56 @@ class _FeedBaselineScreenState extends ConsumerState<FeedBaselineScreen> {
     }
   }
 
+  /// Rename the feed's display name (e.g. a busy feed's user-chosen block
+  /// label). Renaming belongs to the FEED, so it's shared by every member
+  /// linked to it, and relabels already-generated events immediately.
+  Future<void> _renameFeed() async {
+    final controller = TextEditingController(text: _feed.displayName);
+    final name = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Rename feed'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          decoration: const InputDecoration(labelText: 'Name'),
+          onSubmitted: (v) => Navigator.of(dialogContext).pop(v.trim()),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('Cancel'),
+          ),
+          PillButton(
+            label: 'Save',
+            variant: PillVariant.indigo,
+            onPressed: () =>
+                Navigator.of(dialogContext).pop(controller.text.trim()),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    if (name == null || name.isEmpty || name == _feed.displayName) return;
+
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      final familyId = await ref.read(familyProvider.future);
+      await ref
+          .read(apiClientProvider)
+          .updateFeed(familyId, _feed.id, sourceCalendarName: name);
+      setState(() => _feed = _feed.copyWith(sourceCalendarName: name));
+      _refresh();
+    } catch (e) {
+      setState(() => _error = '$e');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
   /// Turn the feed into a shared family calendar (or back). Routing belongs to
   /// the FEED, so this is the same switch every member linked to the calendar
   /// sees — the copy says so, because flipping it here changes their setup too.
@@ -231,6 +281,12 @@ class _FeedBaselineScreenState extends ConsumerState<FeedBaselineScreen> {
                       iconColor: AppColors.feedBlue,
                       title: _feed.displayName,
                       subtitle: _feed.sourceLabel,
+                      trailing: const Icon(
+                        Icons.edit_rounded,
+                        size: 18,
+                        color: AppColors.textMuted,
+                      ),
+                      onTap: _busy ? null : _renameFeed,
                     ),
                   ),
                   const SizedBox(height: 24),

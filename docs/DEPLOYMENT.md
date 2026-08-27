@@ -414,28 +414,55 @@ action needed per-release. Add internal/external testers in App Store Connect
 ### 9. Edge rate limiting (Cloudflare Rate Limiting rules)
 
 The Worker already enforces app-layer, per-identity rate limits and refresh
-cooldowns (`apps/api/src/lib/rate-limit.ts`, issue #142 items 2-5). Terraform
-adds a cheap edge-layer backstop (`cloudflare_ruleset.rate_limiting`,
-`infra/terraform/main.tf`) that blocks abusive traffic by source IP before it
-reaches the Worker at all:
+cooldowns (`apps/api/src/routes/auth.ts`'s `MagicLinkCapExceededError`,
+`apps/api/src/routes/feeds.ts`'s 60s manual-refresh cooldown — issue #142
+items 2-5). Terraform adds a cheap edge-layer backstop
+(`cloudflare_ruleset.rate_limiting`, `infra/terraform/main.tf`) that blocks
+abusive traffic by source IP before it reaches the Worker at all:
 
-- `POST /api/auth/*` — 5 requests/min/IP
-- `POST /api/families/*/feeds/*refresh*` (both the per-feed and refresh-all
-  endpoints) — 2 requests/min/IP
+- `POST /api/auth/*` **or** `POST /api/families/*/feeds/*refresh*` (both the
+  per-feed and refresh-all endpoints) — 5 requests/min/IP, one combined rule.
 
-Each rule's `action_parameters.response` returns the same JSON body the
-Worker itself would (`{"error":"too_many_requests"}` / `{"error":
-"refresh_cooldown","retryAfterSeconds":60}`), not Cloudflare's default HTML
-block page — the mobile client's `FeedRefreshCooldown` handling only
-recognizes that shape, so an edge-level block still shows the friendly
-"already up to date" message instead of a raw error.
+This was originally two rules (auth at 5/min, feed-refresh at 2/min), but
+this zone's plan caps the `http_ratelimit` phase at **1** custom rule —
+Cloudflare rejects a 2nd with a 400 (code 50001, "exceeded the maximum
+number of rules in the phase http_ratelimit: 2 out of 1"). Consolidated into
+one rule at the less-restrictive threshold; the app-layer cooldown above is
+already tighter than 5/min for feed-refresh specifically, so it catches
+refresh abuse first in practice and this rule stays a coarse backstop for
+both endpoint groups. Bump to a plan tier with more `http_ratelimit` rules
+if the two ever need to diverge again.
+
+`action_parameters.response` returns the same generic JSON body the Worker's
+own auth rejection would (`{"error":"too_many_requests"}`), not Cloudflare's
+default HTML block page — a feed-refresh client tripping this edge rule
+(rather than the app-layer cooldown, which returns the friendlier
+`{"error":"refresh_cooldown","retryAfterSeconds":60}` shape the mobile
+client's `FeedRefreshCooldown` handling recognizes) sees a raw error instead
+of the "already up to date" message; expected to be rare given the ordering
+above.
 
 Unlike the D1/Queue resources above, this rule is **zone-scoped**, so it
 needs the zone backing your custom domain (§7) — set `cloudflare_zone_id` in
-your `*.tfvars` (find it on the zone's Overview page in the dashboard) and
-make sure the API token has the **Zone · Zone WAF · Edit** permission from
-§1. If you haven't set up a custom domain yet, this resource has nothing to
-attach to — hold off on `terraform apply` for it until §7 is done.
+your `*.tfvars` for a local apply (find it on the zone's Overview page in the
+dashboard) and make sure the API token has the **Zone · Zone WAF · Edit**
+permission from §1. If you haven't set up a custom domain yet, this resource
+has nothing to attach to — hold off on `terraform apply` for it until §7 is
+done.
+
+**CI needs this too, as a repo secret**: `deploy.yml` passes it to Terraform
+as `TF_VAR_cloudflare_zone_id: ${{ secrets.CLOUDFLARE_ZONE_ID }}`. Since
+staging and production share one parent zone (§7), a single repo-level
+`CLOUDFLARE_ZONE_ID` secret covers both — set it once (Settings → Secrets and
+variables → Actions). The `cloudflare_zone_id` variable has no default, and
+the `terraform apply` step runs with `-input=false`, so a missing secret now
+fails the "Terraform apply" step immediately with a clear "no value for
+required variable" error instead of hanging: Terraform's interactive prompt
+for a missing required variable blocks forever on a GitHub Actions runner,
+which has no stdin to answer it — that's what happened before `-input=false`
+was added, when this variable was introduced without the CI secret to back
+it and staging deploys hung for over an hour with no error until manually
+cancelled.
 
 ### 10. Push notifications (APNs)
 
