@@ -79,35 +79,55 @@ resource "cloudflare_queue" "delivery_dlq" {
 # docs/DEPLOYMENT.md §1. Confirm the resource schema against the pinned
 # provider version before apply.
 #
-# One rule, not one per endpoint group: this zone's plan caps the
-# http_ratelimit phase at 1 custom rule (Cloudflare rejects a 2nd with 400,
-# code 50001, "exceeded the maximum number of rules in the phase
-# http_ratelimit: 2 out of 1") — a plan-tier limit, not something Terraform
-# config can route around. So this single rule takes the less-restrictive
-# threshold (auth's 5/min) across both endpoint groups, and leans on the
-# Worker's own app-layer limits above for the tighter per-endpoint
-# enforcement (feed-refresh's 60s cooldown is already stricter than 5/min, so
-# in practice the app layer catches refresh abuse first and this rule is a
-# coarse backstop for both).
+# Only ONE rule, covering ONLY auth — not one per endpoint group, and not
+# both combined. This zone's plan is more restrictive than the "1 rule"
+# ceiling the earlier comment (and Cloudflare's own error text) suggested:
+#
+# - The http_ratelimit phase really does cap at 1 rule zone-wide (confirmed:
+#   the phase has no entrypoint ruleset at all — GET
+#   /zones/:id/rulesets/phases/http_ratelimit/entrypoint 404s — and the
+#   zone's/account's full ruleset listings are empty for this phase, so
+#   nothing pre-existing was ever competing for that slot).
+# - But an `or`-combined expression spanning two unrelated match conditions
+#   (the original auth-or-feed-refresh rule) still gets rejected with that
+#   same "2 out of 1" error even as a single JSON rules[] entry — verified by
+#   testing directly against the Rulesets API: a rule with only the auth
+#   condition (no `or`) passed the count check outright, where the
+#   OR'd version never did. Cloudflare's rate-limit counting apparently needs
+#   a separate counter per distinct match branch, and this plan's "1 rule"
+#   entitlement is really "1 counter" — so the two endpoint groups can't
+#   share one rule via `or` any more than they could as two separate rules.
+# - `period` and `mitigation_timeout` are further pinned to exactly 10
+#   (seconds) on this plan — confirmed via the same direct-API test, which
+#   400'd on period=60 ("not entitled to use the period 60, can only use a
+#   period among [10]") and succeeded once both were set to 10.
+#
+# That leaves room for exactly one simple rule, so auth gets it (the more
+# exposure-prone target for an IP-based backstop: credential-stuffing/
+# enumeration spread across many different accounts from one IP isn't
+# something apps/api/src/routes/auth.ts's per-identity MagicLinkCapExceededError
+# alone catches). Feed-refresh relies entirely on
+# apps/api/src/routes/feeds.ts's 60s manual-refresh cooldown — already an
+# IP-agnostic, per-feed limit tighter than anything the edge could add here.
+# requests_per_period is scaled down from the original 5/60s intent to the
+# nearest whole number for a 10s window (5 * 10/60 ≈ 0.83 → 1), landing on
+# roughly 6/min instead of 5/min.
 
 resource "cloudflare_ruleset" "rate_limiting" {
   zone_id     = var.cloudflare_zone_id
   name        = "${var.name_prefix}-rate-limiting-${local.suffix}"
-  description = "Edge rate limit backstop for auth + feed-refresh endpoints (issue #142)."
+  description = "Edge rate limit backstop for auth endpoints (issue #142)."
   kind        = "zone"
   phase       = "http_ratelimit"
 
   rules = [
     {
-      description = "Auth + feed-refresh endpoints: 5 requests/min/IP"
-      expression  = "(http.request.method eq \"POST\" and (starts_with(http.request.uri.path, \"/api/auth/\") or http.request.uri.path matches \"^/api/families/[^/]+/feeds/.*refresh.*$\"))"
+      description = "Auth endpoints: ~6 requests/min/IP"
+      expression  = "(http.request.method eq \"POST\" and starts_with(http.request.uri.path, \"/api/auth/\"))"
       action      = "block"
       enabled     = true
-      # Matches the Worker's own generic 429 shape (apps/api/src/routes/auth.ts)
-      # so a client can't tell an edge block from an app-layer rejection. Feed
-      # refresh's app-layer cooldown returns a different, friendlier shape
-      # (refresh_cooldown) — this rule shouldn't usually be the one a
-      # feed-refresh client actually hits, per the comment above.
+      # Matches the Worker's own 429 shape (apps/api/src/routes/auth.ts) so a
+      # client can't tell an edge block from an app-layer rejection.
       action_parameters = {
         response = {
           status_code  = 429
@@ -121,9 +141,9 @@ resource "cloudflare_ruleset" "rate_limiting" {
         # without it is rejected outright (400, code 20155) rather than
         # falling back to some default scope.
         characteristics     = ["ip.src", "cf.colo.id"]
-        period              = 60
-        requests_per_period = 5
-        mitigation_timeout  = 60
+        period              = 10
+        requests_per_period = 1
+        mitigation_timeout  = 10
       }
     }
   ]

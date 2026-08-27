@@ -420,27 +420,45 @@ items 2-5). Terraform adds a cheap edge-layer backstop
 (`cloudflare_ruleset.rate_limiting`, `infra/terraform/main.tf`) that blocks
 abusive traffic by source IP before it reaches the Worker at all:
 
-- `POST /api/auth/*` **or** `POST /api/families/*/feeds/*refresh*` (both the
-  per-feed and refresh-all endpoints) — 5 requests/min/IP, one combined rule.
+- `POST /api/auth/*` — ~6 requests/min/IP (`period`/`requests_per_period`
+  values are pinned by plan entitlements — see below — to 1 request per 10s).
 
-This was originally two rules (auth at 5/min, feed-refresh at 2/min), but
-this zone's plan caps the `http_ratelimit` phase at **1** custom rule —
-Cloudflare rejects a 2nd with a 400 (code 50001, "exceeded the maximum
-number of rules in the phase http_ratelimit: 2 out of 1"). Consolidated into
-one rule at the less-restrictive threshold; the app-layer cooldown above is
-already tighter than 5/min for feed-refresh specifically, so it catches
-refresh abuse first in practice and this rule stays a coarse backstop for
-both endpoint groups. Bump to a plan tier with more `http_ratelimit` rules
-if the two ever need to diverge again.
+**This zone's plan only supports one simple rate-limiting rule, full stop —
+not one per endpoint group, and not both combined into one.** Discovered the
+hard way across three iterations:
 
-`action_parameters.response` returns the same generic JSON body the Worker's
-own auth rejection would (`{"error":"too_many_requests"}`), not Cloudflare's
-default HTML block page — a feed-refresh client tripping this edge rule
-(rather than the app-layer cooldown, which returns the friendlier
-`{"error":"refresh_cooldown","retryAfterSeconds":60}` shape the mobile
-client's `FeedRefreshCooldown` handling recognizes) sees a raw error instead
-of the "already up to date" message; expected to be rare given the ordering
-above.
+1. Two separate rules (auth at 5/min, feed-refresh at 2/min) — rejected: a
+   400 (code 50001) "exceeded the maximum number of rules in the phase
+   http_ratelimit: 2 out of 1".
+2. Consolidated into **one** rule with an `or`-combined expression spanning
+   both endpoint groups — rejected with the *exact same* "2 out of 1" error,
+   despite being a single `rules[]` entry. Ruled out every "something's
+   already occupying the slot" theory first (the zone's and account's full
+   ruleset listings were empty for this phase, and
+   `GET /zones/:id/rulesets/phases/http_ratelimit/entrypoint` 404'd — no
+   entrypoint existed at all), then confirmed directly against the Rulesets
+   API: a rule with *only* the auth condition (no `or`) passed the count
+   check where the OR'd version never did. Cloudflare's rate-limit counting
+   apparently needs a separate counter per distinct match branch, and this
+   plan's "1 rule" entitlement is really "1 counter" — the two endpoint
+   groups can't share a rule via `or` any more than as two separate rules.
+3. Testing that isolated auth-only rule surfaced a *third* restriction:
+   `period` and `mitigation_timeout` are pinned to exactly **10** (seconds)
+   on this plan — `period: 60` 400'd with "not entitled to use the period
+   60, can only use a period among [10]".
+
+With room for exactly one simple rule, auth gets it — the more
+exposure-prone target for an IP-based backstop (credential-stuffing/
+enumeration spread across many accounts from one IP isn't something the
+per-identity `MagicLinkCapExceededError` alone catches). Feed-refresh relies
+entirely on the 60s manual-refresh cooldown above — already an IP-agnostic,
+per-feed limit tighter than anything the edge could add. If the zone's plan
+is ever upgraded to one with a higher `http_ratelimit` rule count, `main.tf`
+can go back to a rule (or two) covering feed-refresh as well.
+
+`action_parameters.response` returns the same JSON body the Worker's own
+auth rejection would (`{"error":"too_many_requests"}`), not Cloudflare's
+default HTML block page.
 
 Unlike the D1/Queue resources above, this rule is **zone-scoped**, so it
 needs the zone backing your custom domain (§7) — set `cloudflare_zone_id` in
