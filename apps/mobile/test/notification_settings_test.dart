@@ -45,7 +45,7 @@ class _FakePush implements PushService {
   }
 
   @override
-  Future<String> apsEnvironment() async => 'sandbox';
+  Future<String> apsEnvironment() async => 'development';
 
   @override
   Future<String?> timezone() async => 'America/Los_Angeles';

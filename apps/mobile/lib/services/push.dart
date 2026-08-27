@@ -75,8 +75,9 @@ class PushService {
     return token;
   }
 
-  /// `sandbox` or `production` — which APNs host this build's tokens route
-  /// through, read from the same xcconfig value that signs the entitlement.
+  /// `development` or `production` — which APNs host this build's tokens
+  /// route through, read from the same xcconfig value that signs the
+  /// entitlement.
   Future<String> apsEnvironment() async =>
       await _query<String>('apsEnvironment') ?? 'production';
 

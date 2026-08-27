@@ -45,7 +45,7 @@ function device(token: string, extra: Record<string, unknown> = {}) {
   return {
     deviceToken: token,
     bundleId: 'com.kylebjordahl.igt.staging',
-    environment: 'sandbox',
+    environment: 'development',
     timezone: LA,
     ...extra,
   };
@@ -725,7 +725,7 @@ describe('sending a digest', () => {
       userId: admin.userId,
       deviceToken: 'f'.repeat(64),
       bundleId: 'com.example.app',
-      environment: 'sandbox',
+      environment: 'development',
     });
     const schedule = await scheduleFor(admin.userId);
     const pusher = new DevPusher();
@@ -743,7 +743,7 @@ describe('sending a digest', () => {
         userId: admin.userId,
         deviceToken: token,
         bundleId: 'com.example.app',
-        environment: 'sandbox',
+        environment: 'development',
       });
     }
     // A device APNs already rejected must be skipped.
@@ -751,7 +751,7 @@ describe('sending a digest', () => {
       userId: admin.userId,
       deviceToken: '3'.repeat(64),
       bundleId: 'com.example.app',
-      environment: 'sandbox',
+      environment: 'development',
       disabledAt: new Date(),
     });
     await insertTask(db, familyId, childId, { dtstart: new Date('2026-08-06T16:00:00Z') });
@@ -778,7 +778,7 @@ describe('sending a digest', () => {
         userId: admin.userId,
         deviceToken,
         bundleId: 'com.example.app',
-        environment: 'sandbox',
+        environment: 'development',
       });
     }
     await insertTask(db, familyId, childId, { dtstart: new Date('2026-08-06T16:00:00Z') });

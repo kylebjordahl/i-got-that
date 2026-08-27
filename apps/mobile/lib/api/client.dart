@@ -1198,7 +1198,7 @@ class ApiClient {
   Future<void> registerPushDevice({
     required String deviceToken,
     required String bundleId,
-    required String environment, // 'sandbox' | 'production'
+    required String environment, // 'development' | 'production'
     String? timezone,
   }) async {
     await _dio.post(
