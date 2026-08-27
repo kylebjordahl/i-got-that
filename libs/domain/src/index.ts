@@ -197,7 +197,7 @@ export type NotificationCategory = z.infer<typeof NotificationCategory>;
  * client reports it from the same xcconfig value the entitlement is built from,
  * so the two can't drift.
  */
-export const ApnsEnvironment = z.enum(['sandbox', 'production']);
+export const ApnsEnvironment = z.enum(['development', 'production']);
 export type ApnsEnvironment = z.infer<typeof ApnsEnvironment>;
 
 /** Push transport a device is registered for. iOS/APNs is the only one today. */

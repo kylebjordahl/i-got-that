@@ -69,7 +69,7 @@ export class DevPusher implements Pusher {
 
 const APNS_HOSTS: Record<ApnsEnvironment, string> = {
   production: 'https://api.push.apple.com',
-  sandbox: 'https://api.sandbox.push.apple.com',
+  development: 'https://api.sandbox.push.apple.com',
 };
 
 /**
