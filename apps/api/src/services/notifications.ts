@@ -171,6 +171,13 @@ export interface DigestSendOutcome {
   retry: boolean;
   /** Set when nothing was sent, and why — for the test endpoint's response. */
   skipped?: 'empty' | 'no_devices';
+  /**
+   * APNs' own reason for each device that didn't get the push. The scheduled
+   * path already logs these; the test endpoint has no other way to tell "sent
+   * successfully" apart from "reached APNs and was rejected" — `delivered: 0`
+   * looks identical either way without this.
+   */
+  failures: string[];
 }
 
 /**
@@ -201,7 +208,7 @@ export async function sendDigest(
   );
 
   if (digest.total === 0 && schedule.skipWhenEmpty && !opts.force) {
-    return { digest, delivered: 0, retry: false, skipped: 'empty' };
+    return { digest, delivered: 0, retry: false, skipped: 'empty', failures: [] };
   }
 
   const devices = await db
@@ -211,12 +218,13 @@ export async function sendDigest(
       and(eq(pushDevices.userId, schedule.userId), isNull(pushDevices.disabledAt)),
     );
   if (devices.length === 0) {
-    return { digest, delivered: 0, retry: false, skipped: 'no_devices' };
+    return { digest, delivered: 0, retry: false, skipped: 'no_devices', failures: [] };
   }
 
   const { title, body } = digestNotificationText(digest, at, schedule.timezone);
   let delivered = 0;
   let retry = false;
+  const failures: string[] = [];
 
   for (const device of devices) {
     const message: PushMessage = {
@@ -249,13 +257,15 @@ export async function sendDigest(
         .set({ disabledAt: new Date() })
         .where(eq(pushDevices.id, device.id));
       console.warn(`push device ${device.id} disabled: ${result.reason}`);
+      failures.push(result.reason);
       continue;
     }
     if (result.kind === 'retryable') retry = true;
     console.error(`push to device ${device.id} failed: ${result.reason}`);
+    failures.push(result.reason);
   }
 
-  return { digest, delivered, retry };
+  return { digest, delivered, retry, failures: [...new Set(failures)] };
 }
 
 /**

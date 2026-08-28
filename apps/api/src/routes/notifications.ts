@@ -221,5 +221,6 @@ notificationRoutes.post('/schedules/:scheduleId/test', async (c) => {
     digest: outcome.digest,
     delivered: outcome.delivered,
     skipped: outcome.skipped ?? null,
+    failures: outcome.failures,
   });
 });

@@ -800,6 +800,9 @@ describe('sending a digest', () => {
 
     expect(outcome.delivered).toBe(0);
     expect(outcome.retry).toBe(true);
+    // The reason APNs gave for each device, so the test endpoint can tell
+    // "delivered" apart from "reached APNs and was rejected".
+    expect(outcome.failures.sort()).toEqual(['HTTP 503', 'Unregistered']);
     const rows = await db
       .select()
       .from(pushDevices)
@@ -822,11 +825,13 @@ describe('sending a digest', () => {
     const body = (await res.json()) as {
       digest: { total: number };
       skipped: string | null;
+      failures: string[];
     };
     // `force` bypasses skipWhenEmpty, so an empty digest still reports back —
     // it just has no devices to go to in this test.
     expect(body.digest.total).toBe(0);
     expect(body.skipped).toBe('no_devices');
+    expect(body.failures).toEqual([]);
   });
 });
 
