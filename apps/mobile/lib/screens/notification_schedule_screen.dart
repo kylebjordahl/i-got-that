@@ -6,7 +6,8 @@ import '../state/notifications.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_text.dart';
 import '../util/assignment_text.dart' show kWeekdayLabels;
-import '../widgets/app_bottom_nav.dart' show kBottomNavClearance;
+import '../widgets/app_bottom_nav.dart'
+    show kBottomNavClearance, snackBarMarginAboveNav;
 import '../widgets/day_chip.dart';
 import '../widgets/primitives.dart';
 import '../widgets/settings.dart';
@@ -160,6 +161,7 @@ class _NotificationScheduleScreenState
     final schedule = widget.schedule;
     if (schedule == null) return;
     final messenger = ScaffoldMessenger.of(context);
+    final margin = snackBarMarginAboveNav(context);
     try {
       final result = await ref
           .read(apiClientProvider)
@@ -181,10 +183,13 @@ class _NotificationScheduleScreenState
                   ? 'Nothing outstanding right now. Sent to $delivered device(s).'
                   : '$total outstanding. Sent to $delivered device(s).',
           }),
+          margin: margin,
         ),
       );
     } catch (err) {
-      messenger.showSnackBar(SnackBar(content: Text('Test failed: $err')));
+      messenger.showSnackBar(
+        SnackBar(content: Text('Test failed: $err'), margin: margin),
+      );
     }
   }
 
