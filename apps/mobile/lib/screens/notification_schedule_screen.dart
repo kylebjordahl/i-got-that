@@ -168,11 +168,14 @@ class _NotificationScheduleScreenState
       final total = digest?['total'] as int? ?? 0;
       final delivered = result['delivered'] as int? ?? 0;
       final skipped = result['skipped'] as String?;
+      final failures = (result['failures'] as List<dynamic>?)?.cast<String>();
       messenger.showSnackBar(
         SnackBar(
           content: Text(switch (skipped) {
             'no_devices' =>
               'Nothing to send to — turn push notifications on first.',
+            _ when failures != null && failures.isNotEmpty =>
+              'APNs rejected it: ${failures.join(', ')}',
             _ =>
               total == 0
                   ? 'Nothing outstanding right now. Sent to $delivered device(s).'
