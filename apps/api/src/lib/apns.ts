@@ -159,7 +159,14 @@ export class ApnsPusher implements Pusher {
   private cached: { token: string; issuedAt: number } | null = null;
 
   constructor(private readonly config: ApnsConfig) {
-    this.fetchImpl = config.fetchImpl ?? fetch;
+    // Not just `config.fetchImpl ?? fetch`: the platform `fetch` is a native
+    // function that requires its receiver to be the global scope. Stashing it
+    // on `this.fetchImpl` and calling it as `this.fetchImpl(...)` below invokes
+    // it with `this` bound to the ApnsPusher instance instead, which throws
+    // "Illegal invocation" in workerd — every real send failed with that
+    // before ever reaching the network. The wrapper calls `fetch` bare, so the
+    // receiver is always correct regardless of how the property is called.
+    this.fetchImpl = config.fetchImpl ?? ((...args) => fetch(...args));
     this.now = config.now ?? Date.now;
   }
 

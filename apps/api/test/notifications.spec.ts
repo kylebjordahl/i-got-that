@@ -1,4 +1,4 @@
-import { env } from 'cloudflare:test';
+import { env, fetchMock } from 'cloudflare:test';
 import {
   conflicts,
   eq,
@@ -12,8 +12,8 @@ import {
   feeds,
   tasks,
 } from '@igt/db';
-import { describe, expect, it } from 'vitest';
-import { DevPusher, pemToPkcs8, signApnsToken } from '../src/lib/apns.js';
+import { beforeAll, describe, expect, it } from 'vitest';
+import { ApnsPusher, DevPusher, pemToPkcs8, signApnsToken } from '../src/lib/apns.js';
 import {
   buildUserDigest,
   digestNotificationText,
@@ -835,6 +835,20 @@ describe('sending a digest', () => {
   });
 });
 
+/** A fresh ECDSA P-256 key, PEM-armoured, good enough to sign a real APNs JWT with. */
+async function testP8(): Promise<string> {
+  const pair = (await crypto.subtle.generateKey(
+    { name: 'ECDSA', namedCurve: 'P-256' },
+    true,
+    ['sign', 'verify'],
+  )) as CryptoKeyPair;
+  const pkcs8 = (await crypto.subtle.exportKey('pkcs8', pair.privateKey)) as ArrayBuffer;
+  let binary = '';
+  for (const byte of new Uint8Array(pkcs8)) binary += String.fromCharCode(byte);
+  const b64 = btoa(binary);
+  return `-----BEGIN PRIVATE KEY-----\n${b64.replace(/(.{64})/g, '$1\n')}\n-----END PRIVATE KEY-----\n`;
+}
+
 // --- APNs provider token ---------------------------------------------------
 
 describe('APNs provider token', () => {
@@ -885,5 +899,53 @@ describe('APNs provider token', () => {
     const body = 'MEECAQAwEwYHKoZIzj0CAQYIKoZIzj0DAQcEJzAlAgEBBCA=';
     const armoured = `-----BEGIN PRIVATE KEY-----\n${body}\n-----END PRIVATE KEY-----`;
     expect(pemToPkcs8(armoured)).toEqual(pemToPkcs8(body));
+  });
+});
+
+// --- APNs send ---------------------------------------------------------------
+
+describe('ApnsPusher.send', () => {
+  beforeAll(() => {
+    fetchMock.activate();
+    fetchMock.disableNetConnect();
+  });
+
+  // Smoke test for a real staging outage: `ApnsPusher` used to stash the
+  // platform `fetch` on `this.fetchImpl` and call it as `this.fetchImpl(...)`,
+  // which invokes it with `this` bound to the ApnsPusher instance rather than
+  // the global scope — real workerd throws "Illegal invocation" for that,
+  // before the request ever leaves the Worker (see
+  // https://developers.cloudflare.com/workers/observability/errors/#illegal-invocation-errors).
+  // Every other test in this file supplies its own `fetchImpl`/`Pusher` mock,
+  // so this is the only one that constructs `ApnsPusher` with no override —
+  // the exact configuration every real deployment runs with.
+  //
+  // Caveat: `vitest-pool-workers`' `fetch` does NOT reproduce the receiver
+  // check real deployed Workers enforce (confirmed by hand: detaching `fetch`
+  // onto a plain object and calling it here does not throw), so this test
+  // alone would not have caught the original bug and can't regress-guard it.
+  // It's still worth having as a smoke test of the default `fetchImpl` path,
+  // which nothing previously exercised.
+  it('sends through the default fetchImpl end to end', async () => {
+    const deviceToken = 'c'.repeat(64);
+    fetchMock
+      .get('https://api.sandbox.push.apple.com')
+      .intercept({ path: `/3/device/${deviceToken}`, method: 'POST' })
+      .reply(200, '');
+
+    const pusher = new ApnsPusher({
+      keyP8: await testP8(),
+      keyId: 'ABCDE12345',
+      teamId: 'WG5R9LUU9X',
+    });
+    const result = await pusher.send({
+      deviceToken,
+      bundleId: 'com.example.app',
+      environment: 'development',
+      title: 'Test',
+      body: 'Body',
+    });
+
+    expect(result).toEqual({ ok: true });
   });
 });
