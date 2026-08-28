@@ -6,7 +6,8 @@ import '../state/notifications.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_text.dart';
 import '../util/assignment_text.dart' show kWeekdayLabels;
-import '../widgets/app_bottom_nav.dart' show kBottomNavClearance;
+import '../widgets/app_bottom_nav.dart'
+    show kBottomNavClearance, snackBarMarginAboveNav;
 import '../widgets/day_chip.dart';
 import '../widgets/primitives.dart';
 import '../widgets/settings.dart';
@@ -181,10 +182,16 @@ class _NotificationScheduleScreenState
                   ? 'Nothing outstanding right now. Sent to $delivered device(s).'
                   : '$total outstanding. Sent to $delivered device(s).',
           }),
+          margin: snackBarMarginAboveNav(context),
         ),
       );
     } catch (err) {
-      messenger.showSnackBar(SnackBar(content: Text('Test failed: $err')));
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text('Test failed: $err'),
+          margin: snackBarMarginAboveNav(context),
+        ),
+      );
     }
   }
 
