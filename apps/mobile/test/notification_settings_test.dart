@@ -6,6 +6,7 @@ import 'package:caretaker_app/services/push.dart';
 import 'package:caretaker_app/state/auth.dart';
 import 'package:caretaker_app/state/family.dart';
 import 'package:caretaker_app/state/notifications.dart';
+import 'package:caretaker_app/theme/app_theme.dart';
 import 'package:caretaker_app/util/notification_text.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -315,6 +316,7 @@ void main() {
             pushServiceProvider.overrideWithValue(_FakePush()),
           ],
           child: MaterialApp(
+            theme: buildAppTheme(),
             home: NotificationScheduleScreen(
               schedule: schedule,
               timezone: 'America/Los_Angeles',
