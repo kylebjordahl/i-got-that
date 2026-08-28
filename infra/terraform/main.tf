@@ -112,8 +112,22 @@ resource "cloudflare_queue" "delivery_dlq" {
 # requests_per_period is scaled down from the original 5/60s intent to the
 # nearest whole number for a 10s window (5 * 10/60 ≈ 0.83 → 1), landing on
 # roughly 6/min instead of 5/min.
-
+#
+# SINGLETON ACROSS ENVIRONMENTS: staging and production are deployed from two
+# independent Terraform states (envs/staging and envs/production, per
+# backend.<env>.hcl) but resolve to the SAME `cloudflare_zone_id` (docs
+# §7/§9 — one parent zone hosts both hostnames), and the plan's "1 ruleset
+# per zone in the http_ratelimit phase" ceiling is enforced zone-wide, not
+# per Terraform state. The expression above has no host condition, so a
+# single ruleset already protects `POST /api/auth/*` on every hostname in
+# the zone (staging's and production's alike) — creating a second one for
+# the other environment's state doesn't add coverage, it just collides with
+# the first and 400s ("exceeded maximum number of zone rulesets for phase
+# http_ratelimit", code 20217). Only staging's state manages the resource
+# (it's the one already applied/live); production intentionally skips it.
 resource "cloudflare_ruleset" "rate_limiting" {
+  count = var.environment == "staging" ? 1 : 0
+
   zone_id     = var.cloudflare_zone_id
   name        = "${var.name_prefix}-rate-limiting-${local.suffix}"
   description = "Edge rate limit backstop for auth endpoints (issue #142)."

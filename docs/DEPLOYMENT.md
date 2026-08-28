@@ -482,6 +482,24 @@ was added, when this variable was introduced without the CI secret to back
 it and staging deploys hung for over an hour with no error until manually
 cancelled.
 
+**The ruleset is a cross-environment singleton, only ever created by
+staging's state.** Staging and production apply from two *independent*
+Terraform states (`backend.staging.hcl` / `backend.production.hcl`, different
+state keys) but — per the above — resolve the exact same `cloudflare_zone_id`.
+The "one ruleset per zone in the `http_ratelimit` phase" ceiling is enforced
+by Cloudflare **per zone**, not per Terraform state, and the rule's
+expression has no host condition, so a single ruleset already covers
+`POST /api/auth/*` on both hostnames. `main.tf` therefore guards the resource
+with `count = var.environment == "staging" ? 1 : 0`: production's plan
+doesn't touch it at all. This was found the hard way — v0.11.0 was the first
+production release to carry this resource, and its `terraform apply` failed
+with `400 exceeded maximum number of zone rulesets for phase http_ratelimit
+(code 20217)` because staging had already claimed the zone's only slot on an
+earlier push to `main`. If the zone ever moves to a plan with a higher
+`http_ratelimit` ruleset count, `main.tf` could give production its own
+(functionally redundant, since it's zone-wide either way) copy — no need to
+until then.
+
 ### 10. Push notifications (APNs)
 
 The daily "outstanding items" digest is sent straight from the Worker to APNs
