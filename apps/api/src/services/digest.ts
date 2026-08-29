@@ -12,6 +12,7 @@ import {
   lt,
   pendingDecisions,
   sourceEvents,
+  taskOwners,
   tasks,
 } from '@igt/db';
 import { DAY_MS, tzOffsetMs } from '@igt/classification';
@@ -241,11 +242,15 @@ async function myTasks(
     })
     .from(tasks)
     .innerJoin(familyMembers, eq(familyMembers.id, tasks.familyMemberId))
+    // A task can be covered by several caretakers (both parents at the same
+    // recital); the join is on the caller's own claim, so it still yields one
+    // row per task of theirs.
+    .innerJoin(taskOwners, eq(taskOwners.taskId, tasks.id))
     .where(
       and(
         inArray(tasks.familyId, scope.familyIds),
         eq(tasks.status, 'owned'),
-        inArray(tasks.ownerMemberId, scope.memberIds),
+        inArray(taskOwners.familyMemberId, scope.memberIds),
         gte(tasks.dtstart, window.from),
         lt(tasks.dtstart, window.to),
       ),

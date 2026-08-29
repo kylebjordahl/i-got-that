@@ -18,6 +18,27 @@ class _RecordingApiClient extends ApiClient {
 
   List<String>? lastConvertTypes;
   ({String eventId, int? minutes})? lastTravelTime;
+  ({String taskId, List<String>? memberIds, String? memberId})? lastAssign;
+  String? lastUnassignedTaskId;
+
+  @override
+  Future<void> assignTask(
+    String familyId,
+    String taskId, {
+    String? memberId,
+    List<String>? memberIds,
+  }) async {
+    lastAssign = (taskId: taskId, memberIds: memberIds, memberId: memberId);
+  }
+
+  @override
+  Future<void> unassignTask(
+    String familyId,
+    String taskId, {
+    String? memberId,
+  }) async {
+    lastUnassignedTaskId = taskId;
+  }
 
   @override
   Future<void> convertTask(
@@ -232,7 +253,7 @@ void main() {
         status: 'owned',
         createdVia: 'generated',
         calendarEventId: 'e3',
-        ownerMemberId: 'dad',
+        ownerMemberIds: const ['dad'],
         autoAssignedRuleId: 'ar1',
       );
       final ruleSet = AssignmentRuleSet(
@@ -305,7 +326,7 @@ void main() {
       type: 'dropoff',
       start: DateTime.now().add(const Duration(hours: 2)),
       status: 'owned',
-      ownerMemberId: 'dad',
+      ownerMemberIds: const ['dad'],
       createdVia: 'generated',
       calendarEventId: 'e3',
     );
@@ -362,4 +383,66 @@ void main() {
     // Written to the claim, not to the source event the task came from.
     expect(api.lastTravelTime, (eventId: 'claim-3', minutes: 25));
   });
+
+  testWidgets(
+    'an attendance task can be handed to several caretakers at once',
+    (tester) async {
+      final me = _m('dad', 'Dad', caretaker: true, admin: true);
+      final mom = _m('mom', 'Mom', caretaker: true);
+      // Both parents at the same recital: the sheet offers "Who's going" rather
+      // than a one-of reassignment, and submits the whole set.
+      final attendance = TaskItem(
+        id: 't4',
+        familyMemberId: 'theo',
+        type: 'attendance',
+        start: DateTime.now().add(const Duration(hours: 2)),
+        end: DateTime.now().add(const Duration(hours: 4)),
+        status: 'owned',
+        ownerMemberIds: const ['dad'],
+        createdVia: 'generated',
+        calendarEventId: 'e4',
+      );
+      final api = _RecordingApiClient();
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            apiClientProvider.overrideWithValue(api),
+            familyProvider.overrideWith((ref) async => 'fam-1'),
+            membersProvider.overrideWith(
+              (ref) async => [me, mom, _m('theo', 'Theo', child: true)],
+            ),
+            currentMemberProvider.overrideWith((ref) async => me),
+            unownedTasksProvider.overrideWith((ref) async => const []),
+            allTasksProvider.overrideWith((ref) async => [attendance]),
+            pendingDecisionsProvider.overrideWith((ref) async => const []),
+            conflictsProvider.overrideWith((ref) async => const []),
+            calendarEventsProvider.overrideWith((ref) async => const []),
+            threadingThresholdProvider.overrideWith((ref) async => 30),
+          ],
+          child: MaterialApp(
+            theme: buildAppTheme(),
+            themeMode: ThemeMode.dark,
+            home: const Scaffold(body: HomeScreen()),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byType(TaskRow));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('Who’s going…'));
+      await tester.pumpAndSettle();
+
+      // Dad is already going; add Mom and save.
+      await tester.tap(find.text('Mom'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Save'));
+      await tester.pumpAndSettle();
+
+      expect(api.lastAssign?.taskId, 't4');
+      expect(api.lastAssign?.memberIds, ['dad', 'mom']);
+    },
+  );
 }

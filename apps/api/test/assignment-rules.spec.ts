@@ -10,6 +10,7 @@ import {
 } from '@igt/db';
 import { describe, expect, it } from 'vitest';
 import { hashCalendarEvent } from '../src/services/synthesis.js';
+import { withOwners } from '../src/services/task-owners.js';
 import { authed, bearer, call, setupFamily } from './helpers.js';
 
 type Db = ReturnType<typeof getDb>;
@@ -59,7 +60,7 @@ async function insertEvent(db: Db, familyId: string, memberId: string, linkId: s
 }
 
 async function childTasks(db: Db, eventId: string) {
-  return db.select().from(tasks).where(eq(tasks.calendarEventId, eventId));
+  return withOwners(db, await db.select().from(tasks).where(eq(tasks.calendarEventId, eventId)));
 }
 
 async function claimEventsFor(db: Db, familyId: string, ownerId: string) {
@@ -98,7 +99,7 @@ describe('assignment-rule pipeline (issue #24)', () => {
     expect(rows.map((t) => t.type).sort()).toEqual(['dropoff', 'pickup']);
     for (const t of rows) {
       expect(t.status).toBe('owned');
-      expect(t.ownerMemberId).toBe(fam.adminMemberId);
+      expect(t.ownerMemberIds).toEqual([fam.adminMemberId]);
       expect(t.autoAssignedRuleId).toBeTruthy();
     }
     // The claim recursion mirrored both onto the owner's calendar.

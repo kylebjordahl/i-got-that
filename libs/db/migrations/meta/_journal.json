@@ -134,6 +134,13 @@
       "when": 1787698696819,
       "tag": "0018_brave_roulette",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "6",
+      "when": 1787981026247,
+      "tag": "0019_flawless_blazing_skull",
+      "breakpoints": true
     }
   ]
 }

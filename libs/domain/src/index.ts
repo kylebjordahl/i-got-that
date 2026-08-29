@@ -522,11 +522,30 @@ export type ReorderMemberFeedLinksInput = z.infer<
   typeof ReorderMemberFeedLinksInput
 >;
 
-/** Assign a task to a caretaker; defaults to the calling member when omitted. */
+/**
+ * Assign a task to caretakers — its owner set becomes exactly these members.
+ *
+ * `memberIds` is the multi-caretaker form and wins when both are given: an
+ * attendance task is regularly several people's (both parents at the recital),
+ * while a drop-off or pickup is one person's trip and the API rejects more than
+ * one owner for it. `memberId` is the single-owner shorthand, and with neither
+ * the calling member claims it for themselves.
+ */
 export const AssignTaskInput = z.object({
   memberId: Id.optional(),
+  memberIds: z.array(Id).min(1).max(16).optional(),
 });
 export type AssignTaskInput = z.infer<typeof AssignTaskInput>;
+
+/**
+ * Release a task. With `memberId` only that caretaker steps off (the others
+ * keep covering it); omitted, the whole owner set is released back to the
+ * unowned pool.
+ */
+export const UnassignTaskInput = z.object({
+  memberId: Id.optional(),
+});
+export type UnassignTaskInput = z.infer<typeof UnassignTaskInput>;
 
 /**
  * Convert a feed-generated task into a chosen set of types (attendance, pickup,

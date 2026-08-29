@@ -679,22 +679,36 @@ class ApiClient {
     return _list(res, 'tasks');
   }
 
+  /// Set who is covering a task. [memberIds] names the whole set at once —
+  /// several caretakers are allowed on an attendance task, one on a drop-off or
+  /// pickup — [memberId] is the single-caretaker form, and with neither the
+  /// signed-in member claims it.
   Future<void> assignTask(
+    String familyId,
+    String taskId, {
+    String? memberId,
+    List<String>? memberIds,
+  }) async {
+    await _dio.post(
+      '/families/$familyId/tasks/$taskId/assign',
+      data: {
+        if (memberIds != null) 'memberIds': memberIds,
+        if (memberIds == null && memberId != null) 'memberId': memberId,
+      },
+      options: _auth,
+    );
+  }
+
+  /// Release a task: [memberId] steps just that caretaker off (the others keep
+  /// covering it), omitted releases the whole set back to the queue.
+  Future<void> unassignTask(
     String familyId,
     String taskId, {
     String? memberId,
   }) async {
     await _dio.post(
-      '/families/$familyId/tasks/$taskId/assign',
-      data: memberId != null ? {'memberId': memberId} : <String, dynamic>{},
-      options: _auth,
-    );
-  }
-
-  Future<void> unassignTask(String familyId, String taskId) async {
-    await _dio.post(
       '/families/$familyId/tasks/$taskId/unassign',
-      data: <String, dynamic>{},
+      data: memberId != null ? {'memberId': memberId} : <String, dynamic>{},
       options: _auth,
     );
   }

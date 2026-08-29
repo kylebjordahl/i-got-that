@@ -324,7 +324,14 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
 
   bool _passesFilter(TaskItem t, Set<String> myKids) {
     if (_exChildren.contains(t.familyMemberId)) return false;
-    if (_exOwners.contains(t.ownerMemberId ?? '__unowned__')) return false;
+    // Owner filter: an unclaimed task is filtered as "__unowned__", a claimed
+    // one as any of its caretakers (a shared attendance task hides only when
+    // every caretaker on it is filtered out).
+    if (t.ownerMemberIds.isEmpty
+        ? _exOwners.contains('__unowned__')
+        : t.ownerMemberIds.every(_exOwners.contains)) {
+      return false;
+    }
     final group = t.type == 'attendance' ? 'attendance' : 'transition';
     if (_exTypes.contains(group)) return false;
     if (_onlyMyKids && !myKids.contains(t.familyMemberId)) return false;
@@ -386,7 +393,7 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
     // Children I'm covering (for the "only my kids" filter): kids with a task I own.
     final myKids = {
       for (final t in rawTasks)
-        if (t.ownerMemberId == me?.id) t.familyMemberId,
+        if (t.ownerMemberIds.contains(me?.id)) t.familyMemberId,
     };
     final allTasks = [
       for (final t in rawTasks)
@@ -426,10 +433,12 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
     for (final t in rawTasks) {
       if (t.status != 'owned' || t.calendarEventId == null) continue;
       if (t.type != 'attendance') continue;
-      final owner = byId[t.ownerMemberId];
-      if (owner == null) continue;
       final list = ownersByEvent[t.calendarEventId!] ??= [];
-      if (!list.any((m) => m.id == owner.id)) list.add(owner);
+      for (final id in t.ownerMemberIds) {
+        final owner = byId[id];
+        if (owner == null) continue;
+        if (!list.any((m) => m.id == owner.id)) list.add(owner);
+      }
     }
 
     // An unowned attendance task's own block stands in for its source event

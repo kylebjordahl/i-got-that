@@ -8,6 +8,7 @@ import {
   feeds,
   getDb,
   memberCalendars,
+  taskOwners,
   tasks,
 } from '@igt/db';
 import {
@@ -280,11 +281,11 @@ describe('mirror reconcile (syncMemberMirror)', () => {
           dtstart: new Date('2026-07-06T15:30:00Z'),
           dtend: new Date('2026-07-06T15:45:00Z'),
           status: 'owned',
-          ownerMemberId: fam.adminMemberId,
           createdVia: 'generated',
         })
         .returning()
     )[0]!;
+    await db.insert(taskOwners).values({ taskId: task.id, familyMemberId: fam.adminMemberId });
     await insertEvent(db, fam.familyId, fam.adminMemberId, {
       synthKey: `task:${task.id}`,
       provenance: 'claimed_task',
@@ -326,11 +327,11 @@ describe('mirror reconcile (syncMemberMirror)', () => {
             dtstart,
             dtend: new Date(dtstart.getTime() + 15 * 60_000),
             status: 'owned',
-            ownerMemberId: fam.adminMemberId,
             createdVia: 'generated',
           })
           .returning()
       )[0]!;
+      await db.insert(taskOwners).values({ taskId: task.id, familyMemberId: fam.adminMemberId });
       return insertEvent(db, fam.familyId, fam.adminMemberId, {
         synthKey: `task:${task.id}`,
         provenance: 'claimed_task',
@@ -426,11 +427,11 @@ describe('mirror reconcile (syncMemberMirror)', () => {
           dtstart: new Date('2026-07-06T15:30:00Z'),
           dtend: new Date('2026-07-06T17:00:00Z'),
           status: 'owned',
-          ownerMemberId: fam.adminMemberId,
           createdVia: 'generated',
         })
         .returning()
     )[0]!;
+    await db.insert(taskOwners).values({ taskId: task.id, familyMemberId: fam.adminMemberId });
     const claimed = await insertEvent(db, fam.familyId, fam.adminMemberId, {
       synthKey: `task:${task.id}`,
       provenance: 'claimed_task',
@@ -488,11 +489,11 @@ describe('mirror reconcile (syncMemberMirror)', () => {
             dtstart: values.dtstart,
             dtend: values.dtend,
             status: 'owned',
-            ownerMemberId: fam.adminMemberId,
             createdVia: 'generated',
           })
           .returning()
       )[0]!;
+      await db.insert(taskOwners).values({ taskId: task.id, familyMemberId: fam.adminMemberId });
       return insertEvent(db, fam.familyId, fam.adminMemberId, {
         synthKey: `task:${task.id}`,
         provenance: 'claimed_task',
@@ -564,11 +565,11 @@ describe('mirror reconcile (syncMemberMirror)', () => {
             dtstart,
             dtend: new Date(dtstart.getTime() + 15 * 60_000),
             status: 'owned',
-            ownerMemberId: fam.adminMemberId,
             createdVia: 'generated',
           })
           .returning()
       )[0]!;
+      await db.insert(taskOwners).values({ taskId: task.id, familyMemberId: fam.adminMemberId });
       return insertEvent(db, fam.familyId, fam.adminMemberId, {
         synthKey: `task:${task.id}`,
         provenance: 'claimed_task',

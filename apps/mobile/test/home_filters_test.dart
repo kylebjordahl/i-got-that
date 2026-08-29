@@ -39,7 +39,7 @@ void main() {
     type: 'dropoff',
     start: DateTime.now().add(const Duration(hours: 3)),
     status: 'owned',
-    ownerMemberId: 'dad',
+    ownerMemberIds: const ['dad'],
     createdVia: 'generated',
   );
   final claimedByMom = TaskItem(
@@ -48,7 +48,7 @@ void main() {
     type: 'dropoff',
     start: DateTime.now().add(const Duration(hours: 4)),
     status: 'owned',
-    ownerMemberId: 'mom',
+    ownerMemberIds: const ['mom'],
     createdVia: 'generated',
   );
 

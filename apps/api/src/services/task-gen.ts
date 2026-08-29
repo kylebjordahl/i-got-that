@@ -26,7 +26,7 @@ import {
   type TaskRuleLike,
 } from '@igt/classification';
 import { geoKey, type GeoLocation } from '@igt/domain';
-import { removeClaimEvent, upsertClaimEvent } from './claim.js';
+import { isRuleOwned, ownerRowsFor, setTaskOwners } from './task-owners.js';
 
 type CalendarEventRow = typeof calendarEvents.$inferSelect;
 type TaskRow = typeof tasks.$inferSelect;
@@ -78,7 +78,9 @@ interface AssignmentContext {
  * Reconcile one task's ownership against the family's assignment rules. A rule
  * may claim an unowned task, move a rule-owned task to a new owner, or release a
  * rule-owned task whose rule no longer matches. It never touches a task a human
- * owns or has touched (`manualOwnerOverride`) — a manual action always wins.
+ * owns or has touched (`manualOwnerOverride`) — a manual action always wins,
+ * including the extra caretakers a human adds to an attendance claim, which is
+ * why a rule only ever owns a task on its own.
  * Returns true when ownership changed (so the caller can reconcile mirrors).
  */
 async function reconcileTaskOwner(
@@ -90,41 +92,35 @@ async function reconcileTaskOwner(
   if (
     task.manualOwnerOverride ||
     task.createdVia === 'manual' ||
-    task.status === 'dismissed' ||
-    (task.status === 'owned' && task.autoAssignedRuleId == null)
+    task.status === 'dismissed'
   ) {
     return false;
   }
+  const owners = (await ownerRowsFor(db, [task.id])).get(task.id) ?? [];
+  const ruleOwned = isRuleOwned(owners);
+  if (task.status === 'owned' && !ruleOwned) return false;
 
   const match = resolveTaskOwner(cand, ctx.rules);
   const owner = match && ctx.caretakerIds.has(match.ownerMemberId) ? match : null;
 
   if (owner) {
-    if (task.ownerMemberId === owner.ownerMemberId && task.autoAssignedRuleId === owner.id) {
+    if (
+      owners.length === 1 &&
+      owners[0]!.familyMemberId === owner.ownerMemberId &&
+      owners[0]!.autoAssignedRuleId === owner.id
+    ) {
       return false; // already correctly rule-owned
     }
-    const updated = (
-      await db
-        .update(tasks)
-        .set({
-          ownerMemberId: owner.ownerMemberId,
-          status: 'owned',
-          autoAssignedRuleId: owner.id,
-        })
-        .where(eq(tasks.id, task.id))
-        .returning()
-    )[0];
-    if (updated) await upsertClaimEvent(db, updated);
+    await setTaskOwners(db, task, [owner.ownerMemberId], {
+      manual: false,
+      ruleId: owner.id,
+    });
     return true;
   }
 
-  if (task.autoAssignedRuleId != null) {
+  if (ruleOwned) {
     // Was rule-owned but no rule matches now → release back to the unowned pool.
-    await db
-      .update(tasks)
-      .set({ ownerMemberId: null, status: 'unowned', autoAssignedRuleId: null })
-      .where(eq(tasks.id, task.id));
-    await removeClaimEvent(db, task.id);
+    await setTaskOwners(db, task, [], { manual: false });
     return true;
   }
 
