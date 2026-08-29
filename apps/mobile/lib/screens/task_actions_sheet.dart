@@ -67,9 +67,14 @@ Future<void> showTaskActions(
 
   final owners = scope
       .where((t) => t.status == 'owned')
-      .map((t) => byId[t.ownerMemberId]?.relationName)
+      .expand((t) => t.ownerMemberIds)
+      .map((id) => byId[id]?.relationName)
       .whereType<String>()
       .toSet();
+  // Several caretakers on one task is an attendance thing — a drop-off or
+  // pickup is one person's trip — and only makes sense on a single task, not a
+  // whole event group where each leg has its own claimant.
+  final canShare = scope.length == 1 && scope.first.type == 'attendance';
   // Rules responsible for the owned tasks in scope — drives the "assigned by a
   // rule" note (and the header's "· auto" hint) so a rule-claim never looks
   // like a person quietly claiming for you.
@@ -307,12 +312,18 @@ Future<void> showTaskActions(
                     _ActionRow(
                       icon: Icons.person_add_alt_1_rounded,
                       iconColor: AppColors.blue,
-                      label: allUnowned
-                          ? 'Assign to someone…'
-                          : 'Reassign to someone…',
+                      label: canShare
+                          ? 'Who’s going…'
+                          : (allUnowned
+                                ? 'Assign to someone…'
+                                : 'Reassign to someone…'),
                       onTap: () {
                         Navigator.of(sheetCtx).pop();
-                        _pickAndAssign(context, ref, scope, caretakers);
+                        if (canShare) {
+                          _pickAttendees(context, ref, scope.first, caretakers);
+                        } else {
+                          _pickAndAssign(context, ref, scope, caretakers);
+                        }
                       },
                     ),
                     const Divider(height: 18),
@@ -534,6 +545,102 @@ Future<void> showEventDetails(
   );
 }
 
+/// Pick everyone going to an attendance event. Unlike the single-caretaker
+/// picker below, this one is a multi-select — an attendance task can be covered
+/// by several caretakers at once (both parents at the recital), and each of them
+/// gets their own copy of the event on their calendar.
+///
+/// The set is submitted whole, so unchecking someone steps them off; clearing it
+/// entirely releases the task back to the claim queue.
+Future<void> _pickAttendees(
+  BuildContext context,
+  WidgetRef ref,
+  TaskItem task,
+  List<Member> caretakers,
+) async {
+  final picked = {...task.ownerMemberIds};
+  await showModalBottomSheet<void>(
+    context: context,
+    useSafeArea: true,
+    useRootNavigator: true,
+    showDragHandle: true,
+    builder: (sheetCtx) => SafeArea(
+      child: StatefulBuilder(
+        builder: (ctx, setSheetState) => SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(22, 4, 22, 28),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Who’s going', style: AppText.subPageTitle),
+              const SizedBox(height: 4),
+              Text(
+                'Everyone you pick gets it on their own calendar.',
+                style: AppText.subtitle,
+              ),
+              const SizedBox(height: 12),
+              for (final m in caretakers)
+                InkWell(
+                  onTap: () => setSheetState(() {
+                    if (!picked.remove(m.id)) picked.add(m.id);
+                  }),
+                  borderRadius: BorderRadius.circular(14),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 8),
+                    child: Row(
+                      children: [
+                        PersonAvatar(
+                          initial: initialFor(m.relationName),
+                          color: personColor(m),
+                          size: 40,
+                        ),
+                        const SizedBox(width: 14),
+                        Expanded(
+                          child: Text(
+                            m.relationName,
+                            style: AppText.sectionItemTitle,
+                          ),
+                        ),
+                        Icon(
+                          picked.contains(m.id)
+                              ? Icons.check_circle_rounded
+                              : Icons.circle_outlined,
+                          color: picked.contains(m.id)
+                              ? AppColors.indigo
+                              : AppColors.textSecondary,
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              const SizedBox(height: 18),
+              PillButton(
+                label: 'Save',
+                onPressed: () {
+                  final chosen = picked.toList();
+                  Navigator.of(sheetCtx).pop();
+                  _run(
+                    context,
+                    ref,
+                    (api, fid) => chosen.isEmpty
+                        ? api.unassignTask(fid, task.id)
+                        : api.assignTask(fid, task.id, memberIds: chosen),
+                    switch (chosen.length) {
+                      0 => 'Returned to the queue',
+                      1 => 'Assigned',
+                      _ => '${chosen.length} going',
+                    },
+                  );
+                },
+              ),
+            ],
+          ),
+        ),
+      ),
+    ),
+  );
+}
+
 /// Pick a caretaker to (re)assign the scope's tasks to. Hides a caretaker only
 /// when they already own every task in the scope (nothing to move to them).
 Future<void> _pickAndAssign(
@@ -543,7 +650,11 @@ Future<void> _pickAndAssign(
   List<Member> caretakers,
 ) async {
   final options = caretakers
-      .where((m) => !scope.every((t) => t.ownerMemberId == m.id))
+      .where(
+        (m) => !scope.every(
+          (t) => t.ownerMemberIds.length == 1 && t.ownerMemberIds.first == m.id,
+        ),
+      )
       .toList();
   await showModalBottomSheet<void>(
     context: context,

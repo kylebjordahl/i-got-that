@@ -24,6 +24,7 @@ import {
   ResolvePendingDecisionInput,
   SetEventTravelTimeInput,
   SetTaskDurationInput,
+  UnassignTaskInput,
 } from '@igt/domain';
 import {
   estimateTravelMinutes,
@@ -35,7 +36,7 @@ import {
 import { Hono } from 'hono';
 import type { HonoEnv } from '../env.js';
 import { requireFamilyMember } from '../middleware/auth.js';
-import { removeClaimEvent, upsertClaimEvent } from '../services/claim.js';
+import { ownersOf, removeClaimEvent, syncClaimEvents } from '../services/claim.js';
 import {
   hydrateConflicts,
   reconcileMemberConflicts,
@@ -46,6 +47,7 @@ import { resynthesizeFeed } from '../services/pipeline.js';
 import { buildKekKeySet } from '../lib/secrets.js';
 import { hashCalendarEvent } from '../services/synthesis.js';
 import { buildMemberTasks } from '../services/task-gen.js';
+import { ownerRowsFor, setTaskOwners, withOwners } from '../services/task-owners.js';
 
 /** Mounted under /families/:familyId (auth applied by parent router). */
 export const taskRoutes = new Hono<HonoEnv>();
@@ -61,19 +63,35 @@ taskRoutes.get('/tasks', async (c) => {
       ? and(eq(tasks.familyId, familyId), eq(tasks.status, status))
       : eq(tasks.familyId, familyId);
 
-  const rows = await getDb(c.env.DB)
-    .select()
-    .from(tasks)
-    .where(where)
-    .orderBy(asc(tasks.dtstart));
-  return c.json({ tasks: rows });
+  const db = getDb(c.env.DB);
+  const rows = await db.select().from(tasks).where(where).orderBy(asc(tasks.dtstart));
+  return c.json({ tasks: await withOwners(db, rows) });
 });
 
+/** The task named by :taskId, scoped to the caller's family. */
+async function taskInFamily(db: ReturnType<typeof getDb>, taskId: string, familyId: string) {
+  return (
+    await db
+      .select()
+      .from(tasks)
+      .where(and(eq(tasks.id, taskId), eq(tasks.familyId, familyId)))
+      .limit(1)
+  )[0];
+}
+
 /**
- * Assign a task to a caretaker — claim it for yourself (default) or hand it to
- * any other claim-capable member. Works from both the unowned and an already
- * owned state (reassignment). The claimed task becomes an event on the new
- * owner's unified calendar (the recursion) and both owners' mirrors reconcile.
+ * Assign a task to caretakers — claim it for yourself (default), hand it to any
+ * other claim-capable member, or name several at once. Works from both the
+ * unowned and an already owned state (reassignment): the owner set becomes
+ * exactly the members named.
+ *
+ * Several owners is an *attendance* thing — both parents at the recital, a
+ * parent and a grandparent at the game. A drop-off or pickup is one person's
+ * trip, so naming more than one for it is rejected rather than quietly having
+ * two people drive to the same school.
+ *
+ * Each claim becomes an event on its owner's unified calendar (the recursion)
+ * and every calendar that gained or lost one reconciles.
  */
 taskRoutes.post('/tasks/:taskId/assign', async (c) => {
   const parsed = AssignTaskInput.safeParse(
@@ -83,161 +101,97 @@ taskRoutes.post('/tasks/:taskId/assign', async (c) => {
 
   const db = getDb(c.env.DB);
   const me = c.get('member');
-  const targetMemberId = parsed.data.memberId ?? me.id;
+  const targetIds = [...new Set(parsed.data.memberIds ?? [parsed.data.memberId ?? me.id])];
 
-  // Target must be a claim-capable member of this family.
-  const target = (
-    await db
-      .select()
-      .from(familyMembers)
-      .where(
-        and(
-          eq(familyMembers.id, targetMemberId),
-          eq(familyMembers.familyId, me.familyId),
-        ),
-      )
-      .limit(1)
-  )[0];
-  if (!target) return c.json({ error: 'member_not_found' }, 404);
-  if (!target.isCaretaker) return c.json({ error: 'not_a_caretaker' }, 400);
+  // Targets must be claim-capable members of this family.
+  const targets = await db
+    .select()
+    .from(familyMembers)
+    .where(
+      and(
+        inArray(familyMembers.id, targetIds),
+        eq(familyMembers.familyId, me.familyId),
+      ),
+    );
+  if (targets.length !== targetIds.length) return c.json({ error: 'member_not_found' }, 404);
+  if (targets.some((t) => !t.isCaretaker)) return c.json({ error: 'not_a_caretaker' }, 400);
 
-  // Task must belong to this family.
-  const task = (
-    await db
-      .select()
-      .from(tasks)
-      .where(
-        and(
-          eq(tasks.id, c.req.param('taskId')),
-          eq(tasks.familyId, me.familyId),
-        ),
-      )
-      .limit(1)
-  )[0];
+  const task = await taskInFamily(db, c.req.param('taskId'), me.familyId);
   if (!task) return c.json({ error: 'task_not_found' }, 404);
-
-  const formerOwner = task.ownerMemberId;
-  const updated = (
-    await db
-      .update(tasks)
-      .set({
-        ownerMemberId: targetMemberId,
-        status: 'owned',
-        // A human touched ownership: opt this task out of the rule engine for
-        // good (a manual action always wins over an assignment rule).
-        manualOwnerOverride: true,
-        autoAssignedRuleId: null,
-      })
-      .where(eq(tasks.id, task.id))
-      .returning()
-  )[0]!;
-
-  // The recursion: the claimed task lands on the owner's unified calendar
-  // (reassignment moves the same event). DB writes first, then reconcile the
-  // new owner's mirror; on a reassignment also the former owner's.
-  await upsertClaimEvent(db, updated);
-  enqueueReconcile(c, { kind: 'member', memberId: targetMemberId });
-  if (formerOwner && formerOwner !== targetMemberId) {
-    enqueueReconcile(c, { kind: 'member', memberId: formerOwner });
+  if (targetIds.length > 1 && task.type !== 'attendance') {
+    return c.json({ error: 'not_multi_assignable' }, 400);
   }
-  return c.json({ task: updated });
+
+  // The recursion: each claim lands on its owner's unified calendar (a
+  // single-owner reassignment moves the same event). DB writes first, then
+  // reconcile every calendar that gained or lost one.
+  const { task: updated, affected } = await setTaskOwners(db, task, targetIds, {
+    // A human touched ownership: opt this task out of the rule engine for good
+    // (a manual action always wins over an assignment rule).
+    manual: true,
+  });
+  for (const memberId of affected) {
+    enqueueReconcile(c, { kind: 'member', memberId });
+  }
+  return c.json({ task: (await withOwners(db, [updated]))[0]! });
 });
 
-/** Release a task back to the unowned pool (its claimed event is removed). */
+/**
+ * Release a task. With a `memberId` just that caretaker steps off — the others
+ * keep covering it — otherwise the whole owner set goes back to the unowned
+ * pool. Each released caretaker's claimed event is removed.
+ */
 taskRoutes.post('/tasks/:taskId/unassign', async (c) => {
+  const parsed = UnassignTaskInput.safeParse(await c.req.json().catch(() => ({})));
+  if (!parsed.success) return c.json({ error: 'invalid' }, 400);
+
   const db = getDb(c.env.DB);
   const me = c.get('member');
 
-  const task = (
-    await db
-      .select()
-      .from(tasks)
-      .where(and(eq(tasks.id, c.req.param('taskId')), eq(tasks.familyId, me.familyId)))
-      .limit(1)
-  )[0];
+  const task = await taskInFamily(db, c.req.param('taskId'), me.familyId);
   if (!task) return c.json({ error: 'task_not_found' }, 404);
 
-  const formerOwner = task.ownerMemberId;
-  const updated = (
-    await db
-      .update(tasks)
-      .set({
-        ownerMemberId: null,
-        status: 'unowned',
-        manualOwnerOverride: true,
-        autoAssignedRuleId: null,
-      })
-      .where(eq(tasks.id, task.id))
-      .returning()
-  )[0]!;
+  const leaving = parsed.data.memberId;
+  const remaining = leaving
+    ? (await ownersOf(db, task.id)).filter((id) => id !== leaving)
+    : [];
+  const { task: updated, affected } = await setTaskOwners(db, task, remaining, {
+    manual: true,
+  });
 
-  await removeClaimEvent(db, task.id);
-  // Reconcile the former owner's mirror (the event is no longer desired).
-  if (formerOwner) {
-    enqueueReconcile(c, { kind: 'member', memberId: formerOwner });
+  // Reconcile every former owner's mirror (the event is no longer desired).
+  for (const memberId of affected) {
+    enqueueReconcile(c, { kind: 'member', memberId });
   }
-  return c.json({ task: updated });
+  return c.json({ task: (await withOwners(db, [updated]))[0]! });
 });
 
-/** Mark a task as unneeded — drops it from the queue + the owner's calendar. */
+/** Mark a task as unneeded — drops it from the queue + its owners' calendars. */
 taskRoutes.post('/tasks/:taskId/dismiss', async (c) => {
   const db = getDb(c.env.DB);
   const me = c.get('member');
-  const task = (
-    await db
-      .select()
-      .from(tasks)
-      .where(and(eq(tasks.id, c.req.param('taskId')), eq(tasks.familyId, me.familyId)))
-      .limit(1)
-  )[0];
+  const task = await taskInFamily(db, c.req.param('taskId'), me.familyId);
   if (!task) return c.json({ error: 'task_not_found' }, 404);
 
-  const formerOwner = task.ownerMemberId;
-  const updated = (
-    await db
-      .update(tasks)
-      .set({
-        status: 'dismissed',
-        ownerMemberId: null,
-        manualOwnerOverride: true,
-        autoAssignedRuleId: null,
-      })
-      .where(eq(tasks.id, task.id))
-      .returning()
-  )[0]!;
-  await removeClaimEvent(db, task.id);
-  if (formerOwner) {
-    enqueueReconcile(c, { kind: 'member', memberId: formerOwner });
+  const { task: updated, affected } = await setTaskOwners(db, task, [], {
+    manual: true,
+    status: 'dismissed',
+  });
+  for (const memberId of affected) {
+    enqueueReconcile(c, { kind: 'member', memberId });
   }
-  return c.json({ task: updated });
+  return c.json({ task: (await withOwners(db, [updated]))[0]! });
 });
 
 /** Restore a dismissed task back to the unowned pool. */
 taskRoutes.post('/tasks/:taskId/restore', async (c) => {
   const db = getDb(c.env.DB);
   const me = c.get('member');
-  const task = (
-    await db
-      .select()
-      .from(tasks)
-      .where(and(eq(tasks.id, c.req.param('taskId')), eq(tasks.familyId, me.familyId)))
-      .limit(1)
-  )[0];
+  const task = await taskInFamily(db, c.req.param('taskId'), me.familyId);
   if (!task) return c.json({ error: 'task_not_found' }, 404);
 
-  const updated = (
-    await db
-      .update(tasks)
-      .set({
-        status: 'unowned',
-        ownerMemberId: null,
-        manualOwnerOverride: true,
-        autoAssignedRuleId: null,
-      })
-      .where(eq(tasks.id, task.id))
-      .returning()
-  )[0]!;
-  return c.json({ task: updated });
+  const { task: updated } = await setTaskOwners(db, task, [], { manual: true });
+  return c.json({ task: (await withOwners(db, [updated]))[0]! });
 });
 
 /**
@@ -255,13 +209,7 @@ taskRoutes.post('/tasks/:taskId/convert', async (c) => {
   const db = getDb(c.env.DB);
   const me = c.get('member');
 
-  const task = (
-    await db
-      .select()
-      .from(tasks)
-      .where(and(eq(tasks.id, c.req.param('taskId')), eq(tasks.familyId, me.familyId)))
-      .limit(1)
-  )[0];
+  const task = await taskInFamily(db, c.req.param('taskId'), me.familyId);
   if (!task) return c.json({ error: 'task_not_found' }, 404);
   // Conversion is an event-derived concept; fully-manual tasks have no event.
   if (!task.calendarEventId) return c.json({ error: 'not_convertible' }, 400);
@@ -278,11 +226,15 @@ taskRoutes.post('/tasks/:taskId/convert', async (c) => {
   const groupWhere = eq(tasks.calendarEventId, task.calendarEventId);
   const group = await db.select().from(tasks).where(groupWhere);
 
-  // Owners whose mirrors must re-sync: anyone owning a group task before the
+  // Owners whose mirrors must re-sync: anyone covering a group task before the
   // change (a dropped type leaves their calendar; a kept type's mirrored title
   // may change with its type).
+  const ownersByTask = await ownerRowsFor(
+    db,
+    group.map((t) => t.id),
+  );
   const affectedOwners = new Set(
-    group.map((t) => t.ownerMemberId).filter((id): id is string => id != null),
+    [...ownersByTask.values()].flat().map((o) => o.familyMemberId),
   );
   const existingTypes = new Set(group.map((t) => t.type));
 
@@ -320,7 +272,7 @@ taskRoutes.post('/tasks/:taskId/convert', async (c) => {
   }
 
   const updated = await db.select().from(tasks).where(groupWhere);
-  return c.json({ tasks: updated });
+  return c.json({ tasks: await withOwners(db, updated) });
 });
 
 /**
@@ -342,13 +294,7 @@ taskRoutes.post('/tasks/:taskId/duration', async (c) => {
   const db = getDb(c.env.DB);
   const me = c.get('member');
 
-  const task = (
-    await db
-      .select()
-      .from(tasks)
-      .where(and(eq(tasks.id, c.req.param('taskId')), eq(tasks.familyId, me.familyId)))
-      .limit(1)
-  )[0];
+  const task = await taskInFamily(db, c.req.param('taskId'), me.familyId);
   if (!task) return c.json({ error: 'task_not_found' }, 404);
   if (task.type !== 'pickup' && task.type !== 'dropoff') {
     return c.json({ error: 'not_a_transition' }, 400);
@@ -399,12 +345,15 @@ taskRoutes.post('/tasks/:taskId/duration', async (c) => {
       .returning()
   )[0]!;
 
-  // Owned ⇒ the claimed mirror event tracks the task's window; re-sync it.
-  if (updated.status === 'owned' && updated.ownerMemberId) {
-    await upsertClaimEvent(db, updated);
-    enqueueReconcile(c, { kind: 'member', memberId: updated.ownerMemberId });
+  // Owned ⇒ each owner's claimed mirror event tracks the task's window; re-sync.
+  const owners = await ownersOf(db, updated.id);
+  if (updated.status === 'owned' && owners.length > 0) {
+    await syncClaimEvents(db, updated, owners);
+    for (const memberId of owners) {
+      enqueueReconcile(c, { kind: 'member', memberId });
+    }
   }
-  return c.json({ task: updated });
+  return c.json({ task: (await withOwners(db, [updated]))[0]! });
 });
 
 // --- Pending decisions -----------------------------------------------------
@@ -1063,9 +1012,11 @@ taskRoutes.post('/calendar-events/:eventId/tasks', async (c) => {
   // Un-dismiss first: task-gen keeps a dismissed row for a type it still wants
   // (it heals, never resurrects), so restoring has to happen before the rebuild
   // or the event stays exactly as stuck as it was.
+  // (A dismissed task has no owners — dismissing releases them — so there is
+  // nothing to clear on the way back to the queue.)
   const restored = await db
     .update(tasks)
-    .set({ status: 'unowned', ownerMemberId: null })
+    .set({ status: 'unowned' })
     .where(
       and(
         eq(tasks.calendarEventId, event.id),
@@ -1086,7 +1037,7 @@ taskRoutes.post('/calendar-events/:eventId/tasks', async (c) => {
     .select()
     .from(tasks)
     .where(eq(tasks.calendarEventId, event.id));
-  return c.json({ tasks: rows, restored: restored.length });
+  return c.json({ tasks: await withOwners(db, rows), restored: restored.length });
 });
 
 /**

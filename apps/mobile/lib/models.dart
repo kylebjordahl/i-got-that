@@ -216,7 +216,7 @@ class TaskItem {
     required this.createdVia,
     this.end,
     this.location,
-    this.ownerMemberId,
+    this.ownerMemberIds = const [],
     this.calendarEventId,
     this.durationOverrideMin,
     this.autoAssignedRuleId,
@@ -225,7 +225,7 @@ class TaskItem {
   final String id;
 
   /// The member the task is *about* (the event's calendar owner) — distinct
-  /// from [ownerMemberId], the caretaker who claimed it.
+  /// from [ownerMemberIds], the caretakers covering it.
   final String familyMemberId;
   final String type;
   final DateTime start;
@@ -233,7 +233,11 @@ class TaskItem {
   final String? location;
   final String status;
   final String createdVia; // 'generated' | 'manual'
-  final String? ownerMemberId;
+
+  /// The caretakers covering this task, oldest claim first. An attendance task
+  /// can be several people's at once (both parents at the recital); a drop-off
+  /// or pickup is one person's trip, so it never holds more than one.
+  final List<String> ownerMemberIds;
 
   /// The unified-calendar event this task was generated from (null for
   /// fully-manual tasks).
@@ -248,6 +252,12 @@ class TaskItem {
   /// owner (if any) is a human claim, so the UI can tell the two apart and name
   /// the responsible rule. Cleared the moment anyone claims/unassigns by hand.
   final String? autoAssignedRuleId;
+
+  /// The first caretaker covering this task, for the places that show a single
+  /// person — a transition's claimant, an accent colour, a day dot. Use
+  /// [ownerMemberIds] wherever the whole set matters.
+  String? get ownerMemberId =>
+      ownerMemberIds.isEmpty ? null : ownerMemberIds.first;
 
   bool get isDismissed => status == 'dismissed';
   bool get isUnowned => status == 'unowned';
@@ -272,7 +282,8 @@ class TaskItem {
     location: j['location'] as String?,
     status: j['status'] as String,
     createdVia: j['createdVia'] as String? ?? 'generated',
-    ownerMemberId: j['ownerMemberId'] as String?,
+    ownerMemberIds: (j['ownerMemberIds'] as List<dynamic>? ?? const [])
+        .cast<String>(),
     calendarEventId: j['calendarEventId'] as String?,
     durationOverrideMin: j['durationOverrideMin'] as int?,
     autoAssignedRuleId: j['autoAssignedRuleId'] as String?,

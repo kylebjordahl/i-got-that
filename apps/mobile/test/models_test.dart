@@ -226,7 +226,7 @@ void main() {
       'type': 'pickup',
       'dtstart': '2026-07-06T15:30:00.000Z',
       'status': 'owned',
-      'ownerMemberId': 'dad',
+      'ownerMemberIds': ['dad'],
       ...extra,
     };
 
@@ -240,6 +240,34 @@ void main() {
       final t = TaskItem.fromJson(task(const {}));
       expect(t.autoAssignedRuleId, isNull);
       expect(t.isAutoAssigned, isFalse);
+    });
+  });
+
+  group('TaskItem owners', () {
+    Map<String, dynamic> task(Map<String, dynamic> extra) => {
+      'id': 't1',
+      'familyMemberId': 'theo',
+      'type': 'attendance',
+      'dtstart': '2026-07-06T15:30:00.000Z',
+      'status': 'owned',
+      ...extra,
+    };
+
+    test('parses the whole owner set — an event both parents are going to', () {
+      final t = TaskItem.fromJson(
+        task({
+          'ownerMemberIds': ['mom', 'dad'],
+        }),
+      );
+      expect(t.ownerMemberIds, ['mom', 'dad']);
+      // The single-person shorthand takes the first claimant.
+      expect(t.ownerMemberId, 'mom');
+    });
+
+    test('an unclaimed task has no owners', () {
+      final t = TaskItem.fromJson(task({'status': 'unowned'}));
+      expect(t.ownerMemberIds, isEmpty);
+      expect(t.ownerMemberId, isNull);
     });
   });
 

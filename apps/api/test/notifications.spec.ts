@@ -10,6 +10,7 @@ import {
   calendarEvents,
   familyMemberFeeds,
   feeds,
+  taskOwners,
   tasks,
 } from '@igt/db';
 import { beforeAll, describe, expect, it } from 'vitest';
@@ -88,9 +89,10 @@ async function insertTask(
   db: Db,
   familyId: string,
   familyMemberId: string,
-  values: Partial<typeof tasks.$inferInsert> & { dtstart: Date },
+  values: Partial<typeof tasks.$inferInsert> & { dtstart: Date; ownerMemberId?: string },
 ) {
-  return (
+  const { ownerMemberId, ...taskValues } = values;
+  const task = (
     await db
       .insert(tasks)
       .values({
@@ -99,10 +101,14 @@ async function insertTask(
         type: values.type ?? 'pickup',
         status: values.status ?? 'unowned',
         createdVia: 'generated',
-        ...values,
+        ...taskValues,
       })
       .returning()
   )[0]!;
+  if (ownerMemberId) {
+    await db.insert(taskOwners).values({ taskId: task.id, familyMemberId: ownerMemberId });
+  }
+  return task;
 }
 
 // --- Device registration ---------------------------------------------------

@@ -661,7 +661,7 @@ export const tasks = sqliteTable(
     // as stale, not silently deleted) — task-gen sweeps unowned orphans itself.
     calendarEventId: text('calendar_event_id'),
     // The member the task is about (the event's calendar owner), NOT the
-    // claiming caretaker — that's ownerMemberId.
+    // claiming caretaker — those are the `task_owners` rows.
     familyMemberId: text('family_member_id')
       .notNull()
       .references(() => familyMembers.id, { onDelete: 'cascade' }),
@@ -686,14 +686,6 @@ export const tasks = sqliteTable(
     status: text('status', { enum: TaskStatus.options })
       .notNull()
       .default('unowned'),
-    ownerMemberId: text('owner_member_id').references(() => familyMembers.id, {
-      onDelete: 'set null',
-    }),
-    // Set to the assignment rule that auto-claimed this task; null for a human
-    // claim (or an unowned task). Lets task-gen recognise a rule-owned task so a
-    // rule edit can move or release it. Deliberately NOT a FK — deleting a rule
-    // must not cascade the task away; task-gen releases it on the next run.
-    autoAssignedRuleId: text('auto_assigned_rule_id'),
     // True once a human performs any ownership action (assign / unassign /
     // reassign / dismiss / restore). Auto-assignment permanently skips such
     // tasks — a manual action always wins over the rule engine.
@@ -710,6 +702,47 @@ export const tasks = sqliteTable(
     // tasks ("what's outstanding tomorrow"), which the status index above can't
     // serve — it has nothing on `dtstart`.
     familyStartIdx: index('tasks_family_start_idx').on(t.familyId, t.dtstart),
+  }),
+);
+
+/**
+ * Who is covering a task — the claim side of `tasks`, one row per caretaker.
+ *
+ * A task's ownership is a SET, not a column, because an `attendance` task is
+ * regularly several people's: both parents at the recital, a parent and a
+ * grandparent at the game. A transition (drop-off / pickup) is one person's
+ * trip and the API holds it to a single row; the table itself doesn't care.
+ * `tasks.status` stays the summary of this set — `owned` iff at least one row
+ * survives here — so the claim queue's queries don't have to join.
+ *
+ * Each owner carries its own `autoAssignedRuleId`: an assignment rule claims a
+ * task for exactly one caretaker, and the moment a human touches ownership
+ * every stamp in the set is cleared (with `tasks.manualOwnerOverride`) so the
+ * rule engine leaves the task alone from then on. Deliberately NOT a FK to
+ * `assignment_rules` — deleting a rule must not cascade the claim away;
+ * task-gen releases it on the next run.
+ */
+export const taskOwners = sqliteTable(
+  'task_owners',
+  {
+    id: id(),
+    taskId: text('task_id')
+      .notNull()
+      .references(() => tasks.id, { onDelete: 'cascade' }),
+    familyMemberId: text('family_member_id')
+      .notNull()
+      .references(() => familyMembers.id, { onDelete: 'cascade' }),
+    autoAssignedRuleId: text('auto_assigned_rule_id'),
+    createdAt: createdAt(),
+  },
+  (t) => ({
+    taskMemberUq: uniqueIndex('task_owners_task_member_uq').on(
+      t.taskId,
+      t.familyMemberId,
+    ),
+    // "What am I covering?" — Home's covering list and the digest both read a
+    // caretaker's own claims.
+    memberIdx: index('task_owners_member_idx').on(t.familyMemberId),
   }),
 );
 
@@ -1119,6 +1152,7 @@ export const schema = {
   pendingDecisions,
   conflicts,
   tasks,
+  taskOwners,
   calendarEvents,
   memberCalendars,
   eventMirrors,

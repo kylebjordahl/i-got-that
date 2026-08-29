@@ -15,7 +15,7 @@ feeds → ingest → source_events
 source_events + link(baseline + link_rules)  → SYNTHESIS (schedule) → calendar_events + pending_decisions
 target calendar → READ-BACK → calendar_events (provenance 'human')
 calendar_events + member task_rules → TASK-GEN (typing) → tasks (transition = drop-off+pickup, or attendance; claim-only)
-claim → a 'claimed_task' event on the CLAIMER's unified calendar (the recursion)
+claim → a 'claimed_task' event on each CLAIMER's unified calendar (the recursion)
 calendar_events (synthesized|claimed) → MIRROR → the member's one target calendar
 ```
 
@@ -136,6 +136,31 @@ paths in particular).
 - **Owned tasks are never deleted by reconciliation** (`services/task-gen.ts`):
   only unowned tasks are removed/swept, and user-converted (`createdVia:
   'manual'`) tasks are healed, never reclassified.
+- **A task's owner is a SET, not a column** (`task_owners`, written only through
+  `setTaskOwners` in `services/task-owners.ts`). An attendance task is regularly
+  several people's — both parents at the recital — so `POST
+  /tasks/:id/assign` takes `memberIds` and *replaces* the set, and
+  `unassign` takes an optional `memberId` to step one caretaker off a task the
+  others keep. A drop-off/pickup is one person's trip, so more than one owner on
+  one is refused (`not_multi_assignable`). `tasks.status` is the set's summary
+  (`owned` iff somebody is on it) and the API adds `ownerMemberIds` to every task
+  it returns. The claim recursion follows: `syncClaimEvents` keeps **one
+  `claimed_task` event per owner**, all sharing the `task:<taskId>` synthKey
+  (unique per member), moving a row rather than recreating it when a
+  single-owner task is reassigned — a recreated claim would cancel and re-add
+  the remote VEVENT and lose its travel-time override. Assignment rules still
+  own a task alone, and the rule stamp moved to the owner row
+  (`task_owners.auto_assigned_rule_id`); any human ownership action clears every
+  stamp in the set, on top of `manualOwnerOverride`.
+- **Migration 0019 empties `tasks.owner_member_id` instead of dropping it**, and
+  the column is gone from `libs/db/schema.ts` either way — treat it as not
+  existing. SQLite refuses `DROP COLUMN` on a column named in a table `FOREIGN
+  KEY` clause, and the table rebuild Drizzle generates for that is *not* safe on
+  D1: its `PRAGMA foreign_keys=OFF` is a no-op inside the implicit transaction a
+  migration runs in (and `defer_foreign_keys` defers violation checks, not
+  actions), so `DROP TABLE tasks` would cascade every `claimed_task` calendar
+  event — and its `travel_time_override_min` — out of the database. Any future
+  migration that wants to rebuild a table with children has the same problem.
 - **`tasksBuiltHash` is a *skip* stamp, so anything that removes an event's
   tasks behind task-gen's back has to clear it.** Task-gen's dirty query is
   `maskedAt IS NULL AND tasksBuiltHash != contentHash`, so an event whose

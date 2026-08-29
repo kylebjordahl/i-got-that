@@ -2,8 +2,9 @@ import { env } from 'cloudflare:test';
 import { and, calendarEvents, eq, getDb, tasks } from '@igt/db';
 import type { GeoLocation } from '@igt/domain';
 import { describe, expect, it } from 'vitest';
+import { reconcileClaimEvents } from '../src/services/claim.js';
 import { hashCalendarEvent } from '../src/services/synthesis.js';
-import { authed, call, setupFamily } from './helpers.js';
+import { authed, bearer, call, setupFamily } from './helpers.js';
 
 type Db = ReturnType<typeof getDb>;
 
@@ -250,5 +251,192 @@ describe('claiming (the recursion)', () => {
       authed(other.admin.token, {}),
     );
     expect(cross.status).toBe(403);
+  });
+});
+
+describe('multiple caretakers on one attendance task', () => {
+  /** A second claim-capable member to share the event with. */
+  async function addCaretaker(fam: Awaited<ReturnType<typeof setupFamily>>, name: string) {
+    const res = await call(
+      `/families/${fam.familyId}/members`,
+      authed(fam.admin.token, { relationName: name, isCaretaker: true }),
+    );
+    return ((await res.json()) as { member: { id: string } }).member.id;
+  }
+
+  it('claims for several caretakers at once — one claimed event each', async () => {
+    const fam = await setupFamily('claim-multi@example.com');
+    const db = getDb(env.DB);
+    const partnerId = await addCaretaker(fam, 'partner');
+    const { event, task } = await insertAttendanceTaskWithEvent(db, fam.familyId, fam.childId);
+
+    const res = await call(
+      `/families/${fam.familyId}/tasks/${task.id}/assign`,
+      authed(fam.admin.token, { memberIds: [fam.adminMemberId, partnerId] }),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { task: { status: string; ownerMemberIds: string[] } };
+    expect(body.task.status).toBe('owned');
+    expect([...body.task.ownerMemberIds].sort()).toEqual([fam.adminMemberId, partnerId].sort());
+
+    // Both caretakers get the event on their own calendar, each an exact copy
+    // of the source event (so both keep the metadata travel time runs on).
+    const events = await claimEventsFor(db, task.id);
+    expect(events).toHaveLength(2);
+    expect(events.map((e) => e.familyMemberId).sort()).toEqual(
+      [fam.adminMemberId, partnerId].sort(),
+    );
+    for (const e of events) {
+      expect(e.synthKey).toBe(`task:${task.id}`);
+      expect(e.summary).toBe(event.summary);
+      expect(e.locationGeo).toEqual(event.locationGeo);
+    }
+  });
+
+  it('lets one caretaker step off while the others keep covering it', async () => {
+    const fam = await setupFamily('claim-multi-step-off@example.com');
+    const db = getDb(env.DB);
+    const partnerId = await addCaretaker(fam, 'partner');
+    const { task } = await insertAttendanceTaskWithEvent(db, fam.familyId, fam.childId);
+
+    await call(
+      `/families/${fam.familyId}/tasks/${task.id}/assign`,
+      authed(fam.admin.token, { memberIds: [fam.adminMemberId, partnerId] }),
+    );
+
+    const res = await call(
+      `/families/${fam.familyId}/tasks/${task.id}/unassign`,
+      authed(fam.admin.token, { memberId: partnerId }),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { task: { status: string; ownerMemberIds: string[] } };
+    expect(body.task.status).toBe('owned');
+    expect(body.task.ownerMemberIds).toEqual([fam.adminMemberId]);
+
+    const events = await claimEventsFor(db, task.id);
+    expect(events).toHaveLength(1);
+    expect(events[0]!.familyMemberId).toBe(fam.adminMemberId);
+
+    // No member named ⇒ the whole set is released.
+    await call(
+      `/families/${fam.familyId}/tasks/${task.id}/unassign`,
+      authed(fam.admin.token),
+    );
+    expect(await claimEventsFor(db, task.id)).toHaveLength(0);
+  });
+
+  it('assigning a smaller set drops the caretakers left out of it', async () => {
+    const fam = await setupFamily('claim-multi-shrink@example.com');
+    const db = getDb(env.DB);
+    const partnerId = await addCaretaker(fam, 'partner');
+    const { task } = await insertAttendanceTaskWithEvent(db, fam.familyId, fam.childId);
+
+    await call(
+      `/families/${fam.familyId}/tasks/${task.id}/assign`,
+      authed(fam.admin.token, { memberIds: [fam.adminMemberId, partnerId] }),
+    );
+    await call(
+      `/families/${fam.familyId}/tasks/${task.id}/assign`,
+      authed(fam.admin.token, { memberIds: [partnerId] }),
+    );
+
+    const events = await claimEventsFor(db, task.id);
+    expect(events).toHaveLength(1);
+    expect(events[0]!.familyMemberId).toBe(partnerId);
+  });
+
+  it('dismissing a shared task clears every caretaker’s claim', async () => {
+    const fam = await setupFamily('claim-multi-dismiss@example.com');
+    const db = getDb(env.DB);
+    const partnerId = await addCaretaker(fam, 'partner');
+    const { task } = await insertAttendanceTaskWithEvent(db, fam.familyId, fam.childId);
+
+    await call(
+      `/families/${fam.familyId}/tasks/${task.id}/assign`,
+      authed(fam.admin.token, { memberIds: [fam.adminMemberId, partnerId] }),
+    );
+    const res = await call(
+      `/families/${fam.familyId}/tasks/${task.id}/dismiss`,
+      authed(fam.admin.token),
+    );
+    expect(res.status).toBe(200);
+    expect(await claimEventsFor(db, task.id)).toHaveLength(0);
+  });
+
+  it('refuses to put two caretakers on the same drop-off or pickup', async () => {
+    const fam = await setupFamily('claim-multi-transition@example.com');
+    const db = getDb(env.DB);
+    const partnerId = await addCaretaker(fam, 'partner');
+    const task = await insertTask(db, fam.familyId, fam.childId);
+
+    // A transition is one person's trip — two claimants would mean two cars.
+    const res = await call(
+      `/families/${fam.familyId}/tasks/${task.id}/assign`,
+      authed(fam.admin.token, { memberIds: [fam.adminMemberId, partnerId] }),
+    );
+    expect(res.status).toBe(400);
+    expect(await claimEventsFor(db, task.id)).toHaveLength(0);
+  });
+
+  it('rejects a set containing a non-caretaker or an outsider', async () => {
+    const fam = await setupFamily('claim-multi-authz@example.com');
+    const db = getDb(env.DB);
+    const { task } = await insertAttendanceTaskWithEvent(db, fam.familyId, fam.childId);
+
+    const withChild = await call(
+      `/families/${fam.familyId}/tasks/${task.id}/assign`,
+      authed(fam.admin.token, { memberIds: [fam.adminMemberId, fam.childId] }),
+    );
+    expect(withChild.status).toBe(400);
+
+    const other = await setupFamily('claim-multi-stranger@example.com');
+    const withStranger = await call(
+      `/families/${fam.familyId}/tasks/${task.id}/assign`,
+      authed(fam.admin.token, { memberIds: [fam.adminMemberId, other.adminMemberId] }),
+    );
+    expect(withStranger.status).toBe(404);
+    expect(await claimEventsFor(db, task.id)).toHaveLength(0);
+  });
+
+  it('puts a task back in the queue when its only caretaker leaves the family', async () => {
+    const fam = await setupFamily('claim-owner-removed@example.com');
+    const db = getDb(env.DB);
+    const partnerId = await addCaretaker(fam, 'partner');
+    const task = await insertTask(db, fam.familyId, fam.childId);
+    await call(
+      `/families/${fam.familyId}/tasks/${task.id}/assign`,
+      authed(fam.admin.token, { memberId: partnerId }),
+    );
+
+    // Removing the member cascades their `task_owners` row away, which would
+    // otherwise leave the task marked owned with nobody on it.
+    const del = await call(`/families/${fam.familyId}/members/${partnerId}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${fam.admin.token}` },
+    });
+    expect(del.status).toBe(204);
+
+    await reconcileClaimEvents(db, fam.familyId);
+    const after = (
+      await db.select().from(tasks).where(eq(tasks.id, task.id)).limit(1)
+    )[0]!;
+    expect(after.status).toBe('unowned');
+    expect(await claimEventsFor(db, task.id)).toHaveLength(0);
+  });
+
+  it('reports the owner set on GET /tasks', async () => {
+    const fam = await setupFamily('claim-multi-list@example.com');
+    const db = getDb(env.DB);
+    const partnerId = await addCaretaker(fam, 'partner');
+    const { task } = await insertAttendanceTaskWithEvent(db, fam.familyId, fam.childId);
+    await call(
+      `/families/${fam.familyId}/tasks/${task.id}/assign`,
+      authed(fam.admin.token, { memberIds: [fam.adminMemberId, partnerId] }),
+    );
+
+    const res = await call(`/families/${fam.familyId}/tasks?status=owned`, bearer(fam.admin.token));
+    const body = (await res.json()) as { tasks: { id: string; ownerMemberIds: string[] }[] };
+    const row = body.tasks.find((t) => t.id === task.id)!;
+    expect([...row.ownerMemberIds].sort()).toEqual([fam.adminMemberId, partnerId].sort());
   });
 });

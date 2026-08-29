@@ -133,7 +133,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     // Children I'm covering (for the "only my kids" filter): kids with a task I own.
     final myKids = {
       for (final t in rawTasks)
-        if (t.ownerMemberId == me?.id) t.familyMemberId,
+        if (t.ownerMemberIds.contains(me?.id)) t.familyMemberId,
     };
 
     // Upcoming tasks passing the base filters (child / type / only-my-kids).
@@ -157,7 +157,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       for (final t in upcoming)
         if (!t.isUnowned &&
             !t.isDismissed &&
-            (t.ownerMemberId == me?.id || _incOwners.contains(t.ownerMemberId)))
+            t.ownerMemberIds.any(
+              (id) => id == me?.id || _incOwners.contains(id),
+            ))
           t,
     ];
 
@@ -713,9 +715,19 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final child = byId[t.familyMemberId];
     final color = child != null ? personColor(child) : AppColors.textSecondary;
     final owned = t.status == 'owned';
-    final owner = owned ? byId[t.ownerMemberId] : null;
+    // An attendance task can be covered by several caretakers at once. The chip
+    // is about one of them — yourself when you're on it, else whoever claimed it
+    // first — and counts the rest as "+N".
+    final owners = [
+      for (final id in t.ownerMemberIds)
+        if (byId[id] case final m?) m,
+    ];
+    final isMine = owners.any((m) => m.id == me?.id);
+    final owner = isMine
+        ? owners.firstWhere((m) => m.id == me!.id)
+        : (owners.isEmpty ? null : owners.first);
     final ownerColor = owner != null ? personColor(owner) : AppColors.indigo;
-    final isMine = owner?.id == me?.id;
+    final others = owners.length - 1;
     return TaskRow(
       icon: taskIcon(t.type),
       iconColor: color,
@@ -743,14 +755,16 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             : eventsById[t.calendarEventId],
       ),
       trailing: owned
-          ? (isMine
+          ? (isMine && others < 1
                 ? YouChip(
                     initial: initialFor(me?.relationName ?? '?'),
                     color: ownerColor,
                   )
                 : _CoveredByChip(
                     initial: initialFor(owner?.relationName ?? '?'),
-                    name: owner?.relationName ?? 'them',
+                    name:
+                        '${isMine ? 'you' : owner?.relationName ?? 'them'}'
+                        '${others > 0 ? ' +$others' : ''}',
                     color: ownerColor,
                   ))
           : PillButton(
