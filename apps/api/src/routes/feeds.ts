@@ -43,6 +43,7 @@ import { fetchGoogleFreeBusy } from '@igt/ical';
 import { Hono } from 'hono';
 import type { Bindings, HonoEnv } from '../env.js';
 import { resolveAccountCredential } from '../lib/account-credentials.js';
+import { runChunked } from '../lib/d1.js';
 import { googleRefresherFor } from '../lib/google-oauth.js';
 import { buildKekKeySet } from '../lib/secrets.js';
 import {
@@ -569,8 +570,11 @@ feedRoutes.delete('/:feedId/member-links/:linkId', requireAdmin, async (c) => {
   await db.delete(familyMemberFeeds).where(eq(familyMemberFeeds.id, link.id));
   if (eventIds.length > 0) {
     // Deleting the tasks also cascades their claimed events off the owners'
-    // calendars; the family reconcile then cancels every remote copy.
-    await db.delete(tasks).where(inArray(tasks.calendarEventId, eventIds));
+    // calendars; the family reconcile then cancels every remote copy. Chunked
+    // because a link's window holds far more events than D1 will bind at once.
+    await runChunked(eventIds, (chunk) =>
+      db.delete(tasks).where(inArray(tasks.calendarEventId, chunk)),
+    );
   }
   enqueueReconcile(c, { kind: 'family', familyId });
   return c.json({ ok: true });

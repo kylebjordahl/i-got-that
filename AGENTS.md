@@ -200,6 +200,22 @@ paths in particular).
   `If-None-Match` and sends `Cache-Control: no-cache` so no intermediary can
   answer it either. The background poll still uses the stored ETag — being
   told "nothing changed" is exactly what it's for.
+- **D1 binds at most 100 parameters per statement, and the tests won't tell
+  you.** The 101st comes back as `too many SQL variables: SQLITE_ERROR` — a
+  500. Every `inArray(col, ids)` binds one per id, so any query that fans out
+  over a list which grows with a family's *data* (its tasks, its events, its
+  source events) eventually trips it: `GET /tasks` started 500ing on staging
+  the day the family's 101st task appeared, because decorating the list with
+  its owners was one `inArray` over every task id. Nothing catches this before
+  a deploy — the API tests run on miniflare's local D1, plain SQLite with
+  `SQLITE_MAX_VARIABLE_NUMBER` in the tens of thousands, so an over-cap query
+  passes locally and in CI and fails only on the edge. Route such lists through
+  `apps/api/src/lib/d1.ts` (`selectChunked` / `runChunked` / `chunkForD1`,
+  whose `reserved` argument accounts for the parameters the rest of the
+  statement binds — Drizzle binds comparison values too). Lists bounded by the
+  size of a *family* (its members, a member's feeds, a task's owners) are fine
+  unchunked. `test/d1-limits.spec.ts` puts the real cap back in front of the
+  local database, which is the only way a regression here is catchable.
 - **CalDAV** does a direct authenticated `PUT`/`DELETE` to the discovered
   collection URL (`libs/delivery/src/caldav.ts`), not tsdav's create-only helper.
 - **Travel time is coordinate-driven, end to end.** `locationGeo` rides from the

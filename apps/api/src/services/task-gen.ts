@@ -26,6 +26,7 @@ import {
   type TaskRuleLike,
 } from '@igt/classification';
 import { geoKey, type GeoLocation } from '@igt/domain';
+import { runChunked } from '../lib/d1.js';
 import { isRuleOwned, ownerRowsFor, setTaskOwners } from './task-owners.js';
 
 type CalendarEventRow = typeof calendarEvents.$inferSelect;
@@ -407,11 +408,11 @@ export async function buildMemberTasks(
       ),
     );
   if (orphans.length > 0) {
-    await db.delete(tasks).where(
-      inArray(
-        tasks.id,
-        orphans.map((o) => o.id),
-      ),
+    // Chunked: an orphan sweep after a bulk change can name more ids than D1
+    // will bind in one statement.
+    await runChunked(
+      orphans.map((o) => o.id),
+      (chunk) => db.delete(tasks).where(inArray(tasks.id, chunk)),
     );
     result.tasksRemoved += orphans.length;
   }

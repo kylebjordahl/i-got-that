@@ -11,6 +11,7 @@ import {
   parseAndExpand,
 } from '@igt/ical';
 import { resolveAccountCredential } from '../lib/account-credentials.js';
+import { runChunked } from '../lib/d1.js';
 import type { KekKeySet } from '../lib/secrets.js';
 
 export interface IngestOptions {
@@ -144,11 +145,9 @@ async function deleteStaleSourceEvents(
     .filter((r) => !freshKeys.has(key(r.icalUid, r.recurrenceId)))
     .map((r) => r.id);
   // Chunked to stay under D1's bound-parameter limit.
-  for (let i = 0; i < staleIds.length; i += 50) {
-    await db
-      .delete(sourceEvents)
-      .where(inArray(sourceEvents.id, staleIds.slice(i, i + 50)));
-  }
+  await runChunked(staleIds, (chunk) =>
+    db.delete(sourceEvents).where(inArray(sourceEvents.id, chunk)),
+  );
 }
 
 /**

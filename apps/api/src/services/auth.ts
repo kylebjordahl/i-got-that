@@ -17,6 +17,7 @@ import {
 import type { IdentityProvider } from '@igt/domain';
 import type { AppleNotificationEvent } from '../lib/apple.js';
 import { randomToken, sha256hex } from '../lib/crypto.js';
+import { runChunked } from '../lib/d1.js';
 import { loadSecret, type KekKeySet } from '../lib/secrets.js';
 import { wouldOrphanFamily } from './families.js';
 
@@ -235,7 +236,11 @@ export async function sweepOrphanedSecrets(db: Db): Promise<number> {
   );
   const orphanIds = candidates.map((c) => c.id).filter((id) => !referenced.has(id));
   if (orphanIds.length === 0) return 0;
-  await db.delete(secrets).where(inArray(secrets.id, orphanIds));
+  // Chunked: this sweeps the whole table, so the backlog isn't bounded by
+  // anything D1 will bind in one statement.
+  await runChunked(orphanIds, (chunk) =>
+    db.delete(secrets).where(inArray(secrets.id, chunk)),
+  );
   return orphanIds.length;
 }
 

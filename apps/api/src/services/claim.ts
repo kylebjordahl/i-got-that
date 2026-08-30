@@ -8,6 +8,7 @@ import {
   taskOwners,
   tasks,
 } from '@igt/db';
+import { selectChunked } from '../lib/d1.js';
 import { hashCalendarEvent } from './synthesis.js';
 
 type TaskRow = typeof tasks.$inferSelect;
@@ -208,16 +209,16 @@ export async function reconcileClaimEvents(db: Db, familyId: string): Promise<vo
 
   const ownersByTask = new Map<string, string[]>();
   if (owned.length > 0) {
-    const rows = await db
-      .select({ taskId: taskOwners.taskId, familyMemberId: taskOwners.familyMemberId })
-      .from(taskOwners)
-      .where(
-        inArray(
-          taskOwners.taskId,
-          owned.map((t) => t.id),
-        ),
-      )
-      .orderBy(taskOwners.createdAt);
+    // Chunked: a family's owned-task list outgrows D1's parameter cap.
+    const rows = await selectChunked(
+      owned.map((t) => t.id),
+      (chunk) =>
+        db
+          .select({ taskId: taskOwners.taskId, familyMemberId: taskOwners.familyMemberId })
+          .from(taskOwners)
+          .where(inArray(taskOwners.taskId, chunk))
+          .orderBy(taskOwners.createdAt),
+    );
     for (const r of rows) {
       const list = ownersByTask.get(r.taskId) ?? [];
       list.push(r.familyMemberId);

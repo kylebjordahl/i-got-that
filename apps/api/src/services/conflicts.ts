@@ -12,6 +12,7 @@ import {
   lt,
   or,
 } from '@igt/db';
+import { selectChunked } from '../lib/d1.js';
 import {
   detectConflicts,
   subtractIntervals,
@@ -135,25 +136,33 @@ export async function hydrateConflicts(
   if (rows.length === 0 || familyIds.length === 0) return [];
   const memberIds = [...new Set(rows.map((r) => r.familyMemberId))];
   const synthKeys = [...new Set(rows.flatMap((r) => [r.loserKey, r.winnerKey]))];
-  const evs = await db
-    .select({
-      familyMemberId: calendarEvents.familyMemberId,
-      synthKey: calendarEvents.synthKey,
-      summary: calendarEvents.summary,
-      location: calendarEvents.location,
-      locationGeo: calendarEvents.locationGeo,
-      dtstart: calendarEvents.dtstart,
-      dtend: calendarEvents.dtend,
-      allDay: calendarEvents.allDay,
-    })
-    .from(calendarEvents)
-    .where(
-      and(
-        inArray(calendarEvents.familyId, familyIds),
-        inArray(calendarEvents.familyMemberId, memberIds),
-        inArray(calendarEvents.synthKey, synthKeys),
-      ),
-    );
+  // Two keys per conflict, so the key list outgrows D1's 100-parameter cap
+  // long before the family or member lists do — chunk on it, leaving room for
+  // the other two `inArray`s the same statement binds.
+  const evs = await selectChunked(
+    synthKeys,
+    (chunk) =>
+      db
+        .select({
+          familyMemberId: calendarEvents.familyMemberId,
+          synthKey: calendarEvents.synthKey,
+          summary: calendarEvents.summary,
+          location: calendarEvents.location,
+          locationGeo: calendarEvents.locationGeo,
+          dtstart: calendarEvents.dtstart,
+          dtend: calendarEvents.dtend,
+          allDay: calendarEvents.allDay,
+        })
+        .from(calendarEvents)
+        .where(
+          and(
+            inArray(calendarEvents.familyId, familyIds),
+            inArray(calendarEvents.familyMemberId, memberIds),
+            inArray(calendarEvents.synthKey, chunk),
+          ),
+        ),
+    familyIds.length + memberIds.length,
+  );
   const byKey = new Map(evs.map((e) => [`${e.familyMemberId}|${e.synthKey}`, e]));
 
   const out: HydratedConflict[] = [];
