@@ -1,5 +1,6 @@
 import { and, type Db, eq, inArray, taskOwners, tasks } from '@igt/db';
 import type { TaskStatus } from '@igt/domain';
+import { selectChunked } from '../lib/d1.js';
 import { syncClaimEvents } from './claim.js';
 
 type TaskRow = typeof tasks.$inferSelect;
@@ -26,15 +27,19 @@ export async function ownerRowsFor(
 ): Promise<Map<string, OwnerRow[]>> {
   const byTask = new Map<string, OwnerRow[]>();
   if (taskIds.length === 0) return byTask;
-  const rows = await db
-    .select({
-      taskId: taskOwners.taskId,
-      familyMemberId: taskOwners.familyMemberId,
-      autoAssignedRuleId: taskOwners.autoAssignedRuleId,
-    })
-    .from(taskOwners)
-    .where(inArray(taskOwners.taskId, taskIds))
-    .orderBy(taskOwners.createdAt);
+  // A family's task list is exactly the kind of unbounded fan-out D1's
+  // 100-parameter cap rejects, and this runs on every `GET /tasks`.
+  const rows = await selectChunked(taskIds, (chunk) =>
+    db
+      .select({
+        taskId: taskOwners.taskId,
+        familyMemberId: taskOwners.familyMemberId,
+        autoAssignedRuleId: taskOwners.autoAssignedRuleId,
+      })
+      .from(taskOwners)
+      .where(inArray(taskOwners.taskId, chunk))
+      .orderBy(taskOwners.createdAt),
+  );
   for (const r of rows) {
     const list = byTask.get(r.taskId) ?? [];
     list.push({
@@ -46,7 +51,10 @@ export async function ownerRowsFor(
   return byTask;
 }
 
-/** Decorate task rows with their owner set, in one extra query. */
+/**
+ * Decorate task rows with their owner set, in one extra query per 100 tasks
+ * (see {@link selectChunked} — D1 won't bind more ids than that in one go).
+ */
 export async function withOwners(
   db: Db,
   rows: TaskRow[],
