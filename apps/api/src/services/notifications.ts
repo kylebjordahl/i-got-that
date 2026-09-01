@@ -19,6 +19,7 @@ import {
   digestWindow,
   localDateKey,
   localWallInstant,
+  type DigestWindow,
   type UserDigest,
 } from './digest.js';
 
@@ -163,13 +164,120 @@ function slotInstant(schedule: ScheduleRow, slot: string): Date {
   return localWallInstant(dateKey!, hhmm ?? schedule.sendAt, schedule.timezone);
 }
 
+type DeviceRow = typeof pushDevices.$inferSelect;
+
+/** Every device of this user's that APNs hasn't already rejected. */
+async function liveDevices(db: Db, userId: string): Promise<DeviceRow[]> {
+  return db
+    .select()
+    .from(pushDevices)
+    .where(and(eq(pushDevices.userId, userId), isNull(pushDevices.disabledAt)));
+}
+
+/**
+ * Send one message per device, disabling the ones APNs says are gone.
+ *
+ * Shared by the two sends below — the digest alert and the badge-only sync —
+ * so a dead token is retired the same way whichever one found it.
+ */
+async function pushToDevices(
+  db: Db,
+  pusher: Pusher,
+  devices: DeviceRow[],
+  build: (device: DeviceRow) => PushMessage,
+): Promise<{ delivered: number; retry: boolean; failures: string[] }> {
+  let delivered = 0;
+  let retry = false;
+  const failures: string[] = [];
+
+  for (const device of devices) {
+    const result = await pusher.send(build(device));
+    if (result.ok) {
+      delivered++;
+      continue;
+    }
+    if (result.kind === 'device_gone') {
+      // The install is gone or the token was minted for the other APNs
+      // environment. Stop sending to it; a re-register revives the row.
+      await db
+        .update(pushDevices)
+        .set({ disabledAt: new Date() })
+        .where(eq(pushDevices.id, device.id));
+      console.warn(`push device ${device.id} disabled: ${result.reason}`);
+      failures.push(result.reason);
+      continue;
+    }
+    if (result.kind === 'retryable') retry = true;
+    console.error(`push to device ${device.id} failed: ${result.reason}`);
+    failures.push(result.reason);
+  }
+
+  return { delivered, retry, failures: [...new Set(failures)] };
+}
+
+/**
+ * The badge every one of this user's devices should be showing right now.
+ *
+ * The push that *sets* a badge describes one schedule's window, but the badge
+ * outlives the notification, so what it means afterwards has to be answerable
+ * without it: it's "how much still needs you, across every window your enabled
+ * schedules watch". Categories are unioned and the windows merged (earliest
+ * `from`, furthest `to`) so the count can't disagree with whichever digest
+ * happened to arrive last.
+ *
+ * `my_tasks` never counts — see `UserDigest.actionable`. With no enabled
+ * schedule at all the answer is 0: nothing is left to raise the badge again,
+ * so leaving one lit would strand it forever.
+ */
+export async function currentBadgeCount(
+  db: Db,
+  userId: string,
+  now = new Date(),
+): Promise<number> {
+  const schedules = await db
+    .select()
+    .from(notificationSchedules)
+    .where(
+      and(
+        eq(notificationSchedules.userId, userId),
+        eq(notificationSchedules.enabled, true),
+      ),
+    );
+  if (schedules.length === 0) return 0;
+
+  const categories = new Set<NotificationCategory>();
+  let from = Infinity;
+  let to = -Infinity;
+  for (const schedule of schedules) {
+    for (const category of schedule.categories as NotificationCategory[]) {
+      if (category !== 'my_tasks') categories.add(category);
+    }
+    const window = digestWindow(
+      now,
+      schedule.timezone,
+      schedule.startOffsetDays,
+      schedule.horizonDays,
+    );
+    from = Math.min(from, window.from.getTime());
+    to = Math.max(to, window.to.getTime());
+  }
+  if (categories.size === 0) return 0;
+
+  const window: DigestWindow = { from: new Date(from), to: new Date(to) };
+  const digest = await buildUserDigest(db, userId, window, [...categories]);
+  return digest.actionable;
+}
+
 export interface DigestSendOutcome {
   digest: UserDigest;
-  /** Devices the push actually reached. */
+  /** Devices the alert actually reached. Always 0 on a `skipped` send. */
   delivered: number;
   /** True when a transient failure means the queue should try again. */
   retry: boolean;
-  /** Set when nothing was sent, and why — for the test endpoint's response. */
+  /**
+   * Set when no *alert* was sent, and why — for the test endpoint's response.
+   * `empty` still pushes a silent badge-only sync (see `sendDigest`).
+   */
   skipped?: 'empty' | 'no_devices';
   /**
    * APNs' own reason for each device that didn't get the push. The scheduled
@@ -207,65 +315,54 @@ export async function sendDigest(
     schedule.categories as NotificationCategory[],
   );
 
+  const devices = await liveDevices(db, schedule.userId);
+
   if (digest.total === 0 && schedule.skipWhenEmpty && !opts.force) {
-    return { digest, delivered: 0, retry: false, skipped: 'empty', failures: [] };
+    // Silent, but not nothing: the badge this schedule set on some earlier
+    // evening is still lit, and the user has since dealt with everything it
+    // counted. A badge-only push (no banner, no sound) takes it back down
+    // without ever telling them there's nothing to do.
+    const outcome = await pushToDevices(db, pusher, devices, (device) => ({
+      deviceToken: device.deviceToken,
+      bundleId: device.bundleId,
+      environment: device.environment,
+      badge: 0,
+    }));
+    return {
+      digest,
+      delivered: 0,
+      retry: outcome.retry,
+      skipped: 'empty',
+      failures: outcome.failures,
+    };
   }
 
-  const devices = await db
-    .select()
-    .from(pushDevices)
-    .where(
-      and(eq(pushDevices.userId, schedule.userId), isNull(pushDevices.disabledAt)),
-    );
   if (devices.length === 0) {
     return { digest, delivered: 0, retry: false, skipped: 'no_devices', failures: [] };
   }
 
   const { title, body } = digestNotificationText(digest, at, schedule.timezone);
-  let delivered = 0;
-  let retry = false;
-  const failures: string[] = [];
+  const outcome = await pushToDevices(db, pusher, devices, (device) => ({
+    deviceToken: device.deviceToken,
+    bundleId: device.bundleId,
+    environment: device.environment,
+    title,
+    body,
+    // What's left to *do*, not what the body counts: a digest that's all
+    // "tasks you're covering" is worth reading and worth a badge of zero.
+    badge: digest.actionable,
+    threadId: schedule.id,
+    collapseId: opts.collapseId,
+    data: {
+      type: 'digest',
+      scheduleId: schedule.id,
+      familyIds: digest.familyIds,
+      from: window.from.toISOString(),
+      to: window.to.toISOString(),
+    },
+  }));
 
-  for (const device of devices) {
-    const message: PushMessage = {
-      deviceToken: device.deviceToken,
-      bundleId: device.bundleId,
-      environment: device.environment,
-      title,
-      body,
-      badge: digest.total,
-      threadId: schedule.id,
-      collapseId: opts.collapseId,
-      data: {
-        type: 'digest',
-        scheduleId: schedule.id,
-        familyIds: digest.familyIds,
-        from: window.from.toISOString(),
-        to: window.to.toISOString(),
-      },
-    };
-    const result = await pusher.send(message);
-    if (result.ok) {
-      delivered++;
-      continue;
-    }
-    if (result.kind === 'device_gone') {
-      // The install is gone or the token was minted for the other APNs
-      // environment. Stop sending to it; a re-register revives the row.
-      await db
-        .update(pushDevices)
-        .set({ disabledAt: new Date() })
-        .where(eq(pushDevices.id, device.id));
-      console.warn(`push device ${device.id} disabled: ${result.reason}`);
-      failures.push(result.reason);
-      continue;
-    }
-    if (result.kind === 'retryable') retry = true;
-    console.error(`push to device ${device.id} failed: ${result.reason}`);
-    failures.push(result.reason);
-  }
-
-  return { digest, delivered, retry, failures: [...new Set(failures)] };
+  return { digest, ...outcome };
 }
 
 /**

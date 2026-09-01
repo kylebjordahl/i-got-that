@@ -26,6 +26,7 @@ class _FakePush implements PushService {
   PushAuthorization authorization;
   bool registerCalled = false;
   bool settingsOpened = false;
+  int? badgeCount;
 
   @override
   bool get isSupported => supported;
@@ -50,6 +51,9 @@ class _FakePush implements PushService {
 
   @override
   Future<String?> timezone() async => 'America/Los_Angeles';
+
+  @override
+  Future<void> setBadgeCount(int count) async => badgeCount = count;
 
   @override
   Future<void> openSettings() async => settingsOpened = true;

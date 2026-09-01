@@ -1258,6 +1258,14 @@ class ApiClient {
     'devices',
   );
 
+  /// How many things still need a human right now — the number the app-icon
+  /// badge should be showing. Server-computed over the windows this user's
+  /// enabled digests watch, so it agrees with whatever the last push said.
+  Future<int> fetchBadgeCount() async {
+    final res = await _dio.get('/notifications/badge', options: _auth);
+    return (_obj(res)['count'] as num?)?.toInt() ?? 0;
+  }
+
   Future<List<dynamic>> listNotificationSchedules() async => _list(
     await _dio.get('/notifications/schedules', options: _auth),
     'schedules',

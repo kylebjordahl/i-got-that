@@ -167,6 +167,9 @@ class PushController extends StateNotifier<AsyncValue<PushState>> {
   /// account's, and another device may still want them.
   Future<void> disable() async {
     await unregisterDevice();
+    // With no registration left, nothing can ever take a leftover badge back
+    // down again — so it goes now, with the last push that could set it.
+    await _push.setBadgeCount(0);
     final authorization = await _push.authorizationStatus();
     state = AsyncValue.data(
       PushState(authorization: authorization, registered: false),

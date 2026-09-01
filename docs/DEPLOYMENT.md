@@ -550,6 +550,17 @@ can't negotiate it, so local runs always get the `DevPusher`. Verify real
 delivery on staging, on a **physical device** — the iOS Simulator never talks to
 real APNs (it only accepts drag-and-dropped `.apns` files).
 
+**The app-icon badge is live state, not an unread count.** A digest sets the
+badge to what still needs a human (`UserDigest.actionable` — everything except
+the tasks you're already covering), and two things take it back down again: the
+app asks `GET /notifications/badge` for the current count whenever it comes to
+the foreground or something is claimed/decided/resolved, and a schedule whose
+window turns up empty pushes a **badge-only** payload (no alert, no sound,
+`apns-priority: 5`) instead of staying completely silent — so a phone that never
+gets opened still stops showing yesterday's number. That second one is the only
+push this app sends without visible copy; it still needs the `badge`
+authorization the app requests at registration.
+
 **Where it runs.** The cron tick (`*/15 * * * *`) sweeps due schedules in
 `scheduled.ts` → `dispatchDueDigests`, which claims each schedule's slot with a
 conditional UPDATE and enqueues onto the existing `DELIVERY_QUEUE` (no new

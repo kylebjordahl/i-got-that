@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
@@ -6,6 +8,7 @@ import 'package:package_info_plus/package_info_plus.dart';
 import '../models.dart';
 import '../services/push.dart';
 import '../state/auth.dart';
+import '../state/badge.dart';
 import '../state/family.dart';
 import '../state/nav.dart';
 import '../state/notifications.dart';
@@ -547,6 +550,9 @@ class MeScreen extends ConsumerWidget {
       // [PushController.unregisterDevice]) so a platform-channel round trip
       // can never hold up signing out.
       await ref.read(pushControllerProvider.notifier).unregisterDevice();
+      // The badge counts the departing account's outstanding work; nothing
+      // that could take it back down survives the sign-out.
+      unawaited(ref.read(badgeSyncProvider).clear());
       ref.read(navIndexProvider.notifier).state = 0;
       ref.read(authControllerProvider.notifier).logout();
     }

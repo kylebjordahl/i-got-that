@@ -231,6 +231,8 @@ class _ShotPush implements PushService {
   @override
   Future<String?> timezone() async => 'America/Los_Angeles';
   @override
+  Future<void> setBadgeCount(int count) async {}
+  @override
   Future<void> openSettings() async {}
   @override
   Future<Map<String, dynamic>?> takeInitialTap() async => null;
