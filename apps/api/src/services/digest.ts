@@ -54,6 +54,17 @@ export interface UserDigest {
   window: DigestWindow;
   buckets: DigestBucket[];
   total: number;
+  /**
+   * The part of `total` that still needs a human: everything except
+   * `my_tasks`, which is a reminder of work you've *already* taken on rather
+   * than a gap.
+   *
+   * This — not `total` — is what the app-icon badge counts, and it's the whole
+   * reason the badge can reach zero: claim the last unowned task and the work
+   * moves from `unclaimed_tasks` into `my_tasks`, so `total` stays put while
+   * `actionable` drops to 0.
+   */
+  actionable: number;
   /** The families the digest drew from, for the tap-through payload. */
   familyIds: string[];
 }
@@ -374,7 +385,7 @@ export async function buildUserDigest(
 ): Promise<UserDigest> {
   const scope = await loadUserScope(db, userId);
   if (scope.familyIds.length === 0) {
-    return { window, buckets: [], total: 0, familyIds: [] };
+    return { window, buckets: [], total: 0, actionable: 0, familyIds: [] };
   }
 
   const wanted = new Set(categories);
@@ -398,6 +409,9 @@ export async function buildUserDigest(
     window,
     buckets,
     total: buckets.reduce((sum, b) => sum + b.count, 0),
+    actionable: buckets
+      .filter((b) => b.category !== 'my_tasks')
+      .reduce((sum, b) => sum + b.count, 0),
     familyIds: scope.familyIds,
   };
 }

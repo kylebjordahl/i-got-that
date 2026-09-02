@@ -86,6 +86,20 @@ class PushService {
   /// server can't read a schedule's send time in.
   Future<String?> timezone() => _query<String>('timezone');
 
+  /// Set the app-icon badge to [count] (`0` clears it), and — at zero — sweep
+  /// the delivered digests out of Notification Center along with it.
+  ///
+  /// The badge a digest push sets is a snapshot: nothing about claiming the
+  /// last task tells iOS to take it back down. This is how it comes down.
+  Future<void> setBadgeCount(int count) async {
+    if (!isSupported) return;
+    try {
+      await _channel.invokeMethod<void>('setBadge', {'count': count});
+    } catch (_) {
+      // Cosmetic — never worth failing a refresh or a sign-out over.
+    }
+  }
+
   /// Open the app's page in iOS Settings, the only route back from a denial.
   Future<void> openSettings() => _query<void>('openSettings');
 

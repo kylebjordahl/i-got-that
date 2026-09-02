@@ -17,7 +17,7 @@ import { Hono } from 'hono';
 import type { HonoEnv } from '../env.js';
 import { getPusher } from '../lib/apns.js';
 import { authMiddleware } from '../middleware/auth.js';
-import { sendDigest } from '../services/notifications.js';
+import { currentBadgeCount, sendDigest } from '../services/notifications.js';
 
 /**
  * Push notification setup — device registration and the user's digest
@@ -129,6 +129,23 @@ notificationRoutes.get('/devices', async (c) => {
     .where(eq(pushDevices.userId, user.id))
     .orderBy(asc(pushDevices.createdAt));
   return c.json({ devices: rows });
+});
+
+// --- Badge -----------------------------------------------------------------
+
+/**
+ * What the app-icon badge should read right now.
+ *
+ * The push that set the badge is a snapshot of one moment; this is the live
+ * answer, so the client can put the badge back in step whenever it comes to
+ * the foreground — and drop it to zero once the last thing that needed a human
+ * has been claimed, decided or resolved, whoever did it and wherever. See
+ * `currentBadgeCount` for what counts.
+ */
+notificationRoutes.get('/badge', async (c) => {
+  const user = c.get('user');
+  const count = await currentBadgeCount(getDb(c.env.DB), user.id);
+  return c.json({ count });
 });
 
 // --- Schedules -------------------------------------------------------------

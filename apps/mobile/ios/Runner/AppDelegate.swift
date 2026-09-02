@@ -110,9 +110,33 @@ enum PushChannel {
       case "takeInitialTap":
         result(pendingTapPayload)
         pendingTapPayload = nil
+      case "setBadge":
+        // The app-icon badge is the count of things still waiting on a human,
+        // which the client recomputes from the server whenever it can (see
+        // `state/badge.dart`) — a digest's badge would otherwise stay lit long
+        // after the work behind it was claimed.
+        let count = (call.arguments as? [String: Any])?["count"] as? Int ?? 0
+        setBadge(count)
+        if count == 0 {
+          // Whatever raised the badge is done with, so the digests that
+          // carried it are stale too — leaving them stacked in Notification
+          // Center is its own kind of unread marker.
+          UNUserNotificationCenter.current().removeAllDeliveredNotifications()
+        }
+        result(nil)
       default:
         result(FlutterMethodNotImplemented)
       }
+    }
+  }
+
+  /// Set the app-icon badge, on whichever API this OS version offers.
+  /// `setBadgeCount` is iOS 16+; the deployment target is still 15.
+  private static func setBadge(_ count: Int) {
+    if #available(iOS 16.0, *) {
+      UNUserNotificationCenter.current().setBadgeCount(count)
+    } else {
+      UIApplication.shared.applicationIconBadgeNumber = count
     }
   }
 

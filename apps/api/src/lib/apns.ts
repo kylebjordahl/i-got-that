@@ -19,8 +19,14 @@ export interface PushMessage {
   /** Becomes the `apns-topic` header — the receiving app's bundle id. */
   bundleId: string;
   environment: ApnsEnvironment;
-  title: string;
-  body: string;
+  /**
+   * Alert copy. Omit *both* to send a badge-only sync: no banner, no sound,
+   * nothing in Notification Center — just the new `badge`. That's how a stale
+   * badge is cleared on a phone whose owner claimed the last task somewhere
+   * else and never opened the app.
+   */
+  title?: string;
+  body?: string;
   /** App-icon badge. `0` clears it; omit to leave it alone. */
   badge?: number;
   /** Groups related notifications in the shade. */
@@ -62,7 +68,11 @@ export class DevPusher implements Pusher {
 
   async send(message: PushMessage): Promise<PushResult> {
     this.sent.push(message);
-    console.log(`[dev-pusher] ${message.title} — ${message.body}`);
+    console.log(
+      message.title === undefined && message.body === undefined
+        ? `[dev-pusher] badge ${message.badge ?? '—'}`
+        : `[dev-pusher] ${message.title} — ${message.body}`,
+    );
     return { ok: true };
   }
 }
@@ -197,10 +207,18 @@ export class ApnsPusher implements Pusher {
 
   private async post(message: PushMessage, jwt: string): Promise<PushResult> {
     const url = `${APNS_HOSTS[message.environment]}/3/device/${message.deviceToken}`;
+    // A badge-only sync still goes out as an `alert` push type — Apple counts
+    // the badge itself as the user-visible part, and the `background` type
+    // would refuse to carry one — it just has no alert dictionary to draw.
+    const alerts = message.title !== undefined || message.body !== undefined;
     const payload = {
       aps: {
-        alert: { title: message.title, body: message.body },
-        sound: 'default',
+        ...(alerts
+          ? {
+              alert: { title: message.title ?? '', body: message.body ?? '' },
+              sound: 'default',
+            }
+          : {}),
         ...(message.badge === undefined ? {} : { badge: message.badge }),
         ...(message.threadId ? { 'thread-id': message.threadId } : {}),
       },
@@ -216,8 +234,10 @@ export class ApnsPusher implements Pusher {
           'apns-topic': message.bundleId,
           'apns-push-type': 'alert',
           // A digest is worth waking the screen for, but it goes stale: if it
-          // can't be delivered before the day it describes, drop it.
-          'apns-priority': '10',
+          // can't be delivered before the day it describes, drop it. A
+          // badge-only sync draws nothing, so it rides at the polite priority
+          // and waits for the device to be awake anyway.
+          'apns-priority': alerts ? '10' : '5',
           'apns-expiration': String(Math.floor(this.now() / 1000) + 6 * 60 * 60),
           ...(message.collapseId ? { 'apns-collapse-id': message.collapseId } : {}),
           'content-type': 'application/json',

@@ -24,6 +24,7 @@ import {
 } from '../src/services/digest.js';
 import {
   claimSlot,
+  currentBadgeCount,
   dueSlot,
   sendDigest,
 } from '../src/services/notifications.js';
@@ -675,6 +676,7 @@ describe('digest copy', () => {
       {
         window,
         total: 3,
+        actionable: 3,
         familyIds: ['f1'],
         buckets: [
           {
@@ -695,7 +697,7 @@ describe('digest copy', () => {
     const now = new Date('2026-08-05T14:00:00Z'); // 07:00 PDT
     const window = digestWindow(now, LA, 0, 1);
     const { title } = digestNotificationText(
-      { window, total: 1, familyIds: ['f1'], buckets: [] },
+      { window, total: 1, actionable: 1, familyIds: ['f1'], buckets: [] },
       now,
       LA,
     );
@@ -724,7 +726,7 @@ describe('sending a digest', () => {
     )[0]!;
   }
 
-  it('stays silent when nothing is outstanding and skipWhenEmpty is set', async () => {
+  it('clears the badge instead of alerting when nothing is outstanding', async () => {
     const { admin } = await setupFamily('send-empty@example.com');
     const db = getDb(env.DB);
     await db.insert(pushDevices).values({
@@ -738,7 +740,44 @@ describe('sending a digest', () => {
 
     const outcome = await sendDigest(db, pusher, schedule, new Date('2026-08-06T03:00:00Z'));
     expect(outcome.skipped).toBe('empty');
-    expect(pusher.sent).toHaveLength(0);
+    expect(outcome.delivered).toBe(0);
+    // Silent, but not nothing: a badge left over from an earlier evening has
+    // to come down, and a badge-only payload carries no alert copy.
+    expect(pusher.sent).toHaveLength(1);
+    expect(pusher.lastPush).toMatchObject({ badge: 0 });
+    expect(pusher.lastPush?.title).toBeUndefined();
+    expect(pusher.lastPush?.body).toBeUndefined();
+  });
+
+  it("badges only what still needs doing, not the tasks you're already covering", async () => {
+    const { admin, familyId, childId, adminMemberId } = await setupFamily(
+      'send-covering@example.com',
+    );
+    const db = getDb(env.DB);
+    await db.insert(pushDevices).values({
+      userId: admin.userId,
+      deviceToken: '6'.repeat(64),
+      bundleId: 'com.example.app',
+      environment: 'development',
+    });
+    await insertTask(db, familyId, childId, {
+      dtstart: new Date('2026-08-06T16:00:00Z'),
+      status: 'owned',
+      ownerMemberId: adminMemberId,
+    });
+
+    const schedule = await scheduleFor(admin.userId, {
+      categories: ['unclaimed_tasks', 'my_tasks'],
+    });
+    const pusher = new DevPusher();
+    const outcome = await sendDigest(db, pusher, schedule, new Date('2026-08-06T03:00:00Z'));
+
+    // The brief still reads "1 task you're covering" — it just doesn't leave a
+    // badge behind for work that needs nothing from anyone.
+    expect(outcome.digest.total).toBe(1);
+    expect(outcome.skipped).toBeUndefined();
+    expect(pusher.lastPush?.badge).toBe(0);
+    expect(pusher.lastPush?.body).toContain("you're covering");
   });
 
   it('pushes to every live device, with the badge and deep-link payload', async () => {
@@ -838,6 +877,85 @@ describe('sending a digest', () => {
     expect(body.digest.total).toBe(0);
     expect(body.skipped).toBe('no_devices');
     expect(body.failures).toEqual([]);
+  });
+});
+
+// --- Badge -----------------------------------------------------------------
+
+describe('the live badge count', () => {
+  it('counts what needs a human across every enabled schedule, and drops to zero once it is claimed', async () => {
+    const { admin, familyId, childId, adminMemberId } = await setupFamily(
+      'badge-count@example.com',
+    );
+    const db = getDb(env.DB);
+    const now = new Date('2026-08-05T21:00:00Z'); // 14:00 PDT
+    await db.insert(notificationSchedules).values({
+      userId: admin.userId,
+      sendAt: '20:00',
+      timezone: LA,
+      categories: ['unclaimed_tasks', 'my_tasks'],
+    });
+    const task = await insertTask(db, familyId, childId, {
+      dtstart: new Date('2026-08-06T16:00:00Z'), // inside tomorrow's window
+    });
+
+    expect(await currentBadgeCount(db, admin.userId, now)).toBe(1);
+
+    // Claiming it moves the task from "needs an owner" into "you're covering",
+    // which is the moment the badge is supposed to go away.
+    await db
+      .update(tasks)
+      .set({ status: 'owned' })
+      .where(eq(tasks.id, task.id));
+    await db.insert(taskOwners).values({ taskId: task.id, familyMemberId: adminMemberId });
+
+    expect(await currentBadgeCount(db, admin.userId, now)).toBe(0);
+  });
+
+  it('is zero with no enabled schedule — nothing is left to raise it again', async () => {
+    const { admin, familyId, childId } = await setupFamily('badge-noschedule@example.com');
+    const db = getDb(env.DB);
+    await insertTask(db, familyId, childId, {
+      dtstart: new Date('2026-08-06T16:00:00Z'),
+    });
+    await db.insert(notificationSchedules).values({
+      userId: admin.userId,
+      enabled: false,
+      sendAt: '20:00',
+      timezone: LA,
+      categories: ['unclaimed_tasks'],
+    });
+
+    expect(
+      await currentBadgeCount(db, admin.userId, new Date('2026-08-05T21:00:00Z')),
+    ).toBe(0);
+  });
+
+  it('serves the count over the API for the signed-in user', async () => {
+    const { admin, familyId, childId } = await setupFamily('badge-route@example.com');
+    const db = getDb(env.DB);
+    await db.insert(notificationSchedules).values({
+      userId: admin.userId,
+      sendAt: '20:00',
+      timezone: LA,
+      startOffsetDays: 0,
+      horizonDays: 2,
+      categories: ['unclaimed_tasks'],
+    });
+    // The route reads the real clock, so the task is placed relative to it —
+    // an hour out is always inside a "today plus tomorrow" window.
+    await insertTask(db, familyId, childId, {
+      dtstart: new Date(Date.now() + 60 * 60 * 1000),
+    });
+
+    const res = await call('/notifications/badge', bearer(admin.token));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ count: 1 });
+  });
+
+  it('needs a session', async () => {
+    const res = await call('/notifications/badge', {});
+    expect(res.status).toBe(401);
   });
 });
 

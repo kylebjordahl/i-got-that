@@ -216,6 +216,21 @@ paths in particular).
   size of a *family* (its members, a member's feeds, a task's owners) are fine
   unchunked. `test/d1-limits.spec.ts` puts the real cap back in front of the
   local database, which is the only way a regression here is catchable.
+- **The app-icon badge can only ever go *up* unless something takes it down.**
+  APNs sets it from the payload and nothing expires it, so a digest's badge
+  outlives the work it counted: claim the pickup and iOS still shows the 3.
+  Two mechanisms answer that, and both are load-bearing. What the badge counts
+  is `UserDigest.actionable`, not `total` — `my_tasks` is a *reminder* of work
+  you've already taken on, so counting it would leave a badge that no amount of
+  claiming can clear (claiming moves a task into that bucket). And the number is
+  re-derivable at any time from `GET /notifications/badge`
+  (`currentBadgeCount`, over the union of the user's enabled schedules'
+  windows): the client rewrites the badge from it on foreground and after
+  anything that could have emptied the queue (`lib/state/badge.dart`, wired to
+  the providers every claim/decision/conflict path invalidates rather than to
+  the call sites), and a scheduled digest that finds nothing outstanding sends a
+  silent badge-only push rather than nothing at all. A new digest category has
+  to decide which side of `actionable` it's on.
 - **CalDAV** does a direct authenticated `PUT`/`DELETE` to the discovered
   collection URL (`libs/delivery/src/caldav.ts`), not tsdav's create-only helper.
 - **Travel time is coordinate-driven, end to end.** `locationGeo` rides from the
