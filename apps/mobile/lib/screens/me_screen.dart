@@ -170,8 +170,10 @@ class MeScreen extends ConsumerWidget {
                 onTap: () => showAddLoginMethodDialog(context, ref),
               ),
               // Offer Apple until one is linked (web redirects; native uses the
-              // OS sheet).
-              if (!identities.any((i) => i.provider == 'apple')) ...[
+              // OS sheet) — and only where it's offered at all: see
+              // [appleSignInAvailable], which is false on Android.
+              if (appleSignInAvailable &&
+                  !identities.any((i) => i.provider == 'apple')) ...[
                 const Divider(height: 20),
                 SettingRow(
                   icon: Icons.apple,

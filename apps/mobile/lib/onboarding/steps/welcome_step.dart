@@ -154,18 +154,26 @@ class _WelcomeStepState extends ConsumerState<WelcomeStep> {
                   ),
                   const SizedBox(height: 12),
                 ],
-                OnboardingButton(
-                  label: 'Continue with Apple',
-                  variant: OnbButtonVariant.white,
-                  icon: Icons.apple,
-                  busy: _busy,
-                  onPressed: _apple,
-                ),
-                const SizedBox(height: 11),
+                // Apple is the primary button where it's offered; on Android
+                // (see [appleSignInAvailable]) Google takes its place, so it
+                // gets the white variant and the busy spinner there instead.
+                if (appleSignInAvailable) ...[
+                  OnboardingButton(
+                    label: 'Continue with Apple',
+                    variant: OnbButtonVariant.white,
+                    icon: Icons.apple,
+                    busy: _busy,
+                    onPressed: _apple,
+                  ),
+                  const SizedBox(height: 11),
+                ],
                 OnboardingButton(
                   label: 'Continue with Google',
-                  variant: OnbButtonVariant.ghost,
+                  variant: appleSignInAvailable
+                      ? OnbButtonVariant.ghost
+                      : OnbButtonVariant.white,
                   icon: Icons.g_mobiledata_rounded,
+                  busy: appleSignInAvailable ? false : _busy,
                   onPressed: _busy ? null : _google,
                 ),
                 const SizedBox(height: 11),

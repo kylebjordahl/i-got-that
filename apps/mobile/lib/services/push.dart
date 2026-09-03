@@ -1,4 +1,5 @@
-import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/foundation.dart'
+    show defaultTargetPlatform, kIsWeb, TargetPlatform;
 import 'package:flutter/services.dart';
 
 /// Where the user's notification permission currently stands.
@@ -28,15 +29,27 @@ enum PushAuthorization {
 /// `ios/Runner/AppDelegate.swift` (mirroring the `igt/geocoding` channel).
 ///
 /// Every method is a no-op returning a "not supported" answer off iOS: the same
-/// codebase builds the web client the Worker serves at `/app`, where there is
-/// no channel on the other end.
+/// codebase builds the web client the Worker serves at `/app` and the Android
+/// app, and on neither is there a channel on the other end.
 class PushService {
   const PushService();
 
   static const _channel = MethodChannel('igt/push');
 
-  /// False on web, where the whole notifications section is hidden.
-  bool get isSupported => !kIsWeb;
+  /// True only on iOS, which is the only platform with an implementation of
+  /// the channel behind this — the whole notifications section is hidden
+  /// everywhere else.
+  ///
+  /// This is deliberately *not* `!kIsWeb`. The read-only queries below fall
+  /// back quietly when nothing answers, but [register] does not: it has to
+  /// surface an APNs refusal (a build whose profile lacks the push
+  /// entitlement) rather than silently look disabled. On Android that same
+  /// honesty would put a raw `MissingPluginException` in front of whoever
+  /// tapped the switch, so the switch must not be reachable there at all.
+  /// Widen this only alongside an Android sender — the server half is
+  /// APNs-only too (`PushPlatform` is `z.enum(['ios'])`).
+  bool get isSupported =>
+      !kIsWeb && defaultTargetPlatform == TargetPlatform.iOS;
 
   /// Invoke a read-only channel method, falling back rather than throwing when
   /// there's nothing on the other end. The channel is absent on any host that

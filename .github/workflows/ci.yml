@@ -45,11 +45,49 @@ jobs:
           channel: stable
           # Cache the Flutter SDK between runs (the download is the slow part).
           cache: true
-      # Generate platform runners (ios/, web/) which aren't committed.
-      - run: flutter create . --platforms=ios,web --project-name caretaker_app
+      # Fills in the gitignored ephemeral parts of the committed platform
+      # runners (ios/, android/, web/); the committed flavor config survives.
+      - run: flutter create . --platforms=ios,android,web --project-name caretaker_app
         working-directory: apps/mobile
       # Drive Flutter through Nx with the `ci` configuration (plain `flutter`,
       # no fvm), selected abstractly by language tag. `format` runs after
       # `pub-get` on purpose: `dart format`'s style is keyed to the package's
       # language version, which it can only read once `.dart_tool/` exists.
       - run: pnpm nx run-many -t pub-get analyze format test --configuration=ci --projects=tag:language:dart
+
+  # The only gate that actually exercises Gradle, the manifest merge, the two
+  # flavors and every plugin's Android half — `analyze`/`test` above are pure
+  # Dart and would pass with a broken build.gradle.kts. A debug APK is the
+  # cheapest command that does all of that; the release AAB path is exercised
+  # by the deploy workflow. Deliberately NOT behind an Nx-affected check: PR
+  # checks here stay unfiltered so they never report as a stuck "expected"
+  # check.
+  android:
+    name: Android (compile)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # Gradle needs a JDK on PATH; the runner image's default has moved
+      # between images before, so pin it rather than inherit it.
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - name: Regenerate ephemeral Android project files
+        working-directory: apps/mobile
+        run: |
+          flutter create . --platforms=android --project-name caretaker_app
+          flutter pub get
+      # Both flavors: they differ in applicationId and manifest placeholders,
+      # so a merge failure can hit one and not the other.
+      - name: Build debug APK (staging)
+        working-directory: apps/mobile
+        run: flutter build apk --debug --flavor staging
+      - name: Build debug APK (prod)
+        working-directory: apps/mobile
+        run: flutter build apk --debug --flavor prod

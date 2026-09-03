@@ -2,7 +2,8 @@ import 'dart:convert';
 import 'dart:math';
 
 import 'package:crypto/crypto.dart';
-import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/foundation.dart'
+    show defaultTargetPlatform, kIsWeb, TargetPlatform;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:google_sign_in/google_sign_in.dart';
@@ -30,6 +31,20 @@ final _googleSignIn = GoogleSignIn(
   scopes: ['email', 'https://www.googleapis.com/auth/calendar.events'],
   serverClientId: _googleServerClientId.isEmpty ? null : _googleServerClientId,
 );
+
+/// Whether to offer Sign in with Apple at all on this platform.
+///
+/// True on iOS (the OS sheet) and on web (the redirect flow through
+/// `/auth/apple/start`), false on Android. `sign_in_with_apple` can work on
+/// Android, but only via `webAuthenticationOptions` — which needs an Apple
+/// Services ID and a server callback that 302s to
+/// `intent://callback?…#Intent;package=…;scheme=signinwithapple;end`. Neither
+/// exists yet, and without them `getAppleIDCredential` throws. Google and
+/// magic link both work on Android, and Play has no analogue of Apple's
+/// "offer Apple too" rule, so hiding the button is the honest state rather
+/// than a button that always fails.
+bool get appleSignInAvailable =>
+    kIsWeb || defaultTargetPlatform == TargetPlatform.iOS;
 
 /// Native-only session persistence (iOS Keychain / Android Keystore). Web
 /// deliberately never writes the token here — see docs/AUTH.md's note on

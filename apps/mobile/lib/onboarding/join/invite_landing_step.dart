@@ -75,10 +75,14 @@ class _InviteLandingStepState extends ConsumerState<InviteLandingStep> {
   });
 
   void _joinGoogle() {
+    // Names only the routes actually on screen: Apple isn't offered on Android
+    // (see [appleSignInAvailable]), so pointing at it there would send the
+    // invitee looking for a button that isn't there.
+    final alternatives = appleSignInAvailable ? 'Apple or email' : 'email';
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
+      SnackBar(
         content: Text(
-          'Google sign-in is coming soon — use Apple or email for now.',
+          'Google sign-in is coming soon — use $alternatives for now.',
         ),
       ),
     );
@@ -209,14 +213,21 @@ class _InviteLandingStepState extends ConsumerState<InviteLandingStep> {
                     onPressed: () => _run(_accept),
                   )
                 else ...[
-                  OnboardingButton(
-                    label: 'Join with Apple',
-                    variant: OnbButtonVariant.white,
-                    icon: Icons.apple,
-                    busy: _busy,
-                    onPressed: _joinApple,
-                  ),
-                  const SizedBox(height: 11),
+                  // Apple only where it's offered — see [appleSignInAvailable].
+                  // Where it isn't (Android), the magic link is the primary
+                  // route in: `_joinGoogle` is still the "coming soon" stub, so
+                  // it can't be promoted in Apple's place the way the welcome
+                  // screen promotes it.
+                  if (appleSignInAvailable) ...[
+                    OnboardingButton(
+                      label: 'Join with Apple',
+                      variant: OnbButtonVariant.white,
+                      icon: Icons.apple,
+                      busy: _busy,
+                      onPressed: _joinApple,
+                    ),
+                    const SizedBox(height: 11),
+                  ],
                   OnboardingButton(
                     label: 'Join with Google',
                     variant: OnbButtonVariant.ghost,
@@ -226,8 +237,11 @@ class _InviteLandingStepState extends ConsumerState<InviteLandingStep> {
                   const SizedBox(height: 11),
                   OnboardingButton(
                     label: 'Email me a magic link',
-                    variant: OnbButtonVariant.ghost,
+                    variant: appleSignInAvailable
+                        ? OnbButtonVariant.ghost
+                        : OnbButtonVariant.white,
                     icon: Icons.mail_outline_rounded,
+                    busy: appleSignInAvailable ? false : _busy,
                     onPressed: _busy ? null : _joinMagicLink,
                   ),
                 ],

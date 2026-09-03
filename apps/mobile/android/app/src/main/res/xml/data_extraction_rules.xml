@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The API 31+ half of turning backup off. `android:allowBackup="false"` stops
+  cloud backup, but device-to-device transfer is governed separately — and a
+  transferred copy of flutter_secure_storage's keystore-wrapped session token
+  is exactly as unreadable on the new device as a restored one, so exclude it
+  there too. Both sections are required to be present; an empty <exclude/> set
+  would opt everything back in.
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="root" />
+        <exclude domain="database" />
+        <exclude domain="sharedpref" />
+        <exclude domain="external" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="root" />
+        <exclude domain="database" />
+        <exclude domain="sharedpref" />
+        <exclude domain="external" />
+    </device-transfer>
+</data-extraction-rules>

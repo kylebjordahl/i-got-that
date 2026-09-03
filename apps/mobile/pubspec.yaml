@@ -39,6 +39,11 @@ dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^4.0.0
+  # Generates the Android launcher mipmaps + adaptive icon from
+  # assets/images/app_icon.png (see the `flutter_launcher_icons:` block below).
+  # Regenerate after changing that image:
+  #   fvm dart run flutter_launcher_icons
+  flutter_launcher_icons: ^0.14.1
 
 flutter:
   uses-material-design: true
@@ -57,9 +62,33 @@ flutter:
       fonts:
         - asset: assets/fonts/Caveat.ttf
 
-# Per-environment app identity. Only the iOS bundle id differs today (there's no
-# Android target yet); the Dart-side per-env config is threaded via --dart-define
-# (see state/auth.dart). The generated iOS build configs + schemes are committed
+# Android launcher icon, generated from the same 1024px source the iOS
+# appiconset uses. `flutter create` writes the stock Flutter logo into
+# android/app/src/main/res/mipmap-*/, and this replaces it; the generated files
+# are committed the same way the iOS icons are. Both flavors share one icon —
+# prod and staging are byte-identical on iOS too, since a staging build is told
+# apart at runtime by the corner ribbon (see EnvRibbon), not by its icon.
+#   fvm dart run flutter_launcher_icons
+flutter_launcher_icons:
+  android: "ic_launcher"
+  ios: false
+  image_path: "assets/images/app_icon.png"
+  # Adaptive icon: the source art is a full-bleed square, so it goes in the
+  # foreground layer over the app's own background colour rather than being
+  # letterboxed on white.
+  adaptive_icon_background: "#15121B"
+  adaptive_icon_foreground: "assets/images/app_icon.png"
+  min_sdk_android: 24
+
+# Per-environment app identity. **iOS only** — Android's equivalent is the
+# hand-written `productFlavors` block in android/app/build.gradle.kts, and it is
+# deliberately not generated from here: flavorizr's Android processors rewrite
+# build.gradle wholesale, which would clobber the signing config and manifest
+# placeholders that live in the same file. Keep the two flavor *names*
+# (`staging`, `prod`) and the two app ids in sync by hand.
+#
+# The Dart-side per-env config is threaded via --dart-define (see
+# state/auth.dart). The generated iOS build configs + schemes are committed
 # under ios/; regenerate after editing flavors with flutter_flavorizr (not a
 # project dependency — activate it on demand):
 #   dart pub global activate flutter_flavorizr

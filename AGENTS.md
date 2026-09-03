@@ -49,7 +49,7 @@ Nx monorepo (TypeScript) + a plain Flutter app (not Nx-managed).
 ```
 apps/
   api/        Cloudflare Worker — Hono API, Cron, Queue consumer (+ static web assets in deployed envs)
-  mobile/     Flutter app (iOS + web), Riverpod + dio
+  mobile/     Flutter app (iOS + Android + web), Riverpod + dio
 libs/
   domain/     Zod schemas / shared types — the API contract source of truth
   db/         Drizzle schema + D1 migrations
@@ -79,6 +79,21 @@ Backend: Cloudflare Workers + Hono + D1 + Drizzle. Client: Flutter (Riverpod, di
   language version `dart format` reads, so it also selects the formatter's
   style. CI runs `dart format --set-exit-if-changed`, so an unformatted file
   fails the build; run `fvm dart format lib test` before committing.
+- **`defaultTargetPlatform` is `TargetPlatform.android` under `flutter test`.**
+  So a widget test gets the *Android* branch of any platform check unless it
+  asks otherwise — which is the right way round now that Android is a target,
+  but it does mean the iOS branch needs
+  `variant: TargetPlatformVariant.only(TargetPlatform.iOS)` to be covered at
+  all (`test/widget_test.dart`). Assigning `debugDefaultTargetPlatformOverride`
+  and clearing it in `tearDown` does *not* work: the framework asserts
+  foundation debug vars are unset at the end of the test body, before
+  teardown runs.
+- **Android builds need the Android SDK, which a cloud agent session doesn't
+  have** (`dl.google.com` is blocked by the egress proxy). `flutter create`,
+  `analyze`, `test` and `dart format` all work there; `flutter build apk` does
+  not. The `Android (compile)` job in `ci.yml` is the gate that actually
+  compiles Gradle, the manifest merge and both flavors — treat a green CI run,
+  not a local check, as proof an Android change builds.
 
 ## Commands
 
@@ -91,6 +106,9 @@ node_modules/.bin/vitest run --root apps/api
 pnpm db:generate                 # then commit libs/db/migrations/*
 # Flutter (always before committing client changes)
 cd apps/mobile && fvm dart format lib test && fvm flutter analyze && fvm flutter test
+# Android sanity check (needs the Android SDK; CI's `Android (compile)` job is
+# the real gate — see apps/mobile/README.md)
+cd apps/mobile && fvm flutter build apk --debug --flavor staging
 ```
 
 **Always** run the relevant typecheck/tests before committing. Add or update tests
