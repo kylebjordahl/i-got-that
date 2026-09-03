@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Drives android:label on <application>. The prod flavor has its own
+         copy of this file; the counterpart on iOS is BUNDLE_DISPLAY_NAME in
+         ios/Flutter/staging*.xcconfig. -->
+    <string name="app_name">IGT Staging</string>
+</resources>

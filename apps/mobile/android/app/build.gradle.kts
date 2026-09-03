@@ -46,26 +46,30 @@ android {
     // `--flavor staging` means the same thing on both platforms.
     flavorDimensions += "env"
 
+    // The launcher label comes from each flavor's own source set —
+    // src/{staging,prod}/res/values/strings.xml, resolved by
+    // `android:label="@string/app_name"` in the manifest — rather than from
+    // `resValue(...)`. AGP 9 ships with the `resValues` build feature disabled
+    // by default ("Product Flavor staging contains custom resource values, but
+    // the feature is disabled"), and a flavor source set is the mechanism that
+    // doesn't depend on a build-feature default staying put.
     productFlavors {
         create("staging") {
             dimension = "env"
             applicationIdSuffix = ".staging"
-            // Drives the launcher label via `android:label="@string/app_name"`,
-            // the counterpart of BUNDLE_DISPLAY_NAME in ios/Flutter/*.xcconfig.
-            resValue("string", "app_name", "IGT Staging")
         }
         create("prod") {
             dimension = "env"
-            resValue("string", "app_name", "IGT")
         }
     }
 
     buildTypes {
         release {
             // Debug keys for now, so `flutter build apk --release` works for
-            // anyone without the upload keystore. Real signing (and the Play
-            // upload path) lands with the release pipeline — see
-            // docs/ANDROID.md § Signing.
+            // anyone without the upload keystore. Real signing — a
+            // `signingConfigs.release` reading a gitignored key.properties —
+            // lands with the Play upload pipeline, alongside the deploy
+            // workflow's play-build/play-upload jobs.
             signingConfig = signingConfigs.getByName("debug")
         }
     }

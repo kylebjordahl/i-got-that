@@ -49,10 +49,12 @@
     "build-android": {
       "executor": "nx:run-commands",
       "options": {
-        "command": "fvm flutter build appbundle",
+        "command": "fvm flutter build appbundle --flavor prod",
         "cwd": "apps/mobile"
       },
-      "configurations": { "ci": { "command": "flutter build appbundle" } }
+      "configurations": {
+        "ci": { "command": "flutter build appbundle --flavor prod" }
+      }
     },
     "clean": {
       "executor": "nx:run-commands",
