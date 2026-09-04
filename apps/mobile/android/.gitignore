@@ -1,0 +1,23 @@
+gradle-wrapper.jar
+/.gradle
+/captures/
+/gradlew
+/gradlew.bat
+/local.properties
+GeneratedPluginRegistrant.java
+
+# `flutter create` derives a Kotlin package from <org>.<project name> and
+# regenerates a MainActivity there every time it runs — which CI does on every
+# build. The activity the app actually launches is the one under the package
+# matching `namespace` in app/build.gradle.kts (com.kylebjordahl.igt), which
+# `android:name=".MainActivity"` resolves against; this second copy is dead
+# template output, so ignore it rather than committing a duplicate that has to
+# be kept in sync.
+app/src/main/kotlin/com/kylebjordahl/caretaker_app/
+.cxx/
+
+# Remember to never publicly share your keystore.
+# See https://flutter.dev/to/reference-keystore
+key.properties
+**/*.keystore
+**/*.jks

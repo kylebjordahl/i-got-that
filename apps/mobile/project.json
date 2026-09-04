@@ -46,6 +46,16 @@
       },
       "configurations": { "ci": { "command": "flutter build ios --no-codesign" } }
     },
+    "build-android": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "fvm flutter build appbundle --flavor prod",
+        "cwd": "apps/mobile"
+      },
+      "configurations": {
+        "ci": { "command": "flutter build appbundle --flavor prod" }
+      }
+    },
     "clean": {
       "executor": "nx:run-commands",
       "options": { "command": "fvm flutter clean", "cwd": "apps/mobile" }
