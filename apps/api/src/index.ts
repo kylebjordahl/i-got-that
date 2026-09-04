@@ -10,6 +10,7 @@ import { authRoutes } from './routes/auth.js';
 import { familyRoutes } from './routes/families.js';
 import { inviteRoutes } from './routes/invites.js';
 import { notificationRoutes } from './routes/notifications.js';
+import { opsRoutes } from './routes/ops.js';
 import { scheduled } from './scheduled.js';
 
 /**
@@ -128,6 +129,10 @@ app.get('/me', authMiddleware, async (c) => {
 // Family-scoped feeds (CRUD + force-refresh) live under
 // /families/:familyId/feeds (mounted inside familyRoutes).
 app.route('/families', familyRoutes);
+
+// Cross-tenant operator dashboard — gated by its own Basic-auth middleware,
+// not a family session (see routes/ops.ts).
+app.route('/ops', opsRoutes);
 
 app.notFound((c) => c.json({ error: 'not_found' }, 404));
 

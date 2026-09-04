@@ -155,6 +155,13 @@ export interface Bindings {
      * works).
      */
     APPLE_APP_ID_PREFIX?: string;
+    /**
+     * Shared password for the cross-tenant `/ops` dashboard (HTTP Basic,
+     * username ignored — see `middleware/ops-auth.ts`). Unset ⇒ the
+     * dashboard 401s unconditionally (fails closed). Set via `wrangler
+     * secret put OPS_DASHBOARD_PASSWORD [--env <env>]` in deployed envs.
+     */
+    OPS_DASHBOARD_PASSWORD?: string;
 }
 
 /** Per-request context set by middleware. */

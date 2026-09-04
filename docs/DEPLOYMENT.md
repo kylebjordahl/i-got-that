@@ -222,6 +222,21 @@ for an unconfigured provider) instead of signing with anything predictable.
 > inherit those, so staging/production are closed by default — keep it that way.
 > See `docs/AUTH.md`.
 
+**OPS_DASHBOARD_PASSWORD**. The cross-tenant `/ops` dashboard (platform-wide
+counts and trends — see `routes/ops.ts`) is gated by a single shared HTTP Basic
+password, not a family session — there's no platform-admin role, so it can't
+reuse `requireAdmin`. `wrangler.jsonc` ships a **dev-only** value in `vars`;
+staging/production must set a real secret:
+
+```bash
+cd apps/api
+echo "<a strong password>" | pnpm wrangler secret put OPS_DASHBOARD_PASSWORD --env staging
+echo "<a different one>"   | pnpm wrangler secret put OPS_DASHBOARD_PASSWORD --env production
+```
+
+Unset ⇒ `/ops/*` 401s unconditionally (fails closed) rather than falling back
+to the checked-in dev value.
+
 #### Rotating the envelope-encryption KEK
 
 Rotation adds a new `KEK_V<n>` without ever invalidating already-stored

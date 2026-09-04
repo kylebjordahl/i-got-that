@@ -9,6 +9,7 @@ declare module 'cloudflare:test' {
     KEK_CURRENT_VERSION?: string;
     ORGANIZER_EMAIL: string;
     ALLOW_DEV_TOKENS?: string;
+    OPS_DASHBOARD_PASSWORD?: string;
     TEST_MIGRATIONS: D1Migration[];
   }
 }

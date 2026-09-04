@@ -91,6 +91,12 @@
         // Empty locally: APNs speaks HTTP/2 only and `wrangler dev` can't reach
         // it. See docs/DEPLOYMENT.md § Push notifications.
         "APNS_TEAM_ID": "",
+        // DEV ONLY password for the /ops dashboard (middleware/ops-auth.ts) —
+        // HTTP Basic, username ignored. Deployed envs set this via `wrangler
+        // secret put OPS_DASHBOARD_PASSWORD --env <env>`; unset ⇒ the
+        // dashboard 401s unconditionally, so staging/production fail closed
+        // until someone deliberately sets the secret.
+        "OPS_DASHBOARD_PASSWORD": "dev-ops-password",
     },
     "d1_databases": [
         {
