@@ -233,7 +233,7 @@ describe('Sign in with Google — redirect flow', () => {
 describe('Native "connect a Google Calendar" — OAuth bounce', () => {
   const nativeCallbackEnv = {
     ...env,
-    GOOGLE_IOS_OAUTH_CALLBACK_SCHEME: 'com.kylebjordahl.igt.oauth',
+    GOOGLE_NATIVE_OAUTH_CALLBACK_SCHEME: 'com.kylebjordahl.igt.oauth',
   };
 
   it('reports 501 when no callback scheme is configured', async () => {

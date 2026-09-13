@@ -8,11 +8,15 @@ import { login } from './helpers.js';
 
 const ISSUER = 'https://accounts.google.com';
 const AUD = 'ios-client-123.apps.googleusercontent.com';
+/** What an *Android* id_token carries as `aud`: the env's Web client id, not
+ *  an Android client's. See GOOGLE_NATIVE_CLIENT_IDS in env.ts. */
+const WEB_AUD = 'web-client-456.apps.googleusercontent.com';
 const KID = 'test-key-1';
 
 /** Env with native Google login configured (the base test env leaves
- *  GOOGLE_IOS_CLIENT_IDS empty ⇒ 501). */
-const googleEnv = { ...env, GOOGLE_IOS_CLIENT_IDS: AUD };
+ *  GOOGLE_NATIVE_CLIENT_IDS empty ⇒ 501). Both platforms' audiences, which is
+ *  the shape every deployed env uses. */
+const googleEnv = { ...env, GOOGLE_NATIVE_CLIENT_IDS: `${AUD},${WEB_AUD}` };
 
 function b64url(bytes: Uint8Array): string {
   let bin = '';
@@ -120,7 +124,7 @@ describe('Sign in with Google (native) — token verification', () => {
 });
 
 describe('POST /auth/google (native)', () => {
-  it('returns 501 when native Google is not configured (no GOOGLE_IOS_CLIENT_IDS)', async () => {
+  it('returns 501 when native Google is not configured (no GOOGLE_NATIVE_CLIENT_IDS)', async () => {
     const res = await fetchWith('/auth/google', env, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -174,6 +178,43 @@ describe('POST /auth/google (native)', () => {
     });
     expect(res.status).toBe(401);
   });
+
+  // Android's id_token is minted against the *Web* client (passed to
+  // google_sign_in as serverClientId), not against its own OAuth client — that
+  // one only registers the package name + signing fingerprint and is never an
+  // audience. So a token whose `aud` is the Web client id has to be accepted by
+  // the same route. Dropping the Web id from GOOGLE_NATIVE_CLIENT_IDS breaks
+  // Android sign-in with a 401 that reads like a bad token rather than a
+  // missing config entry, which is exactly why this is pinned.
+  it('accepts an Android token, whose aud is the Web client id', async () => {
+    const { privateKey, jwks } = await makeKeyAndJwks(KID);
+    const now = Date.now();
+    const token = await signToken(privateKey, KID, {
+      iss: ISSUER,
+      aud: WEB_AUD,
+      sub: 'g-android-sub',
+      email: 'android@example.com',
+      exp: Math.floor(now / 1000) + 600,
+    });
+    vi.stubGlobal(
+      'fetch',
+      async () => new Response(JSON.stringify({ keys: jwks }), { status: 200 }),
+    );
+
+    const res = await fetchWith('/auth/google', googleEnv, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ idToken: token }),
+    });
+    expect(res.status).toBe(200);
+
+    const db = getDb(env.DB);
+    const idRows = await db
+      .select()
+      .from(identities)
+      .where(and(eq(identities.provider, 'google'), eq(identities.providerRef, 'g-android-sub')));
+    expect(idRows).toHaveLength(1);
+  });
 });
 
 describe('POST /auth/link/google (native)', () => {
@@ -218,4 +259,5 @@ describe('POST /auth/link/google (native)', () => {
       .where(and(eq(externalAccounts.userId, alice.userId), eq(externalAccounts.kind, 'google')));
     expect(accounts).toHaveLength(0);
   });
+
 });
