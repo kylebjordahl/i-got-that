@@ -53,13 +53,25 @@ android {
     // by default ("Product Flavor staging contains custom resource values, but
     // the feature is disabled"), and a flavor source set is the mechanism that
     // doesn't depend on a build-feature default staying put.
+    //
+    // `oauthCallbackScheme` feeds the flutter_web_auth_2 CallbackActivity in
+    // the manifest — the custom scheme the connect-a-Google-Calendar wizard
+    // comes back on. It must match this flavor's `googleOAuthCallbackScheme`
+    // in lib/env.dart AND this env's GOOGLE_NATIVE_OAUTH_CALLBACK_SCHEME in
+    // apps/api/wrangler.jsonc; the Worker's /auth/google/native-callback 302s
+    // to exactly this scheme, so a mismatch strands the wizard on a blank
+    // Custom Tab with no error.
     productFlavors {
         create("staging") {
             dimension = "env"
             applicationIdSuffix = ".staging"
+            manifestPlaceholders["oauthCallbackScheme"] =
+                "com.kylebjordahl.igt.staging.oauth"
         }
         create("prod") {
             dimension = "env"
+            manifestPlaceholders["oauthCallbackScheme"] =
+                "com.kylebjordahl.igt.oauth"
         }
     }
 

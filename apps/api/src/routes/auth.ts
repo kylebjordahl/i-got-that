@@ -95,9 +95,13 @@ function appleAudience(env: HonoEnv['Bindings']): string[] {
     .filter(Boolean);
 }
 
-/** Allowed native Google `aud` values (iOS OAuth client ids), from GOOGLE_IOS_CLIENT_IDS. */
+/**
+ * Allowed native Google `aud` values, from GOOGLE_NATIVE_CLIENT_IDS — each
+ * env's iOS OAuth client id *and* its Web client id, because Android's
+ * id_token is minted against the Web client (see env.ts).
+ */
 function googleNativeAudience(env: HonoEnv['Bindings']): string[] {
-  return (env.GOOGLE_IOS_CLIENT_IDS ?? '')
+  return (env.GOOGLE_NATIVE_CLIENT_IDS ?? '')
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean);
@@ -548,13 +552,14 @@ authRoutes.get('/google/callback', async (c) => {
  * the app passes *this* HTTPS route as its `redirectUri`, and we immediately
  * 302 the untouched `code`/`state`/`error` query string on to
  * `<scheme>://google-oauth-callback`, which `ASWebAuthenticationSession`
- * intercepts on-device and hands back to the app — no server-side state, no
+ * (iOS) or `flutter_web_auth_2`'s `CallbackActivity` (Android) intercepts
+ * on-device and hands back to the app — no server-side state, no
  * session, nothing sensitive touches this hop. Requires
- * GOOGLE_IOS_OAUTH_CALLBACK_SCHEME; unset ⇒ 501 (the wizard's manual
+ * GOOGLE_NATIVE_OAUTH_CALLBACK_SCHEME; unset ⇒ 501 (the wizard's manual
  * copy/paste path still works).
  */
 authRoutes.get('/google/native-callback', (c) => {
-  const scheme = c.env.GOOGLE_IOS_OAUTH_CALLBACK_SCHEME;
+  const scheme = c.env.GOOGLE_NATIVE_OAUTH_CALLBACK_SCHEME;
   if (!scheme) return c.json({ error: 'google_native_callback_not_configured' }, 501);
   const qs = new URL(c.req.url).search;
   return c.redirect(`${scheme}://google-oauth-callback${qs}`, 302);

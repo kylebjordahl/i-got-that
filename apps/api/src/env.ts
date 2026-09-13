@@ -114,12 +114,22 @@ export interface Bindings {
     GOOGLE_OAUTH_CLIENT_SECRET?: string;
     /**
      * Comma-separated allowed Google `aud` values for native Sign in with
-     * Google — the iOS OAuth client id(s) (one per flavor), distinct from
-     * GOOGLE_OAUTH_CLIENT_ID (the Web client used for the redirect flow and
-     * for redeeming a native `serverAuthCode`). Unset ⇒ native Google login
-     * disabled (web flow is unaffected).
+     * Google. Unset ⇒ native Google login disabled (web flow is unaffected).
+     *
+     * The two platforms put *different* values here, which is the whole reason
+     * this is a list:
+     * - **iOS** mints the id_token against the flavor's own iOS OAuth client,
+     *   so the `aud` is that client's id.
+     * - **Android** has no such thing. Its client exists only so Google will
+     *   trust the package name + signing fingerprint; the id_token's `aud` is
+     *   the **Web** client id passed to `google_sign_in` as `serverClientId`
+     *   — i.e. the same value as GOOGLE_OAUTH_CLIENT_ID for this env.
+     *
+     * So each env lists its iOS client id *and* its Web client id. Dropping the
+     * Web one silently breaks Android sign-in with a 401 that looks like a
+     * token problem rather than a config one.
      */
-    GOOGLE_IOS_CLIENT_IDS?: string;
+    GOOGLE_NATIVE_CLIENT_IDS?: string;
     /**
      * Custom URL scheme the native "connect a Google Calendar" wizard
      * (`accounts.ts`'s `/google/authorize-url` + the plain OAuth code-exchange
@@ -127,11 +137,14 @@ export interface Bindings {
      * Google's Web-application client type can't redirect straight to a
      * custom scheme, so `GET /auth/google/native-callback` is registered in
      * the Cloud Console as an ordinary HTTPS redirect URI instead, and just
-     * 302s the `code`/`state` on to `<scheme>://google-oauth-callback`, which
-     * `flutter_web_auth_2`/`ASWebAuthenticationSession` intercepts on-device.
+     * 302s the `code`/`state` on to `<scheme>://google-oauth-callback`. Both
+     * native platforms intercept that on-device — iOS via
+     * `ASWebAuthenticationSession`, Android via `flutter_web_auth_2`'s
+     * `CallbackActivity` (registered for this same scheme through a per-flavor
+     * Gradle manifest placeholder). One scheme per env serves both.
      * Unset ⇒ that route 501s (the wizard still works via manual copy/paste).
      */
-    GOOGLE_IOS_OAUTH_CALLBACK_SCHEME?: string;
+    GOOGLE_NATIVE_OAUTH_CALLBACK_SCHEME?: string;
     /**
      * Contents of the Apple `.p8` APNs auth key (the whole PEM, BEGIN/END lines
      * included), set via `wrangler secret put APNS_KEY_P8 [--env <env>]`. One
