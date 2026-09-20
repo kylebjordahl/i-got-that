@@ -118,8 +118,7 @@ class _UnifiedCalendarPickerState extends ConsumerState<UnifiedCalendarPicker> {
   Future<void> _connectMore() async {
     await Navigator.of(context).push(
       MaterialPageRoute(
-        builder: (_) =>
-            ConnectAccountWizard(skipCalendarStep: true, onConnected: (_) {}),
+        builder: (_) => ConnectAccountWizard(onConnected: (_) {}),
       ),
     );
     ref.invalidate(accountsProvider);

@@ -9,26 +9,18 @@ import '../state/family.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_text.dart';
 import '../widgets/primitives.dart';
-import '../widgets/settings.dart';
 
-/// The 3-step connect-account wizard (5m/n/o), launched from Me. Choose a
-/// provider, sign in / grant access, then pick calendars. Wired to the external-
-/// account API: iCloud/Outlook use CalDAV basic auth, Google uses OAuth.
+/// The 2-step connect-account wizard, launched from Me. Choose a provider,
+/// then sign in / grant access. Wired to the external-account API:
+/// iCloud/Outlook use CalDAV basic auth, Google uses OAuth. Calendar
+/// selection happens in context later (per-feed / per-member unified-
+/// calendar picks), not here.
 class ConnectAccountWizard extends ConsumerStatefulWidget {
-  const ConnectAccountWizard({
-    super.key,
-    this.onConnected,
-    this.skipCalendarStep = false,
-  });
+  const ConnectAccountWizard({super.key, this.onConnected});
 
   /// Called with the freshly-connected account id once a connection succeeds.
   /// The onboarding wizard uses this to pop straight back into its own flow.
   final void Function(String accountId)? onConnected;
-
-  /// When true, the "choose calendars" step (3) is omitted — calendar selection
-  /// happens in context later (per-child / per-parent unified-calendar picks).
-  /// The wizard pops as soon as the account connects.
-  final bool skipCalendarStep;
 
   @override
   ConsumerState<ConnectAccountWizard> createState() =>
@@ -45,10 +37,7 @@ class _ConnectAccountWizardState extends ConsumerState<ConnectAccountWizard> {
   final _password = TextEditingController();
   final _serverUrl = TextEditingController();
 
-  // Step 3.
   String? _accountId;
-  List<Map<String, dynamic>> _calendars = const [];
-  final Set<String> _selectedCals = {};
 
   bool _busy = false;
   String? _error;
@@ -199,36 +188,15 @@ class _ConnectAccountWizardState extends ConsumerState<ConnectAccountWizard> {
   }
 
   /// Shared post-connect step for both [_connect] (CalDAV) and
-  /// [_connectGoogleNative]: registers the new account, then either hands it
-  /// straight back to the caller (onboarding's skip-calendar-step reuse) or
-  /// advances to the calendar-picker step.
+  /// [_connectGoogleNative]: registers the new account and hands it back to
+  /// the caller.
   Future<void> _finishConnected(Map<String, dynamic> res) async {
     ref.invalidate(accountsProvider);
     _accountId =
         (res['account'] as Map<String, dynamic>?)?['id'] as String? ??
         (res['id'] as String?);
-    if (widget.skipCalendarStep) {
-      if (_accountId != null) widget.onConnected?.call(_accountId!);
-      if (mounted) Navigator.of(context).maybePop();
-      return;
-    }
-    await _loadCalendars();
-    if (mounted) setState(() => _step = 3);
-  }
-
-  Future<void> _loadCalendars() async {
-    if (_accountId == null) return;
-    try {
-      final cals = await ref
-          .read(apiClientProvider)
-          .listAccountCalendars(_accountId!);
-      _calendars = cals.cast<Map<String, dynamic>>();
-      _selectedCals
-        ..clear()
-        ..addAll(_calendars.map((c) => c['id'] as String));
-    } catch (_) {
-      _calendars = const [];
-    }
+    if (_accountId != null) widget.onConnected?.call(_accountId!);
+    if (mounted) Navigator.of(context).maybePop();
   }
 
   @override
@@ -252,16 +220,11 @@ class _ConnectAccountWizardState extends ConsumerState<ConnectAccountWizard> {
             _ProgressBar(step: _step),
             const SizedBox(height: 10),
             Text(
-              'Step $_step of 3 · ${_stepCaption()}',
+              'Step $_step of 2 · ${_stepCaption()}',
               style: font(kBodyFont, 12.5, 600, color: AppColors.indigo),
             ),
             const SizedBox(height: 20),
-            if (_step == 1)
-              ..._chooseProvider()
-            else if (_step == 2)
-              ..._signIn()
-            else
-              ..._chooseCalendars(),
+            if (_step == 1) ..._chooseProvider() else ..._signIn(),
             if (_error != null) ...[
               const SizedBox(height: 16),
               Text(
@@ -275,11 +238,8 @@ class _ConnectAccountWizardState extends ConsumerState<ConnectAccountWizard> {
     );
   }
 
-  String _stepCaption() => switch (_step) {
-    1 => 'Choose a provider',
-    2 => 'Sign in & grant access',
-    _ => 'Choose calendars',
-  };
+  String _stepCaption() =>
+      _step == 1 ? 'Choose a provider' : 'Sign in & grant access';
 
   // --- Step 1 ------------------------------------------------------------
   List<Widget> _chooseProvider() {
@@ -405,69 +365,6 @@ class _ConnectAccountWizardState extends ConsumerState<ConnectAccountWizard> {
     ),
   ];
 
-  // --- Step 3 ------------------------------------------------------------
-  List<Widget> _chooseCalendars() {
-    return [
-      Container(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-        decoration: BoxDecoration(
-          color: AppColors.tint(AppColors.green, 0.10),
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: AppColors.green.withValues(alpha: 0.4)),
-        ),
-        child: Row(
-          children: [
-            const Icon(
-              Icons.check_circle_rounded,
-              color: AppColors.green,
-              size: 20,
-            ),
-            const SizedBox(width: 10),
-            Expanded(
-              child: Text(
-                'Connected via $_providerLabel',
-                style: font(kBodyFont, 14, 600, color: AppColors.green),
-              ),
-            ),
-          ],
-        ),
-      ),
-      const SizedBox(height: 16),
-      Text(
-        'Pick the calendars Tasks should watch for events. You can change this '
-        'anytime when adding feeds or delivery methods.',
-        style: AppText.subtitle,
-      ),
-      const SizedBox(height: 12),
-      if (_calendars.isNotEmpty)
-        AppCard(
-          child: Column(
-            children: [
-              for (var i = 0; i < _calendars.length; i++) ...[
-                SwitchRow(
-                  icon: Icons.calendar_today_rounded,
-                  iconColor: AppColors.blue,
-                  title: _calendars[i]['name'] as String? ?? 'Calendar',
-                  value: _selectedCals.contains(_calendars[i]['id']),
-                  onChanged: (v) => setState(() {
-                    final id = _calendars[i]['id'] as String;
-                    v ? _selectedCals.add(id) : _selectedCals.remove(id);
-                  }),
-                ),
-                if (i < _calendars.length - 1) const Divider(height: 20),
-              ],
-            ],
-          ),
-        ),
-      const SizedBox(height: 24),
-      _PrimaryButton(
-        label: 'Finish',
-        busy: false,
-        onPressed: () => Navigator.of(context).maybePop(),
-      ),
-    ];
-  }
-
   Widget _hero(IconData icon, String title, String subtitle) {
     return Column(
       children: [
@@ -498,7 +395,7 @@ class _ProgressBar extends StatelessWidget {
   Widget build(BuildContext context) {
     return Row(
       children: [
-        for (var i = 1; i <= 3; i++) ...[
+        for (var i = 1; i <= 2; i++) ...[
           Expanded(
             child: Container(
               height: 4,
@@ -508,7 +405,7 @@ class _ProgressBar extends StatelessWidget {
               ),
             ),
           ),
-          if (i < 3) const SizedBox(width: 6),
+          if (i < 2) const SizedBox(width: 6),
         ],
       ],
     );
