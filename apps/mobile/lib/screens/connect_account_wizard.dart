@@ -9,6 +9,7 @@ import '../state/family.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_text.dart';
 import '../widgets/primitives.dart';
+import '../widgets/settings.dart';
 
 /// The 2-step connect-account wizard, launched from Me. Choose a provider,
 /// then sign in / grant access. Wired to the external-account API:
