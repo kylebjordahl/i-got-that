@@ -320,7 +320,9 @@ export const familyMemberFeeds = sqliteTable(
  * of edited in on the day. Each row's hours hold from `effectiveFrom` until
  * the next row's date; days before the earliest row use the link's own
  * `dayStart`/`dayEnd`. Only the hours change: weekday mask and location stay
- * on the link. `modify_day` rules still win on the days they cover.
+ * on the link. `modify_day` rules still win on the days they cover. Once a
+ * change takes effect, synthesis folds its hours into the link and deletes it
+ * (`foldEffectiveBaselineChanges`), so this only ever holds upcoming changes.
  */
 export const linkBaselineChanges = sqliteTable(
   'link_baseline_changes',

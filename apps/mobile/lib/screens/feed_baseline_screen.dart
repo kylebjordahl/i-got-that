@@ -478,10 +478,11 @@ class _FeedBaselineScreenState extends ConsumerState<FeedBaselineScreen> {
   }
 }
 
-/// Dated changes to the baseline hours ("from Oct 1, 8:30–5:00"), so a known
-/// shift can be planned across rather than edited in on the day. Each change
-/// holds until the next; the hours above apply before the first. Changes save
-/// straight away, like rules — not with "Save linked feed".
+/// Upcoming changes to the baseline hours ("from Oct 1, 8:30–5:00"), so a
+/// known shift can be planned across rather than edited in on the day. Each
+/// change holds until the next. Once one starts, the server folds its hours
+/// into the baseline above and drops it from this list. Changes save straight
+/// away, like rules — not with "Save linked feed".
 class _BaselineChanges extends ConsumerWidget {
   const _BaselineChanges({required this.feed, required this.link});
   final FeedItem feed;
@@ -496,14 +497,6 @@ class _BaselineChanges extends ConsumerWidget {
         ref.watch(baselineChangesProvider(_key)).valueOrNull ??
         const <BaselineChange>[];
     final now = DateTime.now();
-    final today = DateTime(now.year, now.month, now.day);
-    // The change in force today: the latest one dated on or before it.
-    final inEffect = changes
-        .where((c) => !c.date.isAfter(today))
-        .fold<BaselineChange?>(
-          null,
-          (best, c) => best == null || c.date.isAfter(best.date) ? c : best,
-        );
 
     String hours(BaselineChange c) {
       final start = parseClockTime(c.dayStart);
@@ -516,15 +509,11 @@ class _BaselineChanges extends ConsumerWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text('SCHEDULED CHANGES', style: AppText.eyebrow()),
+        Text('UPCOMING CHANGES', style: AppText.eyebrow()),
         const SizedBox(height: 6),
         Text(
-          inEffect == null
-              ? 'New hours from a date on — e.g. after-care starting. The hours '
-                    'above apply until the first change.'
-              : 'The hours above applied before '
-                    '${dayHeading(changes.first.date, now)}; the change marked '
-                    '“In effect” is today’s.',
+          'New hours from a date on — e.g. after-care starting. When a change '
+          'starts, its hours become the baseline above.',
           style: AppText.subtitle,
         ),
         const SizedBox(height: 10),
@@ -535,11 +524,11 @@ class _BaselineChanges extends ConsumerWidget {
               iconColor: AppColors.amber,
               title: 'From ${dayHeading(c.date, now)}',
               subtitle: hours(c),
-              trailing: c == inEffect
-                  ? const TintBadge('In effect', color: AppColors.green)
-                  : c.date.isAfter(today)
-                  ? const TintBadge('Upcoming', color: AppColors.amber)
-                  : const TintBadge('Ended', color: AppColors.textMuted),
+              trailing: const Icon(
+                Icons.edit_rounded,
+                size: 18,
+                color: AppColors.textMuted,
+              ),
               onTap: () => showBaselineChangeSheet(
                 context,
                 feed: feed,
@@ -632,6 +621,7 @@ class _BaselineChangeSheetState extends ConsumerState<_BaselineChangeSheet> {
     ref.invalidate(
       baselineChangesProvider((feedId: widget.feed.id, linkId: widget.link.id)),
     );
+    ref.invalidate(feedLinksProvider(widget.feed.id));
     ref.invalidate(calendarEventsProvider);
     ref.invalidate(unownedTasksProvider);
     ref.invalidate(allTasksProvider);
@@ -639,10 +629,12 @@ class _BaselineChangeSheetState extends ConsumerState<_BaselineChangeSheet> {
 
   Future<void> _pickDate() async {
     final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
     final picked = await showDatePicker(
       context: context,
       initialDate: _from,
-      firstDate: DateTime(now.year - 1),
+      // A change is for planning ahead; past dates would fold straight away.
+      firstDate: _from.isBefore(today) ? _from : today,
       lastDate: DateTime(now.year + 2),
     );
     if (picked != null) setState(() => _from = picked);

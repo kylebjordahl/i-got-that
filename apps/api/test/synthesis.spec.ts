@@ -470,6 +470,57 @@ describe('synthesis: dated baseline changes', () => {
   });
 });
 
+describe('synthesis: folding effective baseline changes', () => {
+  it('folds the latest change on or before the window start into the link, keeping upcoming ones', async () => {
+    const f = await exceptionFixture('synth-baseline-fold@example.com');
+    const change = (effectiveFrom: string, dayEnd: string) => ({
+      familyId: f.familyId,
+      linkId: f.linkId,
+      effectiveFrom,
+      dayStart: '08:30',
+      dayEnd,
+    });
+    await f.db
+      .insert(linkBaselineChanges)
+      .values([
+        change('2026-06-01', '15:00'),
+        change('2026-07-06', '17:00'), // the window start day itself
+        change('2026-07-09', '16:00'),
+      ]);
+
+    await synthesizeFeed(f.db, f.feed, WINDOW);
+
+    const link = (
+      await f.db.select().from(familyMemberFeeds).where(eq(familyMemberFeeds.id, f.linkId))
+    )[0]!;
+    expect([link.dayStart, link.dayEnd]).toEqual(['08:30', '17:00']);
+    const left = await f.db
+      .select()
+      .from(linkBaselineChanges)
+      .where(eq(linkBaselineChanges.linkId, f.linkId));
+    expect(left.map((c) => c.effectiveFrom)).toEqual(['2026-07-09']);
+
+    const events = await f.db
+      .select()
+      .from(calendarEvents)
+      .where(eq(calendarEvents.familyMemberId, f.childId));
+    const ends = Object.fromEntries(
+      events.map((e) => [e.synthKey.slice(-10), e.dtend!.toISOString().slice(11, 16)]),
+    );
+    expect(ends).toEqual({
+      '2026-07-06': '17:00',
+      '2026-07-07': '17:00',
+      '2026-07-08': '17:00',
+      '2026-07-09': '16:00',
+      '2026-07-10': '16:00',
+    });
+
+    // Idempotent: a rerun folds nothing more and changes no events.
+    const again = await synthesizeFeed(f.db, f.feed, WINDOW);
+    expect([again.eventsUpserted, again.eventsRemoved]).toEqual([0, 0]);
+  });
+});
+
 describe('baseline-change routes', () => {
   /** A date `days` from today (UTC), inside the default synthesis window. */
   const dayFromNow = (days: number) =>

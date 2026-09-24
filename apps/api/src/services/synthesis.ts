@@ -9,6 +9,7 @@ import {
   inArray,
   isNull,
   linkBaselineChanges,
+  lte,
   linkRules,
   lt,
   or,
@@ -23,6 +24,7 @@ import {
   synthesizeException,
   synthesizeRouted,
   synthesizeStandard,
+  utcDayString,
   type EventIntent,
   type OverrideRuleLike,
   type RoutedSynthesisResult,
@@ -264,6 +266,57 @@ async function reconcilePending(
 }
 
 /**
+ * Fold baseline changes that have taken effect into their links' own hours.
+ * Synthesis never looks behind the window, so once a change's date is on or
+ * before `today` only the latest such change matters: its hours become the
+ * link's `dayStart`/`dayEnd` and it (plus anything older) is deleted. The
+ * table then only holds upcoming changes, and the link's hours always mean
+ * "the hours now". Past days' events already on calendars are the history.
+ * Mutates `links` in place so the rest of this run sees the folded hours.
+ */
+async function foldEffectiveBaselineChanges(
+  db: Db,
+  links: LinkRow[],
+  today: string,
+): Promise<void> {
+  const due = await db
+    .select()
+    .from(linkBaselineChanges)
+    .where(
+      and(
+        inArray(
+          linkBaselineChanges.linkId,
+          links.map((l) => l.id),
+        ),
+        lte(linkBaselineChanges.effectiveFrom, today),
+      ),
+    );
+  for (const link of links) {
+    const latest = due
+      .filter((c) => c.linkId === link.id)
+      .reduce<(typeof due)[number] | null>(
+        (best, c) => (!best || c.effectiveFrom > best.effectiveFrom ? c : best),
+        null,
+      );
+    if (!latest) continue;
+    await db
+      .update(familyMemberFeeds)
+      .set({ dayStart: latest.dayStart, dayEnd: latest.dayEnd })
+      .where(eq(familyMemberFeeds.id, link.id));
+    await db
+      .delete(linkBaselineChanges)
+      .where(
+        and(
+          eq(linkBaselineChanges.linkId, link.id),
+          lte(linkBaselineChanges.effectiveFrom, today),
+        ),
+      );
+    link.dayStart = latest.dayStart;
+    link.dayEnd = latest.dayEnd;
+  }
+}
+
+/**
  * Module A — synthesis (SCHEDULE only). Runs each active link of a feed through
  * the pure engine and reconciles the member's unified calendar to the desired
  * set: upserts by (member, synthKey) with contentHash skip, deletes this link's
@@ -298,6 +351,7 @@ export async function synthesizeFeed(
       and(eq(familyMemberFeeds.feedId, feed.id), eq(familyMemberFeeds.active, true)),
     );
   if (links.length === 0) return result;
+  await foldEffectiveBaselineChanges(db, links, utcDayString(window.start.getTime()));
 
   // Occurrences overlapping the window (a span that started before the window
   // still counts for the days it reaches into it). Dismissed events are ignored.

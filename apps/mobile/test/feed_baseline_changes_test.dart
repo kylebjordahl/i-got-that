@@ -102,32 +102,27 @@ void main() {
     return api;
   }
 
-  testWidgets('lists scheduled changes with their status', (tester) async {
+  testWidgets('lists upcoming changes with their dates and hours', (
+    tester,
+  ) async {
     await pump(tester, [
       BaselineChange(
-        id: 'c0',
-        effectiveFrom: dateOffset(-30),
-        dayStart: '09:00',
-        dayEnd: '15:00',
-      ),
-      BaselineChange(
         id: 'c1',
-        effectiveFrom: dateOffset(-3),
-        dayStart: '08:30',
-        dayEnd: '15:15',
-      ),
-      BaselineChange(
-        id: 'c2',
-        effectiveFrom: dateOffset(10),
+        effectiveFrom: dateOffset(1),
         dayStart: '08:30',
         dayEnd: '17:00',
       ),
+      BaselineChange(
+        id: 'c2',
+        effectiveFrom: dateOffset(40),
+        dayStart: '09:00',
+        dayEnd: '15:30',
+      ),
     ]);
 
+    expect(find.text('From Tomorrow'), findsOneWidget);
     expect(find.text('8:30 AM – 5:00 PM'), findsOneWidget);
-    expect(find.text('Ended'), findsOneWidget);
-    expect(find.text('In effect'), findsOneWidget);
-    expect(find.text('Upcoming'), findsOneWidget);
+    expect(find.text('9:00 AM – 3:30 PM'), findsOneWidget);
   });
 
   testWidgets('schedules a new change on the link hours by default', (
