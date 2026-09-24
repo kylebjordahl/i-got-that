@@ -507,6 +507,33 @@ export const UpdateMemberFeedLinkInput = z.object({
 });
 export type UpdateMemberFeedLinkInput = z.infer<typeof UpdateMemberFeedLinkInput>;
 
+/** A calendar date, `YYYY-MM-DD` (local to whatever it's scheduled against). */
+export const LocalDate = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, 'expected YYYY-MM-DD')
+  .refine((d) => {
+    const parsed = new Date(`${d}T00:00:00Z`);
+    return !Number.isNaN(parsed.getTime()) && parsed.toISOString().startsWith(d);
+  }, 'not a real date');
+export type LocalDate = z.infer<typeof LocalDate>;
+
+/**
+ * Schedule a change to an exception link's baseline hours from a date on
+ * (e.g. after-care starting Oct 1: 08:30–17:00). The hours hold until the next
+ * change; weekday mask and location stay on the link. `effectiveFrom` is a
+ * date in the feed's timezone, unique per link.
+ */
+export const CreateBaselineChangeInput = z.object({
+  effectiveFrom: LocalDate,
+  dayStart: TimeOfDay,
+  dayEnd: TimeOfDay,
+});
+export type CreateBaselineChangeInput = z.infer<typeof CreateBaselineChangeInput>;
+
+/** Partial update of a scheduled baseline change. */
+export const UpdateBaselineChangeInput = CreateBaselineChangeInput.partial();
+export type UpdateBaselineChangeInput = z.infer<typeof UpdateBaselineChangeInput>;
+
 /**
  * Reorder one member's feed links by priority — every link id of that member
  * exactly once, in the new order (index 0 = highest priority). Priority breaks

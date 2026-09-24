@@ -8,6 +8,7 @@ import {
   gte,
   inArray,
   isNull,
+  linkBaselineChanges,
   linkRules,
   lt,
   or,
@@ -328,6 +329,20 @@ export async function synthesizeFeed(
   const rulesFor = (linkId: string) =>
     allRules.filter((r) => r.linkId === linkId).map(toRuleLike);
 
+  // Dated baseline-hour changes only shape exception feeds' baseline days.
+  const allBaselineChanges =
+    feed.mode === 'exception'
+      ? await db
+          .select()
+          .from(linkBaselineChanges)
+          .where(
+            inArray(
+              linkBaselineChanges.linkId,
+              links.map((l) => l.id),
+            ),
+          )
+      : [];
+
   // Routed feeds are decided feed-wide before the per-link pass: every link's
   // `keep` pipeline sees the same occurrences, and an occurrence no link keeps
   // is unrouted — one routing decision per link, answered once.
@@ -354,6 +369,7 @@ export async function synthesizeFeed(
       location: link.location,
       locationGeo: link.locationGeo,
       baselineSummary: baselineSummaryFor(feed),
+      baselineChanges: allBaselineChanges.filter((b) => b.linkId === link.id),
     };
 
     const engineResult: EngineResult = routing
