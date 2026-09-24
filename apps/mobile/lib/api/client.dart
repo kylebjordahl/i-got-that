@@ -545,6 +545,75 @@ class ApiClient {
     );
   }
 
+  // --- Dated baseline changes (exception links) ----------------------------
+
+  String _baselineChangesBase(String familyId, String feedId, String linkId) =>
+      '/families/$familyId/feeds/$feedId/member-links/$linkId/baseline-changes';
+
+  Future<List<dynamic>> listBaselineChanges(
+    String familyId,
+    String feedId,
+    String linkId,
+  ) async => _list(
+    await _dio.get(
+      _baselineChangesBase(familyId, feedId, linkId),
+      options: _auth,
+    ),
+    'changes',
+  );
+
+  /// Schedule new baseline hours from [effectiveFrom] (`YYYY-MM-DD`) on.
+  Future<void> createBaselineChange(
+    String familyId,
+    String feedId,
+    String linkId, {
+    required String effectiveFrom,
+    required String dayStart,
+    required String dayEnd,
+  }) async {
+    await _dio.post(
+      _baselineChangesBase(familyId, feedId, linkId),
+      data: {
+        'effectiveFrom': effectiveFrom,
+        'dayStart': dayStart,
+        'dayEnd': dayEnd,
+      },
+      options: _auth,
+    );
+  }
+
+  Future<void> updateBaselineChange(
+    String familyId,
+    String feedId,
+    String linkId,
+    String changeId, {
+    String? effectiveFrom,
+    String? dayStart,
+    String? dayEnd,
+  }) async {
+    await _dio.patch(
+      '${_baselineChangesBase(familyId, feedId, linkId)}/$changeId',
+      data: {
+        if (effectiveFrom != null) 'effectiveFrom': effectiveFrom,
+        if (dayStart != null) 'dayStart': dayStart,
+        if (dayEnd != null) 'dayEnd': dayEnd,
+      },
+      options: _auth,
+    );
+  }
+
+  Future<void> deleteBaselineChange(
+    String familyId,
+    String feedId,
+    String linkId,
+    String changeId,
+  ) async {
+    await _dio.delete(
+      '${_baselineChangesBase(familyId, feedId, linkId)}/$changeId',
+      options: _auth,
+    );
+  }
+
   // --- Override rules (the link's event pipeline) --------------------------
 
   String _rulesBase(String familyId, String feedId, String linkId) =>

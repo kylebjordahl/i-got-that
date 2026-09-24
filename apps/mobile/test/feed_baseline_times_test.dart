@@ -76,6 +76,7 @@ void main() {
           apiClientProvider.overrideWithValue(api),
           familyProvider.overrideWith((ref) async => 'fam-1'),
           linkRulesProvider.overrideWith((ref, key) async => const []),
+          baselineChangesProvider.overrideWith((ref, key) async => const []),
         ],
         child: MaterialApp(
           theme: buildAppTheme(),

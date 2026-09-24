@@ -1,3 +1,4 @@
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models.dart';
@@ -6,6 +7,7 @@ import '../state/auth.dart';
 import '../state/family.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_text.dart';
+import '../util/format.dart';
 import '../widgets/app_bottom_nav.dart';
 import '../widgets/location_picker.dart';
 import '../widgets/primitives.dart';
@@ -406,6 +408,8 @@ class _FeedBaselineScreenState extends ConsumerState<FeedBaselineScreen> {
                         ],
                       ),
                     ),
+                    const SizedBox(height: 16),
+                    _BaselineChanges(feed: _feed, link: widget.existingLink),
                     const SizedBox(height: 24),
                     _OverridePipeline(
                       feed: _feed,
@@ -465,6 +469,349 @@ class _FeedBaselineScreenState extends ConsumerState<FeedBaselineScreen> {
                   const SizedBox(height: 12),
                   _RemoveButton(label: 'Unlink feed', onTap: _unlink),
                 ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Dated changes to the baseline hours ("from Oct 1, 8:30–5:00"), so a known
+/// shift can be planned across rather than edited in on the day. Each change
+/// holds until the next; the hours above apply before the first. Changes save
+/// straight away, like rules — not with "Save linked feed".
+class _BaselineChanges extends ConsumerWidget {
+  const _BaselineChanges({required this.feed, required this.link});
+  final FeedItem feed;
+  final FeedLink link;
+
+  ({String feedId, String linkId}) get _key =>
+      (feedId: feed.id, linkId: link.id);
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final changes =
+        ref.watch(baselineChangesProvider(_key)).valueOrNull ??
+        const <BaselineChange>[];
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    // The change in force today: the latest one dated on or before it.
+    final inEffect = changes
+        .where((c) => !c.date.isAfter(today))
+        .fold<BaselineChange?>(
+          null,
+          (best, c) => best == null || c.date.isAfter(best.date) ? c : best,
+        );
+
+    String hours(BaselineChange c) {
+      final start = parseClockTime(c.dayStart);
+      final end = parseClockTime(c.dayEnd);
+      if (start == null || end == null) return '${c.dayStart} – ${c.dayEnd}';
+      return '${formatClockTimeForDisplay(context, start)} – '
+          '${formatClockTimeForDisplay(context, end)}';
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('SCHEDULED CHANGES', style: AppText.eyebrow()),
+        const SizedBox(height: 6),
+        Text(
+          inEffect == null
+              ? 'New hours from a date on — e.g. after-care starting. The hours '
+                    'above apply until the first change.'
+              : 'The hours above applied before '
+                    '${dayHeading(changes.first.date, now)}; the change marked '
+                    '“In effect” is today’s.',
+          style: AppText.subtitle,
+        ),
+        const SizedBox(height: 10),
+        for (final c in changes) ...[
+          AppCard(
+            child: SettingRow(
+              icon: Icons.event_repeat_rounded,
+              iconColor: AppColors.amber,
+              title: 'From ${dayHeading(c.date, now)}',
+              subtitle: hours(c),
+              trailing: c == inEffect
+                  ? const TintBadge('In effect', color: AppColors.green)
+                  : c.date.isAfter(today)
+                  ? const TintBadge('Upcoming', color: AppColors.amber)
+                  : const TintBadge('Ended', color: AppColors.textMuted),
+              onTap: () => showBaselineChangeSheet(
+                context,
+                feed: feed,
+                link: link,
+                existing: c,
+              ),
+            ),
+          ),
+          const SizedBox(height: 10),
+        ],
+        Center(
+          child: TextButton.icon(
+            onPressed: () =>
+                showBaselineChangeSheet(context, feed: feed, link: link),
+            icon: const Icon(
+              Icons.add_rounded,
+              size: 18,
+              color: AppColors.amber,
+            ),
+            label: Text(
+              'Schedule a change',
+              style: font(kBodyFont, 13, 700, color: AppColors.amber),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// Add or edit one scheduled baseline change: a start date and the new hours.
+Future<void> showBaselineChangeSheet(
+  BuildContext context, {
+  required FeedItem feed,
+  required FeedLink link,
+  BaselineChange? existing,
+}) {
+  return showModalBottomSheet<void>(
+    context: context,
+    useSafeArea: true,
+    useRootNavigator: true,
+    showDragHandle: true,
+    isScrollControlled: true,
+    builder: (_) =>
+        _BaselineChangeSheet(feed: feed, link: link, existing: existing),
+  );
+}
+
+class _BaselineChangeSheet extends ConsumerStatefulWidget {
+  const _BaselineChangeSheet({
+    required this.feed,
+    required this.link,
+    this.existing,
+  });
+  final FeedItem feed;
+  final FeedLink link;
+  final BaselineChange? existing;
+
+  @override
+  ConsumerState<_BaselineChangeSheet> createState() =>
+      _BaselineChangeSheetState();
+}
+
+class _BaselineChangeSheetState extends ConsumerState<_BaselineChangeSheet> {
+  late DateTime _from;
+  late TimeOfDay _dayStart;
+  late TimeOfDay _dayEnd;
+  bool _busy = false;
+  String? _error;
+
+  bool get _editing => widget.existing != null;
+
+  @override
+  void initState() {
+    super.initState();
+    final ex = widget.existing;
+    final now = DateTime.now();
+    // A new change defaults to the first of next month — the usual shape of a
+    // school schedule change — on the link's current hours.
+    _from = ex?.date ?? DateTime(now.year, now.month + 1, 1);
+    _dayStart =
+        parseClockTime(ex?.dayStart ?? widget.link.dayStart) ??
+        const TimeOfDay(hour: 8, minute: 30);
+    _dayEnd =
+        parseClockTime(ex?.dayEnd ?? widget.link.dayEnd) ??
+        const TimeOfDay(hour: 14, minute: 45);
+  }
+
+  void _invalidate() {
+    ref.invalidate(
+      baselineChangesProvider((feedId: widget.feed.id, linkId: widget.link.id)),
+    );
+    ref.invalidate(calendarEventsProvider);
+    ref.invalidate(unownedTasksProvider);
+    ref.invalidate(allTasksProvider);
+  }
+
+  Future<void> _pickDate() async {
+    final now = DateTime.now();
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: _from,
+      firstDate: DateTime(now.year - 1),
+      lastDate: DateTime(now.year + 2),
+    );
+    if (picked != null) setState(() => _from = picked);
+  }
+
+  String _describe(Object e) {
+    if (e is DioException) {
+      final body = e.response?.data;
+      final code = body is Map ? body['error'] : null;
+      if (code == 'date_taken') {
+        return 'There’s already a change on that date — edit that one instead.';
+      }
+      return 'Failed: ${e.response?.statusCode ?? e.message}';
+    }
+    return 'Failed: $e';
+  }
+
+  Future<void> _save() async {
+    if (formatClockTime(_dayEnd).compareTo(formatClockTime(_dayStart)) <= 0) {
+      setState(() => _error = 'The day has to end after it starts.');
+      return;
+    }
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      final familyId = await ref.read(familyProvider.future);
+      final api = ref.read(apiClientProvider);
+      if (_editing) {
+        await api.updateBaselineChange(
+          familyId,
+          widget.feed.id,
+          widget.link.id,
+          widget.existing!.id,
+          effectiveFrom: formatLocalDate(_from),
+          dayStart: formatClockTime(_dayStart),
+          dayEnd: formatClockTime(_dayEnd),
+        );
+      } else {
+        await api.createBaselineChange(
+          familyId,
+          widget.feed.id,
+          widget.link.id,
+          effectiveFrom: formatLocalDate(_from),
+          dayStart: formatClockTime(_dayStart),
+          dayEnd: formatClockTime(_dayEnd),
+        );
+      }
+      _invalidate();
+      if (mounted) Navigator.of(context).pop();
+    } catch (e) {
+      setState(() {
+        _busy = false;
+        _error = _describe(e);
+      });
+    }
+  }
+
+  Future<void> _delete() async {
+    setState(() => _busy = true);
+    try {
+      final familyId = await ref.read(familyProvider.future);
+      await ref
+          .read(apiClientProvider)
+          .deleteBaselineChange(
+            familyId,
+            widget.feed.id,
+            widget.link.id,
+            widget.existing!.id,
+          );
+      _invalidate();
+      if (mounted) Navigator.of(context).pop();
+    } catch (e) {
+      setState(() {
+        _busy = false;
+        _error = _describe(e);
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      child: SingleChildScrollView(
+        padding: EdgeInsets.fromLTRB(
+          22,
+          4,
+          22,
+          28 + MediaQuery.of(context).viewInsets.bottom,
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    _editing ? 'Edit scheduled change' : 'Schedule a change',
+                    style: AppText.subPageTitle,
+                  ),
+                ),
+                if (_editing)
+                  IconButton(
+                    tooltip: 'Delete change',
+                    onPressed: _busy ? null : _delete,
+                    icon: const Icon(
+                      Icons.delete_outline_rounded,
+                      color: AppColors.coral,
+                    ),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'From this date on, normal days use these hours until the next '
+              'change. Rules that modify a day still override them.',
+              style: AppText.subtitle,
+            ),
+            const SizedBox(height: 16),
+            AppCard(
+              child: SettingRow(
+                icon: Icons.calendar_today_rounded,
+                iconColor: AppColors.amber,
+                title: 'Starts on',
+                subtitle: dayHeading(_from, DateTime.now()),
+                trailing: const Icon(
+                  Icons.edit_rounded,
+                  size: 18,
+                  color: AppColors.textMuted,
+                ),
+                onTap: _busy ? null : _pickDate,
+              ),
+            ),
+            const SizedBox(height: 16),
+            Row(
+              children: [
+                Expanded(
+                  child: ClockTimePickerField(
+                    label: 'Day starts',
+                    value: _dayStart,
+                    onChanged: (t) => setState(() => _dayStart = t),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: ClockTimePickerField(
+                    label: 'Day ends',
+                    value: _dayEnd,
+                    onChanged: (t) => setState(() => _dayEnd = t),
+                  ),
+                ),
+              ],
+            ),
+            if (_error != null) ...[
+              const SizedBox(height: 12),
+              Text(
+                _error!,
+                style: font(kBodyFont, 13, 500, color: AppColors.coral),
+              ),
+            ],
+            const SizedBox(height: 20),
+            SizedBox(
+              width: double.infinity,
+              child: PillButton(
+                label: 'Save change',
+                variant: PillVariant.indigo,
+                onPressed: _busy ? null : _save,
               ),
             ),
           ],
