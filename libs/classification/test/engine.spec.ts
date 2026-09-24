@@ -352,6 +352,109 @@ describe('synthesizeException', () => {
   });
 });
 
+describe('synthesizeException — dated baseline changes', () => {
+  // From Wed Jul 8 the day runs to 17:00 (after-care added).
+  const changingLink = {
+    ...schoolLink,
+    baselineChanges: [{ effectiveFrom: '2026-07-08', dayStart: '08:30', dayEnd: '17:00' }],
+  };
+  const ends = (events: { synthKey: string; dtend: Date | null }[]) =>
+    Object.fromEntries(events.map((e) => [e.synthKey.slice(-10), e.dtend?.toISOString().slice(11, 16)]));
+
+  it('switches hours on the effective date, keeping the same bl: keys', () => {
+    const { events } = synthesizeException(changingLink, [], [], week, 'UTC');
+    expect(ends(events)).toEqual({
+      '2026-07-06': '14:45',
+      '2026-07-07': '14:45',
+      '2026-07-08': '17:00',
+      '2026-07-09': '17:00',
+      '2026-07-10': '17:00',
+    });
+  });
+
+  it('the latest change on or before the day wins, in any order', () => {
+    const { events } = synthesizeException(
+      {
+        ...schoolLink,
+        baselineChanges: [
+          { effectiveFrom: '2026-07-10', dayStart: '09:00', dayEnd: '13:00' },
+          { effectiveFrom: '2026-07-07', dayStart: '08:30', dayEnd: '17:00' },
+        ],
+      },
+      [],
+      [],
+      week,
+      'UTC',
+    );
+    expect(ends(events)).toMatchObject({
+      '2026-07-06': '14:45',
+      '2026-07-07': '17:00',
+      '2026-07-09': '17:00',
+      '2026-07-10': '13:00',
+    });
+    const fri = events.find((e) => e.synthKey === 'bl:link-1:2026-07-10');
+    expect(fri?.dtstart.toISOString()).toBe('2026-07-10T09:00:00.000Z');
+  });
+
+  it('a change dated on a non-school day takes effect from the next school day', () => {
+    const { events } = synthesizeException(
+      {
+        ...schoolLink,
+        baselineChanges: [{ effectiveFrom: '2026-07-04', dayStart: '08:30', dayEnd: '17:00' }],
+      },
+      [],
+      [],
+      week,
+      'UTC',
+    );
+    expect(Object.values(ends(events))).toEqual(['17:00', '17:00', '17:00', '17:00', '17:00']);
+  });
+
+  it('a change after the window leaves the window on the link hours', () => {
+    const { events } = synthesizeException(
+      {
+        ...schoolLink,
+        baselineChanges: [{ effectiveFrom: '2026-08-01', dayStart: '08:30', dayEnd: '17:00' }],
+      },
+      [],
+      [],
+      week,
+      'UTC',
+    );
+    expect(Object.values(ends(events))).toEqual(['14:45', '14:45', '14:45', '14:45', '14:45']);
+  });
+
+  it('modify_day still wins over the changed hours; a partial patch inherits them', () => {
+    const noCare = override({
+      position: 0,
+      matchValue: 'No PM Care',
+      outcome: 'modify_day',
+      params: { dayEnd: '14:45' },
+    });
+    const lateStart = override({
+      position: 1,
+      matchValue: 'Late Start',
+      outcome: 'modify_day',
+      params: { dayStart: '10:00' },
+    });
+    const thu = occ({ summary: 'No PM Care', allDay: true, dtstart: new Date('2026-07-09T00:00:00Z'), dtend: new Date('2026-07-10T00:00:00Z') });
+    const fri = occ({ summary: 'Late Start', allDay: true, dtstart: new Date('2026-07-10T00:00:00Z'), dtend: new Date('2026-07-11T00:00:00Z') });
+    const { events } = synthesizeException(changingLink, [thu, fri], [noCare, lateStart], week, 'UTC');
+    expect(ends(events)).toMatchObject({ '2026-07-08': '17:00', '2026-07-09': '14:45', '2026-07-10': '17:00' });
+    const friEvent = events.find((e) => e.synthKey === 'bl:link-1:2026-07-10');
+    expect(friEvent?.dtstart.toISOString()).toBe('2026-07-10T10:00:00.000Z');
+  });
+
+  it('change dates are local to the feed timezone', () => {
+    const { events } = synthesizeException(changingLink, [], [], week, 'America/Los_Angeles');
+    const tue = events.find((e) => e.synthKey === 'bl:link-1:2026-07-07');
+    const wed = events.find((e) => e.synthKey === 'bl:link-1:2026-07-08');
+    // 14:45 / 17:00 PDT.
+    expect(tue?.dtend?.toISOString()).toBe('2026-07-07T21:45:00.000Z');
+    expect(wed?.dtend?.toISOString()).toBe('2026-07-09T00:00:00.000Z');
+  });
+});
+
 describe('day coverage + wall-clock conversion', () => {
   it('all-day dtend is exclusive; wall times anchor via Intl', () => {
     expect(

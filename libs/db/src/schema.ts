@@ -314,6 +314,41 @@ export const familyMemberFeeds = sqliteTable(
   }),
 );
 
+/**
+ * A dated change to an exception link's baseline hours — "from Oct 1 the day
+ * runs 8:30–17:00" — so a known schedule shift can be planned across instead
+ * of edited in on the day. Each row's hours hold from `effectiveFrom` until
+ * the next row's date; days before the earliest row use the link's own
+ * `dayStart`/`dayEnd`. Only the hours change: weekday mask and location stay
+ * on the link. `modify_day` rules still win on the days they cover. Once a
+ * change takes effect, synthesis folds its hours into the link and deletes it
+ * (`foldEffectiveBaselineChanges`), so this only ever holds upcoming changes.
+ */
+export const linkBaselineChanges = sqliteTable(
+  'link_baseline_changes',
+  {
+    id: id(),
+    familyId: text('family_id')
+      .notNull()
+      .references(() => families.id, { onDelete: 'cascade' }),
+    linkId: text('link_id')
+      .notNull()
+      .references(() => familyMemberFeeds.id, { onDelete: 'cascade' }),
+    // Local calendar date (YYYY-MM-DD, the feed's timezone) the hours start on.
+    effectiveFrom: text('effective_from').notNull(),
+    dayStart: text('day_start').notNull(),
+    dayEnd: text('day_end').notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => ({
+    linkDateUq: uniqueIndex('link_baseline_changes_link_date_uq').on(
+      t.linkId,
+      t.effectiveFrom,
+    ),
+    familyIdx: index('link_baseline_changes_family_idx').on(t.familyId),
+  }),
+);
+
 // --- Source events -------------------------------------------------------
 
 export const sourceEvents = sqliteTable(
@@ -1148,6 +1183,7 @@ export const schema = {
   familyMemberFeeds,
   sourceEvents,
   linkRules,
+  linkBaselineChanges,
   taskRules,
   pendingDecisions,
   conflicts,

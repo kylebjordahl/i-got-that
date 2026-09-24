@@ -6,6 +6,7 @@ import {
   familyMemberFeeds,
   feeds,
   getDb,
+  linkBaselineChanges,
   linkRules,
   pendingDecisions,
   sourceEvents,
@@ -15,7 +16,7 @@ import {
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { synthesizeFeed } from '../src/services/synthesis.js';
 import { buildMemberTasks } from '../src/services/task-gen.js';
-import { authed, call, setupFamily } from './helpers.js';
+import { authed, bearer, call, patched, setupFamily } from './helpers.js';
 
 const EMPTY_ICS = 'BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//test//test//EN\r\nEND:VCALENDAR';
 
@@ -401,6 +402,224 @@ describe('synthesis: exception feeds (schedule only)', () => {
     )[0]!;
     expect(reopened.status).toBe('pending');
     expect(reopened.sourceContentHash).toBe('v2');
+  });
+});
+
+describe('synthesis: dated baseline changes', () => {
+  it('switches the baseline hours on the effective date; tasks follow; removal restores', async () => {
+    const f = await exceptionFixture('synth-baseline-change@example.com');
+    const change = (
+      await f.db
+        .insert(linkBaselineChanges)
+        .values({
+          familyId: f.familyId,
+          linkId: f.linkId,
+          effectiveFrom: '2026-07-08',
+          dayStart: '08:30',
+          dayEnd: '17:00',
+        })
+        .returning()
+    )[0]!;
+
+    await synthesizeFeed(f.db, f.feed, WINDOW);
+    const ends = async () => {
+      const events = await f.db
+        .select()
+        .from(calendarEvents)
+        .where(eq(calendarEvents.familyMemberId, f.childId));
+      return Object.fromEntries(
+        events.map((e) => [e.synthKey, e.dtend!.toISOString().slice(11, 16)]),
+      );
+    };
+    expect(await ends()).toEqual({
+      [`bl:${f.linkId}:2026-07-06`]: '14:45',
+      [`bl:${f.linkId}:2026-07-07`]: '14:45',
+      [`bl:${f.linkId}:2026-07-08`]: '17:00',
+      [`bl:${f.linkId}:2026-07-09`]: '17:00',
+      [`bl:${f.linkId}:2026-07-10`]: '17:00',
+    });
+
+    // The pickup moves with the day's end.
+    await buildMemberTasks(f.db, f.childId);
+    const pickupAt = async (day: string) => {
+      const ev = (
+        await f.db
+          .select()
+          .from(calendarEvents)
+          .where(eq(calendarEvents.synthKey, `bl:${f.linkId}:${day}`))
+      )[0]!;
+      const pickup = (
+        await f.db
+          .select()
+          .from(tasks)
+          .where(and(eq(tasks.calendarEventId, ev.id), eq(tasks.type, 'pickup')))
+      )[0]!;
+      return pickup.dtstart.toISOString().slice(11, 16);
+    };
+    expect(await pickupAt('2026-07-07')).toBe('14:45');
+    expect(await pickupAt('2026-07-08')).toBe('17:00');
+
+    // Deleting the change puts the link's hours back on the same keys.
+    await f.db.delete(linkBaselineChanges).where(eq(linkBaselineChanges.id, change.id));
+    const r = await synthesizeFeed(f.db, f.feed, WINDOW);
+    expect(r.eventsUpserted).toBe(3);
+    expect(r.eventsRemoved).toBe(0);
+    expect(Object.values(await ends())).toEqual(['14:45', '14:45', '14:45', '14:45', '14:45']);
+    await buildMemberTasks(f.db, f.childId);
+    expect(await pickupAt('2026-07-08')).toBe('14:45');
+  });
+});
+
+describe('synthesis: folding effective baseline changes', () => {
+  it('folds the latest change on or before the window start into the link, keeping upcoming ones', async () => {
+    const f = await exceptionFixture('synth-baseline-fold@example.com');
+    const change = (effectiveFrom: string, dayEnd: string) => ({
+      familyId: f.familyId,
+      linkId: f.linkId,
+      effectiveFrom,
+      dayStart: '08:30',
+      dayEnd,
+    });
+    await f.db
+      .insert(linkBaselineChanges)
+      .values([
+        change('2026-06-01', '15:00'),
+        change('2026-07-06', '17:00'), // the window start day itself
+        change('2026-07-09', '16:00'),
+      ]);
+
+    await synthesizeFeed(f.db, f.feed, WINDOW);
+
+    const link = (
+      await f.db.select().from(familyMemberFeeds).where(eq(familyMemberFeeds.id, f.linkId))
+    )[0]!;
+    expect([link.dayStart, link.dayEnd]).toEqual(['08:30', '17:00']);
+    const left = await f.db
+      .select()
+      .from(linkBaselineChanges)
+      .where(eq(linkBaselineChanges.linkId, f.linkId));
+    expect(left.map((c) => c.effectiveFrom)).toEqual(['2026-07-09']);
+
+    const events = await f.db
+      .select()
+      .from(calendarEvents)
+      .where(eq(calendarEvents.familyMemberId, f.childId));
+    const ends = Object.fromEntries(
+      events.map((e) => [e.synthKey.slice(-10), e.dtend!.toISOString().slice(11, 16)]),
+    );
+    expect(ends).toEqual({
+      '2026-07-06': '17:00',
+      '2026-07-07': '17:00',
+      '2026-07-08': '17:00',
+      '2026-07-09': '16:00',
+      '2026-07-10': '16:00',
+    });
+
+    // Idempotent: a rerun folds nothing more and changes no events.
+    const again = await synthesizeFeed(f.db, f.feed, WINDOW);
+    expect([again.eventsUpserted, again.eventsRemoved]).toEqual([0, 0]);
+  });
+});
+
+describe('baseline-change routes', () => {
+  /** A date `days` from today (UTC), inside the default synthesis window. */
+  const dayFromNow = (days: number) =>
+    new Date(Date.now() + days * 86_400_000).toISOString().slice(0, 10);
+
+  async function routeFixture(email: string, mode: 'exception' | 'standard' = 'exception') {
+    const fam = await setupFamily(email);
+    const db = getDb(env.DB);
+    const feed = (
+      await db
+        .insert(feeds)
+        .values({
+          familyId: fam.familyId,
+          mode,
+          url: 'https://feed.example.com/cal.ics',
+          // Already synced, so resynthesis doesn't try an ingest.
+          lastSyncedAt: new Date(),
+        })
+        .returning()
+    )[0]!;
+    const link = (
+      await db
+        .insert(familyMemberFeeds)
+        .values({
+          familyId: fam.familyId,
+          feedId: feed.id,
+          familyMemberId: fam.childId,
+          weekdayMask: 127, // every day, so any date lands on a baseline day
+          dayStart: '08:30',
+          dayEnd: '14:45',
+        })
+        .returning()
+    )[0]!;
+    const base = `/families/${fam.familyId}/feeds/${feed.id}/member-links/${link.id}/baseline-changes`;
+    return { ...fam, db, feed, link, base };
+  }
+
+  const endOn = async (db: Db, linkId: string, day: string) =>
+    (
+      await db
+        .select()
+        .from(calendarEvents)
+        .where(eq(calendarEvents.synthKey, `bl:${linkId}:${day}`))
+    )[0]?.dtend?.toISOString().slice(11, 16);
+
+  it('creates, lists, updates and deletes a change, resynthesizing each time', async () => {
+    const f = await routeFixture('baseline-routes@example.com');
+    const from = dayFromNow(5);
+
+    const created = await call(
+      f.base,
+      authed(f.admin.token, { effectiveFrom: from, dayStart: '08:30', dayEnd: '17:00' }),
+    );
+    expect(created.status).toBe(201);
+    const { change } = (await created.json()) as { change: { id: string } };
+    expect(await endOn(f.db, f.link.id, dayFromNow(4))).toBe('14:45');
+    expect(await endOn(f.db, f.link.id, from)).toBe('17:00');
+    expect(await endOn(f.db, f.link.id, dayFromNow(10))).toBe('17:00');
+
+    const list = await call(f.base, bearer(f.admin.token));
+    const { changes } = (await list.json()) as { changes: { effectiveFrom: string }[] };
+    expect(changes.map((c) => c.effectiveFrom)).toEqual([from]);
+
+    // Same date again → 409.
+    const dupe = await call(
+      f.base,
+      authed(f.admin.token, { effectiveFrom: from, dayStart: '09:00', dayEnd: '15:00' }),
+    );
+    expect(dupe.status).toBe(409);
+
+    const patchedRes = await call(`${f.base}/${change.id}`, patched(f.admin.token, { dayEnd: '16:30' }));
+    expect(patchedRes.status).toBe(200);
+    expect(await endOn(f.db, f.link.id, from)).toBe('16:30');
+
+    const del = await call(`${f.base}/${change.id}`, {
+      ...bearer(f.admin.token),
+      method: 'DELETE',
+    });
+    expect(del.status).toBe(200);
+    expect(await endOn(f.db, f.link.id, from)).toBe('14:45');
+  });
+
+  it('validates dates and hours, and rejects non-exception feeds', async () => {
+    const f = await routeFixture('baseline-routes-invalid@example.com');
+    const post = (body: unknown) => call(f.base, authed(f.admin.token, body));
+
+    expect((await post({ effectiveFrom: '2026-02-30', dayStart: '08:30', dayEnd: '17:00' })).status).toBe(400);
+    expect((await post({ effectiveFrom: '2026-10-01', dayStart: '8:30', dayEnd: '17:00' })).status).toBe(400);
+    const backwards = await post({ effectiveFrom: '2026-10-01', dayStart: '17:00', dayEnd: '08:30' });
+    expect(backwards.status).toBe(400);
+    expect(await backwards.json()).toEqual({ error: 'day_end_before_start' });
+
+    const s = await routeFixture('baseline-routes-standard@example.com', 'standard');
+    const onStandard = await call(
+      s.base,
+      authed(s.admin.token, { effectiveFrom: '2026-10-01', dayStart: '08:30', dayEnd: '17:00' }),
+    );
+    expect(onStandard.status).toBe(400);
+    expect(await onStandard.json()).toEqual({ error: 'baseline_requires_exception_feed' });
   });
 });
 

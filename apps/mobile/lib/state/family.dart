@@ -227,6 +227,24 @@ final linkRulesProvider =
       },
     );
 
+/// An exception link's scheduled baseline-hour changes, earliest first.
+final baselineChangesProvider =
+    FutureProvider.family<
+      List<BaselineChange>,
+      ({String feedId, String linkId})
+    >((ref, key) async {
+      final api = ref.watch(apiClientProvider);
+      final familyId = await ref.watch(familyProvider.future);
+      final rows = await api.listBaselineChanges(
+        familyId,
+        key.feedId,
+        key.linkId,
+      );
+      return rows
+          .map((e) => BaselineChange.fromJson(e as Map<String, dynamic>))
+          .toList();
+    });
+
 /// Open pending decisions — ranked above unclaimed tasks on Home.
 final pendingDecisionsProvider = FutureProvider<List<PendingDecision>>((
   ref,

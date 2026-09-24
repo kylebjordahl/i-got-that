@@ -223,6 +223,38 @@ export interface LinkConfigLike {
   locationGeo?: GeoLocation | null;
   /** Summary for generated baseline-day events (e.g. the feed's name). */
   baselineSummary?: string | null;
+  /**
+   * Dated changes to the baseline hours (exception feeds). Each holds from its
+   * `effectiveFrom` until the next one's; days before the earliest use
+   * `dayStart`/`dayEnd` above. Order doesn't matter.
+   */
+  baselineChanges?: BaselineChangeLike[];
+}
+
+/** A dated change to a link's baseline hours (a `link_baseline_changes` row). */
+export interface BaselineChangeLike {
+  /** Local calendar date the hours start on, `YYYY-MM-DD`. */
+  effectiveFrom: string;
+  dayStart: string;
+  dayEnd: string;
+}
+
+/**
+ * The baseline hours in force on `day` (a `YYYY-MM-DD` local date): the latest
+ * change on or before it, else the link's own hours.
+ */
+export function baselineHoursOn(
+  link: Pick<LinkConfigLike, 'dayStart' | 'dayEnd' | 'baselineChanges'>,
+  day: string,
+): { dayStart: string | null; dayEnd: string | null } {
+  let current: BaselineChangeLike | null = null;
+  for (const change of link.baselineChanges ?? []) {
+    if (change.effectiveFrom > day) continue;
+    if (!current || change.effectiveFrom > current.effectiveFrom) current = change;
+  }
+  return current
+    ? { dayStart: current.dayStart, dayEnd: current.dayEnd }
+    : { dayStart: link.dayStart, dayEnd: link.dayEnd };
 }
 
 /** A desired event on the member's unified calendar. */
@@ -414,9 +446,10 @@ export function synthesizeBusy(
 
 /**
  * Exception-only feed: normal days come from the link's baseline (weekday mask
- * + day start/end), feed events apply schedule overrides. Per covered day the
- * winning (lowest-position) rule decides: `cancel_day` drops the day's baseline
- * event, `modify_day` patches its hours, `ignore` keeps the baseline. An
+ * + day start/end, or the dated `baselineChanges` in force that day), feed
+ * events apply schedule overrides. Per covered day the winning (lowest-position)
+ * rule decides: `cancel_day` drops the day's baseline event, `modify_day`
+ * patches its hours, `ignore` keeps the baseline. An
  * occurrence matching NO rule becomes a pending decision — the baseline still
  * stands until a human resolves it.
  *
@@ -480,11 +513,13 @@ export function synthesizeException(
         winner?.rule.outcome === 'modify_day'
           ? ((winner.rule.params ?? {}) as ModifyDayParamsLike)
           : null;
-      const dtstart = wallTimeToUtc(day, modify?.dayStart ?? link.dayStart, 8, tz);
-      const dtend = wallTimeToUtc(day, modify?.dayEnd ?? link.dayEnd, 15, tz);
+      const dayKey = utcDayString(day.getTime());
+      const hours = baselineHoursOn(link, dayKey);
+      const dtstart = wallTimeToUtc(day, modify?.dayStart ?? hours.dayStart, 8, tz);
+      const dtend = wallTimeToUtc(day, modify?.dayEnd ?? hours.dayEnd, 15, tz);
 
       events.push({
-        synthKey: `bl:${link.id}:${utcDayString(day.getTime())}`,
+        synthKey: `bl:${link.id}:${dayKey}`,
         sourceEventId: winner?.occ.id ?? null,
         matchedRuleId: winner?.rule.id ?? null,
         dtstart,

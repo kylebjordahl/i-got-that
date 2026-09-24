@@ -411,6 +411,41 @@ class GeoLocation {
   };
 }
 
+/// A dated change to an exception link's baseline hours: from [effectiveFrom]
+/// on, the normal day runs [dayStart]–[dayEnd] until the next change. Weekday
+/// mask and location stay on the link.
+class BaselineChange {
+  BaselineChange({
+    required this.id,
+    required this.effectiveFrom,
+    required this.dayStart,
+    required this.dayEnd,
+  });
+
+  final String id;
+
+  /// `YYYY-MM-DD`, a calendar date in the feed's timezone.
+  final String effectiveFrom;
+  final String dayStart; // "HH:MM"
+  final String dayEnd; // "HH:MM"
+
+  /// [effectiveFrom] as a local date (midnight).
+  DateTime get date => DateTime.parse(effectiveFrom);
+
+  factory BaselineChange.fromJson(Map<String, dynamic> j) => BaselineChange(
+    id: j['id'] as String,
+    effectiveFrom: j['effectiveFrom'] as String,
+    dayStart: j['dayStart'] as String,
+    dayEnd: j['dayEnd'] as String,
+  );
+}
+
+/// The `YYYY-MM-DD` wire form of a local date.
+String formatLocalDate(DateTime d) =>
+    '${d.year.toString().padLeft(4, '0')}-'
+    '${d.month.toString().padLeft(2, '0')}-'
+    '${d.day.toString().padLeft(2, '0')}';
+
 class FeedLink {
   FeedLink({
     required this.id,

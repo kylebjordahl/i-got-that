@@ -9,11 +9,13 @@ import {
   feeds,
   getDb,
   inArray,
+  linkBaselineChanges,
   linkRules,
   sourceEvents,
   tasks,
 } from '@igt/db';
 import {
+  CreateBaselineChangeInput,
   CreateFeedInput,
   CreateLinkRuleInput,
   MemberFeedLinkInput,
@@ -22,6 +24,7 @@ import {
   OverrideOutcome,
   ReorderLinkRulesInput,
   ReorderMemberFeedLinksInput,
+  UpdateBaselineChangeInput,
   UpdateFeedInput,
   UpdateLinkRuleInput,
   UpdateMemberFeedLinkInput,
@@ -579,6 +582,173 @@ feedRoutes.delete('/:feedId/member-links/:linkId', requireAdmin, async (c) => {
   enqueueReconcile(c, { kind: 'family', familyId });
   return c.json({ ok: true });
 });
+
+// --- Dated baseline changes (exception links) --------------------------------
+
+/** HH:MM strings compare correctly as text. */
+function hoursInvalid(dayStart: string, dayEnd: string) {
+  return dayEnd <= dayStart
+    ? ({ error: 'day_end_before_start' } as const)
+    : null;
+}
+
+/** List a link's scheduled baseline-hour changes, earliest first. */
+feedRoutes.get('/:feedId/member-links/:linkId/baseline-changes', async (c) => {
+  const db = getDb(c.env.DB);
+  const link = await loadLink(
+    db,
+    c.get('member').familyId,
+    c.req.param('feedId'),
+    c.req.param('linkId'),
+  );
+  if (!link) return c.json({ error: 'not_found' }, 404);
+  const rows = await db
+    .select()
+    .from(linkBaselineChanges)
+    .where(eq(linkBaselineChanges.linkId, link.id))
+    .orderBy(asc(linkBaselineChanges.effectiveFrom));
+  return c.json({ changes: rows });
+});
+
+/** Schedule a baseline-hours change from a date on (admin), then resynthesize. */
+feedRoutes.post('/:feedId/member-links/:linkId/baseline-changes', requireAdmin, async (c) => {
+  const parsed = CreateBaselineChangeInput.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) {
+    return c.json({ error: 'invalid', issues: parsed.error.issues }, 400);
+  }
+  const db = getDb(c.env.DB);
+  const familyId = c.get('member').familyId;
+  const feedId = c.req.param('feedId');
+  const link = await loadLink(db, familyId, feedId, c.req.param('linkId'));
+  if (!link) return c.json({ error: 'not_found' }, 404);
+  const feed = (await db.select().from(feeds).where(eq(feeds.id, feedId)).limit(1))[0]!;
+  if (feed.mode !== 'exception') {
+    return c.json({ error: 'baseline_requires_exception_feed' }, 400);
+  }
+
+  const d = parsed.data;
+  const bad = hoursInvalid(d.dayStart, d.dayEnd);
+  if (bad) return c.json(bad, 400);
+  const clash = (
+    await db
+      .select({ id: linkBaselineChanges.id })
+      .from(linkBaselineChanges)
+      .where(
+        and(
+          eq(linkBaselineChanges.linkId, link.id),
+          eq(linkBaselineChanges.effectiveFrom, d.effectiveFrom),
+        ),
+      )
+      .limit(1)
+  )[0];
+  if (clash) return c.json({ error: 'date_taken' }, 409);
+
+  const change = (
+    await db
+      .insert(linkBaselineChanges)
+      .values({ familyId, linkId: link.id, ...d })
+      .returning()
+  )[0]!;
+
+  await resynthesizeFeed(c, db, feed);
+  return c.json({ change }, 201);
+});
+
+/** Update a scheduled baseline change (admin); the merged hours are re-checked. */
+feedRoutes.patch(
+  '/:feedId/member-links/:linkId/baseline-changes/:changeId',
+  requireAdmin,
+  async (c) => {
+    const parsed = UpdateBaselineChangeInput.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) {
+      return c.json({ error: 'invalid', issues: parsed.error.issues }, 400);
+    }
+    const db = getDb(c.env.DB);
+    const familyId = c.get('member').familyId;
+    const feedId = c.req.param('feedId');
+    const link = await loadLink(db, familyId, feedId, c.req.param('linkId'));
+    if (!link) return c.json({ error: 'not_found' }, 404);
+
+    const change = (
+      await db
+        .select()
+        .from(linkBaselineChanges)
+        .where(
+          and(
+            eq(linkBaselineChanges.id, c.req.param('changeId')),
+            eq(linkBaselineChanges.linkId, link.id),
+          ),
+        )
+        .limit(1)
+    )[0];
+    if (!change) return c.json({ error: 'change_not_found' }, 404);
+
+    const merged = { ...change, ...parsed.data };
+    const bad = hoursInvalid(merged.dayStart, merged.dayEnd);
+    if (bad) return c.json(bad, 400);
+    if (merged.effectiveFrom !== change.effectiveFrom) {
+      const clash = (
+        await db
+          .select({ id: linkBaselineChanges.id })
+          .from(linkBaselineChanges)
+          .where(
+            and(
+              eq(linkBaselineChanges.linkId, link.id),
+              eq(linkBaselineChanges.effectiveFrom, merged.effectiveFrom),
+            ),
+          )
+          .limit(1)
+      )[0];
+      if (clash) return c.json({ error: 'date_taken' }, 409);
+    }
+
+    const updated = (
+      await db
+        .update(linkBaselineChanges)
+        .set({
+          effectiveFrom: merged.effectiveFrom,
+          dayStart: merged.dayStart,
+          dayEnd: merged.dayEnd,
+        })
+        .where(eq(linkBaselineChanges.id, change.id))
+        .returning()
+    )[0]!;
+
+    const feed = (await db.select().from(feeds).where(eq(feeds.id, feedId)).limit(1))[0];
+    if (feed) await resynthesizeFeed(c, db, feed);
+    return c.json({ change: updated });
+  },
+);
+
+/** Remove a scheduled baseline change (admin); those days fall back a step. */
+feedRoutes.delete(
+  '/:feedId/member-links/:linkId/baseline-changes/:changeId',
+  requireAdmin,
+  async (c) => {
+    const db = getDb(c.env.DB);
+    const familyId = c.get('member').familyId;
+    const feedId = c.req.param('feedId');
+    const link = await loadLink(db, familyId, feedId, c.req.param('linkId'));
+    if (!link) return c.json({ error: 'not_found' }, 404);
+
+    const deleted = (
+      await db
+        .delete(linkBaselineChanges)
+        .where(
+          and(
+            eq(linkBaselineChanges.id, c.req.param('changeId')),
+            eq(linkBaselineChanges.linkId, link.id),
+          ),
+        )
+        .returning()
+    )[0];
+    if (!deleted) return c.json({ error: 'change_not_found' }, 404);
+
+    const feed = (await db.select().from(feeds).where(eq(feeds.id, feedId)).limit(1))[0];
+    if (feed) await resynthesizeFeed(c, db, feed);
+    return c.json({ ok: true });
+  },
+);
 
 // --- Override rules (the link's event pipeline) ------------------------------
 

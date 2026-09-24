@@ -13,6 +13,7 @@ DROP TABLE IF EXISTS calendar_events;
 DROP TABLE IF EXISTS member_calendars;
 DROP TABLE IF EXISTS pending_decisions;
 DROP TABLE IF EXISTS link_rules;
+DROP TABLE IF EXISTS link_baseline_changes;
 DROP TABLE IF EXISTS task_rules;
 DROP TABLE IF EXISTS task_owners;
 DROP TABLE IF EXISTS tasks;
