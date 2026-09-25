@@ -50,12 +50,13 @@ async function loadMember(
 }
 
 /**
- * Who may manage a member's target: the member themselves (their linked user)
+ * Who may manage a member's outputs — their target calendar here, and their
+ * email invite outputs (`email-outputs.ts`): the member themselves (their linked user)
  * or a family admin — but the credential constraint is stricter: the target
  * must draw from an account the CALLER owns, and a member linked to a
  * different user keeps their calendar config private from admins (PRD §6).
  */
-function mayManage(
+export function mayManageMemberOutputs(
   me: { id: string; isAdmin: boolean },
   target: { id: string; userId: string | null },
 ): boolean {
@@ -98,7 +99,7 @@ memberCalendarRoutes.put('/members/:memberId/calendar-target', async (c) => {
   const me = c.get('member');
   const member = await loadMember(db, me.familyId, c.req.param('memberId'));
   if (!member) return c.json({ error: 'not_found' }, 404);
-  if (!mayManage(me, member)) return c.json({ error: 'forbidden' }, 403);
+  if (!mayManageMemberOutputs(me, member)) return c.json({ error: 'forbidden' }, 403);
 
   const account = (
     await db
@@ -215,7 +216,7 @@ memberCalendarRoutes.delete('/members/:memberId/calendar-target', async (c) => {
   const me = c.get('member');
   const member = await loadMember(db, me.familyId, c.req.param('memberId'));
   if (!member) return c.json({ error: 'not_found' }, 404);
-  if (!mayManage(me, member)) return c.json({ error: 'forbidden' }, 403);
+  if (!mayManageMemberOutputs(me, member)) return c.json({ error: 'forbidden' }, 403);
 
   const cal = (
     await db

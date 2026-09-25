@@ -3,7 +3,7 @@ import type { DeliveryMethod, GeoLocation, RsvpStatus } from '@igt/domain';
 export { CalDavProvider } from './caldav.js';
 export { EmailImipProvider, type EmailSender } from './email.js';
 export { GoogleCalendarProvider } from './google.js';
-export { buildInviteEmailMime } from './mime.js';
+export { buildInviteEmailMime, buildTextEmailMime } from './mime.js';
 
 /**
  * Delivery abstraction. v1 ships three full-detail providers (email/iMIP via

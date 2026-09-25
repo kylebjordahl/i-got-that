@@ -10,6 +10,7 @@ import {
   ApnsEnvironment,
   AttendanceRequirement,
   ConflictStatus,
+  EmailOutputFilters,
   EventProvenance,
   ExternalAccountKind,
   FeedKind,
@@ -973,6 +974,114 @@ export const eventMirrors = sqliteTable(
   }),
 );
 
+// --- Email invite outputs ------------------------------------------------
+
+/**
+ * A member's email invite outputs: iMIP invites (METHOD:REQUEST/CANCEL) for the
+ * slice of their unified calendar that `filters` selects, mailed to an address
+ * that need not belong to anyone in the app — a grandparent, a nanny, the
+ * member's own work inbox. Unlike `member_calendars` a member may have several,
+ * one per address, each with its own filter. Nothing is sent to an address
+ * until someone proves they can read it (`verifiedAt`, set by opening the link
+ * in an `email_verifications` mail).
+ */
+export const emailOutputs = sqliteTable(
+  'email_outputs',
+  {
+    id: id(),
+    familyId: text('family_id')
+      .notNull()
+      .references(() => families.id, { onDelete: 'cascade' }),
+    familyMemberId: text('family_member_id')
+      .notNull()
+      .references(() => familyMembers.id, { onDelete: 'cascade' }),
+    // Who set it up — the user whose verification-mail budget it spent.
+    createdByUserId: text('created_by_user_id').references(() => users.id, {
+      onDelete: 'set null',
+    }),
+    // Lower-cased recipient address.
+    email: text('email').notNull(),
+    label: text('label'),
+    filters: text('filters', { mode: 'json' }).$type<EmailOutputFilters>().notNull(),
+    // Same shape as member_calendars.alert_minutes.
+    alertMinutes: text('alert_minutes', { mode: 'json' }).$type<number[]>(),
+    active: integer('active', { mode: 'boolean' }).notNull().default(true),
+    verifiedAt: integer('verified_at', { mode: 'timestamp_ms' }),
+    lastMirroredAt: integer('last_mirrored_at', { mode: 'timestamp_ms' }),
+    createdAt: createdAt(),
+  },
+  (t) => ({
+    memberEmailUq: uniqueIndex('email_outputs_member_email_uq').on(
+      t.familyMemberId,
+      t.email,
+    ),
+    familyIdx: index('email_outputs_family_idx').on(t.familyId),
+  }),
+);
+
+/**
+ * One row per invite an email output has outstanding — `event_mirrors` for an
+ * inbox. Cascades with the output, so the route that deletes an output mails
+ * the cancellations first. No FK to calendar_events for the same reason as
+ * event_mirrors: the row has to outlive its event for the cancel to go out.
+ */
+export const emailOutputMirrors = sqliteTable(
+  'email_output_mirrors',
+  {
+    id: id(),
+    emailOutputId: text('email_output_id')
+      .notNull()
+      .references(() => emailOutputs.id, { onDelete: 'cascade' }),
+    calendarEventId: text('calendar_event_id').notNull(),
+    icalUid: text('ical_uid').notNull(),
+    sequence: integer('sequence').notNull().default(0),
+    payloadHash: text('payload_hash'),
+    // What was last invited, so a cancellation can say what it's cancelling
+    // after the event itself is gone.
+    summary: text('summary').notNull(),
+    eventStartsAt: integer('event_starts_at', { mode: 'timestamp_ms' }).notNull(),
+    // Once this has passed the row is dropped without mailing a cancellation
+    // for something already over.
+    eventEndsAt: integer('event_ends_at', { mode: 'timestamp_ms' }).notNull(),
+    sentAt: integer('sent_at', { mode: 'timestamp_ms' }),
+    createdAt: createdAt(),
+  },
+  (t) => ({
+    outputEventUq: uniqueIndex('email_output_mirrors_output_event_uq').on(
+      t.emailOutputId,
+      t.calendarEventId,
+    ),
+  }),
+);
+
+/**
+ * Verification mails for email outputs. Deliberately NOT keyed to the output by
+ * FK: these rows are also the per-user send budget (see
+ * `EMAIL_VERIFICATION_DAILY_CAP`), and deleting and re-adding an output must
+ * not refund it.
+ */
+export const emailVerifications = sqliteTable(
+  'email_verifications',
+  {
+    id: id(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    emailOutputId: text('email_output_id').notNull(),
+    email: text('email').notNull(),
+    tokenHash: text('token_hash').notNull().unique(),
+    expiresAt: integer('expires_at', { mode: 'timestamp_ms' }).notNull(),
+    consumedAt: integer('consumed_at', { mode: 'timestamp_ms' }),
+    createdAt: createdAt(),
+  },
+  (t) => ({
+    userCreatedIdx: index('email_verifications_user_created_idx').on(
+      t.userId,
+      t.createdAt,
+    ),
+  }),
+);
+
 // --- Invites (no public signup) -----------------------------------------
 
 export const invites = sqliteTable(
@@ -1192,6 +1301,9 @@ export const schema = {
   calendarEvents,
   memberCalendars,
   eventMirrors,
+  emailOutputs,
+  emailOutputMirrors,
+  emailVerifications,
   secrets,
   invites,
   authTokens,

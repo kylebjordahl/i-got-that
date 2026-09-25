@@ -55,7 +55,7 @@ libs/
   db/         Drizzle schema + D1 migrations
   ical/       ical.js / ical-generator / tsdav wrappers
   classification/  pure engine: synthesis (override pipeline + baseline) + task generation
-  delivery/   DeliveryProvider interface + CalDAV/Google providers (email parked, unregistered)
+  delivery/   DeliveryProvider interface + CalDAV/Google providers + iMIP email (email outputs)
 infra/terraform/  durable Cloudflare infra (D1, queues)
 .github/workflows/  CI + staging/production deploy
 ```
@@ -249,6 +249,24 @@ paths in particular).
   the call sites), and a scheduled digest that finds nothing outstanding sends a
   silent badge-only push rather than nothing at all. A new digest category has
   to decide which side of `actionable` it's on.
+- **Email invite outputs are a second, filtered mirror — and every write is
+  a mail a person reads.** `email_outputs` (several per member, one per
+  address) send iMIP invites for the slice of the member's unified calendar
+  their `filters` pick (`claimed_task` / `schedule` / `busy`, narrowed by task
+  type and source link); `services/email-outputs.ts` reconciles them after the
+  target mirror in the same queue job and cron tick. Three things keep it from
+  becoming a spam cannon, and all are load-bearing: nothing goes to an address
+  until someone opens the verification link mailed to it (GET only shows a
+  confirm button — mail scanners prefetch links — and the POST verifies); a user
+  may cause at most `EMAIL_VERIFICATION_DAILY_CAP` verification mails per
+  rolling day (`email_verifications` has no FK to the output so deleting one
+  doesn't refund it); and a reconcile only invites events that haven't ended
+  and start within `EMAIL_INVITE_HORIZON_DAYS`, at most
+  `EMAIL_INVITE_SENDS_PER_RUN` per output, nearest first. A finished event is
+  forgotten, never cancelled. The whole path is skipped unless the `EMAIL`
+  binding exists (`emailEnabled`): with a capture-only outbox the rows would
+  record invites as sent that never left. Header values in `libs/delivery`'s
+  MIME builder are sanitised there because subjects are feed-controlled.
 - **CalDAV** does a direct authenticated `PUT`/`DELETE` to the discovered
   collection URL (`libs/delivery/src/caldav.ts`), not tsdav's create-only helper.
 - **Travel time is coordinate-driven, end to end.** `locationGeo` rides from the

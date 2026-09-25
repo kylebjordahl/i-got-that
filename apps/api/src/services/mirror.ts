@@ -23,10 +23,12 @@ import {
 import { estimateTravelMinutes } from '@igt/classification';
 import { geoKey, type GeoLocation } from '@igt/domain';
 import type { Bindings } from '../env.js';
+import { emailEnabled, getOutbox } from '../lib/email.js';
 import { googleRefresherFor } from '../lib/google-oauth.js';
 import { createGuardedFetch } from '../lib/outbound-url.js';
 import { resolveAccountCredential } from '../lib/account-credentials.js';
 import { buildKekKeySet, type KekKeySet } from '../lib/secrets.js';
+import { syncFamilyEmailOutputs, syncMemberEmailOutputs } from './email-outputs.js';
 import { deliverDigest, type PushDigestJob } from './notifications.js';
 
 type CalendarEventRow = typeof calendarEvents.$inferSelect;
@@ -79,13 +81,36 @@ type ReconcileCtx = {
   executionCtx: { waitUntil(p: Promise<unknown>): void };
 };
 
-function runJob(env: Bindings, job: MirrorJob): Promise<SyncResult> {
+/**
+ * A mirror job reconciles both kinds of output: the member's target calendar,
+ * then their email invite outputs — the latter only where mail can actually
+ * leave (see `syncMemberEmailOutputs`).
+ */
+async function runJob(env: Bindings, job: MirrorJob): Promise<SyncResult> {
   const db = getDb(env.DB);
   const registry = getProductionRegistry(env);
   const keys = buildKekKeySet(env);
-  return job.kind === 'member'
-    ? syncMemberMirror(db, registry, keys, job.memberId)
-    : syncFamilyMirror(db, registry, keys, job.familyId);
+  const mirrored =
+    job.kind === 'member'
+      ? await syncMemberMirror(db, registry, keys, job.memberId)
+      : await syncFamilyMirror(db, registry, keys, job.familyId);
+  if (!emailEnabled(env)) return mirrored;
+  const outbox = getOutbox(env);
+  const emailed =
+    job.kind === 'member'
+      ? await syncMemberEmailOutputs(db, outbox, job.memberId)
+      : await syncFamilyEmailOutputs(db, outbox, job.familyId);
+  return mergeResults(mirrored, emailed);
+}
+
+export function mergeResults(a: SyncResult, b: SyncResult): SyncResult {
+  return {
+    targets: a.targets + b.targets,
+    created: a.created + b.created,
+    updated: a.updated + b.updated,
+    removed: a.removed + b.removed,
+    errors: [...a.errors, ...b.errors],
+  };
 }
 
 /**
@@ -294,7 +319,7 @@ async function mirrorTarget(
 }
 
 /** IANA timezone per link id, so mirrored events render in the source zone. */
-async function linkTimezones(db: Db, familyId: string): Promise<Map<string, string>> {
+export async function linkTimezones(db: Db, familyId: string): Promise<Map<string, string>> {
   const rows = await db
     .select({ linkId: familyMemberFeeds.id, timezone: feeds.timezone })
     .from(familyMemberFeeds)
@@ -308,7 +333,7 @@ async function linkTimezones(db: Db, familyId: string): Promise<Map<string, stri
 }
 
 /** What a `claimed_task` event needs from the task behind it. */
-interface ClaimedTaskMeta {
+export interface ClaimedTaskMeta {
   /** 'dropoff' | 'pickup' | 'attendance' — shapes the travel-time estimate. */
   type: string;
   /**
@@ -319,15 +344,25 @@ interface ClaimedTaskMeta {
    * deliberately not an FK), which is no worse than the UTC fallback.
    */
   timezone?: string;
+  /**
+   * The linked calendar the task's originating event came from, for filtering
+   * email outputs by source. Null when that event is gone or isn't feed-derived.
+   */
+  sourceLinkId: string | null;
 }
 
-/** Task type + source timezone per task id, for the family's claimed events. */
-async function claimedTaskMeta(
+/** Task type, source timezone + source link per task id, for the family's claimed events. */
+export async function claimedTaskMeta(
   db: Db,
   familyId: string,
 ): Promise<Map<string, ClaimedTaskMeta>> {
   const rows = await db
-    .select({ taskId: tasks.id, type: tasks.type, timezone: feeds.timezone })
+    .select({
+      taskId: tasks.id,
+      type: tasks.type,
+      timezone: feeds.timezone,
+      sourceLinkId: calendarEvents.linkId,
+    })
     .from(tasks)
     .leftJoin(calendarEvents, eq(calendarEvents.id, tasks.calendarEventId))
     .leftJoin(familyMemberFeeds, eq(familyMemberFeeds.id, calendarEvents.linkId))
@@ -335,7 +370,11 @@ async function claimedTaskMeta(
     .where(eq(tasks.familyId, familyId));
   const map = new Map<string, ClaimedTaskMeta>();
   for (const r of rows) {
-    map.set(r.taskId, { type: r.type, ...(r.timezone ? { timezone: r.timezone } : {}) });
+    map.set(r.taskId, {
+      type: r.type,
+      sourceLinkId: r.sourceLinkId ?? null,
+      ...(r.timezone ? { timezone: r.timezone } : {}),
+    });
   }
   return map;
 }
@@ -571,9 +610,10 @@ export async function purgeMemberMirror(
 }
 
 /**
- * Production provider registry: CalDAV + Google. (Email/iMIP delivery is
- * parked with the round-6 model — `libs/delivery/src/email.ts` remains for a
- * future helper-delivery feature but is not registered.)
+ * Production provider registry: CalDAV + Google — the target-calendar methods.
+ * Email/iMIP isn't registered here: it isn't a target calendar (nothing is read
+ * back from an inbox) but a separate, filtered output with its own reconcile
+ * (`services/email-outputs.ts`).
  */
 export function getProductionRegistry(env: Bindings): DeliveryProviderRegistry {
   // Google provider can refresh a stored refresh token into an access token

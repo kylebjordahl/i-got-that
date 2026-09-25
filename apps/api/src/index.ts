@@ -7,6 +7,7 @@ import { authMiddleware } from './middleware/auth.js';
 import { deliveryQueueConsumer } from './services/mirror.js';
 import { accountRoutes } from './routes/accounts.js';
 import { authRoutes } from './routes/auth.js';
+import { emailVerifyRoutes } from './routes/email-outputs.js';
 import { familyRoutes } from './routes/families.js';
 import { inviteRoutes } from './routes/invites.js';
 import { notificationRoutes } from './routes/notifications.js';
@@ -102,6 +103,10 @@ app.route('/auth', authRoutes);
 
 // Member-claim invites (accept links a logged-in user to a pre-created member).
 app.route('/invites', inviteRoutes);
+
+// The unauthenticated verification link mailed to an email invite output's
+// address (the token is the credential).
+app.route('/email-outputs', emailVerifyRoutes);
 
 // User-owned external calendar accounts (Google/iCloud/CalDAV) — private to the
 // user and reusable across their families; not family-scoped.

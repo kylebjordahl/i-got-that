@@ -648,6 +648,10 @@ cd apps/api && pnpm wrangler tail --env staging        # live logs
   paid plan + verified sending domain are set up, magic-link login can't email in
   a deployed env — use **Sign in with Apple** or the **invite link** flow for
   onboarding. See `infra/terraform/main.tf` for the sending-domain DNS notes.
+  The same binding gates **email invite outputs**: without it, adding one
+  returns `503 email_disabled` and no invites are sent. Once `EMAIL` is bound
+  (and `ORGANIZER_EMAIL` is on the verified domain), set `PUBLIC_ORIGIN` too —
+  the address-verification link in those mails is built from it.
 - The **web client** is built in CI and served by the same Worker under `/app`
   (see §7) — no separate Pages project. Production gets it once you add the
   `routes` + `assets` blocks under `env.production`.
