@@ -571,6 +571,24 @@ describe('unsubscribing', () => {
     const donePage = await done.text();
     expect(donePage).toContain('Undo');
 
+    // The person who set it up can see why the invites stopped.
+    const listed = await call(
+      `/families/${fam.familyId}/members/${fam.adminMemberId}/email-outputs`,
+      bearer(fam.admin.token),
+    );
+    const { outputs } = (await listed.json()) as {
+      outputs: { id: string; unsubscribed: boolean; unsubscribedAt: string | null }[];
+    };
+    expect(outputs).toEqual([
+      expect.objectContaining({ id: output.id, unsubscribed: true, unsubscribedAt: expect.any(String) }),
+    ]);
+    // Re-adding it elsewhere is refused even for the user who already verified it
+    // (that path mails nothing, so it must check too).
+    const readd = await createOutput(fam.admin.token, fam.familyId, fam.childId, {
+      email: 'optout@example.com',
+    });
+    expect(readd.status).toBe(409);
+
     // Nothing more is mailed — not even the cancellations a narrowed filter would send…
     await call(
       `/families/${fam.familyId}/members/${fam.adminMemberId}/email-outputs/${output.id}`,
@@ -593,6 +611,13 @@ describe('unsubscribing', () => {
     const token = link.split('/').pop()!;
     const undone = await call(`/email/resubscribe/${token}`, { method: 'POST' });
     expect(undone.status).toBe(200);
+    const relisted = (await (
+      await call(
+        `/families/${fam.familyId}/members/${fam.adminMemberId}/email-outputs`,
+        bearer(fam.admin.token),
+      )
+    ).json()) as { outputs: { unsubscribed: boolean }[] };
+    expect(relisted.outputs[0]!.unsubscribed).toBe(false);
     const resumed = new DevOutbox();
     await syncMemberEmailOutputs(db, resumed, fam.adminMemberId, NOW);
     // The filter now picks the busy block; the two claims are cancelled.

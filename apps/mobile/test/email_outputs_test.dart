@@ -147,6 +147,14 @@ void main() {
             active: false,
             verified: true,
           ),
+          EmailOutput(
+            id: 'o3',
+            email: 'nanny@example.com',
+            filters: EmailOutputFilters.claimedOnly,
+            active: true,
+            verified: true,
+            unsubscribed: true,
+          ),
         ],
       ),
     );
@@ -156,6 +164,7 @@ void main() {
     expect(find.text('grandma@example.com\nClaimed pickups'), findsOneWidget);
     expect(find.text('Unconfirmed'), findsOneWidget);
     expect(find.text('Paused'), findsOneWidget);
+    expect(find.text('Unsubscribed'), findsOneWidget);
     expect(find.textContaining("isn't switched on"), findsOneWidget);
   });
 
@@ -243,5 +252,35 @@ void main() {
       find.text('Pick at least one kind of event to send.'),
       findsOneWidget,
     );
+  });
+
+  testWidgets('an unsubscribed address explains itself and offers no resend', (
+    tester,
+  ) async {
+    await pumpTall(
+      tester,
+      app(
+        memberId: 'dad',
+        outputs: [
+          EmailOutput(
+            id: 'o1',
+            email: 'nanny@example.com',
+            filters: EmailOutputFilters.claimedOnly,
+            active: true,
+            verified: false,
+            unsubscribed: true,
+          ),
+        ],
+      ),
+    );
+    await tester.tap(find.text('nanny@example.com').first);
+    await tester.pumpAndSettle();
+
+    expect(
+      find.textContaining('unsubscribed from calendar invites'),
+      findsOneWidget,
+    );
+    expect(find.text('Resend confirmation'), findsNothing);
+    expect(find.text('Remove'), findsOneWidget);
   });
 }

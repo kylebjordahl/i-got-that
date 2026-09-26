@@ -1,6 +1,7 @@
 import {
   and,
   emailOutputs,
+  emailRecipients,
   eq,
   familyMemberFeeds,
   familyMembers,
@@ -47,8 +48,13 @@ type EmailOutputRow = typeof emailOutputs.$inferSelect;
 export const emailOutputRoutes = new Hono<HonoEnv>();
 emailOutputRoutes.use('*', requireFamilyMember);
 
-/** The API shape: everything but the internals of verification. */
-function present(row: EmailOutputRow) {
+/**
+ * The API shape: everything but the internals of verification. `unsubscribed`
+ * is the recipient's own opt-out (from a link in any mail an output sent it),
+ * which only they can undo — the app shows it so nobody wonders why the
+ * invites stopped.
+ */
+function present(row: EmailOutputRow, unsubscribedAt: Date | null = null) {
   return {
     id: row.id,
     familyMemberId: row.familyMemberId,
@@ -59,6 +65,8 @@ function present(row: EmailOutputRow) {
     active: row.active,
     verified: row.verifiedAt != null,
     verifiedAt: row.verifiedAt,
+    unsubscribed: unsubscribedAt != null,
+    unsubscribedAt,
     lastMirroredAt: row.lastMirroredAt,
     createdAt: row.createdAt,
   };
@@ -79,6 +87,17 @@ async function loadManagedMember(c: Context<HonoEnv>, memberId: string) {
     return { error: 'forbidden' as const, status: 403 as const };
   }
   return { db, member };
+}
+
+/** Opt-out time per address, for addresses that have opted out. */
+async function unsubscribedAtByEmail(db: Db, emails: string[]): Promise<Map<string, Date>> {
+  if (emails.length === 0) return new Map();
+  // Bounded by EMAIL_OUTPUTS_PER_MEMBER, so one inArray is fine under D1's cap.
+  const rows = await db
+    .select({ email: emailRecipients.email, at: emailRecipients.unsubscribedAt })
+    .from(emailRecipients)
+    .where(inArray(emailRecipients.email, emails));
+  return new Map(rows.filter((r) => r.at != null).map((r) => [r.email, r.at!]));
 }
 
 async function loadOutput(db: Db, memberId: string, outputId: string) {
@@ -145,7 +164,14 @@ emailOutputRoutes.get('/members/:memberId/email-outputs', async (c) => {
     .select()
     .from(emailOutputs)
     .where(eq(emailOutputs.familyMemberId, loaded.member.id));
-  return c.json({ outputs: rows.map(present), emailEnabled: emailEnabled(c.env) });
+  const optedOut = await unsubscribedAtByEmail(
+    loaded.db,
+    rows.map((r) => r.email),
+  );
+  return c.json({
+    outputs: rows.map((r) => present(r, optedOut.get(r.email) ?? null)),
+    emailEnabled: emailEnabled(c.env),
+  });
 });
 
 /**
@@ -177,6 +203,12 @@ emailOutputRoutes.post('/members/:memberId/email-outputs', async (c) => {
   }
   if (siblings.length >= EMAIL_OUTPUTS_PER_MEMBER) {
     return c.json({ error: 'too_many_outputs', limit: EMAIL_OUTPUTS_PER_MEMBER }, 409);
+  }
+
+  // Up front, not only in sendVerification: an address the caller already
+  // verified skips that mail, and an opted-out one must be refused either way.
+  if ((await unsubscribedAtByEmail(db, [parsed.data.email])).size > 0) {
+    return c.json({ error: 'recipient_unsubscribed' }, 409);
   }
 
   const user = c.get('user');
@@ -249,7 +281,8 @@ emailOutputRoutes.patch('/members/:memberId/email-outputs/:outputId', async (c) 
   )[0]!;
   // Invites that no longer match are cancelled; newly matching ones go out.
   enqueueReconcile(c, { kind: 'member', memberId: member.id });
-  return c.json({ output: present(row) });
+  const optedOut = await unsubscribedAtByEmail(db, [row.email]);
+  return c.json({ output: present(row, optedOut.get(row.email) ?? null) });
 });
 
 /** Re-send the verification mail (counts against the daily cap). */

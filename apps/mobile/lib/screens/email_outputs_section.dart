@@ -62,7 +62,11 @@ class EmailOutputsSection extends ConsumerWidget {
               trailing: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  if (!o.verified)
+                  // The recipient's own opt-out outranks everything: nothing
+                  // this side can change it.
+                  if (o.unsubscribed)
+                    const TintBadge('Unsubscribed', color: AppColors.coral)
+                  else if (!o.verified)
                     const TintBadge('Unconfirmed', color: AppColors.amber)
                   else if (!o.active)
                     const TintBadge('Paused', color: AppColors.textMuted),
@@ -307,7 +311,11 @@ class _EmailOutputSheetState extends ConsumerState<EmailOutputSheet> {
               _isNew
                   ? 'We\'ll email this address a link to confirm first. Nothing '
                         'else is sent until it\'s confirmed.'
-                  : existing!.verified
+                  : existing!.unsubscribed
+                  ? '${existing.email} unsubscribed from calendar invites, so '
+                        'nothing is sent to it. Only they can undo that, from '
+                        'the unsubscribe link in any earlier email.'
+                  : existing.verified
                   ? 'Invites for ${widget.member.relationName}\'s events that '
                         'match below go to ${existing.email}.'
                   : '${existing.email} hasn\'t confirmed yet, so nothing is '
@@ -436,7 +444,9 @@ class _EmailOutputSheetState extends ConsumerState<EmailOutputSheet> {
                   variant: PillVariant.amber,
                   onPressed: _busy ? null : _save,
                 ),
-                if (existing != null && !existing.verified)
+                if (existing != null &&
+                    !existing.verified &&
+                    !existing.unsubscribed)
                   PillButton(
                     label: 'Resend confirmation',
                     variant: PillVariant.ghost,

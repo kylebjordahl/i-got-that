@@ -249,6 +249,15 @@ void main() {
         active: true,
         verified: false,
       ),
+      EmailOutput(
+        id: 'o3',
+        email: 'nanny@example.com',
+        label: 'Nanny',
+        filters: EmailOutputFilters.claimedOnly,
+        active: true,
+        verified: true,
+        unsubscribed: true,
+      ),
     ];
     await tester.pumpWidget(
       ProviderScope(

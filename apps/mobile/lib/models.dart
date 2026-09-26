@@ -1130,6 +1130,7 @@ class EmailOutput {
     required this.filters,
     required this.active,
     required this.verified,
+    this.unsubscribed = false,
     this.label,
   });
 
@@ -1140,6 +1141,10 @@ class EmailOutput {
   final bool active;
   final bool verified;
 
+  /// The recipient opted out via the link in one of our emails. Nothing is
+  /// sent while this holds, and only they can undo it.
+  final bool unsubscribed;
+
   factory EmailOutput.fromJson(Map<String, dynamic> j) => EmailOutput(
     id: j['id'] as String,
     email: j['email'] as String,
@@ -1147,6 +1152,7 @@ class EmailOutput {
     filters: EmailOutputFilters.fromJson(j['filters'] as Map<String, dynamic>),
     active: j['active'] as bool? ?? true,
     verified: j['verified'] as bool? ?? false,
+    unsubscribed: j['unsubscribed'] as bool? ?? false,
   );
 }
 
