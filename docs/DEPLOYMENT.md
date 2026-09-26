@@ -54,15 +54,16 @@ Repo → Settings → Secrets and variables → Actions → **New repository sec
 ### 3. GitHub Environments (protection + the prod gate)
 
 Repo → Settings → **Environments** → create **`staging-backend`**,
-**`staging-testflight`**, **`production-backend`**, and
-**`production-testflight`**. Backend and TestFlight are separate Environments
-per stage so a required reviewer or branch policy on one doesn't block the
-other, and their deployment histories (Environments tab, Actions run sidebar)
-don't interleave — see §8 for why the TestFlight upload is a separate job
-from the build.
-- On **`production-backend`** and **`production-testflight`**, add yourself
-  under **Required reviewers**. Publishing a release then pauses the
-  respective prod deploy step until you approve it in the Actions run.
+**`staging-testflight`**, **`staging-play`**, **`production-backend`**,
+**`production-testflight`**, and **`production-play`**. Backend, TestFlight
+and Play are separate Environments per stage so a required reviewer or branch
+policy on one doesn't block the others, and their deployment histories
+(Environments tab, Actions run sidebar) don't interleave — see §8 and §11 for
+why each store upload is a separate job from its build.
+- On **`production-backend`**, **`production-testflight`** and
+  **`production-play`**, add yourself under **Required reviewers**. Publishing
+  a release then pauses the respective prod deploy step until you approve it
+  in the Actions run.
 - (Optional) restrict each environment's deployment branches to `main` (and
   `v*` tags for the production environments, since releases are tag-triggered).
 
@@ -582,6 +583,96 @@ conditional UPDATE and enqueues onto the existing `DELIVERY_QUEUE` (no new
 Terraform-managed queue). Because the send time is compared against a 15-minute
 tick, the client's time picker snaps to quarter hours.
 
+### 11. Android / Google Play (staging + production)
+
+Two Play Console app entries, one per flavor — `com.kylebjordahl.igt.staging`
+and `com.kylebjordahl.igt` — so a staging merge exercises the exact signing
+and upload path production depends on. `deploy.yml` mirrors the TestFlight
+split of §8:
+- `play-build` builds and signs the flavor's release **AAB** whenever the
+  `mobile` Nx project is affected, and uploads it as a workflow artifact. It
+  runs in parallel with `deploy`. Unlike iOS it needs no macOS runner.
+- `play-upload` downloads that artifact and pushes it to the **internal**
+  track. It needs both `play-build` and `deploy` to succeed.
+
+Both environments publish to the *internal* track only. Promotion to closed,
+open or production testing stays a deliberate click in the Play Console —
+nothing in CI can put a build in front of real users on its own.
+
+**The upload key.** Generate it once, locally; it is not in the repo and
+cannot be regenerated:
+
+```bash
+keytool -genkeypair -v -keystore ~/igt-upload.jks \
+  -alias upload -keyalg RSA -keysize 4096 -validity 10000
+```
+
+Keep the file and both passwords in your password manager. One key covers
+both app entries — nothing requires separate upload certificates, and one key
+is one thing to not lose. With Play App Signing enabled, losing it is
+recoverable (Google can reset the upload certificate) but costs a support
+round-trip; losing the *app signing* key would not be, which is exactly why
+Google holds that one.
+
+**Local release builds.** `android/app/build.gradle.kts` reads an optional,
+gitignored `apps/mobile/android/key.properties`:
+
+```properties
+storeFile=/absolute/path/to/igt-upload.jks
+storePassword=…
+keyAlias=upload
+keyPassword=…
+```
+
+Absolute path — Gradle does not expand `~`. Without that file, release builds
+fall back to the **debug** key so `flutter build apk --release` still works
+for anyone who clones the repo. CI never relies on that fallback: `play-build`
+sets `IGT_REQUIRE_RELEASE_SIGNING=true`, which makes the build fail rather
+than produce a debug-signed bundle, and then re-reads the signing certificate
+off the finished AAB as a second check. Both guards exist because of what the
+*first* upload does — see below.
+
+**The five secrets** (Settings → Secrets and variables → Actions):
+
+| Secret | Value |
+| --- | --- |
+| `ANDROID_UPLOAD_KEYSTORE_BASE64` | `base64 -i ~/igt-upload.jks` |
+| `ANDROID_UPLOAD_KEYSTORE_PASSWORD` | the keystore password |
+| `ANDROID_UPLOAD_KEY_ALIAS` | `upload` |
+| `ANDROID_UPLOAD_KEY_PASSWORD` | the key password |
+| `PLAY_SERVICE_ACCOUNT_JSON` | the whole service-account JSON, pasted |
+
+**The service account.** In the Google Cloud project, create a service
+account and a JSON key, then Play Console → Users and permissions → Invite
+user → paste its email → grant **Release to testing tracks** on both apps.
+The Google Play Android Developer API must be enabled on that Cloud project.
+Permission changes take a few minutes to propagate; a fresh invite that
+401s usually just needs another try.
+
+**The first upload of each app must be done by hand.** The Play Developer API
+refuses to create a release for an app that has never had one, so
+`play-upload` cannot bootstrap a new entry — build the bundle locally
+(`flutter build appbundle --flavor staging`) and upload it through the
+console once per app. Two things become permanent at that moment:
+
+- **the package name** binds to that app entry. Build with the wrong
+  `--flavor` and the entry is stuck on the wrong id forever; the only fix is
+  deleting it and starting over.
+- **the upload certificate** binds too. A debug-signed first upload is not
+  something you can quietly correct.
+
+**Then, and only then**, the OAuth fingerprints: Play Console → Test and
+release → Setup → **App signing** gives you the Play App Signing SHA-1 (which
+does not exist before that first upload) alongside your upload key's. Add
+both to that flavor's Android OAuth client in the Cloud Console. Skipping the
+Play App Signing one is the classic "works over USB, `ApiException: 10` from
+the internal track" failure — see docs/AUTH.md.
+
+**versionCode** comes from `--build-number=${{ github.run_number }}`, the same
+monotonic value TestFlight uses. Play requires it to strictly increase per
+package; a repo-wide run number satisfies that for both packages without
+querying Play for the current high-water mark.
+
 ---
 
 ### 11. Outbound email (email invite outputs)
@@ -626,10 +717,11 @@ blocks new confirmation requests to it. The page it lands on offers an undo.
 
 - **Staging**: merge to `main` → once `CI` passes, `Deploy staging` runs
   automatically (build web → Terraform → migrate → deploy). If `mobile` is
-  Nx-affected since the last successful TestFlight build, `testflight-build`
-  also archives and signs the staging flavor in parallel with the backend
-  deploy, and `testflight-upload` pushes it to TestFlight once both that
-  build and the backend deploy succeed (see §8).
+  Nx-affected since the last successful store build, `testflight-build` and
+  `play-build` also archive and sign the staging flavor in parallel with the
+  backend deploy, and `testflight-upload` / `play-upload` push them to
+  TestFlight and Play's internal track once both that build and the backend
+  deploy succeed (see §8 and §11).
 - **Production**: every successful staging deploy also creates/updates a
   **draft** release (`draft-release` job, `deploy-staging.yml`) tagged with
   the same next-version guess the `version` job (`deploy.yml`) computed for
@@ -701,12 +793,20 @@ cd apps/api && pnpm wrangler tail --env staging        # live logs
   client, keyed on the `apps/mobile` sources — a backend/infra-only deploy
   restores the last bundle instead of rebuilding Flutter. Changing anything
   under `apps/mobile` busts that cache and forces a rebuild.
-- **TestFlight is change-gated, not cached**: `check-mobile-changed` runs Nx
-  affected-detection against the last commit that successfully reached
-  TestFlight and skips `testflight-build` (job-level `if`, shows as skipped
-  in the UI, and `testflight-upload` skips right along with it) when
-  `mobile` isn't affected, rather than restoring a
-  previous `.ipa` (there's nothing useful to "restore" — every build must get
-  a fresh, strictly-increasing build number). This keeps macOS runner minutes
-  and TestFlight build clutter tied to real client changes, and a skip is
-  never mistaken for a successful build in the run history.
+- **The store builds are change-gated, not cached**: `check-mobile-changed`
+  runs Nx affected-detection against the last commit that successfully
+  reached *both* TestFlight and Play, and skips `testflight-build` and
+  `play-build` (job-level `if`, shows as skipped in the UI, and the two
+  upload jobs skip right along with them) when `mobile` isn't affected,
+  rather than restoring a previous `.ipa`/`.aab` (there's nothing useful to
+  "restore" — every build must get a fresh, strictly-increasing build
+  number). This keeps macOS runner minutes and tester-build clutter tied to
+  real client changes, and a skip is never mistaken for a successful build in
+  the run history.
+
+  Requiring *both* stores to have succeeded is deliberate: a run from before
+  the Play jobs existed has no `Play → <env>` job, so it's never picked as
+  the base and the first Android build isn't skipped on the grounds that
+  TestFlight was already current. Afterwards it errs the same way — one store
+  failing rebuilds both next run, which costs a build, never a missed
+  release.

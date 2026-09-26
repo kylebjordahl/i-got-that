@@ -63,6 +63,22 @@ on:
         required: false
       APP_STORE_CONNECT_API_KEY_P8:
         required: false
+      # Google Play signing/upload, used by the `play-build` / `play-upload`
+      # jobs. One upload keystore covers both environments — they're separate
+      # Play apps (com.kylebjordahl.igt.staging / com.kylebjordahl.igt), but
+      # nothing requires separate upload certificates, and one key is one
+      # thing to not lose. Optional, same as the iOS pair above, so a caller
+      # that doesn't publish to Play still validates.
+      ANDROID_UPLOAD_KEYSTORE_BASE64:
+        required: false
+      ANDROID_UPLOAD_KEYSTORE_PASSWORD:
+        required: false
+      ANDROID_UPLOAD_KEY_ALIAS:
+        required: false
+      ANDROID_UPLOAD_KEY_PASSWORD:
+        required: false
+      PLAY_SERVICE_ACCOUNT_JSON:
+        required: false
 
 jobs:
   # Computed once and shared via job outputs, rather than in the `deploy` and
@@ -361,15 +377,22 @@ jobs:
       - uses: ./.github/actions/pnpm-install
 
       # Walk this environment's "Deploy <env>" runs newest-first and find the
-      # most recent one whose `testflight` job actually succeeded (as opposed
-      # to no-op'd — see the job-level `if` below, a no-op reports as
+      # most recent one where *both* store uploads actually succeeded (as
+      # opposed to no-op'd — see the job-level `if` below, a no-op reports as
       # skipped, not success). That run's commit is the last point we know
-      # TestFlight is up to date, so it's the right base for the Nx-affected
-      # diff below. Staging and production are tracked independently (each
-      # has its own "deploy-<env>.yml" caller workflow and its own last
-      # successful build), since they archive/upload on very different
-      # cadences.
-      - name: Find commit of last successful TestFlight build
+      # both TestFlight and Play are up to date, so it's the right base for
+      # the Nx-affected diff below. Staging and production are tracked
+      # independently (each has its own "deploy-<env>.yml" caller workflow and
+      # its own last successful build), since they archive/upload on very
+      # different cadences.
+      #
+      # Requiring *both* is what makes this correct across the introduction of
+      # the Play jobs: runs from before they existed have no "Play → <env>"
+      # job at all, so they're never chosen as the base, and the first Android
+      # build isn't skipped on the grounds that TestFlight was already current.
+      # It's conservative in the same direction afterwards — one store failing
+      # rebuilds both next run, which costs a build, never a missed release.
+      - name: Find commit of last successful store build
         id: base-sha
         env:
           GH_TOKEN: ${{ github.token }}
@@ -379,17 +402,19 @@ jobs:
           set -euo pipefail
           BASE_SHA=""
           for run_id in $(gh api "repos/${REPO}/actions/workflows/deploy-${ENVIRONMENT}.yml/runs?status=completed&per_page=30" --jq '.workflow_runs[].id'); do
-            conclusion=$(gh api "repos/${REPO}/actions/runs/${run_id}/jobs" \
-              --jq "[.jobs[] | select(.name | endswith(\"TestFlight → ${ENVIRONMENT}\"))][0].conclusion // empty")
-            if [ "$conclusion" = "success" ]; then
+            jobs_json=$(gh api "repos/${REPO}/actions/runs/${run_id}/jobs" --jq '[.jobs[] | {name, conclusion}]')
+            conclusion_of() {
+              printf '%s' "$jobs_json" | jq -r "[.[] | select(.name | endswith(\"$1 → ${ENVIRONMENT}\"))][0].conclusion // empty"
+            }
+            if [ "$(conclusion_of TestFlight)" = "success" ] && [ "$(conclusion_of Play)" = "success" ]; then
               BASE_SHA=$(gh api "repos/${REPO}/actions/runs/${run_id}" --jq '.head_sha')
               break
             fi
           done
           if [ -z "$BASE_SHA" ]; then
-            echo "No prior successful TestFlight build found — building unconditionally."
+            echo "No prior run with both store uploads successful — building unconditionally."
           else
-            echo "Last successful TestFlight build was for commit $BASE_SHA."
+            echo "Last run with both store uploads successful was for commit $BASE_SHA."
           fi
           echo "base_sha=$BASE_SHA" >> "$GITHUB_OUTPUT"
 
@@ -409,7 +434,7 @@ jobs:
             echo "changed=true" >> "$GITHUB_OUTPUT"
           else
             echo "changed=false" >> "$GITHUB_OUTPUT"
-            echo "mobile is not Nx-affected since the last successful TestFlight build — skipping."
+            echo "mobile is not Nx-affected since the last successful store build — skipping."
           fi
 
   # Archives and signs the mobile app's flavor for this environment, ready
@@ -564,3 +589,205 @@ jobs:
           issuer-id: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
           api-key-id: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
           api-private-key: ${{ secrets.APP_STORE_CONNECT_API_KEY_P8 }}
+
+  # The Android counterpart to testflight-build/testflight-upload, and split
+  # the same way and for the same reason: the build runs in parallel with
+  # `deploy`, and only the short upload waits on the backend being known-good.
+  # Unlike iOS this needs no macOS runner — Gradle and bundletool are happy on
+  # ubuntu — so it's the cheap half of the pair.
+  play-build:
+    name: Build Play AAB (${{ inputs.environment }})
+    needs: [check-mobile-changed, version]
+    if: needs.check-mobile-changed.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    env:
+      # Same flavor/env derivation as testflight-build above — staging ->
+      # "staging" flavor / com.kylebjordahl.igt.staging, production -> "prod"
+      # flavor / com.kylebjordahl.igt. The applicationId suffix comes from the
+      # flavor itself (android/app/build.gradle.kts), not from here.
+      FLAVOR: ${{ inputs.environment == 'production' && 'prod' || 'staging' }}
+      API_BASE_URL: ${{ inputs.environment == 'production' && 'https://igt.kylebjordahl.com/api' || 'https://staging.igt.kylebjordahl.com/api' }}
+      # The Web OAuth client id for this env — the value google_sign_in passes
+      # as serverClientId, and (on Android) the `aud` the Worker checks the id
+      # token against. Not secret; same string as GOOGLE_OAUTH_CLIENT_ID in
+      # apps/api/wrangler.jsonc. See docs/AUTH.md's "Why two audiences".
+      GOOGLE_SERVER_CLIENT_ID: ${{ inputs.environment == 'production' && '503268168924-5ogd6crcl1p1pfpoe3kdtqbo9nqhivpj.apps.googleusercontent.com' || '503268168924-2tdfajihn62m5o051jjdjnkfjrg921o1.apps.googleusercontent.com' }}
+      # Makes build.gradle.kts fail rather than fall back to the debug key if
+      # key.properties didn't get written below. A debug-signed AAB reaching
+      # Play is not a recoverable mistake on an app's first upload — that
+      # certificate becomes the app's upload certificate permanently.
+      IGT_REQUIRE_RELEASE_SIGNING: "true"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+
+      # Same pins as ci.yml's `android` job: the runner image's default JDK
+      # has moved between images before, so don't inherit it.
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      # Regenerates the gitignored ephemeral Android files; the committed
+      # flavor/signing config in build.gradle.kts survives (same pattern
+      # ci.yml and testflight-build rely on).
+      - name: Regenerate ephemeral Android project files
+        working-directory: apps/mobile
+        run: |
+          flutter create . --platforms=android --project-name caretaker_app
+          flutter pub get
+
+      # Both the keystore and key.properties land under android/ — which is
+      # what `rootProject.file(...)` in app/build.gradle.kts resolves against
+      # — and both are gitignored there, so a stray `git add` can't commit
+      # them even if a later step wanted to.
+      - name: Write upload keystore
+        working-directory: apps/mobile/android
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_UPLOAD_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_UPLOAD_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          missing=""
+          [ -n "$KEYSTORE_BASE64" ]   || missing="$missing ANDROID_UPLOAD_KEYSTORE_BASE64"
+          [ -n "$KEYSTORE_PASSWORD" ] || missing="$missing ANDROID_UPLOAD_KEYSTORE_PASSWORD"
+          [ -n "$KEY_ALIAS" ]         || missing="$missing ANDROID_UPLOAD_KEY_ALIAS"
+          [ -n "$KEY_PASSWORD" ]      || missing="$missing ANDROID_UPLOAD_KEY_PASSWORD"
+          if [ -n "$missing" ]; then
+            echo "::error::Empty or unset secret(s):$missing." \
+                 "Set all five ANDROID_*/PLAY_* secrets (docs/DEPLOYMENT.md § 11)." \
+                 "Refusing to continue — this build would be signed with the debug key."
+            exit 1
+          fi
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > upload-keystore.jks
+          # Written with printf rather than a heredoc: a heredoc terminator
+          # can't be indented inside a YAML block scalar, and `<<-` only
+          # strips tabs. storeFile is relative on purpose — rootProject.file()
+          # resolves it against this same directory.
+          printf 'storeFile=%s\nstorePassword=%s\nkeyAlias=%s\nkeyPassword=%s\n' \
+            'upload-keystore.jks' "$KEYSTORE_PASSWORD" "$KEY_ALIAS" "$KEY_PASSWORD" \
+            > key.properties
+
+      # Marketing version + build number come from the `version` job, the same
+      # values the web client and the iOS build embed for this run. Play's
+      # rule is that versionCode strictly increases *per package*;
+      # github.run_number is monotonic across the whole repo, so it satisfies
+      # that for both packages without querying Play for the current high
+      # water mark.
+      - name: Build signed AAB (${{ inputs.environment }})
+        working-directory: apps/mobile
+        run: |
+          flutter build appbundle --flavor "$FLAVOR" \
+            --dart-define=API_BASE_URL="$API_BASE_URL" \
+            --dart-define=APP_ENV="${{ inputs.environment }}" \
+            --dart-define=GOOGLE_SERVER_CLIENT_ID="$GOOGLE_SERVER_CLIENT_ID" \
+            --build-name=${{ needs.version.outputs.build_name }} \
+            --build-number=${{ github.run_number }}
+
+      # Resolve the glob ourselves rather than handing a pattern to the upload
+      # action, for the same reason the IPA step does: the output filename
+      # carries the flavor, and a literal wildcard that fails to expand
+      # surfaces as a confusing "file not found" inside the action.
+      - name: Locate built AAB
+        id: locate-aab
+        working-directory: apps/mobile
+        run: |
+          set -euo pipefail
+          aab_path=$(find "build/app/outputs/bundle/${FLAVOR}Release" -maxdepth 1 -name '*.aab' -print -quit)
+          if [ -z "$aab_path" ]; then
+            echo "::error::No .aab file found in build/app/outputs/bundle/${FLAVOR}Release"
+            exit 1
+          fi
+          echo "path=apps/mobile/$aab_path" >> "$GITHUB_OUTPUT"
+
+      # Belt and braces on the signing guard above: read the certificate that
+      # actually signed the bundle and refuse to hand a debug-signed artifact
+      # to the upload job. `IGT_REQUIRE_RELEASE_SIGNING` covers a *missing*
+      # key.properties; this covers the case where one exists but points at
+      # the debug keystore.
+      - name: Verify the AAB is not debug-signed
+        run: |
+          set -euo pipefail
+          certs=$(keytool -printcert -jarfile "${{ steps.locate-aab.outputs.path }}" 2>&1 || true)
+          owner=$(printf '%s' "$certs" | grep -m1 'Owner:' || true)
+          if [ -z "$owner" ]; then
+            echo "::warning::Could not read the AAB's signing certificate, so this" \
+                 "check proved nothing. IGT_REQUIRE_RELEASE_SIGNING is the real guard."
+            exit 0
+          fi
+          echo "Signed by: $owner"
+          if printf '%s' "$owner" | grep -q 'CN=Android Debug'; then
+            echo "::error::This AAB is signed with the Android debug certificate." \
+                 "Refusing to upload it to Play."
+            exit 1
+          fi
+
+      - name: Upload AAB artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: aab-${{ inputs.environment }}
+          path: ${{ steps.locate-aab.outputs.path }}
+          retention-days: 1
+
+  # Pushes the AAB to that environment's Play app, on the **internal** track
+  # for both staging and production. Promotion to a wider track stays a
+  # deliberate click in the Play Console, the same way publishing the draft
+  # GitHub Release is what actually ships production — nothing here can put a
+  # build in front of real users on its own.
+  #
+  # Gated on `deploy` as well as the build, so a broken backend deploy can't
+  # be fronted by a new tester build. Its own job (rather than a step on
+  # play-build) so that gate doesn't hold up the build itself.
+  play-upload:
+    name: Play → ${{ inputs.environment }}
+    needs: [play-build, deploy, version]
+    runs-on: ubuntu-latest
+    # Separate per-stage Environment from `deploy`'s "-backend" one, matching
+    # the TestFlight split — see the comment on that job. Also what
+    # check-mobile-changed's "last successful store build" lookup keys off of
+    # via this job's `name:` above.
+    environment: ${{ inputs.environment }}-play
+    env:
+      # The Play app this environment publishes to. These are two separate
+      # Play Console entries; the package name is what binds an upload to one
+      # of them, and it is permanent per entry.
+      PACKAGE_NAME: ${{ inputs.environment == 'production' && 'com.kylebjordahl.igt' || 'com.kylebjordahl.igt.staging' }}
+    steps:
+      - name: Download AAB artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: aab-${{ inputs.environment }}
+          path: aab
+
+      - name: Locate downloaded AAB
+        id: locate-aab
+        run: |
+          set -euo pipefail
+          aab_path=$(find aab -maxdepth 1 -name '*.aab' -print -quit)
+          if [ -z "$aab_path" ]; then
+            echo "::error::No .aab file found in downloaded artifact"
+            exit 1
+          fi
+          echo "path=$aab_path" >> "$GITHUB_OUTPUT"
+
+      # Note: this cannot perform an app's *first* upload — the Play Developer
+      # API refuses to create a release on an app that has never had one, so
+      # the very first bundle for each entry goes up by hand through the
+      # console (docs/DEPLOYMENT.md § 11). Every upload after that is this.
+      - name: Upload to Play (internal track)
+        uses: r0adkll/upload-google-play@v1
+        with:
+          serviceAccountJsonPlainText: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+          packageName: ${{ env.PACKAGE_NAME }}
+          releaseFiles: ${{ steps.locate-aab.outputs.path }}
+          releaseName: ${{ needs.version.outputs.build_name }} (${{ github.run_number }})
+          track: internal
+          status: completed
