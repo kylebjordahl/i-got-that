@@ -15,6 +15,7 @@ import '../widgets/location_picker.dart';
 import '../widgets/primitives.dart';
 import '../widgets/settings.dart';
 import 'add_calendar_sheet.dart';
+import 'email_outputs_section.dart';
 import 'feed_baseline_screen.dart';
 import 'member_editor_screen.dart';
 import 'member_overrides_sheet.dart';
@@ -93,6 +94,15 @@ class MemberDetailScreen extends ConsumerWidget {
                     ),
                   ),
                   const SizedBox(height: 24),
+                  // Same gate as the target: these are the member's outputs,
+                  // and the addresses on them are other people's.
+                  if (canEditTarget) ...[
+                    _AccentSection(
+                      color: AppColors.coral,
+                      child: EmailOutputsSection(member: member),
+                    ),
+                    const SizedBox(height: 24),
+                  ],
                   _AccentSection(
                     color: AppColors.amber,
                     child: _FamilyLogisticsSection(

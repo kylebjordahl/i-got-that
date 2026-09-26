@@ -9,6 +9,10 @@
 DROP TABLE IF EXISTS notification_schedules;
 DROP TABLE IF EXISTS push_devices;
 DROP TABLE IF EXISTS event_mirrors;
+DROP TABLE IF EXISTS email_output_mirrors;
+DROP TABLE IF EXISTS email_outputs;
+DROP TABLE IF EXISTS email_verifications;
+DROP TABLE IF EXISTS email_recipients;
 DROP TABLE IF EXISTS calendar_events;
 DROP TABLE IF EXISTS member_calendars;
 DROP TABLE IF EXISTS pending_decisions;

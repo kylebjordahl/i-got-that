@@ -1091,6 +1091,87 @@ class ApiClient {
     );
   }
 
+  // --- Email invite outputs -------------------------------------------------
+
+  String _emailOutputsBase(String familyId, String memberId) =>
+      '/families/$familyId/members/$memberId/email-outputs';
+
+  /// The member's email invite outputs: `{ outputs: [...], emailEnabled }`.
+  Future<Map<String, dynamic>> listEmailOutputs(
+    String familyId,
+    String memberId,
+  ) async {
+    final res = await _dio.get(
+      _emailOutputsBase(familyId, memberId),
+      options: _auth,
+    );
+    return _obj(res);
+  }
+
+  /// Add an output; a verification mail goes to [email] unless the caller
+  /// already verified it. Returns `{ output, verificationSent, devToken? }`.
+  Future<Map<String, dynamic>> createEmailOutput(
+    String familyId,
+    String memberId, {
+    required String email,
+    String? label,
+    required Map<String, dynamic> filters,
+  }) async {
+    final res = await _dio.post(
+      _emailOutputsBase(familyId, memberId),
+      data: {
+        'email': email,
+        if (label != null && label.isNotEmpty) 'label': label,
+        'filters': filters,
+      },
+      options: _auth,
+    );
+    return _obj(res);
+  }
+
+  Future<Map<String, dynamic>> updateEmailOutput(
+    String familyId,
+    String memberId,
+    String outputId, {
+    String? label,
+    bool clearLabel = false,
+    Map<String, dynamic>? filters,
+    bool? active,
+  }) async {
+    final res = await _dio.patch(
+      '${_emailOutputsBase(familyId, memberId)}/$outputId',
+      data: {
+        if (clearLabel) 'label': null else if (label != null) 'label': label,
+        if (filters != null) 'filters': filters,
+        if (active != null) 'active': active,
+      },
+      options: _auth,
+    );
+    return _obj(res);
+  }
+
+  Future<void> resendEmailOutputVerification(
+    String familyId,
+    String memberId,
+    String outputId,
+  ) async {
+    await _dio.post(
+      '${_emailOutputsBase(familyId, memberId)}/$outputId/resend-verification',
+      options: _auth,
+    );
+  }
+
+  Future<void> deleteEmailOutput(
+    String familyId,
+    String memberId,
+    String outputId,
+  ) async {
+    await _dio.delete(
+      '${_emailOutputsBase(familyId, memberId)}/$outputId',
+      options: _auth,
+    );
+  }
+
   // --- Task rules (per member; 6k/6n) ----------------------------------------
 
   String _taskRulesBase(String familyId, String memberId) =>

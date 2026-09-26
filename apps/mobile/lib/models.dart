@@ -1065,6 +1065,104 @@ class MemberCalendarConfig {
       );
 }
 
+/// Which of a member's events an email invite output sends. Mirrors
+/// `EmailOutputFilters` in libs/domain: `include` picks the kinds
+/// ('claimed_task' | 'schedule' | 'busy'); `taskTypes` narrows claimed tasks;
+/// `sourceLinkIds` narrows by source calendar. Null ⇒ no narrowing.
+class EmailOutputFilters {
+  const EmailOutputFilters({
+    required this.include,
+    this.taskTypes,
+    this.sourceLinkIds,
+  });
+
+  final Set<String> include;
+  final Set<String>? taskTypes;
+  final Set<String>? sourceLinkIds;
+
+  static const claimedOnly = EmailOutputFilters(include: {'claimed_task'});
+
+  factory EmailOutputFilters.fromJson(Map<String, dynamic> j) =>
+      EmailOutputFilters(
+        include: {...(j['include'] as List).cast<String>()},
+        taskTypes: (j['taskTypes'] as List?)?.cast<String>().toSet(),
+        sourceLinkIds: (j['sourceLinkIds'] as List?)?.cast<String>().toSet(),
+      );
+
+  Map<String, dynamic> toJson() => {
+    'include': include.toList(),
+    'taskTypes': taskTypes?.toList(),
+    'sourceLinkIds': sourceLinkIds?.toList(),
+  };
+
+  /// One line for a list row, e.g. "Claimed pickups · Schedule".
+  String get summary {
+    final parts = <String>[];
+    if (include.contains('claimed_task')) {
+      final types = taskTypes;
+      parts.add(
+        types == null
+            ? 'Claimed tasks'
+            : 'Claimed ${types.map(_taskTypePlural).join(' & ')}',
+      );
+    }
+    if (include.contains('schedule')) parts.add('Schedule');
+    if (include.contains('busy')) parts.add('Busy blocks');
+    final links = sourceLinkIds;
+    final base = parts.join(' · ');
+    if (links == null) return base;
+    return '$base · ${links.length} calendar${links.length == 1 ? '' : 's'}';
+  }
+
+  static String _taskTypePlural(String t) => switch (t) {
+    'dropoff' => 'drop-offs',
+    'pickup' => 'pickups',
+    _ => 'attendance',
+  };
+}
+
+/// An email invite output: calendar invites for a filtered slice of a
+/// member's unified calendar, mailed to an address once it confirms.
+class EmailOutput {
+  EmailOutput({
+    required this.id,
+    required this.email,
+    required this.filters,
+    required this.active,
+    required this.verified,
+    this.unsubscribed = false,
+    this.label,
+  });
+
+  final String id;
+  final String email;
+  final String? label;
+  final EmailOutputFilters filters;
+  final bool active;
+  final bool verified;
+
+  /// The recipient opted out via the link in one of our emails. Nothing is
+  /// sent while this holds, and only they can undo it.
+  final bool unsubscribed;
+
+  factory EmailOutput.fromJson(Map<String, dynamic> j) => EmailOutput(
+    id: j['id'] as String,
+    email: j['email'] as String,
+    label: j['label'] as String?,
+    filters: EmailOutputFilters.fromJson(j['filters'] as Map<String, dynamic>),
+    active: j['active'] as bool? ?? true,
+    verified: j['verified'] as bool? ?? false,
+    unsubscribed: j['unsubscribed'] as bool? ?? false,
+  );
+}
+
+/// A member's email outputs, plus whether this server can send mail at all.
+class EmailOutputList {
+  const EmailOutputList({required this.outputs, required this.emailEnabled});
+  final List<EmailOutput> outputs;
+  final bool emailEnabled;
+}
+
 /// A raw event from a calendar feed (shown in feed-oversight views).
 class SourceEventItem {
   SourceEventItem({

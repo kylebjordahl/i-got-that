@@ -5,9 +5,31 @@ import type {
   DeliveryResult,
   DeliveryTarget,
 } from './index.js';
-import { buildInviteEmailMime } from './mime.js';
+import { buildInviteEmailMime, type ExtraHeaders } from './mime.js';
 
 export type EmailSender = (rawMime: string, to: string) => Promise<void>;
+
+/**
+ * RFC 8058 one-click unsubscribe headers. Mail clients (Gmail, Apple Mail)
+ * only offer their built-in "Unsubscribe" for an absolute https URL that
+ * accepts a POST, so a relative dev link gets none.
+ */
+export function unsubscribeHeaders(url: string | undefined): ExtraHeaders {
+  if (!url?.startsWith('https://')) return {};
+  return {
+    'List-Unsubscribe': `<${url}>`,
+    'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
+  };
+}
+
+/** Plain-text body: what the invite is, plus how to stop them. */
+function textBody(summary: string, target: DeliveryTarget, lead: string): string {
+  const lines = [`${lead}: ${summary}`];
+  if (target.unsubscribeUrl) {
+    lines.push('', `Stop receiving these calendar invites: ${target.unsubscribeUrl}`);
+  }
+  return lines.join('\n');
+}
 
 /**
  * Full-detail iMIP invites. Builds the VEVENT (METHOD:REQUEST/CANCEL) and a raw
@@ -46,6 +68,8 @@ export class EmailImipProvider implements DeliveryProvider {
         subject: event.summary,
         ics,
         method: 'REQUEST',
+        text: textBody(event.summary, target, 'Calendar invite'),
+        headers: unsubscribeHeaders(target.unsubscribeUrl),
       }),
       target.addressOrUrl,
     );
@@ -69,6 +93,8 @@ export class EmailImipProvider implements DeliveryProvider {
         subject: `Cancelled: ${event.summary}`,
         ics,
         method: 'CANCEL',
+        text: textBody(event.summary, target, 'Cancelled'),
+        headers: unsubscribeHeaders(target.unsubscribeUrl),
       }),
       target.addressOrUrl,
     );

@@ -42,30 +42,12 @@ resource "cloudflare_queue" "delivery_dlq" {
 
 # --- Outbound email (Cloudflare Email Service) ---------------------------
 #
-# The Worker sends iMIP invites via the `send_email` binding (apps/api ->
-# wrangler.jsonc, binding name EMAIL). For that to deliver to arbitrary
-# recipients you need a VERIFIED SENDING DOMAIN on the account:
-#
-#   1. Add/verify the sending domain in Email Service (Dashboard → Email, or the
-#      REST API). Cloudflare issues SPF / DKIM / DMARC records.
-#   2. If the domain's DNS is on Cloudflare, publish those records here, e.g.:
-#
-#      resource "cloudflare_dns_record" "email_dkim" {
-#        zone_id = var.cloudflare_zone_id
-#        name    = "cf2024-1._domainkey"
-#        type    = "CNAME"
-#        content = "cf2024-1._domainkey.<your-domain>.cloudflareemail.com"
-#        proxied = false
-#        ttl     = 1
-#      }
-#      # ...plus the SPF (TXT) and DMARC (TXT) records Cloudflare provides.
-#
-#   3. Set ORGANIZER_EMAIL (wrangler var) to an address on that domain.
-#
-# NOTE: Email Service is in public beta; confirm the exact provider resource for
-# registering the sending domain against your pinned cloudflare provider version
-# (it may still need a one-time Dashboard/API step). The DNS records above are
-# standard `cloudflare_dns_record` resources.
+# Not managed here on purpose. The Worker sends through the `send_email`
+# binding (apps/api/wrangler.jsonc, binding EMAIL) from ORGANIZER_EMAIL on
+# igt.kylebjordahl.com. Onboarding that domain (Dashboard → Compute → Email
+# Service → Email Sending → Onboard Domain) makes Cloudflare write its own SPF,
+# DKIM, DMARC and cf-bounce MX records and lock them against edits, so
+# declaring them here would fight it. See docs/DEPLOYMENT.md § Outbound email.
 
 # --- Edge rate limiting (issue #142) --------------------------------------
 #

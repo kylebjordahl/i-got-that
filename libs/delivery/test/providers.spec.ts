@@ -61,6 +61,15 @@ const event: DeliveryEvent = {
   location: "Children's House",
 };
 
+/** Decode the base64 body of the MIME part whose Content-Type starts with `type`. */
+function mimePart(mime: string, type: string): string {
+  const at = mime.indexOf(`Content-Type: ${type}`);
+  if (at < 0) throw new Error(`no ${type} part`);
+  const body = mime.slice(mime.indexOf('\r\n\r\n', at) + 4).split('\r\n--')[0]!;
+  const bin = atob(body.replace(/\r\n/g, ''));
+  return new TextDecoder().decode(Uint8Array.from(bin, (ch) => ch.charCodeAt(0)));
+}
+
 describe('EmailImipProvider', () => {
   it('sends a METHOD:REQUEST iMIP message to the attendee', async () => {
     const sent: { mime: string; to: string }[] = [];
@@ -77,13 +86,40 @@ describe('EmailImipProvider', () => {
     expect(res.externalRef).toBe(event.uid);
     expect(sent).toHaveLength(1);
     expect(sent[0]!.to).toBe('parent@example.com');
-    expect(sent[0]!.mime).toContain('To: parent@example.com');
-    expect(sent[0]!.mime).toContain('Content-Type: text/calendar; method=REQUEST');
-    expect(sent[0]!.mime).toContain('METHOD:REQUEST');
-    expect(sent[0]!.mime).toContain('UID:igt-task-1-target-1');
+    const mime = sent[0]!.mime;
+    expect(mime).toContain('To: parent@example.com');
+    expect(mime).toContain('Content-Type: multipart/alternative;');
+    expect(mime).toContain('Content-Type: text/calendar; method=REQUEST');
+    const ics = mimePart(mime, 'text/calendar');
+    expect(ics).toContain('METHOD:REQUEST');
+    expect(ics).toContain('UID:igt-task-1-target-1');
+    // The em dash survives: UTF-8 in a base64 body, RFC 2047 in the subject.
+    expect(ics).toContain('SUMMARY:Pickup — child');
+    expect(mime).toMatch(/^Subject: =\?UTF-8\?B\?.+\?=$/m);
     // RFC 5322 headers required by strict senders (Cloudflare Email Service).
-    expect(sent[0]!.mime).toMatch(/^Date: /m);
-    expect(sent[0]!.mime).toMatch(/^Message-ID: <.+@igt\.test>/m);
+    expect(mime).toMatch(/^Date: /m);
+    expect(mime).toMatch(/^Message-ID: <.+@igt\.test>/m);
+  });
+
+  it("can't be made to inject headers by a feed-controlled summary", async () => {
+    const sent: string[] = [];
+    const provider = new EmailImipProvider(async (mime) => void sent.push(mime), 'noreply@igt.test');
+    await provider.upsert(
+      { ...event, summary: 'Soccer\r\nBcc: victim@example.com' },
+      { method: 'email', addressOrUrl: 'parent@example.com' },
+    );
+    expect(sent[0]).not.toMatch(/^Bcc:/m);
+    expect(sent[0]).toContain('Subject: Soccer Bcc: victim@example.com');
+  });
+
+  it('refuses a recipient that is not a bare address', async () => {
+    const provider = new EmailImipProvider(async () => {}, 'noreply@igt.test');
+    await expect(
+      provider.upsert(event, {
+        method: 'email',
+        addressOrUrl: 'a@example.com\r\nBcc: b@example.com',
+      }),
+    ).rejects.toThrow(/malformed address/);
   });
 });
 

@@ -320,6 +320,23 @@ final memberCalendarProvider =
       return row == null ? null : MemberCalendarConfig.fromJson(row);
     });
 
+/// A member's email invite outputs. Only the member (or an admin, for an
+/// unlinked member) may read them — the addresses are other people's.
+final emailOutputsProvider = FutureProvider.family<EmailOutputList, String>((
+  ref,
+  memberId,
+) async {
+  final api = ref.watch(apiClientProvider);
+  final familyId = await ref.watch(familyProvider.future);
+  final res = await api.listEmailOutputs(familyId, memberId);
+  return EmailOutputList(
+    outputs: (res['outputs'] as List)
+        .map((e) => EmailOutput.fromJson(e as Map<String, dynamic>))
+        .toList(),
+    emailEnabled: res['emailEnabled'] as bool? ?? false,
+  );
+});
+
 /// The family-level threading threshold (minutes) for stitching task chains.
 final threadingThresholdProvider = FutureProvider<int>((ref) async {
   final api = ref.watch(apiClientProvider);

@@ -22,6 +22,7 @@ import {
 } from '../services/invites.js';
 import { assignmentRuleRoutes } from './assignment-rules.js';
 import { feedRoutes } from './feeds.js';
+import { emailOutputRoutes } from './email-outputs.js';
 import { memberCalendarRoutes } from './member-calendars.js';
 import { taskRoutes } from './tasks.js';
 import { taskRuleRoutes } from './task-rules.js';
@@ -45,6 +46,7 @@ familyRoutes.route('/:familyId', taskRoutes);
 
 // Per-member unified-calendar targets under /families/:familyId/members/...
 familyRoutes.route('/:familyId', memberCalendarRoutes);
+familyRoutes.route('/:familyId', emailOutputRoutes);
 
 // Per-member task-rule pipeline under /families/:familyId/members/:memberId/task-rules.
 familyRoutes.route('/:familyId', taskRuleRoutes);

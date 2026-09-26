@@ -992,6 +992,62 @@ export const SetMemberCalendarTargetInput = z.object({
 });
 export type SetMemberCalendarTargetInput = z.infer<typeof SetMemberCalendarTargetInput>;
 
+// --- Email invite outputs --------------------------------------------------
+
+/**
+ * What an email invite output sends, by the kind of event on the member's
+ * unified calendar:
+ * - `claimed_task` — a drop-off/pickup/attendance the member claimed;
+ * - `schedule` — a synthesized event from one of their linked calendars;
+ * - `busy` — an opaque free/busy block from a work calendar.
+ * Human (read-back) events are never sent: they came from the member's own
+ * calendar in the first place.
+ */
+export const EmailOutputEventKind = z.enum(['claimed_task', 'schedule', 'busy']);
+export type EmailOutputEventKind = z.infer<typeof EmailOutputEventKind>;
+
+/**
+ * Which of a member's events an email output invites the recipient to. All
+ * three clauses must pass. `taskTypes` narrows only `claimed_task` events;
+ * `sourceLinkIds` narrows by the linked calendar an event came from (for a
+ * claim, the calendar of the event the task was generated from), and an event
+ * with no source calendar never matches a non-null list. Null ⇒ no narrowing.
+ */
+export const EmailOutputFilters = z.object({
+  include: z.array(EmailOutputEventKind).min(1),
+  taskTypes: z.array(TaskType).min(1).nullable().default(null),
+  sourceLinkIds: z.array(Id).min(1).max(50).nullable().default(null),
+});
+export type EmailOutputFilters = z.infer<typeof EmailOutputFilters>;
+
+/** A new output's default: claimed tasks only — the case email invites are for. */
+export const DEFAULT_EMAIL_OUTPUT_FILTERS: EmailOutputFilters = {
+  include: ['claimed_task'],
+  taskTypes: null,
+  sourceLinkIds: null,
+};
+
+/**
+ * Add an email invite output to a member. The address receives nothing until
+ * someone opens the verification link mailed to it.
+ */
+export const CreateEmailOutputInput = z.object({
+  email: z.string().trim().toLowerCase().email().max(254),
+  label: z.string().trim().min(1).max(80).optional(),
+  filters: EmailOutputFilters.optional(),
+  alertMinutes: AlertMinutes.optional(),
+});
+export type CreateEmailOutputInput = z.infer<typeof CreateEmailOutputInput>;
+
+/** Change an output's label/filters/alerts or pause it. The address is fixed. */
+export const UpdateEmailOutputInput = z.object({
+  label: z.string().trim().min(1).max(80).nullable().optional(),
+  filters: EmailOutputFilters.optional(),
+  alertMinutes: AlertMinutes.optional(),
+  active: z.boolean().optional(),
+});
+export type UpdateEmailOutputInput = z.infer<typeof UpdateEmailOutputInput>;
+
 // --- Push notifications ----------------------------------------------------
 
 /**

@@ -1,10 +1,12 @@
 import { eq, families, feeds, getDb } from '@igt/db';
 import type { Bindings } from './env.js';
+import { emailEnabled, emailLinkBase, getOutbox } from './lib/email.js';
 import { googleRefresherFor } from './lib/google-oauth.js';
 import { createGuardedFetch } from './lib/outbound-url.js';
 import { sweepOrphanedSecrets } from './services/auth.js';
 import { reconcileClaimEvents } from './services/claim.js';
 import { reconcileFamilyConflicts } from './services/conflicts.js';
+import { syncFamilyEmailOutputs } from './services/email-outputs.js';
 import { getProductionRegistry, syncFamilyMirror } from './services/mirror.js';
 import { ingestFeed, isFeedDue } from './services/ingest.js';
 import { dispatchDueDigests } from './services/notifications.js';
@@ -26,7 +28,8 @@ import { buildFamilyTasks } from './services/task-gen.js';
  *      (a member can't be in two places at once) — before task-gen so the
  *      split segments spawn their own drop-off/pickup tasks
  *   4. task generation for every member (calendar_events → tasks)
- *   5. claimed-event true-up + mirror reconcile (unified calendar → target)
+ *   5. claimed-event true-up + mirror reconcile (unified calendar → target),
+ *      then email invite outputs (where outbound mail is enabled)
  *
  * The mirror true-up is cheap when nothing drifted (payloadHash skips
  * unchanged events), so it's safe to run every tick.
@@ -106,6 +109,15 @@ export async function scheduled(
           await buildFamilyTasks(db, fam.id);
           await reconcileClaimEvents(db, fam.id);
           await syncFamilyMirror(db, registry, keys, fam.id);
+          if (emailEnabled(env)) {
+            await syncFamilyEmailOutputs(
+              db,
+              getOutbox(env),
+              fam.id,
+              new Date(),
+              emailLinkBase(env),
+            );
+          }
         } catch (err) {
           console.error(`scheduled tick failed for family ${fam.id}`, err);
         }

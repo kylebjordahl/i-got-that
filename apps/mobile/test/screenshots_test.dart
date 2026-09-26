@@ -4,12 +4,15 @@ import 'dart:ui' as ui;
 import 'package:caretaker_app/api/client.dart';
 import 'package:caretaker_app/models.dart';
 import 'package:caretaker_app/screens/assignment_rules_screen.dart';
+import 'package:caretaker_app/screens/email_outputs_section.dart';
+import 'package:caretaker_app/screens/member_detail_screen.dart';
 import 'package:caretaker_app/screens/me_screen.dart';
 import 'package:caretaker_app/screens/notification_schedule_screen.dart';
 import 'package:caretaker_app/services/push.dart';
 import 'package:caretaker_app/state/auth.dart';
 import 'package:caretaker_app/state/family.dart';
 import 'package:caretaker_app/state/notifications.dart';
+import 'package:caretaker_app/theme/app_theme.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
@@ -17,7 +20,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 /// Renders UI to PNGs for PR descriptions — the assignment-rules screens
-/// (issue #24) and the notification settings. Not a behavioural test — skipped
+/// (issue #24), the notification settings and the email invite outputs. Not a behavioural test — skipped
 /// unless SCREENSHOT_DIR is set, so it never runs in CI. Run locally with:
 ///   SCREENSHOT_DIR=/tmp/shots fvm flutter test test/screenshots_test.dart
 void main() {
@@ -199,6 +202,108 @@ void main() {
     );
     await tester.pumpAndSettle();
     await capture(tester, key, '04-notification-editor');
+  });
+
+  testWidgets('render email invite outputs', (tester) async {
+    if (outDir == null) return; // no-op unless explicitly requested
+    await loadFonts();
+    tester.view.devicePixelRatio = 1.0;
+    tester.view.physicalSize = const Size(400, 1900);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final mom = members.first;
+    final key = GlobalKey();
+    final work = FeedItem(
+      id: 'f-work',
+      kind: 'google',
+      mode: 'busy',
+      sourceCalendarName: 'Busy (work)',
+    );
+    final club = FeedItem(
+      id: 'f-club',
+      kind: 'ics',
+      mode: 'standard',
+      sourceCalendarName: 'Book club',
+    );
+    final outputs = [
+      EmailOutput(
+        id: 'o1',
+        email: 'grandma@example.com',
+        label: 'Grandma',
+        filters: const EmailOutputFilters(
+          include: {'claimed_task'},
+          taskTypes: {'pickup', 'attendance'},
+        ),
+        active: true,
+        verified: true,
+      ),
+      EmailOutput(
+        id: 'o2',
+        email: 'mom@work.example',
+        label: 'Work inbox',
+        filters: const EmailOutputFilters(
+          include: {'claimed_task', 'schedule'},
+          sourceLinkIds: {'link-club'},
+        ),
+        active: true,
+        verified: false,
+      ),
+      EmailOutput(
+        id: 'o3',
+        email: 'nanny@example.com',
+        label: 'Nanny',
+        filters: EmailOutputFilters.claimedOnly,
+        active: true,
+        verified: true,
+        unsubscribed: true,
+      ),
+    ];
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          familyProvider.overrideWith((ref) async => 'fam'),
+          membersProvider.overrideWith((ref) async => members),
+          currentMemberProvider.overrideWith((ref) async => mom),
+          feedsProvider.overrideWith((ref) async => [work, club]),
+          feedLinksProvider.overrideWith(
+            (ref, feedId) async => [
+              FeedLink(
+                id: feedId == 'f-work' ? 'link-work' : 'link-club',
+                familyMemberId: 'mom',
+                active: true,
+              ),
+            ],
+          ),
+          accountsProvider.overrideWith(
+            (ref) async => const <ExternalAccount>[],
+          ),
+          memberCalendarProvider.overrideWith((ref, id) async => null),
+          calendarEventsProvider.overrideWith((ref) async => const []),
+          emailOutputsProvider.overrideWith(
+            (ref, id) async =>
+                EmailOutputList(outputs: outputs, emailEnabled: true),
+          ),
+        ],
+        child: RepaintBoundary(
+          key: key,
+          child: MaterialApp(
+            debugShowCheckedModeBanner: false,
+            theme: buildAppTheme(),
+            themeMode: ThemeMode.dark,
+            home: const MemberDetailScreen(memberId: 'mom'),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.pumpAndSettle();
+    await capture(tester, key, '05-email-invites-section');
+
+    await tester.tap(find.text('Work inbox'));
+    await tester.pumpAndSettle();
+    expect(find.byType(EmailOutputSheet), findsOneWidget);
+    await capture(tester, key, '06-email-invites-sheet');
   });
 }
 

@@ -148,6 +148,13 @@
       "when": 1790227305271,
       "tag": "0020_good_roland_deschain",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "6",
+      "when": 1790447081959,
+      "tag": "0021_free_loki",
+      "breakpoints": true
     }
   ]
 }
