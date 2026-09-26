@@ -88,6 +88,20 @@ Backend: Cloudflare Workers + Hono + D1 + Drizzle. Client: Flutter (Riverpod, di
   and clearing it in `tearDown` does *not* work: the framework asserts
   foundation debug vars are unset at the end of the test body, before
   teardown runs.
+- **Toasts must clear the floating nav pill — don't hand-roll a SnackBar's
+  position.** `PersistentAppNav` floats *over* screen content (it's a sibling
+  of the content Navigator in `_AuthedRoot`, not a `bottomNavigationBar`), so a
+  floating SnackBar at Flutter's default inset lands behind it. This shipped
+  broken repeatedly (#220, then the email-invites sheet) because each call site
+  had to remember `margin: snackBarMarginAboveNav(context)`. Now
+  `SnackBarsAboveNav` (in `widgets/app_bottom_nav.dart`) sets that as the
+  theme's `insetPadding` for everything under the signed-in shell, so a plain
+  `ScaffoldMessenger.of(context).showSnackBar(SnackBar(...))` is correct —
+  including one raised from a root-navigator bottom sheet. So: never pass a
+  smaller `margin:`, never mount another `Theme` or `MaterialApp` between
+  `_AuthedRoot` and a screen that resets `snackBarTheme`, and keep
+  `test/snackbar_above_nav_test.dart` passing. Pre-login screens (welcome,
+  onboarding) have no nav and correctly use the default.
 - **Android builds need the Android SDK, which a cloud agent session doesn't
   have** (`dl.google.com` is blocked by the egress proxy). `flutter create`,
   `analyze`, `test` and `dart format` all work there; `flutter build apk` does

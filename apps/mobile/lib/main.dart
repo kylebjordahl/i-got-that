@@ -153,12 +153,15 @@ class _AuthedRoot extends StatelessWidget {
                         const EdgeInsets.only(bottom: kBottomNavClearance),
                   )
                 : mq,
-            child: Navigator(
-              key: rootNavigatorKey,
-              observers: [AppNavObserver()],
-              onGenerateRoute: (settings) => MaterialPageRoute(
-                builder: (_) => const AppShell(),
-                settings: settings,
+            // Every toast under here floats above the nav pill by default.
+            child: SnackBarsAboveNav(
+              child: Navigator(
+                key: rootNavigatorKey,
+                observers: [AppNavObserver()],
+                onGenerateRoute: (settings) => MaterialPageRoute(
+                  builder: (_) => const AppShell(),
+                  settings: settings,
+                ),
               ),
             ),
           ),
