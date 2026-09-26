@@ -675,7 +675,7 @@ querying Play for the current high-water mark.
 
 ---
 
-### 11. Outbound email (email invite outputs)
+### 12. Outbound email (email invite outputs)
 
 Email invite outputs send through Cloudflare Email Service via the `send_email`
 binding `EMAIL`, which is declared for `staging` and `production` in
@@ -777,7 +777,7 @@ cd apps/api && pnpm wrangler tail --env staging        # live logs
 - **Magic-link login doesn't send mail yet** (`getMailer` in
   `apps/api/src/lib/mailer.ts` is still the dev stub), so in a deployed env use
   **Sign in with Apple/Google** or the **invite link** flow. Outbound email for
-  email invite outputs is covered in §11.
+  email invite outputs is covered in §12.
 - The **web client** is built in CI and served by the same Worker under `/app`
   (see §7) — no separate Pages project. Production gets it once you add the
   `routes` + `assets` blocks under `env.production`.
