@@ -18,6 +18,7 @@ import {
   type DeliveryEvent,
   type DeliveryTarget,
   EmailImipProvider,
+  formatEventTime,
   unsubscribeHeaders,
 } from '@igt/delivery';
 import { geoKey, type EmailOutputEventKind, type EmailOutputFilters } from '@igt/domain';
@@ -26,7 +27,10 @@ import { randomToken, sha256hex } from '../lib/crypto.js';
 import {
   claimedTaskMeta,
   type ClaimedTaskMeta,
+  eventTravelMinutes,
   linkTimezones,
+  type TravelContext,
+  travelContext,
   mirroredSummary,
   type SyncResult,
 } from './mirror.js';
@@ -101,9 +105,11 @@ function hashInvite(
   event: CalendarEventRow,
   alertMinutes: number[],
   timezone: string | undefined,
+  paddedMinutes: number,
 ): string {
   const parts = [
     summary,
+    String(paddedMinutes),
     event.dtstart.toISOString(),
     event.dtend ? event.dtend.toISOString() : '',
     event.allDay ? '1' : '0',
@@ -139,6 +145,33 @@ export async function recipientFor(db: Db, email: string): Promise<EmailRecipien
   return (
     await db.select().from(emailRecipients).where(eq(emailRecipients.email, email)).limit(1)
   )[0]!;
+}
+
+/**
+ * Padding for travel: when the output asks for it and the event is a trip
+ * (see `eventTravelMinutes` — claimed drop-offs, pickups and attendance, or a
+ * human override), start the invite that much earlier and say so in the
+ * title and description. The recipient's calendar then blocks the drive as
+ * well as the event, which most calendars have no field for. All-day events
+ * are never padded.
+ */
+function padForTravel(
+  event: CalendarEventRow,
+  summary: string,
+  minutes: number,
+  timezone: string | undefined,
+): { start: Date; summary: string; description: string | undefined } {
+  if (minutes <= 0 || event.allDay) {
+    return { start: event.dtstart, summary, description: event.description ?? undefined };
+  }
+  const note =
+    `Includes ${minutes} min travel. ${summary} itself starts at ` +
+    `${formatEventTime(event.dtstart, timezone)}.`;
+  return {
+    start: new Date(event.dtstart.getTime() - minutes * 60_000),
+    summary: `🚗 ${summary}`,
+    description: event.description ? `${note}\n\n${event.description}` : note,
+  };
 }
 
 /** The link in every mail to a recipient; `linkBase` as for verification links. */
@@ -220,6 +253,9 @@ export async function syncMemberEmailOutputs(
   const timezones = await linkTimezones(db, familyId);
   const claimedTasks = await claimedTaskMeta(db, familyId);
   const provider = new EmailImipProvider(outbox.send, outbox.from);
+  // Only loaded when some output pads for travel: it reads the member's whole
+  // calendar to place them before each trip.
+  let travel: TravelContext | null = null;
 
   for (const output of verified) {
     result.targets++;
@@ -262,6 +298,7 @@ export async function syncMemberEmailOutputs(
             start: m.eventStartsAt,
             end: m.eventEndsAt,
             summary: m.summary,
+            timezone: m.timezone ?? undefined,
           },
           to,
         );
@@ -274,11 +311,15 @@ export async function syncMemberEmailOutputs(
     }
 
     const alertMinutes = output.alertMinutes ?? [];
+    if (output.padTravelTime && !travel) travel = await travelContext(db, memberId);
     for (const event of desired) {
-      const summary = mirroredSummary(event);
       const task = event.taskId ? claimedTasks.get(event.taskId) : undefined;
       const timezone = event.linkId ? timezones.get(event.linkId) : task?.timezone;
-      const hash = hashInvite(summary, event, alertMinutes, timezone);
+      const travelMinutes =
+        output.padTravelTime && travel ? eventTravelMinutes(travel, event, task?.type) : 0;
+      const padded = padForTravel(event, mirroredSummary(event), travelMinutes, timezone);
+      const summary = padded.summary;
+      const hash = hashInvite(summary, event, alertMinutes, timezone, travelMinutes);
       const prior = existingByEvent.get(event.id);
       if (prior && prior.payloadHash === hash) continue;
       if (budget <= 0) break;
@@ -289,10 +330,10 @@ export async function syncMemberEmailOutputs(
       const invite: DeliveryEvent = {
         uid,
         sequence,
-        start: event.dtstart,
+        start: padded.start,
         end: event.dtend,
         summary,
-        description: event.description ?? undefined,
+        description: padded.description,
         location: event.location ?? undefined,
         locationGeo: event.locationGeo ?? undefined,
         alertMinutes: alertMinutes.length > 0 ? alertMinutes : undefined,
@@ -308,8 +349,9 @@ export async function syncMemberEmailOutputs(
         sequence,
         payloadHash: hash,
         summary,
-        eventStartsAt: event.dtstart,
+        eventStartsAt: padded.start,
         eventEndsAt: eventEnd(event),
+        timezone: timezone ?? null,
         sentAt: now,
       };
       if (prior) {
@@ -396,6 +438,7 @@ export async function cancelInvites(
           start: m.eventStartsAt,
           end: m.eventEndsAt,
           summary: m.summary,
+          timezone: m.timezone ?? undefined,
         },
         to,
       );

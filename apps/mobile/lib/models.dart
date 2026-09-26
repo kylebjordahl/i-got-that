@@ -1131,6 +1131,7 @@ class EmailOutput {
     required this.active,
     required this.verified,
     this.unsubscribed = false,
+    this.padTravelTime = false,
     this.label,
   });
 
@@ -1145,6 +1146,9 @@ class EmailOutput {
   /// sent while this holds, and only they can undo it.
   final bool unsubscribed;
 
+  /// Trips are sent starting earlier by the estimated drive, marked 🚗.
+  final bool padTravelTime;
+
   factory EmailOutput.fromJson(Map<String, dynamic> j) => EmailOutput(
     id: j['id'] as String,
     email: j['email'] as String,
@@ -1153,6 +1157,7 @@ class EmailOutput {
     active: j['active'] as bool? ?? true,
     verified: j['verified'] as bool? ?? false,
     unsubscribed: j['unsubscribed'] as bool? ?? false,
+    padTravelTime: j['padTravelTime'] as bool? ?? false,
   );
 }
 

@@ -70,7 +70,36 @@ function mimePart(mime: string, type: string): string {
   return new TextDecoder().decode(Uint8Array.from(bin, (ch) => ch.charCodeAt(0)));
 }
 
+/** The decoded Subject header of a captured mail. */
+function subjectOf(mime: string): string {
+  const raw = /^Subject: (.*)$/m.exec(mime)![1]!;
+  const encoded = /^=\?UTF-8\?B\?(.*)\?=$/.exec(raw);
+  if (!encoded) return raw;
+  return new TextDecoder().decode(Uint8Array.from(atob(encoded[1]!), (ch) => ch.charCodeAt(0)));
+}
+
 describe('EmailImipProvider', () => {
+  it('says what, when (in the event zone) and where, so duplicates are easy to spot', async () => {
+    const sent: string[] = [];
+    const provider = new EmailImipProvider(async (mime) => void sent.push(mime), 'noreply@igt.test');
+    const detailed = {
+      ...event,
+      description: 'Bring the permission slip.',
+      timezone: 'America/Denver',
+    };
+    await provider.upsert(detailed, { method: 'email', addressOrUrl: 'p@example.com' });
+    await provider.cancel(detailed, { method: 'email', addressOrUrl: 'p@example.com' });
+
+    // 17:00Z is 11:00 AM in Denver (MDT) on 2026-03-10.
+    expect(subjectOf(sent[0]!)).toBe('Pickup — child — Tue, Mar 10, 11:00 AM');
+    const text = mimePart(sent[0]!, 'text/plain');
+    expect(text).toContain('When: Tue, Mar 10, 11:00 AM – 11:30 AM MDT');
+    expect(text).toContain("Where: Children's House");
+    expect(text).toContain('Bring the permission slip.');
+    expect(subjectOf(sent[1]!)).toBe('Cancelled: Pickup — child — Tue, Mar 10, 11:00 AM');
+    expect(mimePart(sent[1]!, 'text/plain')).toContain('When: Tue, Mar 10, 11:00 AM');
+  });
+
   it('sends a METHOD:REQUEST iMIP message to the attendee', async () => {
     const sent: { mime: string; to: string }[] = [];
     const provider = new EmailImipProvider(
@@ -109,7 +138,8 @@ describe('EmailImipProvider', () => {
       { method: 'email', addressOrUrl: 'parent@example.com' },
     );
     expect(sent[0]).not.toMatch(/^Bcc:/m);
-    expect(sent[0]).toContain('Subject: Soccer Bcc: victim@example.com');
+    // The subject (now with an em-dashed date, so RFC 2047-encoded) is one line.
+    expect(subjectOf(sent[0]!)).toMatch(/^Soccer Bcc: victim@example\.com — /);
   });
 
   it('refuses a recipient that is not a bare address', async () => {

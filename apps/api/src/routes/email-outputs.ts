@@ -62,6 +62,7 @@ function present(row: EmailOutputRow, unsubscribedAt: Date | null = null) {
     label: row.label,
     filters: row.filters,
     alertMinutes: row.alertMinutes ?? [],
+    padTravelTime: row.padTravelTime,
     active: row.active,
     verified: row.verifiedAt != null,
     verifiedAt: row.verifiedAt,
@@ -225,6 +226,7 @@ emailOutputRoutes.post('/members/:memberId/email-outputs', async (c) => {
         label: parsed.data.label ?? null,
         filters,
         alertMinutes: parsed.data.alertMinutes ?? null,
+        padTravelTime: parsed.data.padTravelTime ?? false,
         verifiedAt: alreadyVerified ? new Date() : null,
       })
       .returning()
@@ -267,7 +269,7 @@ emailOutputRoutes.patch('/members/:memberId/email-outputs/:outputId', async (c) 
       return c.json({ error: 'unknown_source', linkIds: unknown }, 400);
     }
   }
-  const { label, filters, alertMinutes, active } = parsed.data;
+  const { label, filters, alertMinutes, padTravelTime, active } = parsed.data;
   const row = (
     await db
       .update(emailOutputs)
@@ -275,6 +277,7 @@ emailOutputRoutes.patch('/members/:memberId/email-outputs/:outputId', async (c) 
         ...(label !== undefined ? { label } : {}),
         ...(filters ? { filters } : {}),
         ...(alertMinutes ? { alertMinutes } : {}),
+        ...(padTravelTime !== undefined ? { padTravelTime } : {}),
         ...(active !== undefined ? { active } : {}),
       })
       .where(eq(emailOutputs.id, output.id))

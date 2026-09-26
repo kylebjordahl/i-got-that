@@ -1005,6 +1005,10 @@ export const emailOutputs = sqliteTable(
     filters: text('filters', { mode: 'json' }).$type<EmailOutputFilters>().notNull(),
     // Same shape as member_calendars.alert_minutes.
     alertMinutes: text('alert_minutes', { mode: 'json' }).$type<number[]>(),
+    // Start each invite earlier by the estimated drive (the calendar mirror's
+    // travel block), and mark its title with 🚗. For recipients whose calendar
+    // has no travel-time field of its own — which is most of them.
+    padTravelTime: integer('pad_travel_time', { mode: 'boolean' }).notNull().default(false),
     active: integer('active', { mode: 'boolean' }).notNull().default(true),
     verifiedAt: integer('verified_at', { mode: 'timestamp_ms' }),
     lastMirroredAt: integer('last_mirrored_at', { mode: 'timestamp_ms' }),
@@ -1039,7 +1043,11 @@ export const emailOutputMirrors = sqliteTable(
     // What was last invited, so a cancellation can say what it's cancelling
     // after the event itself is gone.
     summary: text('summary').notNull(),
+    // As sent — travel padding included — so the cancellation matches.
     eventStartsAt: integer('event_starts_at', { mode: 'timestamp_ms' }).notNull(),
+    // IANA zone the invite was written in, so a cancellation mail states the
+    // time the recipient saw.
+    timezone: text('timezone'),
     // Once this has passed the row is dropped without mailing a cancellation
     // for something already over.
     eventEndsAt: integer('event_ends_at', { mode: 'timestamp_ms' }).notNull(),

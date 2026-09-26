@@ -23,8 +23,10 @@ class _FakeApiClient extends ApiClient {
     required String email,
     String? label,
     required Map<String, dynamic> filters,
+    bool padTravelTime = false,
   }) async {
     created = {'email': email, 'label': label, 'filters': filters};
+    if (padTravelTime) created!['padTravelTime'] = true;
     return {'verificationSent': true};
   }
 
@@ -36,9 +38,14 @@ class _FakeApiClient extends ApiClient {
     String? label,
     bool clearLabel = false,
     Map<String, dynamic>? filters,
+    bool? padTravelTime,
     bool? active,
   }) async {
-    updated = {'filters': filters, 'active': active};
+    updated = {
+      'filters': filters,
+      'active': active,
+      'padTravelTime': padTravelTime,
+    };
     return {};
   }
 }
@@ -282,5 +289,33 @@ void main() {
     );
     expect(find.text('Resend confirmation'), findsNothing);
     expect(find.text('Remove'), findsOneWidget);
+  });
+
+  testWidgets('the travel-time switch is sent with a new output', (
+    tester,
+  ) async {
+    final api = _FakeApiClient();
+    await pumpTall(tester, app(memberId: 'dad', outputs: const [], api: api));
+    await tester.tap(find.text('Add email invites'));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.widgetWithText(TextField, 'Email address'),
+      'trips@example.com',
+    );
+    final travel = find.descendant(
+      of: find.ancestor(
+        of: find.text('Include travel time'),
+        matching: find.byType(Row),
+      ),
+      matching: find.byType(Switch),
+    );
+    await tester.ensureVisible(travel.first);
+    await tester.tap(travel.first);
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('Send confirmation'));
+    await tester.tap(find.text('Send confirmation'));
+    await tester.pumpAndSettle();
+
+    expect(api.created?['padTravelTime'], isTrue);
   });
 }
