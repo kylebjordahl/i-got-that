@@ -1,7 +1,53 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id("dev.flutter.flutter-gradle-plugin")
+}
+
+// Release signing material, loaded from a gitignored `android/key.properties`
+// (see android/.gitignore) so the upload key never enters the repo. The deploy
+// workflow writes this file from repository secrets; locally it simply doesn't
+// exist, and release builds fall back to the debug key below so
+// `flutter build apk --release` still works for anyone who clones this.
+//
+//   storeFile=/absolute/path/to/igt-upload.jks   <- absolute: Gradle does not
+//   storePassword=…                                 expand `~`
+//   keyAlias=upload
+//   keyPassword=…
+val keystorePropertiesFile = rootProject.file("key.properties")
+val hasUploadKeystore = keystorePropertiesFile.exists()
+val keystoreProperties = Properties().apply {
+    if (hasUploadKeystore) {
+        keystorePropertiesFile.inputStream().use { load(it) }
+    }
+}
+
+// A half-filled key.properties is worse than none: the build would otherwise
+// fail deep inside the signing task, or — if a property silently resolves to
+// null — produce an unsigned bundle. Name the missing keys up front instead.
+if (hasUploadKeystore) {
+    val missing = listOf("storeFile", "storePassword", "keyAlias", "keyPassword")
+        .filter { keystoreProperties.getProperty(it).isNullOrBlank() }
+    if (missing.isNotEmpty()) {
+        throw GradleException(
+            "android/key.properties is missing: ${missing.joinToString(", ")}. " +
+                "See docs/DEPLOYMENT.md § 11.",
+        )
+    }
+}
+
+// CI sets this for the release AAB build, so a missing or unreadable
+// key.properties fails the build rather than quietly producing a
+// debug-signed bundle. That matters most on a Play app's *first* upload:
+// whichever certificate signs it becomes that app's upload certificate
+// permanently, and a debug key there is not recoverable without Play support.
+if (System.getenv("IGT_REQUIRE_RELEASE_SIGNING") == "true" && !hasUploadKeystore) {
+    throw GradleException(
+        "IGT_REQUIRE_RELEASE_SIGNING=true but android/key.properties is absent, " +
+            "so this build would be signed with the debug key. Refusing.",
+    )
 }
 
 android {
@@ -75,14 +121,36 @@ android {
         }
     }
 
+    signingConfigs {
+        // Only declared when the properties file is actually present —
+        // an AGP signing config with null credentials fails configuration,
+        // which would break every local build rather than just release ones.
+        if (hasUploadKeystore) {
+            create("release") {
+                // Resolved against android/ (not app/) and left as-is when
+                // already absolute, so the same file works for a developer
+                // pointing at ~/igt-upload.jks and for CI writing it next to
+                // key.properties.
+                storeFile = rootProject.file(keystoreProperties.getProperty("storeFile"))
+                storePassword = keystoreProperties.getProperty("storePassword")
+                keyAlias = keystoreProperties.getProperty("keyAlias")
+                keyPassword = keystoreProperties.getProperty("keyPassword")
+            }
+        }
+    }
+
     buildTypes {
         release {
-            // Debug keys for now, so `flutter build apk --release` works for
-            // anyone without the upload keystore. Real signing — a
-            // `signingConfigs.release` reading a gitignored key.properties —
-            // lands with the Play upload pipeline, alongside the deploy
-            // workflow's play-build/play-upload jobs.
-            signingConfig = signingConfigs.getByName("debug")
+            // The upload key when it's available, the debug key otherwise, so
+            // `flutter build apk --release` works for anyone who clones this
+            // without the keystore. CI guards the difference with
+            // IGT_REQUIRE_RELEASE_SIGNING (above) rather than trusting this
+            // fallback not to reach Play.
+            signingConfig = if (hasUploadKeystore) {
+                signingConfigs.getByName("release")
+            } else {
+                signingConfigs.getByName("debug")
+            }
         }
     }
 }
