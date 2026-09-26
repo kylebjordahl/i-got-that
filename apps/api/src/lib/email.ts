@@ -15,11 +15,22 @@ export interface Outbox {
   readonly send: EmailSender;
 }
 
+/**
+ * Everything any DevOutbox captured in this isolate, newest last and capped —
+ * so a test can read the mail a route sent through the outbox it built for
+ * itself (the same idea as `DevMailer.lastToken`). Only ever filled where
+ * there's no mail binding: local dev and tests.
+ */
+export const devOutboxLog: { to: string; mime: string }[] = [];
+const DEV_OUTBOX_LOG_CAP = 50;
+
 export class DevOutbox implements Outbox {
   readonly sent: { to: string; mime: string }[] = [];
   constructor(readonly from = 'noreply@igt.local') {}
   readonly send: EmailSender = async (mime, to) => {
     this.sent.push({ to, mime });
+    devOutboxLog.push({ to, mime });
+    if (devOutboxLog.length > DEV_OUTBOX_LOG_CAP) devOutboxLog.shift();
   };
 }
 

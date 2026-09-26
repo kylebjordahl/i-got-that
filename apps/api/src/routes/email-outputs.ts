@@ -151,7 +151,8 @@ async function mailVerification(
     userId: c.get('user').id,
     output,
     memberName: clip(member.relationName),
-    requesterName: clip(c.get('user').displayName),
+    requesterName: clip(c.get('member').relationName),
+    requesterIsMember: c.get('member').id === member.id,
     linkBase: emailLinkBase(c.env),
   });
   return c.env.ALLOW_DEV_TOKENS === 'true' ? { devToken: raw } : {};

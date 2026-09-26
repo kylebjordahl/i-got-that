@@ -13,7 +13,7 @@ import {
 } from '@igt/db';
 import type { EmailOutputFilters } from '@igt/domain';
 import { describe, expect, it } from 'vitest';
-import { DevOutbox } from '../src/lib/email.js';
+import { DevOutbox, devOutboxLog } from '../src/lib/email.js';
 import {
   EMAIL_INVITE_SENDS_PER_RUN,
   EMAIL_VERIFICATION_DAILY_CAP,
@@ -646,6 +646,7 @@ describe('unsubscribing', () => {
       output: row!,
       memberName: member!.relationName,
       requesterName: 'Admin',
+      requesterIsMember: true,
       linkBase: 'https://igt.test/api',
     });
     const mime = outbox.sent[0]!.mime;
@@ -669,6 +670,7 @@ describe('unsubscribing', () => {
         output: row!,
         memberName: 'x',
         requesterName: 'y',
+        requesterIsMember: false,
         linkBase: '',
       }),
     ).rejects.toThrow(/unsubscribed/);
@@ -676,5 +678,43 @@ describe('unsubscribing', () => {
 
   it('an unknown token is refused', async () => {
     expect((await call('/email/unsubscribe/deadbeef', { method: 'POST' })).status).toBe(404);
+  });
+});
+
+describe('verification mail wording', () => {
+  /** The decoded body of the last mail the routes sent to `to`. */
+  function lastMailTo(to: string): string {
+    const mail = [...devOutboxLog].reverse().find((m) => m.to === to)!;
+    const b64 = mail.mime.slice(mail.mime.indexOf('\r\n\r\n') + 4).replace(/\r\n/g, '');
+    return new TextDecoder().decode(Uint8Array.from(atob(b64), (ch) => ch.charCodeAt(0)));
+  }
+
+  it("names the sender the way the family knows them, not the account's display name", async () => {
+    // Like a Sign in with Apple account behind Hide My Email: the display name
+    // is the relay alias, while the family calls the member "Kyle".
+    const fam = await setupFamily('hp26rvm9sd@privaterelay.appleid.com');
+    const db = getDb(env.DB);
+    await db
+      .update(familyMembers)
+      .set({ relationName: 'Kyle' })
+      .where(eq(familyMembers.id, fam.adminMemberId));
+    await db
+      .update(familyMembers)
+      .set({ relationName: 'Theo' })
+      .where(eq(familyMembers.id, fam.childId));
+
+    await createOutput(fam.admin.token, fam.familyId, fam.adminMemberId, {
+      email: 'own@example.com',
+    });
+    const own = lastMailTo('own@example.com');
+    expect(own).toContain('Kyle wants to send you calendar invites for their schedule.');
+    expect(own).not.toContain('hp26rvm9sd');
+
+    await createOutput(fam.admin.token, fam.familyId, fam.childId, {
+      email: 'theo@example.com',
+    });
+    expect(lastMailTo('theo@example.com')).toContain(
+      "Kyle wants to send you calendar invites for Theo's schedule.",
+    );
   });
 });

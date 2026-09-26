@@ -324,6 +324,11 @@ paths in particular).
   deployed env, where it would be login-as-anyone), Sign in with
   Apple (server done; client wiring TODO), and member-claim invites
   (`/invites/:token/accept` links an existing user to a pre-created member).
+- **Never show `users.displayName` to a person.** It's the part of the sign-up
+  email before the @ — and for a Sign in with Apple account behind Hide My
+  Email that's a random relay alias (`hp26rvm9sd`). The name people recognise
+  is the family member's `relationName` (what the family calls them, set in
+  the app); use that, as the email-output verification mail does.
 - **Deployed staging is single-origin**: one Worker on
   `staging.igt.kylebjordahl.com` serving `/api/*` (API, prefix stripped),
   `/app/*` (Flutter web via the `ASSETS` binding), and `/` → `/app/`. Gated on the
