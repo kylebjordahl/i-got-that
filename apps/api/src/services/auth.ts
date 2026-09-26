@@ -14,7 +14,7 @@ import {
   sessions,
   users,
 } from '@igt/db';
-import type { IdentityProvider } from '@igt/domain';
+import type { IdentityProvider, MagicLinkPurpose } from '@igt/domain';
 import type { AppleNotificationEvent } from '../lib/apple.js';
 import { randomToken, sha256hex } from '../lib/crypto.js';
 import { runChunked } from '../lib/d1.js';
@@ -46,7 +46,11 @@ export class MagicLinkCapExceededError extends Error {
  * Throws `MagicLinkCapExceededError` if `email` already has
  * `MAGIC_LINK_MAX_OUTSTANDING` unconsumed, unexpired tokens outstanding.
  */
-export async function requestMagicLink(db: Db, email: string): Promise<string> {
+export async function requestMagicLink(
+  db: Db,
+  email: string,
+  purpose: MagicLinkPurpose = 'sign_in',
+): Promise<string> {
   const outstanding = await db
     .select({ id: authTokens.id })
     .from(authTokens)
@@ -66,6 +70,7 @@ export async function requestMagicLink(db: Db, email: string): Promise<string> {
   const tokenHash = await sha256hex(rawToken);
   await db.insert(authTokens).values({
     email,
+    purpose: purpose === 'link' ? 'link_identity' : 'magic_link',
     tokenHash,
     expiresAt: new Date(Date.now() + MAGIC_LINK_TTL_MS),
   });
@@ -532,6 +537,10 @@ export async function verifyMagicLink(
   if (!row || row.consumedAt || row.expiresAt.getTime() < Date.now()) {
     return null;
   }
+  // An add-a-login-method token only ever attaches (linkMagicLinkIdentity).
+  // Refused here without consuming it, so the user can still sign in some
+  // other way and open the link again.
+  if (row.purpose === 'link_identity') return null;
   await db
     .update(authTokens)
     .set({ consumedAt: new Date() })

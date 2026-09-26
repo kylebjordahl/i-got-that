@@ -233,6 +233,9 @@ class _AddLoginMethodDialogState extends ConsumerState<_AddLoginMethodDialog> {
   bool _busy = false;
   String? _error;
 
+  /// Set once the link has been emailed: the dialog's job is then done.
+  String? _sentTo;
+
   @override
   void dispose() {
     _email.dispose();
@@ -251,20 +254,30 @@ class _AddLoginMethodDialogState extends ConsumerState<_AddLoginMethodDialog> {
     });
     try {
       final api = ref.read(apiClientProvider);
-      final devToken = await api.requestMagicLink(email);
+      final devToken = await ref
+          .read(authControllerProvider.notifier)
+          .requestLinkEmail(email);
       if (devToken == null) {
-        // Only local dev hands the token back; elsewhere it arrives by email,
-        // so there's no in-app token to attach.
-        throw Exception('Magic link sent — open it on this device to finish.');
+        // Only local dev hands the token back; elsewhere it arrives by email.
+        // Opening it while signed in here attaches the address to this
+        // account (AuthController.completeMagicLink).
+        setState(() => _sentTo = email);
+        return;
       }
       await api.linkMagicLink(devToken);
       if (mounted) Navigator.of(context).pop(true);
     } on DioException catch (e) {
       final code = (e.response?.data as Map<String, dynamic>?)?['error'];
       setState(
-        () => _error = code == 'identity_linked_to_other_user'
-            ? 'That email is already linked to a different account.'
-            : '$e',
+        () => _error = switch (code) {
+          'identity_linked_to_other_user' =>
+            'That email is already linked to a different account.',
+          'email_disabled' => 'Email sign-in isn\'t available on this server.',
+          'too_many_requests' =>
+            'Too many links requested for that address. Use one already '
+                'sent, or wait 15 minutes.',
+          _ => '$e',
+        },
       );
     } catch (e) {
       setState(() => _error = '$e');
@@ -297,6 +310,15 @@ class _AddLoginMethodDialogState extends ConsumerState<_AddLoginMethodDialog> {
             ),
             onSubmitted: (_) => _link(),
           ),
+          if (_sentTo != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 10),
+              child: Text(
+                'We sent a link to $_sentTo. Open it on a device where '
+                'you\'re signed in to this account to add the address.',
+                style: const TextStyle(color: AppColors.green),
+              ),
+            ),
           if (_error != null)
             Padding(
               padding: const EdgeInsets.only(top: 10),
@@ -307,17 +329,27 @@ class _AddLoginMethodDialogState extends ConsumerState<_AddLoginMethodDialog> {
             ),
         ],
       ),
-      actions: [
-        TextButton(
-          onPressed: _busy ? null : () => Navigator.of(context).pop(false),
-          child: const Text('Cancel'),
-        ),
-        PillButton(
-          label: _busy ? 'Linking…' : 'Link',
-          variant: PillVariant.amber,
-          onPressed: _busy ? null : _link,
-        ),
-      ],
+      actions: _sentTo != null
+          ? [
+              PillButton(
+                label: 'Done',
+                variant: PillVariant.amber,
+                onPressed: () => Navigator.of(context).pop(false),
+              ),
+            ]
+          : [
+              TextButton(
+                onPressed: _busy
+                    ? null
+                    : () => Navigator.of(context).pop(false),
+                child: const Text('Cancel'),
+              ),
+              PillButton(
+                label: _busy ? 'Linking…' : 'Link',
+                variant: PillVariant.amber,
+                onPressed: _busy ? null : _link,
+              ),
+            ],
     );
   }
 }

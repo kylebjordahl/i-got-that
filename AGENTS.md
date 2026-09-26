@@ -88,6 +88,20 @@ Backend: Cloudflare Workers + Hono + D1 + Drizzle. Client: Flutter (Riverpod, di
   and clearing it in `tearDown` does *not* work: the framework asserts
   foundation debug vars are unset at the end of the test body, before
   teardown runs.
+- **Toasts must clear the floating nav pill — don't hand-roll a SnackBar's
+  position.** `PersistentAppNav` floats *over* screen content (it's a sibling
+  of the content Navigator in `_AuthedRoot`, not a `bottomNavigationBar`), so a
+  floating SnackBar at Flutter's default inset lands behind it. This shipped
+  broken repeatedly (#220, then the email-invites sheet) because each call site
+  had to remember `margin: snackBarMarginAboveNav(context)`. Now
+  `SnackBarsAboveNav` (in `widgets/app_bottom_nav.dart`) sets that as the
+  theme's `insetPadding` for everything under the signed-in shell, so a plain
+  `ScaffoldMessenger.of(context).showSnackBar(SnackBar(...))` is correct —
+  including one raised from a root-navigator bottom sheet. So: never pass a
+  smaller `margin:`, never mount another `Theme` or `MaterialApp` between
+  `_AuthedRoot` and a screen that resets `snackBarTheme`, and keep
+  `test/snackbar_above_nav_test.dart` passing. Pre-login screens (welcome,
+  onboarding) have no nav and correctly use the default.
 - **Android builds need the Android SDK, which a cloud agent session doesn't
   have** (`dl.google.com` is blocked by the egress proxy). `flutter create`,
   `analyze`, `test` and `dart format` all work there; `flutter build apk` does
@@ -310,6 +324,11 @@ paths in particular).
   deployed env, where it would be login-as-anyone), Sign in with
   Apple (server done; client wiring TODO), and member-claim invites
   (`/invites/:token/accept` links an existing user to a pre-created member).
+- **Never show `users.displayName` to a person.** It's the part of the sign-up
+  email before the @ — and for a Sign in with Apple account behind Hide My
+  Email that's a random relay alias (`hp26rvm9sd`). The name people recognise
+  is the family member's `relationName` (what the family calls them, set in
+  the app); use that, as the email-output verification mail does.
 - **Deployed staging is single-origin**: one Worker on
   `staging.igt.kylebjordahl.com` serving `/api/*` (API, prefix stripped),
   `/app/*` (Flutter web via the `ASSETS` binding), and `/` → `/app/`. Gated on the

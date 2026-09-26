@@ -51,10 +51,15 @@ class ApiClient {
 
   // --- Auth --------------------------------------------------------------
 
-  Future<String?> requestMagicLink(String email) async {
+  /// [purpose] `'link'` asks for an add-a-login-method link, whose token the
+  /// API only accepts on `/auth/link/magic-link`.
+  Future<String?> requestMagicLink(
+    String email, {
+    String purpose = 'sign_in',
+  }) async {
     final res = await _dio.post(
       '/auth/magic-link/request',
-      data: {'email': email},
+      data: {'email': email, 'purpose': purpose},
     );
     return _obj(res)['devToken'] as String?;
   }

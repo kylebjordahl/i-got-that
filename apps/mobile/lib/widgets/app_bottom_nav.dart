@@ -25,6 +25,33 @@ EdgeInsets snackBarMarginAboveNav(BuildContext context) => EdgeInsets.fromLTRB(
   MediaQuery.of(context).padding.bottom + kBottomNavClearance + 10,
 );
 
+/// Makes [snackBarMarginAboveNav] the DEFAULT for every floating SnackBar
+/// shown under the signed-in shell, via the ambient
+/// [SnackBarThemeData.insetPadding] — so a toast clears the nav pill without
+/// each call site having to remember `margin:` (they kept forgetting: #220,
+/// then the email-invites sheet). Wraps the content Navigator in `_AuthedRoot`
+/// (main.dart). It reaches toasts raised from a root-navigator bottom sheet
+/// too: the sheet has no Scaffold of its own, so the SnackBar is built inside
+/// the screen's Scaffold beneath it, under this Theme. An explicit `margin:`
+/// still wins, which is why the older call sites that pass one are unchanged.
+class SnackBarsAboveNav extends StatelessWidget {
+  const SnackBarsAboveNav({super.key, required this.child});
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Theme(
+      data: theme.copyWith(
+        snackBarTheme: theme.snackBarTheme.copyWith(
+          insetPadding: snackBarMarginAboveNav(context),
+        ),
+      ),
+      child: child,
+    );
+  }
+}
+
 /// The floating nav, mounted once above the inner content Navigator (see
 /// `_AuthedRoot` in main.dart) instead of inside any pushed route's own
 /// Scaffold. That keeps the pill itself stationary through every push/pop

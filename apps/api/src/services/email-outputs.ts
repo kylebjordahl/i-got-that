@@ -471,8 +471,16 @@ export async function sendVerification(
   opts: {
     userId: string;
     output: EmailOutputRow;
+    /** The member whose calendar the invites come from. */
     memberName: string;
+    /**
+     * Who set it up, as the family knows them: the requester's own member
+     * name in this family, never the account's display name (for a Sign in
+     * with Apple account that's a Hide My Email relay alias).
+     */
     requesterName: string;
+    /** The requester is setting up invites for their own calendar. */
+    requesterIsMember: boolean;
     /** Absolute base for the link, e.g. `https://host/api`; empty ⇒ relative. */
     linkBase: string;
   },
@@ -501,8 +509,9 @@ export async function sendVerification(
       to: opts.output.email,
       subject: `Confirm calendar invites for ${opts.memberName}`,
       text: [
-        `${opts.requesterName} wants to send calendar invites for ${opts.memberName}'s`,
-        'schedule to this address.',
+        opts.requesterIsMember
+          ? `${opts.requesterName} wants to send you calendar invites for their schedule.`
+          : `${opts.requesterName} wants to send you calendar invites for ${opts.memberName}'s schedule.`,
         '',
         'Nothing will be sent unless you confirm here:',
         link,

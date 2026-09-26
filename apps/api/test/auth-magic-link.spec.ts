@@ -1,7 +1,7 @@
 import { createExecutionContext, env, waitOnExecutionContext } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 import app from '../src/index.js';
-import { call } from './helpers.js';
+import { call, login } from './helpers.js';
 
 /** Like `call`, but with explicit bindings so a test can drop ALLOW_DEV_TOKENS. */
 async function fetchWith(
@@ -15,15 +15,55 @@ async function fetchWith(
   return res;
 }
 
-function requestBody(email: string): RequestInit {
+function requestBody(email: string, purpose?: 'sign_in' | 'link'): RequestInit {
   return {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ email }),
+    body: JSON.stringify({ email, ...(purpose ? { purpose } : {}) }),
+  };
+}
+
+/**
+ * A deployed env's shape: no dev tokens, but a mail binding (captured here)
+ * and a public origin to build the link from.
+ */
+function deployedEnv(sent: { to: string }[] = []): typeof env {
+  return {
+    ...env,
+    ALLOW_DEV_TOKENS: undefined,
+    PUBLIC_ORIGIN: 'https://igt.test',
+    ORGANIZER_EMAIL: 'noreply@igt.test',
+    EMAIL: {
+      send: async (message: { to: string }) => {
+        sent.push({ to: message.to });
+        return { messageId: 'test' };
+      },
+    } as unknown as SendEmail,
   };
 }
 
 describe('magic-link request', () => {
+  it('mails the link where outbound email is bound', async () => {
+    const sent: { to: string }[] = [];
+    const res = await fetchWith(
+      '/auth/magic-link/request',
+      deployedEnv(sent),
+      requestBody('mailed@example.com'),
+    );
+    expect(res.status).toBe(200);
+    expect(sent).toEqual([{ to: 'mailed@example.com' }]);
+  });
+
+  it('refuses rather than claim "sent" when there is no way to deliver the link', async () => {
+    const res = await fetchWith(
+      '/auth/magic-link/request',
+      { ...env, ALLOW_DEV_TOKENS: undefined, EMAIL: undefined },
+      requestBody('nowhere@example.com'),
+    );
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'email_disabled' });
+  });
+
   it('returns the token as `devToken` when ALLOW_DEV_TOKENS is on (local dev + tests)', async () => {
     const res = await call('/auth/magic-link/request', requestBody('dev-token@example.com'));
     expect(res.status).toBe(200);
@@ -37,7 +77,7 @@ describe('magic-link request', () => {
   // Deployed envs leave ALLOW_DEV_TOKENS unset, so they must never disclose the
   // token — otherwise anyone can log in as any email address in one request.
   it('omits `devToken` entirely when ALLOW_DEV_TOKENS is unset', async () => {
-    const bindings = { ...env, ALLOW_DEV_TOKENS: undefined };
+    const bindings = deployedEnv();
     const res = await fetchWith(
       '/auth/magic-link/request',
       bindings,
@@ -50,7 +90,7 @@ describe('magic-link request', () => {
   });
 
   it('does not disclose the token for a non-`true` ALLOW_DEV_TOKENS value', async () => {
-    const bindings = { ...env, ALLOW_DEV_TOKENS: 'false' };
+    const bindings = { ...deployedEnv(), ALLOW_DEV_TOKENS: 'false' };
     const res = await fetchWith(
       '/auth/magic-link/request',
       bindings,
@@ -66,7 +106,7 @@ describe('magic-link request', () => {
     const email = 'withheld-token@example.com';
     const withheld = await fetchWith(
       '/auth/magic-link/request',
-      { ...env, ALLOW_DEV_TOKENS: undefined },
+      deployedEnv(),
       requestBody(email),
     );
     expect(await withheld.json()).toEqual({ sent: true });
@@ -115,5 +155,29 @@ describe('magic-link request', () => {
 
     const afterConsume = await call('/auth/magic-link/request', requestBody(email));
     expect(afterConsume.status).toBe(200);
+  });
+});
+
+describe('add-a-login-method links', () => {
+  it("can only attach to a signed-in account, never sign in (and so can't mint one)", async () => {
+    const email = 'link-only@example.com';
+    const res = await call('/auth/magic-link/request', requestBody(email, 'link'));
+    const { devToken } = (await res.json()) as { devToken: string };
+
+    const verify = await call('/auth/magic-link/verify', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ token: devToken }),
+    });
+    expect(verify.status).toBe(401);
+
+    // Refused without being spent: it still attaches once signed in.
+    const { token: session } = await login('link-only-owner@example.com');
+    const linked = await call('/auth/link/magic-link', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${session}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ token: devToken }),
+    });
+    expect(linked.status).toBe(200);
   });
 });

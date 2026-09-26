@@ -1144,7 +1144,9 @@ export const authTokens = sqliteTable(
   'auth_tokens',
   {
     id: id(),
-    purpose: text('purpose', { enum: ['magic_link'] })
+    // `magic_link` signs in (or attaches); `link_identity` can only attach to
+    // an already-signed-in user (MagicLinkPurpose 'link').
+    purpose: text('purpose', { enum: ['magic_link', 'link_identity'] })
       .notNull()
       .default('magic_link'),
     // The login email this token authorizes (becomes an identity.provider_ref).

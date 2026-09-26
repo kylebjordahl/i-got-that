@@ -1,7 +1,9 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
 
 import 'package:crypto/crypto.dart';
+import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart'
     show defaultTargetPlatform, kIsWeb, TargetPlatform;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -71,11 +73,27 @@ String _generateNonce([int length = 32]) {
   ).join();
 }
 
+/// The token from an emailed magic link, or null: `…/app/#magic=TOKEN`
+/// (sign in) or `…/app/#link-email=TOKEN` (add a login method — only ever
+/// attaches to the signed-in account). Web reads it from the launch fragment
+/// in [AuthController]; native gets the same URL from `app_links` (iOS
+/// Universal Links cover `/app/*`).
+({String token, bool linkOnly})? magicTokenFromUri(Uri uri) {
+  if (uri.fragment.isEmpty) return null;
+  final params = Uri.splitQueryString(uri.fragment);
+  final link = params['link-email'];
+  if (link != null && link.isNotEmpty) return (token: link, linkOnly: true);
+  final magic = params['magic'];
+  if (magic != null && magic.isNotEmpty) return (token: magic, linkOnly: false);
+  return null;
+}
+
 class AuthState {
   const AuthState({
     this.sessionToken,
     this.user,
     this.error,
+    this.notice,
     this.restoring = false,
   });
   final String? sessionToken;
@@ -83,6 +101,10 @@ class AuthState {
 
   /// A login error to surface (e.g. an `auth_error` from the Apple callback).
   final String? error;
+
+  /// A one-off success message from a completed link (e.g. an email added as
+  /// a login method).
+  final String? notice;
 
   /// True while startup restore (fragment, cookie, or Keychain) is in flight
   /// — lets the UI hold off rendering the login screen for the one round trip
@@ -97,9 +119,14 @@ class AuthState {
 
 class AuthController extends StateNotifier<AuthState> {
   AuthController(this._api) : super(const AuthState(restoring: true)) {
-    _restore();
+    _restored = _restore();
   }
   final ApiClient _api;
+
+  /// Completes once startup restore has settled [state]. An emailed magic link
+  /// waits on it, so a cold-start link can't race the restore and be
+  /// overwritten by it (or mistake a still-restoring user for signed out).
+  late final Future<void> _restored;
 
   /// On startup: first pick up a session (or error) the Apple callback left in
   /// the URL fragment (web only); failing that, restore per platform — web
@@ -114,8 +141,22 @@ class AuthController extends StateNotifier<AuthState> {
     // session cookie in place, so we just let the fragment be stripped and fall
     // through to the cookie restore below — the freshly linked identity /
     // connected account is picked up on the reload.
-    final (:session, :error, linked: _, connected: _) =
+    final (:session, :error, linked: _, connected: _, :magic, :linkEmail) =
         consumeWebAuthFragment();
+    // An emailed link's token (`#magic=…`) is completed once restore has
+    // settled whether someone is already signed in; see [completeMagicLink].
+    // Deferred a microtask: this runs inside the constructor's call to
+    // _restore, before [_restored] is assigned.
+    if (magic != null || linkEmail != null) {
+      unawaited(
+        Future.microtask(
+          () => completeMagicLink(
+            (linkEmail ?? magic)!,
+            linkOnly: linkEmail != null,
+          ),
+        ),
+      );
+    }
     if (session != null) {
       _api.setSession(session);
       try {
@@ -301,24 +342,73 @@ class AuthController extends StateNotifier<AuthState> {
     return (idToken: idToken, serverAuthCode: account.serverAuthCode);
   }
 
-  /// Dev flow: request a magic link and immediately verify with the returned
-  /// dev token. Only local dev hands the token back (the API gates it on
-  /// ALLOW_DEV_TOKENS); anywhere else the token is emailed and the link deep-
-  /// links back into verify().
-  Future<void> loginWithEmail(String email) async {
+  /// Request an add-a-login-method link for [email]: its token can only be
+  /// attached to this account, never used to sign in. Returns the token when
+  /// the API hands it straight back (local dev), else null — it was emailed.
+  Future<String?> requestLinkEmail(String email) =>
+      _api.requestMagicLink(email, purpose: 'link');
+
+  /// Request a magic link for [email]. Returns true when that already signed
+  /// the user in — only local dev, where the API hands the token straight back
+  /// (`devToken`, gated on ALLOW_DEV_TOKENS) — and false when the link was
+  /// emailed: the user finishes by opening it, which lands in
+  /// [completeMagicLink].
+  Future<bool> loginWithEmail(String email) async {
     final devToken = await _api.requestMagicLink(email);
-    if (devToken == null) {
-      throw Exception(
-        'Magic link sent — open the link in your email to finish signing in.',
+    if (devToken == null) return false;
+    await _signInWithMagicToken(devToken);
+    return true;
+  }
+
+  /// Finish an emailed link — from the URL fragment on web, or the same URL
+  /// handed to the app as a Universal Link on iOS. Already signed in, either
+  /// kind adds the address as another way into this account, rather than
+  /// silently switching to whichever account owns it. Signed out, a sign-in
+  /// link signs in; a [linkOnly] one (from "Add a login method") can't — the
+  /// API refuses it, which would otherwise create a second account — so it
+  /// asks the user to sign in first, leaving the token usable.
+  Future<void> completeMagicLink(String token, {bool linkOnly = false}) async {
+    await _restored;
+    if (linkOnly && !state.isAuthed) {
+      state = const AuthState(
+        error:
+            'Sign in first, then open the link again to add that email to '
+            'your account.',
+      );
+      return;
+    }
+    try {
+      if (state.isAuthed) {
+        await _api.linkMagicLink(token);
+        state = AuthState(
+          sessionToken: state.sessionToken,
+          user: state.user,
+          notice: 'Email added — you can now sign in with it.',
+        );
+      } else {
+        await _signInWithMagicToken(token);
+      }
+    } on DioException catch (e) {
+      final code = (e.response?.data as Map<String, dynamic>?)?['error'];
+      state = AuthState(
+        sessionToken: state.sessionToken,
+        user: state.user,
+        error: code == 'identity_linked_to_other_user'
+            ? 'That email already signs in to a different account.'
+            : 'That sign-in link has expired or was already used. Request a '
+                  'new one.',
       );
     }
-    final res = await _api.verifyMagicLink(devToken);
-    final token = res['sessionToken'] as String;
+  }
+
+  Future<void> _signInWithMagicToken(String token) async {
+    final res = await _api.verifyMagicLink(token);
+    final session = res['sessionToken'] as String;
     state = AuthState(
-      sessionToken: token,
+      sessionToken: session,
       user: res['user'] as Map<String, dynamic>,
     );
-    await _persistToken(token);
+    await _persistToken(session);
   }
 
   /// Native-only: write the session token to the Keychain so it survives an
