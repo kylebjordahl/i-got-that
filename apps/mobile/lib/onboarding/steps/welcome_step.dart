@@ -1,3 +1,4 @@
+import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -22,10 +23,14 @@ class _WelcomeStepState extends ConsumerState<WelcomeStep> {
   bool _busy = false;
   String? _error;
 
+  /// "Check your email" after a magic link was mailed rather than signed in.
+  String? _notice;
+
   Future<void> _run(Future<void> Function() action) async {
     setState(() {
       _busy = true;
       _error = null;
+      _notice = null;
     });
     try {
       await action();
@@ -57,11 +62,31 @@ class _WelcomeStepState extends ConsumerState<WelcomeStep> {
   Future<void> _magicLink() async {
     final email = await _promptEmail();
     if (email == null || email.trim().isEmpty) return;
-    await _run(
-      () => ref
-          .read(authControllerProvider.notifier)
-          .loginWithEmail(email.trim()),
-    );
+    final address = email.trim();
+    await _run(() async {
+      try {
+        final signedIn = await ref
+            .read(authControllerProvider.notifier)
+            .loginWithEmail(address);
+        if (!signedIn && mounted) {
+          setState(
+            () => _notice =
+                'Check your email: we sent a sign-in link to $address. It '
+                'works once, for 15 minutes.',
+          );
+        }
+      } on DioException catch (e) {
+        final code = (e.response?.data as Map<String, dynamic>?)?['error'];
+        throw switch (code) {
+          'email_disabled' => 'Email sign-in isn\'t available on this server.',
+          'too_many_requests' =>
+            'Too many links requested for that address. Use one already '
+                'sent, or wait 15 minutes.',
+          'invalid' => 'Enter a valid email address.',
+          _ => 'Couldn\'t send the link. Try again.',
+        };
+      }
+    });
   }
 
   Future<String?> _promptEmail() async {
@@ -147,6 +172,13 @@ class _WelcomeStepState extends ConsumerState<WelcomeStep> {
                   ),
                 ),
                 const Spacer(),
+                if (_notice != null && error == null) ...[
+                  Text(
+                    _notice!,
+                    style: font(kBodyFont, 12.5, 500, color: AppColors.green),
+                  ),
+                  const SizedBox(height: 12),
+                ],
                 if (error != null) ...[
                   Text(
                     error,

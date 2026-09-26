@@ -677,11 +677,11 @@ querying Play for the current high-water mark.
 
 ### 12. Outbound email (email invite outputs)
 
-Email invite outputs send through Cloudflare Email Service via the `send_email`
-binding `EMAIL`, which is declared for `staging` and `production` in
-`wrangler.jsonc`. Without the binding the whole feature is off (adding an output
-returns `503 email_disabled`). Magic-link login does **not** use it yet; it
-still only works locally.
+Email invite outputs and magic-link sign-in send through Cloudflare Email
+Service via the `send_email` binding `EMAIL`, which is declared for `staging`
+and `production` in `wrangler.jsonc`. Without the binding both are off: adding
+an output, or requesting a sign-in link, returns `503 email_disabled` (local dev
+and tests hand the token back as `devToken` instead).
 
 **Do steps 1–3 before merging a change that adds the binding.** Until then the
 Worker can't send, and nobody has checked whether a deploy that declares the
@@ -774,10 +774,8 @@ cd apps/api && pnpm wrangler tail --env staging        # live logs
   the optional `OUTBOUND_ALLOWED_HOSTS` var to a comma-separated list of
   `host` / `host:port` entries — that's the only escape hatch; there is no
   "disable the guard" switch.
-- **Magic-link login doesn't send mail yet** (`getMailer` in
-  `apps/api/src/lib/mailer.ts` is still the dev stub), so in a deployed env use
-  **Sign in with Apple/Google** or the **invite link** flow. Outbound email for
-  email invite outputs is covered in §12.
+- **Outbound email** (magic-link sign-in and email invite outputs) is covered
+  in §12.
 - The **web client** is built in CI and served by the same Worker under `/app`
   (see §7) — no separate Pages project. Production gets it once you add the
   `routes` + `assets` blocks under `env.production`.

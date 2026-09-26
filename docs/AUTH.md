@@ -19,7 +19,7 @@ user:
 | Route | What it does |
 | --- | --- |
 | `GET /auth/identities` | List the caller's linked methods (`{ id, provider, providerRef }`). |
-| `POST /auth/link/magic-link` `{ token }` | Request a magic link for the new email as usual, then post that token here (instead of `/magic-link/verify`) to attach the `magic_link` identity to the current user. |
+| `POST /auth/link/magic-link` `{ token }` | Request a magic link for the new email with `purpose: 'link'`, then post that token here (instead of `/magic-link/verify`) to attach the `magic_link` identity to the current user. A `link` token is refused by `/magic-link/verify` (without being spent), so opening it while signed out can't create a second account. The emailed link is `/app/#link-email=<token>`; the app posts it here when signed in, and otherwise asks the user to sign in and open it again. |
 | `POST /auth/link/apple` `{ identityToken }` | Verify a native Apple token (same as `/apple`) and attach the `apple` identity. |
 | `DELETE /auth/identities/:id` | Unlink a method. Blocked (`409 last_identity`) when it's the only one — removing it would orphan the account. |
 
@@ -103,7 +103,7 @@ shape, different storage primitive per platform.
 
 | Method | State | Notes |
 | --- | --- | --- |
-| **Magic link** (email) | Fully implemented | Needs outbound email, which is **off** (no paid plan). In **local dev** only — gated on the `ALLOW_DEV_TOKENS` binding, see below — the request endpoint returns the token directly (`devToken`) so you can log in without a mailbox. **No deployed environment does**, so magic-link login is effectively unusable on staging/production until email is enabled. |
+| **Magic link** (email) | Fully implemented | Mailed through the `EMAIL` binding (see DEPLOYMENT.md §12) as `<PUBLIC_ORIGIN>/app/#magic=<token>`. The token rides in the URL **fragment**, like the Apple/Google `#session=` handoff, so it never reaches a server log or `Referer`. The web app (and iOS, via Universal Links on `/app/*`) consumes it on launch: signed out, it signs in; already signed in, it attaches the address to the current account instead of switching accounts. Tokens work once and expire in 15 minutes. Without a mail binding, the request returns `503 email_disabled`, except in **local dev**, where the token comes back as `devToken` (gated on `ALLOW_DEV_TOKENS`, see below). |
 | **Sign in with Apple** | Server + web redirect flow **implemented + tested**; native (iOS) client wiring + Apple config required | The primary login for deployed environments (works without email). |
 | **Sign in with Google** | Server + web redirect flow **implemented + tested**; native (iOS) route + client wired (CI passes `GOOGLE_SERVER_CLIENT_ID` per flavor), needs an iOS OAuth client per flavor in the Cloud Console before it'll actually run | Also **auto-connects the user's Google Calendar** as part of logging in (the same consent grants calendar access). |
 
@@ -124,8 +124,8 @@ Wrangler's named envs do **not** inherit top-level vars, so `env.staging` and
 `tools/seed-dev.zsh` depends on `devToken` and therefore only works against
 local dev (its default `BASE` is already `http://localhost:8787`).
 
-Until outbound email is enabled (#9), deployed logins go through **Sign in with
-Apple / Google**, which are wired on staging and production.
+Deployed envs sign in with the emailed link, or with **Sign in with Apple /
+Google**.
 
 ## Sign in with Google
 
@@ -519,10 +519,10 @@ uses a small server-side bounce instead of a manual copy/paste:
   error path: the Worker redirects to a scheme nothing is listening for, and
   the user is left on a blank browser sheet.
 
-## Onboarding a caretaker (no email)
-Until email is enabled, add caretakers with the **invite/share-link** flow (see
-the Family tab): an admin creates the member, then shares a link, and the
-invitee signs in (Apple or Google — magic link needs email, which is off) and is linked to
+## Onboarding a caretaker
+Add caretakers with the **invite/share-link** flow (see the Family tab): an
+admin creates the member, then shares a link, and the invitee signs in (Apple,
+Google or an emailed magic link) and is linked to
 that member — the second-caretaker join flow (`JoinFlow`) then walks them
 through connecting one calendar. See the `/invites` endpoints.
 

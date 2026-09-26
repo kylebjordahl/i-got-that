@@ -249,8 +249,18 @@ export function geoKey(geo: GeoLocation | null | undefined): string {
 
 // --- API input schemas (v1 subset) --------------------------------------
 
+/**
+ * What an emailed magic link is for. `sign_in` (the default) finds or creates
+ * the account for the address. `link` only attaches the address to an account
+ * that's already signed in ("Add a login method"): its token is refused by
+ * `/magic-link/verify`, so opening it signed-out can't mint a second account.
+ */
+export const MagicLinkPurpose = z.enum(['sign_in', 'link']);
+export type MagicLinkPurpose = z.infer<typeof MagicLinkPurpose>;
+
 export const MagicLinkRequestInput = z.object({
   email: z.string().email(),
+  purpose: MagicLinkPurpose.default('sign_in'),
 });
 export type MagicLinkRequestInput = z.infer<typeof MagicLinkRequestInput>;
 

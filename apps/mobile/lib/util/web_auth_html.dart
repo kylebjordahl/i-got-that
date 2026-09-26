@@ -7,17 +7,31 @@ import 'dart:html' as html;
 /// Navigate the whole page to [url] to begin an Apple / Google redirect flow.
 void startWebRedirect(String url) => html.window.location.assign(url);
 
-/// Consume `session` / `auth_error` / `linked` / `connected` from the URL
-/// fragment an auth callback redirected us to (`/app/#session=…`, or
+/// Consume `session` / `auth_error` / `linked` / `connected` / `magic` / `link-email` from
+/// the URL fragment an auth callback redirected us to (`/app/#session=…`,
 /// `#linked=apple` / `#connected=google` for the link-a-method / connect-a-
-/// calendar flows), then strip the fragment so nothing lingers in the address
-/// bar or browser history.
-({String? session, String? error, String? linked, String? connected})
+/// calendar flows, or `#magic=…` / `#link-email=…` from an emailed link), then strip the
+/// fragment so nothing lingers in the address bar or browser history.
+({
+  String? session,
+  String? error,
+  String? linked,
+  String? connected,
+  String? magic,
+  String? linkEmail,
+})
 consumeWebAuthFragment() {
   final loc = html.window.location;
   final raw = loc.hash.startsWith('#') ? loc.hash.substring(1) : loc.hash;
   if (raw.isEmpty) {
-    return (session: null, error: null, linked: null, connected: null);
+    return (
+      session: null,
+      error: null,
+      linked: null,
+      connected: null,
+      magic: null,
+      linkEmail: null,
+    );
   }
 
   final params = Uri.splitQueryString(raw);
@@ -25,8 +39,22 @@ consumeWebAuthFragment() {
   final error = params['auth_error'];
   final linked = params['linked'];
   final connected = params['connected'];
-  if (session != null || error != null || linked != null || connected != null) {
+  final magic = params['magic'];
+  final linkEmail = params['link-email'];
+  if (session != null ||
+      error != null ||
+      linked != null ||
+      connected != null ||
+      magic != null ||
+      linkEmail != null) {
     html.window.history.replaceState(null, '', '${loc.pathname}${loc.search}');
   }
-  return (session: session, error: error, linked: linked, connected: connected);
+  return (
+    session: session,
+    error: error,
+    linked: linked,
+    connected: connected,
+    magic: magic,
+    linkEmail: linkEmail,
+  );
 }

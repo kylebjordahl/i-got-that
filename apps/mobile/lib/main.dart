@@ -28,6 +28,7 @@ class CaretakerApp extends ConsumerStatefulWidget {
 
 class _CaretakerAppState extends ConsumerState<CaretakerApp> {
   StreamSubscription<Uri>? _linkSub;
+  final _messenger = GlobalKey<ScaffoldMessengerState>();
 
   @override
   void initState() {
@@ -50,9 +51,18 @@ class _CaretakerAppState extends ConsumerState<CaretakerApp> {
     _linkSub = appLinks.uriLinkStream.listen(_onLink, onError: (_) {});
   }
 
-  /// Route an incoming deep link into the join flow by seeding the invite token
-  /// provider (main.dart's build watches it). Non-invite links are ignored.
+  /// Route an incoming deep link: an emailed magic link finishes sign-in (or
+  /// adds the address to the signed-in account); an invite link seeds the
+  /// invite token provider (main.dart's build watches it). Anything else is
+  /// ignored.
   void _onLink(Uri uri) {
+    final magic = magicTokenFromUri(uri);
+    if (magic != null) {
+      ref
+          .read(authControllerProvider.notifier)
+          .completeMagicLink(magic.token, linkOnly: magic.linkOnly);
+      return;
+    }
     final token = inviteTokenFromUri(uri);
     if (token != null && mounted) {
       ref.read(activeInviteTokenProvider.notifier).state = token;
@@ -75,8 +85,19 @@ class _CaretakerAppState extends ConsumerState<CaretakerApp> {
         ref.read(onboardingActiveProvider.notifier).state = null;
       }
     });
+    // Outcomes of a magic link opened while signed in (an address added, or
+    // a link that had expired) have no screen of their own; say them here.
+    ref.listen(authControllerProvider, (prev, next) {
+      final message = next.notice ?? (next.isAuthed ? next.error : null);
+      final previous =
+          prev?.notice ?? (prev?.isAuthed ?? false ? prev?.error : null);
+      if (message != null && message != previous) {
+        _messenger.currentState?.showSnackBar(SnackBar(content: Text(message)));
+      }
+    });
     final inviteToken = ref.watch(activeInviteTokenProvider);
     return MaterialApp(
+      scaffoldMessengerKey: _messenger,
       title: 'I Got That',
       debugShowCheckedModeBanner: false,
       theme: buildAppTheme(),

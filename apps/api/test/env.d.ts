@@ -8,6 +8,9 @@ declare module 'cloudflare:test' {
     KEK_V1: string;
     KEK_CURRENT_VERSION?: string;
     ORGANIZER_EMAIL: string;
+    // Unbound in tests; declared so a test can supply a deployed env's shape.
+    PUBLIC_ORIGIN?: string;
+    EMAIL?: SendEmail;
     ALLOW_DEV_TOKENS?: string;
     OPS_DASHBOARD_PASSWORD?: string;
     TEST_MIGRATIONS: D1Migration[];

@@ -20,6 +20,7 @@ import {
   googleOAuthConfigured,
   revokeGoogleToken,
 } from '../lib/google-oauth.js';
+import { emailEnabled } from '../lib/email.js';
 import { getMailer } from '../lib/mailer.js';
 import { clearSessionCookie, sessionToken, setSessionCookie } from '../lib/session-cookie.js';
 import { authMiddleware } from '../middleware/auth.js';
@@ -65,9 +66,19 @@ authRoutes.post('/magic-link/request', async (c) => {
     return c.json({ error: 'invalid', issues: parsed.error.issues }, 400);
   }
 
+  // With no way to mail the link (and no dev token to hand back instead), a
+  // request would claim "sent" and deliver nothing. Say so instead.
+  if (!emailEnabled(c.env) && c.env.ALLOW_DEV_TOKENS !== 'true') {
+    return c.json({ error: 'email_disabled' }, 503);
+  }
+
   let rawToken: string;
   try {
-    rawToken = await requestMagicLink(getDb(c.env.DB), parsed.data.email);
+    rawToken = await requestMagicLink(
+      getDb(c.env.DB),
+      parsed.data.email,
+      parsed.data.purpose,
+    );
   } catch (err) {
     if (err instanceof MagicLinkCapExceededError) {
       return c.json({ error: 'too_many_requests' }, 429);
@@ -77,6 +88,7 @@ authRoutes.post('/magic-link/request', async (c) => {
   await getMailer(c.env).sendMagicLink({
     to: parsed.data.email,
     token: rawToken,
+    purpose: parsed.data.purpose,
   });
 
   // Explicit opt-in binding, defaulting to off: returning the raw token is
