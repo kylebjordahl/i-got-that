@@ -15,13 +15,16 @@ import {
 } from '@igt/domain';
 import { type Context, Hono } from 'hono';
 import type { HonoEnv } from '../env.js';
-import { emailEnabled, getOutbox } from '../lib/email.js';
+import { emailEnabled, emailLinkBase, getOutbox } from '../lib/email.js';
 import { requireFamilyMember } from '../middleware/auth.js';
 import {
   consumeVerification,
   EMAIL_OUTPUTS_PER_MEMBER,
   EMAIL_VERIFICATION_DAILY_CAP,
   peekVerification,
+  recipientByToken,
+  RecipientUnsubscribedError,
+  setUnsubscribed,
   cancelInvites,
   sendVerification,
   upcomingInvites,
@@ -108,11 +111,6 @@ async function unknownLinkIds(
   return filters.sourceLinkIds.filter((id) => !ok.has(id));
 }
 
-/** `<PUBLIC_ORIGIN>/api` in the single-origin deploy; relative locally. */
-function linkBase(env: HonoEnv['Bindings']): string {
-  return env.PUBLIC_ORIGIN ? `${env.PUBLIC_ORIGIN.replace(/\/$/, '')}/api` : '';
-}
-
 /**
  * Without a mail binding a verification can't go out, so a new address could
  * never be confirmed. Dev/tests (dev tokens allowed) get the capture-only
@@ -135,7 +133,7 @@ async function mailVerification(
     output,
     memberName: clip(member.relationName),
     requesterName: clip(c.get('user').displayName),
-    linkBase: linkBase(c.env),
+    linkBase: emailLinkBase(c.env),
   });
   return c.env.ALLOW_DEV_TOKENS === 'true' ? { devToken: raw } : {};
 }
@@ -209,6 +207,9 @@ emailOutputRoutes.post('/members/:memberId/email-outputs', async (c) => {
   } catch (err) {
     // Nothing was mailed, so don't leave an output that can never verify.
     await db.delete(emailOutputs).where(eq(emailOutputs.id, output.id));
+    if (err instanceof RecipientUnsubscribedError) {
+      return c.json({ error: 'recipient_unsubscribed' }, 409);
+    }
     if (err instanceof VerificationCapExceededError) {
       return c.json({ error: 'too_many_requests', limit: EMAIL_VERIFICATION_DAILY_CAP }, 429);
     }
@@ -266,6 +267,9 @@ emailOutputRoutes.post(
       const dev = await mailVerification(c, db, output, member);
       return c.json({ verificationSent: true, ...dev });
     } catch (err) {
+      if (err instanceof RecipientUnsubscribedError) {
+        return c.json({ error: 'recipient_unsubscribed' }, 409);
+      }
       if (err instanceof VerificationCapExceededError) {
         return c.json({ error: 'too_many_requests', limit: EMAIL_VERIFICATION_DAILY_CAP }, 429);
       }
@@ -286,7 +290,10 @@ emailOutputRoutes.delete('/members/:memberId/email-outputs/:outputId', async (c)
   const upcoming = await upcomingInvites(db, output.id);
   await db.delete(emailOutputs).where(eq(emailOutputs.id, output.id));
   if (upcoming.length > 0 && emailEnabled(c.env)) {
-    deferSync(c.executionCtx, cancelInvites(getOutbox(c.env), output.email, upcoming));
+    deferSync(
+      c.executionCtx,
+      cancelInvites(db, getOutbox(c.env), output.email, upcoming, emailLinkBase(c.env)),
+    );
   }
   return c.json({ ok: true });
 });
@@ -333,4 +340,68 @@ emailVerifyRoutes.post('/verify/:token', async (c) => {
   if (!outcome.ok) return c.html(page('Link not usable', `<p>${FAILURE[outcome.reason]}</p>`), 410);
   enqueueReconcile(c, { kind: 'member', memberId: outcome.output.familyMemberId });
   return c.html(page('Confirmed', '<p>Calendar invites will now arrive at this address.</p>'));
+});
+
+// --- Public unsubscribe link ---------------------------------------------------
+
+/**
+ * The unsubscribe link in every mail an email output sends (verification and
+ * invites), mounted at /email. GET shows a button, for the same prefetch
+ * reason as verification; POST unsubscribes — which is also what a mail
+ * client's one-click "Unsubscribe" sends (RFC 8058: a POST with body
+ * `List-Unsubscribe=One-Click`, no confirmation page), so POST must act
+ * without further interaction. The token is the credential and only covers
+ * this one address.
+ */
+export const emailUnsubscribeRoutes = new Hono<HonoEnv>();
+
+emailUnsubscribeRoutes.get('/unsubscribe/:token', async (c) => {
+  const recipient = await recipientByToken(getDb(c.env.DB), c.req.param('token'));
+  c.header('Cache-Control', 'no-store');
+  c.header('Referrer-Policy', 'no-referrer');
+  if (!recipient) return c.html(page('Link not usable', `<p>${FAILURE.invalid}</p>`), 404);
+  if (recipient.unsubscribedAt) {
+    return c.html(
+      page(
+        'Unsubscribed',
+        '<p>This address gets no calendar invites or confirmation requests.</p><form method="post" action="../resubscribe/' +
+          encodeURIComponent(c.req.param('token')) +
+          '"><button type="submit">Allow them again</button></form>',
+      ),
+    );
+  }
+  return c.html(
+    page(
+      'Unsubscribe',
+      '<p>Stop all calendar invites and confirmation requests to this address, from everyone who uses the app.</p><form method="post"><button type="submit">Unsubscribe</button></form>',
+    ),
+  );
+});
+
+emailUnsubscribeRoutes.post('/unsubscribe/:token', async (c) => {
+  const email = await setUnsubscribed(getDb(c.env.DB), c.req.param('token'), true);
+  c.header('Cache-Control', 'no-store');
+  c.header('Referrer-Policy', 'no-referrer');
+  if (!email) return c.html(page('Link not usable', `<p>${FAILURE.invalid}</p>`), 404);
+  return c.html(
+    page(
+      'Unsubscribed',
+      '<p>No more calendar invites or confirmation requests will be sent to this address. Invites already in your calendar stay there.</p><form method="post" action="../resubscribe/' +
+        encodeURIComponent(c.req.param('token')) +
+        '"><button type="submit">Undo</button></form>',
+    ),
+  );
+});
+
+emailUnsubscribeRoutes.post('/resubscribe/:token', async (c) => {
+  const email = await setUnsubscribed(getDb(c.env.DB), c.req.param('token'), false);
+  c.header('Cache-Control', 'no-store');
+  c.header('Referrer-Policy', 'no-referrer');
+  if (!email) return c.html(page('Link not usable', `<p>${FAILURE.invalid}</p>`), 404);
+  return c.html(
+    page(
+      'Invites allowed again',
+      '<p>Invites you had already confirmed will resume. Nothing new is sent to this address unless you confirm it.</p>',
+    ),
+  );
 });

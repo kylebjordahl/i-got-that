@@ -34,6 +34,14 @@ CREATE TABLE `email_outputs` (
 --> statement-breakpoint
 CREATE UNIQUE INDEX `email_outputs_member_email_uq` ON `email_outputs` (`family_member_id`,`email`);--> statement-breakpoint
 CREATE INDEX `email_outputs_family_idx` ON `email_outputs` (`family_id`);--> statement-breakpoint
+CREATE TABLE `email_recipients` (
+	`email` text PRIMARY KEY NOT NULL,
+	`unsubscribe_token` text NOT NULL,
+	`unsubscribed_at` integer,
+	`created_at` integer NOT NULL
+);
+--> statement-breakpoint
+CREATE UNIQUE INDEX `email_recipients_unsubscribe_token_unique` ON `email_recipients` (`unsubscribe_token`);--> statement-breakpoint
 CREATE TABLE `email_verifications` (
 	`id` text PRIMARY KEY NOT NULL,
 	`user_id` text NOT NULL,

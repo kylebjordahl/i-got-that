@@ -263,7 +263,11 @@ paths in particular).
   doesn't refund it); and a reconcile only invites events that haven't ended
   and start within `EMAIL_INVITE_HORIZON_DAYS`, at most
   `EMAIL_INVITE_SENDS_PER_RUN` per output, nearest first. A finished event is
-  forgotten, never cancelled. The whole path is skipped unless the `EMAIL`
+  forgotten, never cancelled. Every mail carries an unsubscribe link (plus one-click
+  `List-Unsubscribe` headers) keyed to the address in `email_recipients`; an
+  opted-out address gets nothing from any output — cancellations included —
+  and can't be sent a new verification, so check `recipientFor` before any
+  new kind of send. The whole path is skipped unless the `EMAIL`
   binding exists (`emailEnabled`): with a capture-only outbox the rows would
   record invites as sent that never left. Header values in `libs/delivery`'s
   MIME builder are sanitised there because subjects are feed-controlled.

@@ -4,6 +4,7 @@ import {
   type Db,
   emailOutputMirrors,
   emailOutputs,
+  emailRecipients,
   emailVerifications,
   eq,
   gt,
@@ -17,6 +18,7 @@ import {
   type DeliveryEvent,
   type DeliveryTarget,
   EmailImipProvider,
+  unsubscribeHeaders,
 } from '@igt/delivery';
 import { geoKey, type EmailOutputEventKind, type EmailOutputFilters } from '@igt/domain';
 import type { Outbox } from '../lib/email.js';
@@ -120,8 +122,62 @@ function emptyResult(): SyncResult {
   return { targets: 0, created: 0, updated: 0, removed: 0, errors: [] };
 }
 
-function target(output: EmailOutputRow): DeliveryTarget {
-  return { method: 'email', addressOrUrl: output.email };
+function target(email: string, unsubscribeUrl: string): DeliveryTarget {
+  return { method: 'email', addressOrUrl: email, unsubscribeUrl };
+}
+
+// --- Recipients & opting out ---------------------------------------------------
+
+type EmailRecipientRow = typeof emailRecipients.$inferSelect;
+
+/** The recipient row for `email`, created (with its unsubscribe token) on first use. */
+export async function recipientFor(db: Db, email: string): Promise<EmailRecipientRow> {
+  await db
+    .insert(emailRecipients)
+    .values({ email, unsubscribeToken: randomToken() })
+    .onConflictDoNothing();
+  return (
+    await db.select().from(emailRecipients).where(eq(emailRecipients.email, email)).limit(1)
+  )[0]!;
+}
+
+/** The link in every mail to a recipient; `linkBase` as for verification links. */
+export function unsubscribeUrl(linkBase: string, recipient: EmailRecipientRow): string {
+  return `${linkBase}/email/unsubscribe/${recipient.unsubscribeToken}`;
+}
+
+/**
+ * Opt the address behind `token` out (or back in). Returns the address, or
+ * null for an unknown token. Opting back in only lifts the block: nothing is
+ * re-sent until the next reconcile, and outputs keep their own verification.
+ */
+export async function setUnsubscribed(
+  db: Db,
+  token: string,
+  unsubscribed: boolean,
+  now = new Date(),
+): Promise<string | null> {
+  const row = (
+    await db
+      .update(emailRecipients)
+      .set({ unsubscribedAt: unsubscribed ? now : null })
+      .where(eq(emailRecipients.unsubscribeToken, token))
+      .returning({ email: emailRecipients.email })
+  )[0];
+  return row?.email ?? null;
+}
+
+export async function recipientByToken(
+  db: Db,
+  token: string,
+): Promise<EmailRecipientRow | undefined> {
+  return (
+    await db
+      .select()
+      .from(emailRecipients)
+      .where(eq(emailRecipients.unsubscribeToken, token))
+      .limit(1)
+  )[0];
 }
 
 /**
@@ -134,6 +190,7 @@ export async function syncMemberEmailOutputs(
   outbox: Outbox,
   memberId: string,
   now: Date = new Date(),
+  linkBase = '',
 ): Promise<SyncResult> {
   const result = emptyResult();
   const outputs = await db
@@ -166,6 +223,11 @@ export async function syncMemberEmailOutputs(
 
   for (const output of verified) {
     result.targets++;
+    const recipient = await recipientFor(db, output.email);
+    // Opted out: nothing at all, not even cancellations. Mirror rows are kept
+    // so opting back in resumes by updating rather than re-inviting.
+    if (recipient.unsubscribedAt) continue;
+    const to = target(output.email, unsubscribeUrl(linkBase, recipient));
     const desired = output.active
       ? candidates.filter((e) =>
           matchesEmailOutputFilters(
@@ -201,7 +263,7 @@ export async function syncMemberEmailOutputs(
             end: m.eventEndsAt,
             summary: m.summary,
           },
-          target(output),
+          to,
         );
         await db.delete(emailOutputMirrors).where(eq(emailOutputMirrors.id, m.id));
         result.removed++;
@@ -237,7 +299,7 @@ export async function syncMemberEmailOutputs(
         timezone,
       };
       try {
-        await provider.upsert(invite, target(output));
+        await provider.upsert(invite, to);
       } catch (err) {
         result.errors.push({ memberId, calendarEventId: event.id, error: String(err) });
         continue;
@@ -275,6 +337,7 @@ export async function syncFamilyEmailOutputs(
   outbox: Outbox,
   familyId: string,
   now: Date = new Date(),
+  linkBase = '',
 ): Promise<SyncResult> {
   const result = emptyResult();
   const rows = await db
@@ -282,7 +345,7 @@ export async function syncFamilyEmailOutputs(
     .from(emailOutputs)
     .where(eq(emailOutputs.familyId, familyId));
   for (const { memberId } of rows) {
-    const r = await syncMemberEmailOutputs(db, outbox, memberId, now);
+    const r = await syncMemberEmailOutputs(db, outbox, memberId, now, linkBase);
     result.targets += r.targets;
     result.created += r.created;
     result.updated += r.updated;
@@ -314,10 +377,15 @@ export async function upcomingInvites(
  * Best-effort per invite.
  */
 export async function cancelInvites(
+  db: Db,
   outbox: Outbox,
   email: string,
   rows: EmailOutputMirrorRow[],
+  linkBase = '',
 ): Promise<void> {
+  const recipient = await recipientFor(db, email);
+  if (recipient.unsubscribedAt) return;
+  const to = target(email, unsubscribeUrl(linkBase, recipient));
   const provider = new EmailImipProvider(outbox.send, outbox.from);
   for (const m of rows) {
     try {
@@ -329,7 +397,7 @@ export async function cancelInvites(
           end: m.eventEndsAt,
           summary: m.summary,
         },
-        { method: 'email', addressOrUrl: email },
+        to,
       );
     } catch {
       // best-effort
@@ -338,6 +406,14 @@ export async function cancelInvites(
 }
 
 // --- Verification ------------------------------------------------------------
+
+/** The address opted out of everything email outputs send. */
+export class RecipientUnsubscribedError extends Error {
+  constructor() {
+    super('recipient has unsubscribed');
+    this.name = 'RecipientUnsubscribedError';
+  }
+}
 
 export class VerificationCapExceededError extends Error {
   constructor() {
@@ -402,9 +478,13 @@ export async function sendVerification(
   },
   now = new Date(),
 ): Promise<string> {
+  const recipient = await recipientFor(db, opts.output.email);
+  // Checked before the cap, so a refused address doesn't spend the budget.
+  if (recipient.unsubscribedAt) throw new RecipientUnsubscribedError();
   if ((await verificationsSentToday(db, opts.userId, now)) >= EMAIL_VERIFICATION_DAILY_CAP) {
     throw new VerificationCapExceededError();
   }
+  const optOut = unsubscribeUrl(opts.linkBase, recipient);
   const raw = randomToken();
   await db.insert(emailVerifications).values({
     userId: opts.userId,
@@ -428,7 +508,10 @@ export async function sendVerification(
         link,
         '',
         "If you weren't expecting this, ignore it — the link expires in 48 hours.",
+        '',
+        `Never get calendar invites or confirmation requests at this address: ${optOut}`,
       ].join('\n'),
+      headers: unsubscribeHeaders(optOut),
     }),
     opts.output.email,
   );

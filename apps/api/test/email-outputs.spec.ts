@@ -5,6 +5,7 @@ import {
   emailOutputs,
   eq,
   familyMemberFeeds,
+  familyMembers,
   feeds,
   getDb,
   taskOwners,
@@ -16,6 +17,7 @@ import { DevOutbox } from '../src/lib/email.js';
 import {
   EMAIL_INVITE_SENDS_PER_RUN,
   EMAIL_VERIFICATION_DAILY_CAP,
+  sendVerification,
   syncMemberEmailOutputs,
 } from '../src/services/email-outputs.js';
 import { hashCalendarEvent } from '../src/services/synthesis.js';
@@ -528,5 +530,126 @@ describe('email output reconcile', () => {
     const r = await syncMemberEmailOutputs(db, paused, fam.adminMemberId, NOW);
     expect(r.removed).toBe(2);
     expect(paused.sent.every((m) => ics(m.mime).includes('METHOD:CANCEL'))).toBe(true);
+  });
+});
+
+describe('unsubscribing', () => {
+  /** The unsubscribe URL from a captured mail's text part. */
+  function unsubscribeLink(mime: string): string {
+    const at = mime.indexOf('Content-Type: text/plain');
+    const body = mime.slice(mime.indexOf('\r\n\r\n', at) + 4).split('\r\n--')[0]!;
+    const bin = atob(body.replace(/\r\n/g, ''));
+    const text = new TextDecoder().decode(Uint8Array.from(bin, (ch) => ch.charCodeAt(0)));
+    return /(\/email\/unsubscribe\/[0-9a-f]+)/.exec(text)![1]!;
+  }
+
+  it('every invite carries the link, and opting out stops everything until undone', async () => {
+    const fam = await setupFamily('eo-unsub@example.com');
+    const db = getDb(env.DB);
+    await seedCalendar(db, fam);
+    const output = await verifiedOutput(fam.admin.token, fam.familyId, fam.adminMemberId, {
+      email: 'optout@example.com',
+    });
+    const outbox = new DevOutbox();
+    await syncMemberEmailOutputs(db, outbox, fam.adminMemberId, NOW, 'https://igt.test/api');
+    expect(outbox.sent).toHaveLength(2);
+    // One-click headers for mail clients' own Unsubscribe button.
+    expect(outbox.sent[0]!.mime).toMatch(
+      /^List-Unsubscribe: <https:\/\/igt\.test\/api\/email\/unsubscribe\/[0-9a-f]+>$/m,
+    );
+    expect(outbox.sent[0]!.mime).toContain('List-Unsubscribe-Post: List-Unsubscribe=One-Click');
+    const link = unsubscribeLink(outbox.sent[0]!.mime);
+
+    // GET (a mail scanner) changes nothing; POST — also what one-click sends — opts out.
+    expect(await (await call(link)).text()).toContain('<form method="post">');
+    const done = await call(link, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: 'List-Unsubscribe=One-Click',
+    });
+    expect(done.status).toBe(200);
+    const donePage = await done.text();
+    expect(donePage).toContain('Undo');
+
+    // Nothing more is mailed — not even the cancellations a narrowed filter would send…
+    await call(
+      `/families/${fam.familyId}/members/${fam.adminMemberId}/email-outputs/${output.id}`,
+      patched(fam.admin.token, { filters: { include: ['busy'] } }),
+    );
+    const silent = new DevOutbox();
+    await syncMemberEmailOutputs(db, silent, fam.adminMemberId, NOW);
+    expect(silent.sent).toHaveLength(0);
+    // …and nobody can send the address a new confirmation request.
+    const other = await setupFamily('eo-unsub-other@example.com');
+    const refused = await createOutput(other.admin.token, other.familyId, other.adminMemberId, {
+      email: 'optout@example.com',
+    });
+    expect(refused.status).toBe(409);
+    expect(await refused.json()).toMatchObject({ error: 'recipient_unsubscribed' });
+
+    // Reopening the link offers the undo; taking it resumes the confirmed output.
+    const revisit = await (await call(link)).text();
+    expect(revisit).toContain('Allow them again');
+    const token = link.split('/').pop()!;
+    const undone = await call(`/email/resubscribe/${token}`, { method: 'POST' });
+    expect(undone.status).toBe(200);
+    const resumed = new DevOutbox();
+    await syncMemberEmailOutputs(db, resumed, fam.adminMemberId, NOW);
+    // The filter now picks the busy block; the two claims are cancelled.
+    expect(resumed.sent).toHaveLength(3);
+  });
+
+  it('the confirmation request itself can be unsubscribed from', async () => {
+    const fam = await setupFamily('eo-unsub-verify@example.com');
+    const outbox = new DevOutbox();
+    const db = getDb(env.DB);
+    const [member] = await db
+      .select()
+      .from(familyMembers)
+      .where(eq(familyMembers.id, fam.adminMemberId));
+    const [row] = await db
+      .insert(emailOutputs)
+      .values({
+        familyId: fam.familyId,
+        familyMemberId: fam.adminMemberId,
+        email: 'stranger@example.com',
+        filters: { include: ['claimed_task'], taskTypes: null, sourceLinkIds: null },
+      })
+      .returning();
+    await sendVerification(db, outbox, {
+      userId: fam.admin.userId,
+      output: row!,
+      memberName: member!.relationName,
+      requesterName: 'Admin',
+      linkBase: 'https://igt.test/api',
+    });
+    const mime = outbox.sent[0]!.mime;
+    expect(mime).toMatch(/^List-Unsubscribe: <https:\/\/igt\.test\/api\/email\/unsubscribe\//m);
+    const link = /igt\.test\/api(\/email\/unsubscribe\/[0-9a-f]+)/.exec(
+      new TextDecoder().decode(
+        Uint8Array.from(
+          atob(
+            mime
+              .slice(mime.indexOf('\r\n\r\n', mime.indexOf('Content-Type: text/plain')) + 4)
+              .replace(/\r\n/g, ''),
+          ),
+          (ch) => ch.charCodeAt(0),
+        ),
+      ),
+    )![1]!;
+    expect((await call(link, { method: 'POST' })).status).toBe(200);
+    await expect(
+      sendVerification(db, outbox, {
+        userId: fam.admin.userId,
+        output: row!,
+        memberName: 'x',
+        requesterName: 'y',
+        linkBase: '',
+      }),
+    ).rejects.toThrow(/unsubscribed/);
+  });
+
+  it('an unknown token is refused', async () => {
+    expect((await call('/email/unsubscribe/deadbeef', { method: 'POST' })).status).toBe(404);
   });
 });

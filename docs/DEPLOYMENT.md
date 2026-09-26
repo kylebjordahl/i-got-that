@@ -584,6 +584,44 @@ tick, the client's time picker snaps to quarter hours.
 
 ---
 
+### 11. Outbound email (email invite outputs)
+
+Email invite outputs send through Cloudflare Email Service via the `send_email`
+binding `EMAIL`, which is declared for `staging` and `production` in
+`wrangler.jsonc`. Without the binding the whole feature is off (adding an output
+returns `503 email_disabled`). Magic-link login does **not** use it yet; it
+still only works locally.
+
+**Do steps 1–3 before merging a change that adds the binding.** Until then the
+Worker can't send, and nobody has checked whether a deploy that declares the
+binding is accepted before them.
+
+1. **Workers Paid plan** (Workers & Pages → Plans). The free plan can only mail
+   addresses verified in your own Cloudflare account.
+2. **Onboard the sending domain**: Compute → Email Service → Email Sending →
+   *Onboard Domain* → `igt.kylebjordahl.com`. Cloudflare writes and locks its
+   own SPF, DKIM, DMARC and `cf-bounce` MX records. Don't also declare them in
+   Terraform. Verification usually takes 5–15 minutes.
+3. **Check the senders** match that domain: `ORGANIZER_EMAIL` is
+   `noreply.staging@igt.kylebjordahl.com` (staging) and
+   `noreply@igt.kylebjordahl.com` (production). `PUBLIC_ORIGIN` must be set too:
+   verification and unsubscribe links are built from it.
+4. **Deploy staging** and try it: add an email output for your own address,
+   confirm the link, claim a task, and check the invite arrives with SPF/DKIM
+   passing and an *Unsubscribe* option in the mail client.
+5. **Release to production.**
+
+New accounts start on a small daily sending quota that grows with reputation;
+ask Cloudflare support if it gets in the way. Cloudflare also keeps its own
+suppression list (bounces, spam complaints) and refuses sends to those
+addresses on its side.
+
+**Unsubscribing** is handled by the app, not Cloudflare's list: every
+verification and invite mail carries a link (and RFC 8058 one-click
+`List-Unsubscribe` headers) to `/api/email/unsubscribe/<token>`. Opting out
+stops everything from every output to that address, in every family, and
+blocks new confirmation requests to it. The page it lands on offers an undo.
+
 ## Day-to-day flow
 
 - **Staging**: merge to `main` → once `CI` passes, `Deploy staging` runs
@@ -644,14 +682,10 @@ cd apps/api && pnpm wrangler tail --env staging        # live logs
   the optional `OUTBOUND_ALLOWED_HOSTS` var to a comma-separated list of
   `host` / `host:port` entries — that's the only escape hatch; there is no
   "disable the guard" switch.
-- **Email is disconnected** (`send_email` commented in `wrangler.jsonc`). Until a
-  paid plan + verified sending domain are set up, magic-link login can't email in
-  a deployed env — use **Sign in with Apple** or the **invite link** flow for
-  onboarding. See `infra/terraform/main.tf` for the sending-domain DNS notes.
-  The same binding gates **email invite outputs**: without it, adding one
-  returns `503 email_disabled` and no invites are sent. Once `EMAIL` is bound
-  (and `ORGANIZER_EMAIL` is on the verified domain), set `PUBLIC_ORIGIN` too —
-  the address-verification link in those mails is built from it.
+- **Magic-link login doesn't send mail yet** (`getMailer` in
+  `apps/api/src/lib/mailer.ts` is still the dev stub), so in a deployed env use
+  **Sign in with Apple/Google** or the **invite link** flow. Outbound email for
+  email invite outputs is covered in §11.
 - The **web client** is built in CI and served by the same Worker under `/app`
   (see §7) — no separate Pages project. Production gets it once you add the
   `routes` + `assets` blocks under `env.production`.

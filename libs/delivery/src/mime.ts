@@ -36,14 +36,27 @@ function base64Body(text: string): string {
   return (base64(text).match(/.{1,76}/g) ?? []).join('\r\n');
 }
 
-function envelope(opts: { from: string; to: string; subject: string }): string[] {
+/** Extra headers a caller may add (e.g. List-Unsubscribe). */
+export type ExtraHeaders = Record<string, string>;
+
+function envelope(opts: {
+  from: string;
+  to: string;
+  subject: string;
+  headers?: ExtraHeaders;
+}): string[] {
   const domain = opts.from.split('@')[1] ?? 'localhost';
+  const extra = Object.entries(opts.headers ?? {}).map(([name, value]) => {
+    if (!/^[A-Za-z0-9-]+$/.test(name)) throw new Error(`bad header name: ${name}`);
+    return `${name}: ${headerValue(value)}`;
+  });
   return [
     `From: ${addressValue(opts.from)}`,
     `To: ${addressValue(opts.to)}`,
     `Subject: ${headerValue(opts.subject)}`,
     `Date: ${new Date().toUTCString()}`,
     `Message-ID: <${crypto.randomUUID()}@${domain}>`,
+    ...extra,
     'MIME-Version: 1.0',
   ];
 }
@@ -61,6 +74,7 @@ export function buildInviteEmailMime(opts: {
   method: 'REQUEST' | 'CANCEL';
   /** Plain-text alternative; defaults to the subject. */
   text?: string;
+  headers?: ExtraHeaders;
 }): string {
   const boundary = `igt-${crypto.randomUUID()}`;
   return [
@@ -88,6 +102,7 @@ export function buildTextEmailMime(opts: {
   to: string;
   subject: string;
   text: string;
+  headers?: ExtraHeaders;
 }): string {
   return [
     ...envelope(opts),

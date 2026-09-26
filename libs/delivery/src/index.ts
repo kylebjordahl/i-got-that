@@ -1,9 +1,9 @@
 import type { DeliveryMethod, GeoLocation, RsvpStatus } from '@igt/domain';
 
 export { CalDavProvider } from './caldav.js';
-export { EmailImipProvider, type EmailSender } from './email.js';
+export { EmailImipProvider, type EmailSender, unsubscribeHeaders } from './email.js';
 export { GoogleCalendarProvider } from './google.js';
-export { buildInviteEmailMime, buildTextEmailMime } from './mime.js';
+export { buildInviteEmailMime, buildTextEmailMime, type ExtraHeaders } from './mime.js';
 
 /**
  * Delivery abstraction. v1 ships three full-detail providers (email/iMIP via
@@ -47,6 +47,11 @@ export interface DeliveryTarget {
   externalCalendarId?: string;
   /** Resolved (decrypted) credential material, when the method needs it. */
   credential?: DeliveryCredential;
+  /**
+   * Email only: the recipient's unsubscribe link. Shown in the mail and, when
+   * absolute https, sent as RFC 8058 one-click `List-Unsubscribe` headers.
+   */
+  unsubscribeUrl?: string;
 }
 
 export type DeliveryCredential =

@@ -1,6 +1,6 @@
 import { eq, families, feeds, getDb } from '@igt/db';
 import type { Bindings } from './env.js';
-import { emailEnabled, getOutbox } from './lib/email.js';
+import { emailEnabled, emailLinkBase, getOutbox } from './lib/email.js';
 import { googleRefresherFor } from './lib/google-oauth.js';
 import { createGuardedFetch } from './lib/outbound-url.js';
 import { sweepOrphanedSecrets } from './services/auth.js';
@@ -110,7 +110,13 @@ export async function scheduled(
           await reconcileClaimEvents(db, fam.id);
           await syncFamilyMirror(db, registry, keys, fam.id);
           if (emailEnabled(env)) {
-            await syncFamilyEmailOutputs(db, getOutbox(env), fam.id);
+            await syncFamilyEmailOutputs(
+              db,
+              getOutbox(env),
+              fam.id,
+              new Date(),
+              emailLinkBase(env),
+            );
           }
         } catch (err) {
           console.error(`scheduled tick failed for family ${fam.id}`, err);

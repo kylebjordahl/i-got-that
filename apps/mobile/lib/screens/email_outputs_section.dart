@@ -170,6 +170,9 @@ class _EmailOutputSheetState extends ConsumerState<EmailOutputSheet> {
           'You\'ve sent today\'s limit of confirmation emails. Try again tomorrow.',
         'email_disabled' => 'Email isn\'t switched on for this server yet.',
         'already_verified' => 'That address has already confirmed.',
+        'recipient_unsubscribed' =>
+          'That address has unsubscribed from calendar invites. They can undo '
+              'it from the unsubscribe link in any earlier email.',
         _ => 'Failed: ${e.response?.statusCode ?? e.message}',
       };
     }

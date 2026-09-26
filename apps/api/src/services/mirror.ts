@@ -23,7 +23,7 @@ import {
 import { estimateTravelMinutes } from '@igt/classification';
 import { geoKey, type GeoLocation } from '@igt/domain';
 import type { Bindings } from '../env.js';
-import { emailEnabled, getOutbox } from '../lib/email.js';
+import { emailEnabled, emailLinkBase, getOutbox } from '../lib/email.js';
 import { googleRefresherFor } from '../lib/google-oauth.js';
 import { createGuardedFetch } from '../lib/outbound-url.js';
 import { resolveAccountCredential } from '../lib/account-credentials.js';
@@ -98,8 +98,8 @@ async function runJob(env: Bindings, job: MirrorJob): Promise<SyncResult> {
   const outbox = getOutbox(env);
   const emailed =
     job.kind === 'member'
-      ? await syncMemberEmailOutputs(db, outbox, job.memberId)
-      : await syncFamilyEmailOutputs(db, outbox, job.familyId);
+      ? await syncMemberEmailOutputs(db, outbox, job.memberId, new Date(), emailLinkBase(env))
+      : await syncFamilyEmailOutputs(db, outbox, job.familyId, new Date(), emailLinkBase(env));
   return mergeResults(mirrored, emailed);
 }
 

@@ -109,11 +109,10 @@
             "migrations_dir": "../../libs/db/migrations",
         },
     ],
-    // Outbound email (Cloudflare Email Service) is DISCONNECTED for now — it needs
-    // a paid plan + verified sending domain. The provider code is opt-in on the
-    // EMAIL binding, so leaving this commented means email targets are skipped.
-    // To enable: uncomment here (+ in each env below), verify a sending domain,
-    // and set ORGANIZER_EMAIL. See README / infra/terraform.
+    // Outbound email is bound in staging + production only (see each env). Local
+    // dev and tests leave EMAIL unbound, so email outputs use the capture-only
+    // DevOutbox and hand back dev tokens instead of mailing. Uncomment to send
+    // real mail from `wrangler dev` (remote: true uses the real service).
     // "send_email": [{ "name": "EMAIL", "remote": true }],
     "env": {
         "staging": {
@@ -126,7 +125,7 @@
             "vars": {
                 "ENVIRONMENT": "staging",
                 "PUBLIC_ORIGIN": "https://staging.igt.kylebjordahl.com",
-                "ORGANIZER_EMAIL": "noreply@igt.local",
+                "ORGANIZER_EMAIL": "noreply.staging@igt.kylebjordahl.com",
                 // Allowed Apple `aud`s: the native iOS bundle id + the web Services ID.
                 "APPLE_CLIENT_IDS": "com.kylebjordahl.igt.staging,com.kylebjordahl.igt.web.staging",
                 "APPLE_WEB_CLIENT_ID": "com.kylebjordahl.igt.web.staging",
@@ -184,7 +183,11 @@
                     },
                 ],
             },
-            // "send_email": [{ "name": "EMAIL" }]  // enable with a paid plan
+            // Outbound mail (Cloudflare Email Service). Needs Workers Paid and
+            // igt.kylebjordahl.com onboarded as a sending domain — see
+            // docs/DEPLOYMENT.md § Outbound email. ORGANIZER_EMAIL above must be
+            // on that domain.
+            "send_email": [{ "name": "EMAIL" }],
         },
         "production": {
             // KEK_V1 (envelope encryption) is set per-env via `wrangler secret
@@ -196,7 +199,7 @@
                 "ENVIRONMENT": "production",
                 // Set to the production custom domain once provisioned (Terraform).
                 "PUBLIC_ORIGIN": "https://igt.kylebjordahl.com",
-                "ORGANIZER_EMAIL": "noreply@igt.local",
+                "ORGANIZER_EMAIL": "noreply@igt.kylebjordahl.com",
                 // Allowed Apple `aud`s: the native iOS bundle id + the web Services ID.
                 "APPLE_CLIENT_IDS": "com.kylebjordahl.igt,com.kylebjordahl.igt.web",
                 "APPLE_WEB_CLIENT_ID": "com.kylebjordahl.igt.web",
@@ -252,7 +255,11 @@
                     },
                 ],
             },
-            // "send_email": [{ "name": "EMAIL" }]  // enable with a paid plan
+            // Outbound mail (Cloudflare Email Service). Needs Workers Paid and
+            // igt.kylebjordahl.com onboarded as a sending domain — see
+            // docs/DEPLOYMENT.md § Outbound email. ORGANIZER_EMAIL above must be
+            // on that domain.
+            "send_email": [{ "name": "EMAIL" }],
         },
     },
 }

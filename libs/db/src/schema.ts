@@ -1082,6 +1082,22 @@ export const emailVerifications = sqliteTable(
   }),
 );
 
+/**
+ * Every address an email output mails, and whether it has opted out. The
+ * `unsubscribeToken` is the credential in the unsubscribe link of every such
+ * mail (verification and invites alike); it only ever grants un/resubscribing
+ * this one address, and has to be re-embedded in each mail, so it's stored
+ * as-is. An opted-out address gets nothing at all from any output, in any
+ * family — not even cancellations — and can't be sent a new verification.
+ */
+export const emailRecipients = sqliteTable('email_recipients', {
+  // Lower-cased address.
+  email: text('email').primaryKey(),
+  unsubscribeToken: text('unsubscribe_token').notNull().unique(),
+  unsubscribedAt: integer('unsubscribed_at', { mode: 'timestamp_ms' }),
+  createdAt: createdAt(),
+});
+
 // --- Invites (no public signup) -----------------------------------------
 
 export const invites = sqliteTable(
@@ -1304,6 +1320,7 @@ export const schema = {
   emailOutputs,
   emailOutputMirrors,
   emailVerifications,
+  emailRecipients,
   secrets,
   invites,
   authTokens,
