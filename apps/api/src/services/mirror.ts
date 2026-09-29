@@ -273,6 +273,50 @@ function travelTimeMinutes(
   return Math.min(windowMin > 0 ? windowMin : DEFAULT_TRAVEL_MIN, MAX_WINDOW_TRAVEL_MIN);
 }
 
+/** What a travel estimate needs to know about the member making the trips. */
+export interface TravelContext {
+  /**
+   * Everything on this member's own calendar — human read-back events
+   * included, since a meeting they added by hand is exactly the kind of thing
+   * a school run leaves from. Only used to place the caretaker before a trip.
+   */
+  ownCalendar: CalendarEventRow[];
+  home: GeoLocation | null;
+}
+
+export async function travelContext(db: Db, memberId: string): Promise<TravelContext> {
+  const ownCalendar = await db
+    .select()
+    .from(calendarEvents)
+    .where(
+      and(eq(calendarEvents.familyMemberId, memberId), isNull(calendarEvents.maskedAt)),
+    );
+  const home =
+    (
+      await db
+        .select({ homeLocationGeo: familyMembers.homeLocationGeo })
+        .from(familyMembers)
+        .where(eq(familyMembers.id, memberId))
+        .limit(1)
+    )[0]?.homeLocationGeo ?? null;
+  return { ownCalendar, home };
+}
+
+/**
+ * The travel block (minutes, 0 for none) for one of the member's events — the
+ * same answer the calendar mirror sends, so email outputs that pad for travel
+ * agree with it. See `travelTimeMinutes` for the rules.
+ */
+export function eventTravelMinutes(
+  ctx: TravelContext,
+  event: CalendarEventRow,
+  taskType: string | undefined,
+): number {
+  return travelTimeMinutes(event, taskType, () =>
+    tripOrigin(ctx.ownCalendar, event, ctx.home),
+  );
+}
+
 /** djb2 over the meaningful mirrored fields; cheap + synchronous. */
 function hashMirrorPayload(
   summary: string,
@@ -426,23 +470,7 @@ export async function syncMemberMirror(
   const timezones = await linkTimezones(db, cal.familyId);
   const claimedTasks = await claimedTaskMeta(db, cal.familyId);
 
-  // Everything on this member's own calendar — human read-back events included,
-  // since a meeting they added by hand is exactly the kind of thing a school
-  // run leaves from. Only used to place the caretaker before each trip.
-  const ownCalendar = await db
-    .select()
-    .from(calendarEvents)
-    .where(
-      and(eq(calendarEvents.familyMemberId, memberId), isNull(calendarEvents.maskedAt)),
-    );
-  const home =
-    (
-      await db
-        .select({ homeLocationGeo: familyMembers.homeLocationGeo })
-        .from(familyMembers)
-        .where(eq(familyMembers.id, memberId))
-        .limit(1)
-    )[0]?.homeLocationGeo ?? null;
+  const travel = await travelContext(db, memberId);
 
   const existing = await db
     .select()
@@ -481,9 +509,7 @@ export async function syncMemberMirror(
     const summary = mirroredSummary(event);
     const taskMeta = event.taskId ? claimedTasks.get(event.taskId) : undefined;
     const timezone = event.linkId ? timezones.get(event.linkId) : taskMeta?.timezone;
-    const travelMinutes = travelTimeMinutes(event, taskMeta?.type, () =>
-      tripOrigin(ownCalendar, event, home),
-    );
+    const travelMinutes = eventTravelMinutes(travel, event, taskMeta?.type);
     const hash = hashMirrorPayload(summary, event, alertMinutes, timezone, travelMinutes);
     const prior = existingByEvent.get(event.id);
     if (prior && prior.payloadHash === hash) continue;

@@ -57,7 +57,9 @@ class EmailOutputsSection extends ConsumerWidget {
               title: o.label ?? o.email,
               subtitle: [
                 if (o.label != null) o.email,
-                o.filters.summary,
+                o.padTravelTime
+                    ? '${o.filters.summary} · with travel time'
+                    : o.filters.summary,
               ].join('\n'),
               trailing: Row(
                 mainAxisSize: MainAxisSize.min,
@@ -143,6 +145,7 @@ class _EmailOutputSheetState extends ConsumerState<EmailOutputSheet> {
   late Set<String>? _taskTypes = widget.existing?.filters.taskTypes?.toSet();
   late Set<String>? _links = widget.existing?.filters.sourceLinkIds?.toSet();
   late bool _active = widget.existing?.active ?? true;
+  late bool _padTravel = widget.existing?.padTravelTime ?? false;
   bool _busy = false;
   String? _error;
 
@@ -222,6 +225,7 @@ class _EmailOutputSheetState extends ConsumerState<EmailOutputSheet> {
           email: email,
           label: label,
           filters: _filters.toJson(),
+          padTravelTime: _padTravel,
         );
         return res['verificationSent'] == true
             ? 'Confirmation sent to $email — nothing is sent until they confirm.'
@@ -234,6 +238,7 @@ class _EmailOutputSheetState extends ConsumerState<EmailOutputSheet> {
         label: label.isEmpty ? null : label,
         clearLabel: label.isEmpty,
         filters: _filters.toJson(),
+        padTravelTime: _padTravel,
         active: _active,
       );
       return null;
@@ -417,6 +422,17 @@ class _EmailOutputSheetState extends ConsumerState<EmailOutputSheet> {
                 style: AppText.micro(),
               ),
             ],
+            const SizedBox(height: 16),
+            SwitchRow(
+              icon: Icons.directions_car_rounded,
+              iconColor: AppColors.blue,
+              title: 'Include travel time',
+              subtitle:
+                  'Trips start early by the estimated drive, marked 🚗 in the '
+                  'title',
+              value: _padTravel,
+              onChanged: (v) => setState(() => _padTravel = v),
+            ),
             if (!_isNew) ...[
               const SizedBox(height: 16),
               SwitchRow(

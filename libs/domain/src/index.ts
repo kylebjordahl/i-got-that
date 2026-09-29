@@ -1046,6 +1046,8 @@ export const CreateEmailOutputInput = z.object({
   label: z.string().trim().min(1).max(80).optional(),
   filters: EmailOutputFilters.optional(),
   alertMinutes: AlertMinutes.optional(),
+  /** Start invites earlier by the estimated travel time, marked with 🚗. */
+  padTravelTime: z.boolean().optional(),
 });
 export type CreateEmailOutputInput = z.infer<typeof CreateEmailOutputInput>;
 
@@ -1054,6 +1056,7 @@ export const UpdateEmailOutputInput = z.object({
   label: z.string().trim().min(1).max(80).nullable().optional(),
   filters: EmailOutputFilters.optional(),
   alertMinutes: AlertMinutes.optional(),
+  padTravelTime: z.boolean().optional(),
   active: z.boolean().optional(),
 });
 export type UpdateEmailOutputInput = z.infer<typeof UpdateEmailOutputInput>;

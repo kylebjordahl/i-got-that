@@ -6,6 +6,7 @@ import type {
   DeliveryTarget,
 } from './index.js';
 import { buildInviteEmailMime, type ExtraHeaders } from './mime.js';
+import { formatEventStart, formatEventWhen } from './when.js';
 
 export type EmailSender = (rawMime: string, to: string) => Promise<void>;
 
@@ -22,9 +23,26 @@ export function unsubscribeHeaders(url: string | undefined): ExtraHeaders {
   };
 }
 
-/** Plain-text body: what the invite is, plus how to stop them. */
-function textBody(summary: string, target: DeliveryTarget, lead: string): string {
-  const lines = [`${lead}: ${summary}`];
+/**
+ * Subject: the title plus when, so two mails about the same event read as
+ * duplicates in an inbox list at a glance.
+ */
+function subject(event: DeliveryEvent, prefix = ''): string {
+  return `${prefix}${event.summary} — ${formatEventStart(event.start, event.timezone)}`;
+}
+
+/**
+ * Plain-text body: what, when (in the event's own zone), where, and the
+ * description — everything needed to recognise the event without opening the
+ * attachment — plus how to stop these mails.
+ */
+function textBody(event: DeliveryEvent, target: DeliveryTarget, lead: string): string {
+  const lines = [
+    `${lead}: ${event.summary}`,
+    `When: ${formatEventWhen(event.start, event.end, event.timezone)}`,
+  ];
+  if (event.location) lines.push(`Where: ${event.location}`);
+  if (event.description) lines.push('', event.description);
   if (target.unsubscribeUrl) {
     lines.push('', `Stop receiving these calendar invites: ${target.unsubscribeUrl}`);
   }
@@ -65,10 +83,10 @@ export class EmailImipProvider implements DeliveryProvider {
       buildInviteEmailMime({
         from: this.organizerEmail,
         to: target.addressOrUrl,
-        subject: event.summary,
+        subject: subject(event),
         ics,
         method: 'REQUEST',
-        text: textBody(event.summary, target, 'Calendar invite'),
+        text: textBody(event, target, 'Calendar invite'),
         headers: unsubscribeHeaders(target.unsubscribeUrl),
       }),
       target.addressOrUrl,
@@ -83,6 +101,7 @@ export class EmailImipProvider implements DeliveryProvider {
       start: event.start,
       end: event.end,
       summary: event.summary,
+      timezone: event.timezone,
       organizerEmail: this.organizerEmail,
       attendeeEmail: target.addressOrUrl,
     });
@@ -90,10 +109,10 @@ export class EmailImipProvider implements DeliveryProvider {
       buildInviteEmailMime({
         from: this.organizerEmail,
         to: target.addressOrUrl,
-        subject: `Cancelled: ${event.summary}`,
+        subject: subject(event, 'Cancelled: '),
         ics,
         method: 'CANCEL',
-        text: textBody(event.summary, target, 'Cancelled'),
+        text: textBody(event, target, 'Cancelled'),
         headers: unsubscribeHeaders(target.unsubscribeUrl),
       }),
       target.addressOrUrl,

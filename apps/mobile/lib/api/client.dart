@@ -1121,6 +1121,7 @@ class ApiClient {
     required String email,
     String? label,
     required Map<String, dynamic> filters,
+    bool padTravelTime = false,
   }) async {
     final res = await _dio.post(
       _emailOutputsBase(familyId, memberId),
@@ -1128,6 +1129,7 @@ class ApiClient {
         'email': email,
         if (label != null && label.isNotEmpty) 'label': label,
         'filters': filters,
+        'padTravelTime': padTravelTime,
       },
       options: _auth,
     );
@@ -1141,6 +1143,7 @@ class ApiClient {
     String? label,
     bool clearLabel = false,
     Map<String, dynamic>? filters,
+    bool? padTravelTime,
     bool? active,
   }) async {
     final res = await _dio.patch(
@@ -1148,6 +1151,7 @@ class ApiClient {
       data: {
         if (clearLabel) 'label': null else if (label != null) 'label': label,
         if (filters != null) 'filters': filters,
+        if (padTravelTime != null) 'padTravelTime': padTravelTime,
         if (active != null) 'active': active,
       },
       options: _auth,

@@ -435,6 +435,51 @@ describe('email output reconcile', () => {
     expect(mirrors.map((m) => m.calendarEventId)).toEqual([cal.meeting.id]);
   });
 
+  it('pads trips for travel when asked, marks them with a car, and re-sends on toggling', async () => {
+    const fam = await setupFamily('eo-travel@example.com');
+    const db = getDb(env.DB);
+    const cal = await seedCalendar(db, fam);
+    // A human's own answer for the drop-off's drive: 20 minutes.
+    await db
+      .update(calendarEvents)
+      .set({ location: 'Lincoln Elementary', travelTimeOverrideMin: 20 })
+      .where(eq(calendarEvents.id, cal.dropoff.id));
+    const output = await verifiedOutput(fam.admin.token, fam.familyId, fam.adminMemberId, {
+      email: 'travel@example.com',
+      padTravelTime: true,
+      filters: { include: ['claimed_task', 'schedule'] },
+    });
+
+    const outbox = new DevOutbox();
+    await syncMemberEmailOutputs(db, outbox, fam.adminMemberId, NOW);
+    const byTitle = new Map(outbox.sent.map((m) => [/SUMMARY:(.*)/.exec(ics(m.mime))![1]!.trim(), ics(m.mime)]));
+    const padded = byTitle.get('🚗 Drop-off')!;
+    expect(padded).toBeDefined();
+    // 14:00Z less 20 minutes; the end is untouched.
+    expect(padded).toContain('DTSTART:20260706T134000Z');
+    expect(padded).toContain('DTEND:20260706T143000Z');
+    expect(padded).toContain('Includes 20 min travel. Drop-off itself starts at 2:00 PM.');
+    // Not a trip (no travel estimate): unpadded, no car.
+    expect(byTitle.has('Book club')).toBe(true);
+    const [row] = await db
+      .select()
+      .from(emailOutputMirrors)
+      .where(eq(emailOutputMirrors.calendarEventId, cal.dropoff.id));
+    expect(row!.summary).toBe('🚗 Drop-off');
+    expect(row!.eventStartsAt.toISOString()).toBe('2026-07-06T13:40:00.000Z');
+
+    // Turning it off updates the padded invite back to the event's own time.
+    await call(
+      `/families/${fam.familyId}/members/${fam.adminMemberId}/email-outputs/${output.id}`,
+      patched(fam.admin.token, { padTravelTime: false }),
+    );
+    const unpadded = new DevOutbox();
+    const r = await syncMemberEmailOutputs(db, unpadded, fam.adminMemberId, NOW);
+    expect(r.updated).toBe(1);
+    expect(ics(unpadded.sent[0]!.mime)).toContain('SUMMARY:Drop-off');
+    expect(ics(unpadded.sent[0]!.mime)).toContain('DTSTART:20260706T140000Z');
+  });
+
   it('includes busy blocks only when asked', async () => {
     const fam = await setupFamily('eo-busy@example.com');
     const db = getDb(env.DB);
