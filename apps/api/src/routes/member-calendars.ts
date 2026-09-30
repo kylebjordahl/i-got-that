@@ -50,8 +50,7 @@ async function loadMember(
 }
 
 /**
- * Who may manage a member's outputs — their target calendar here, and their
- * email invite outputs (`email-outputs.ts`): the member themselves (their linked user)
+ * Who may manage a member's target calendar: the member themselves (their linked user)
  * or a family admin — but the credential constraint is stricter: the target
  * must draw from an account the CALLER owns, and a member linked to a
  * different user keeps their calendar config private from admins (PRD §6).

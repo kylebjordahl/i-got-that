@@ -33,17 +33,15 @@ import {
   VerificationCapExceededError,
 } from '../services/email-outputs.js';
 import { deferSync, enqueueReconcile } from '../services/mirror.js';
-import { mayManageMemberOutputs } from './member-calendars.js';
 
 type Db = ReturnType<typeof getDb>;
 type EmailOutputRow = typeof emailOutputs.$inferSelect;
 
 /**
  * A member's email invite outputs. Mounted under /families/:familyId (auth
- * applied by the parent router). Managed by the same people as the member's
- * calendar target — the member themselves, or an admin for an unlinked member
- * — and, unlike the target, not readable by the rest of the family: the
- * addresses are other people's.
+ * applied by the parent router). Managed by the member themselves or any
+ * family admin (`mayManageEmailOutputs`), and not readable by the rest of the
+ * family: the addresses are other people's.
  */
 export const emailOutputRoutes = new Hono<HonoEnv>();
 emailOutputRoutes.use('*', requireFamilyMember);
@@ -73,6 +71,23 @@ function present(row: EmailOutputRow, unsubscribedAt: Date | null = null) {
   };
 }
 
+/**
+ * Who may manage a member's email outputs: the member themselves, or any
+ * family admin — for every member, linked to another user or not. Deliberately
+ * looser than the calendar target's rule (`mayManageMemberOutputs`): that one
+ * writes with the caller's own account credentials, so another user's target
+ * stays theirs, while an email output uses no credentials at all. The
+ * safeguards that matter here don't depend on who the caller is: nothing is
+ * mailed until the address confirms, confirmation mail is capped per user per
+ * day, and an address that unsubscribed can't be re-added.
+ */
+export function mayManageEmailOutputs(
+  me: { id: string; isAdmin: boolean },
+  target: { id: string },
+): boolean {
+  return target.id === me.id || me.isAdmin;
+}
+
 async function loadManagedMember(c: Context<HonoEnv>, memberId: string) {
   const db = getDb(c.env.DB);
   const me = c.get('member');
@@ -84,7 +99,7 @@ async function loadManagedMember(c: Context<HonoEnv>, memberId: string) {
       .limit(1)
   )[0];
   if (!member) return { error: 'not_found' as const, status: 404 as const };
-  if (!mayManageMemberOutputs(me, member)) {
+  if (!mayManageEmailOutputs(me, member)) {
     return { error: 'forbidden' as const, status: 403 as const };
   }
   return { db, member };

@@ -313,7 +313,7 @@ describe('email output routes', () => {
     expect(dup.status).toBe(409);
   });
 
-  it('is managed only by the member or an admin for an unlinked member', async () => {
+  it('is managed by the member or any family admin, never another non-admin', async () => {
     const fam = await setupFamily('eo-perm@example.com');
     const partner = await login('eo-perm-partner@example.com');
     const add = await call(
@@ -323,20 +323,52 @@ describe('email output routes', () => {
     const { member } = (await add.json()) as { member: { id: string } };
     await linkMember(fam.admin.token, fam.familyId, member.id, partner.token);
 
-    // Admin → the partner's own member: private to the partner.
-    expect(
-      (await createOutput(fam.admin.token, fam.familyId, member.id, { email: 'x@example.com' }))
-        .status,
-    ).toBe(403);
+    // Admin → the partner's own member: allowed, unlike the calendar target
+    // (which writes with the caller's own credentials; an output uses none).
+    const byAdmin = await createOutput(fam.admin.token, fam.familyId, member.id, {
+      email: 'x@example.com',
+    });
+    expect(byAdmin.status).toBe(201);
+    const { output } = (await byAdmin.json()) as { output: { id: string } };
+    const listed = await call(
+      `/families/${fam.familyId}/members/${member.id}/email-outputs`,
+      bearer(fam.admin.token),
+    );
+    expect(listed.status).toBe(200);
     expect(
       (
         await call(
-          `/families/${fam.familyId}/members/${member.id}/email-outputs`,
-          bearer(fam.admin.token),
+          `/families/${fam.familyId}/members/${member.id}/email-outputs/${output.id}`,
+          patched(fam.admin.token, { padTravelTime: true }),
+        )
+      ).status,
+    ).toBe(200);
+    // …and the partner sees and manages what the admin set up for them.
+    const theirs = (await (
+      await call(
+        `/families/${fam.familyId}/members/${member.id}/email-outputs`,
+        bearer(partner.token),
+      )
+    ).json()) as { outputs: { email: string }[] };
+    expect(theirs.outputs.map((o) => o.email)).toEqual(['x@example.com']);
+    // The calendar target keeps its stricter rule.
+    expect(
+      (
+        await call(
+          `/families/${fam.familyId}/members/${member.id}/calendar-target`,
+          { ...authed(fam.admin.token, { externalAccountId: 'x', targetCalendarId: 'y' }), method: 'PUT' },
         )
       ).status,
     ).toBe(403);
-    // Non-admin partner → the child: not theirs to configure.
+    // Non-admin partner → the child, or the admin: not theirs to configure.
+    expect(
+      (
+        await call(
+          `/families/${fam.familyId}/members/${fam.adminMemberId}/email-outputs`,
+          bearer(partner.token),
+        )
+      ).status,
+    ).toBe(403);
     expect(
       (await createOutput(partner.token, fam.familyId, fam.childId, { email: 'y@example.com' }))
         .status,

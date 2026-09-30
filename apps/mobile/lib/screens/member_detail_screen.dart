@@ -44,6 +44,10 @@ class MemberDetailScreen extends ConsumerWidget {
     // Target config is credential-bound: the member themselves, or an admin for
     // members without their own login (children, helpers).
     final canEditTarget = isSelf || (isAdmin && !member.hasLogin);
+    // Email invites use no credentials, so any admin manages them for anyone
+    // (mirrors `mayManageEmailOutputs` in the API). Hidden from other
+    // non-admins: the addresses are other people's.
+    final canEditEmailOutputs = isSelf || isAdmin;
     final grouping = member.requiresCaretaker ? 'Child' : 'Caretaker';
 
     return Scaffold(
@@ -94,9 +98,7 @@ class MemberDetailScreen extends ConsumerWidget {
                     ),
                   ),
                   const SizedBox(height: 24),
-                  // Same gate as the target: these are the member's outputs,
-                  // and the addresses on them are other people's.
-                  if (canEditTarget) ...[
+                  if (canEditEmailOutputs) ...[
                     _AccentSection(
                       color: AppColors.coral,
                       child: EmailOutputsSection(member: member),

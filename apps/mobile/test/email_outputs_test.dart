@@ -96,12 +96,13 @@ void main() {
     required List<EmailOutput> outputs,
     bool emailEnabled = true,
     ApiClient? api,
+    Member? viewer,
   }) => ProviderScope(
     overrides: [
       if (api != null) apiClientProvider.overrideWithValue(api),
       familyProvider.overrideWith((ref) async => 'fam'),
       membersProvider.overrideWith((ref) async => [me, partner]),
-      currentMemberProvider.overrideWith((ref) async => me),
+      currentMemberProvider.overrideWith((ref) async => viewer ?? me),
       feedsProvider.overrideWith((ref) async => [work, club]),
       feedLinksProvider.overrideWith(
         (ref, feedId) async => [
@@ -175,8 +176,19 @@ void main() {
     expect(find.textContaining("isn't switched on"), findsOneWidget);
   });
 
-  testWidgets("hidden on someone else's own member page", (tester) async {
+  testWidgets("an admin manages them on another user's member page", (
+    tester,
+  ) async {
+    // Dad is an admin; Mom is linked to her own login.
     await pumpTall(tester, app(memberId: 'mom', outputs: const []));
+    expect(find.text('EMAIL INVITES'), findsOneWidget);
+  });
+
+  testWidgets("hidden from a non-admin on someone else's page", (tester) async {
+    await pumpTall(
+      tester,
+      app(memberId: 'dad', outputs: const [], viewer: partner),
+    );
     expect(find.text('EMAIL INVITES'), findsNothing);
   });
 
