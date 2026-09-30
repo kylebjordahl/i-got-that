@@ -175,6 +175,26 @@ export interface Bindings {
      * secret put OPS_DASHBOARD_PASSWORD [--env <env>]` in deployed envs.
      */
     OPS_DASHBOARD_PASSWORD?: string;
+    /**
+     * Workers Analytics Engine dataset that `middleware/telemetry.ts` writes one
+     * point per API request to. Bound in staging + production only; unbound
+     * locally and in tests, where telemetry is a no-op.
+     */
+    ANALYTICS?: AnalyticsEngineDataset;
+    /**
+     * Name of the dataset bound as `ANALYTICS`, for the read-side SQL queries
+     * (a Worker can't read its own binding's name back). Keep in sync with the
+     * `analytics_engine_datasets` entry in `wrangler.jsonc`.
+     */
+    OPS_ANALYTICS_DATASET?: string;
+    /** Cloudflare account id — the SQL API path needs it. Set per env (`wrangler secret put`). */
+    CF_ACCOUNT_ID?: string;
+    /**
+     * API token with Account › Account Analytics › Read, used only to query the
+     * dataset for the `/ops` traffic charts. Any of the three read-side values
+     * unset ⇒ `GET /ops/requests` reports `configured: false`.
+     */
+    CF_ANALYTICS_API_TOKEN?: string;
 }
 
 /** Per-request context set by middleware. */

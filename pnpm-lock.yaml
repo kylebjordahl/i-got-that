@@ -58,7 +58,7 @@ importers:
         specifier: workspace:*
         version: link:../../libs/ical
       hono:
-        specifier: ^4.6.0
+        specifier: ^4.8.0
         version: 4.12.27
     devDependencies:
       '@cloudflare/workers-types':

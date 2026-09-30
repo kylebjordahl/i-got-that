@@ -140,6 +140,11 @@
                 // APNS_KEY_P8 + APNS_KEY_ID are secrets (`wrangler secret put
                 // APNS_KEY_P8 --env staging`); the team id is not.
                 "APNS_TEAM_ID": "WG5R9LUU9X",
+                // Dataset the ANALYTICS binding below writes to, for the /ops traffic
+                // charts' SQL queries — keep the two in sync. CF_ACCOUNT_ID and
+                // CF_ANALYTICS_API_TOKEN are secrets (docs/DEPLOYMENT.md § Request
+                // telemetry); without them /ops/requests reports "not configured".
+                "OPS_ANALYTICS_DATASET": "igt_ops_staging",
             },
             // The whole subdomain routes to this Worker (custom_domain provisions DNS
             // + cert; the parent zone must be on Cloudflare). The Worker serves the
@@ -188,6 +193,9 @@
             // docs/DEPLOYMENT.md § Outbound email. ORGANIZER_EMAIL above must be
             // on that domain.
             "send_email": [{ "name": "EMAIL" }],
+            // Per-request telemetry (middleware/telemetry.ts). The dataset is created
+            // on first write; needs Workers Paid.
+            "analytics_engine_datasets": [{ "binding": "ANALYTICS", "dataset": "igt_ops_staging" }],
         },
         "production": {
             // KEK_V1 (envelope encryption) is set per-env via `wrangler secret
@@ -214,6 +222,11 @@
                 // APNS_KEY_P8 + APNS_KEY_ID are secrets (`wrangler secret put
                 // APNS_KEY_P8 --env production`); the team id is not.
                 "APNS_TEAM_ID": "WG5R9LUU9X",
+                // Dataset the ANALYTICS binding below writes to, for the /ops traffic
+                // charts' SQL queries — keep the two in sync. CF_ACCOUNT_ID and
+                // CF_ANALYTICS_API_TOKEN are secrets (docs/DEPLOYMENT.md § Request
+                // telemetry); without them /ops/requests reports "not configured".
+                "OPS_ANALYTICS_DATASET": "igt_ops_prod",
             },
             // Single-origin layout, mirroring staging (see §7 of docs/DEPLOYMENT.md):
             // custom_domain provisions DNS + cert on the parent Cloudflare zone.
@@ -260,6 +273,9 @@
             // docs/DEPLOYMENT.md § Outbound email. ORGANIZER_EMAIL above must be
             // on that domain.
             "send_email": [{ "name": "EMAIL" }],
+            // Per-request telemetry (middleware/telemetry.ts). The dataset is created
+            // on first write; needs Workers Paid.
+            "analytics_engine_datasets": [{ "binding": "ANALYTICS", "dataset": "igt_ops_prod" }],
         },
     },
 }

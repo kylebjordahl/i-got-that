@@ -4,6 +4,7 @@ import { cors } from 'hono/cors';
 import type { Bindings, HonoEnv } from './env.js';
 import { kekStatus, kekUsable } from './lib/secrets.js';
 import { authMiddleware } from './middleware/auth.js';
+import { requestTelemetry } from './middleware/telemetry.js';
 import { deliveryQueueConsumer } from './services/mirror.js';
 import { accountRoutes } from './routes/accounts.js';
 import { authRoutes } from './routes/auth.js';
@@ -47,6 +48,9 @@ app.use(
     credentials: true,
   }),
 );
+
+// Per-request Analytics Engine data point for the /ops traffic charts (no-op when unbound).
+app.use('*', requestTelemetry);
 
 /**
  * Liveness + the one piece of configuration whose absence is otherwise silent.
