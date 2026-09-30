@@ -598,6 +598,11 @@ jobs:
   play-build:
     name: Build Play AAB (${{ inputs.environment }})
     needs: [check-mobile-changed, version]
+    # Staging only: an Android failure must not fail the reusable workflow,
+    # or deploy-staging.yml's `draft-release` (which `needs: staging`) is
+    # skipped. The failed job still shows red in the run. Production stays
+    # strict. Temporary — remove once Play staging is reliable.
+    continue-on-error: ${{ inputs.environment == 'staging' }}
     if: needs.check-mobile-changed.outputs.changed == 'true'
     runs-on: ubuntu-latest
     env:
@@ -749,6 +754,11 @@ jobs:
   play-upload:
     name: Play → ${{ inputs.environment }}
     needs: [play-build, deploy, version]
+    # Staging only: an Android failure must not fail the reusable workflow,
+    # or deploy-staging.yml's `draft-release` (which `needs: staging`) is
+    # skipped. The failed job still shows red in the run. Production stays
+    # strict. Temporary — remove once Play staging is reliable.
+    continue-on-error: ${{ inputs.environment == 'staging' }}
     runs-on: ubuntu-latest
     # Separate per-stage Environment from `deploy`'s "-backend" one, matching
     # the TestFlight split — see the comment on that job. Also what
