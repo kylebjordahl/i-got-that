@@ -29,6 +29,10 @@ jobs:
     permissions:
       contents: read
       actions: read
+      # For the Play upload's Workload Identity Federation exchange. A
+      # reusable workflow's jobs are capped by this grant, so the job's own
+      # `id-token: write` is not enough on its own.
+      id-token: write
     uses: ./.github/workflows/deploy.yml
     with:
       environment: staging
@@ -49,7 +53,6 @@ jobs:
       ANDROID_UPLOAD_KEYSTORE_BASE64: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_BASE64 }}
       ANDROID_UPLOAD_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_PASSWORD }}
       ANDROID_UPLOAD_KEY_ALIAS: ${{ secrets.ANDROID_UPLOAD_KEY_ALIAS }}
-      PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
 
   # Keeps a single auto-managed draft release pointed at the latest commit
   # that passed staging, tagged with the same "next version" the `version`

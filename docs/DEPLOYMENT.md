@@ -664,7 +664,7 @@ no per-entry password — pass `-keypass` and keytool tells you it's ignoring it
 (`Warning: Different store and key passwords not supported for PKCS12
 KeyStores`), protecting the key with the store password instead. Only a legacy
 `-storetype jks` keystore can hold a distinct key password; if yours is one,
-set `keyPassword` here and add a matching fifth secret below.
+set `keyPassword` here and add a matching fourth secret below.
 
 Without that file, release builds fall back to the **debug** key so
 `flutter build apk --release` still works for anyone who clones the repo. CI
@@ -674,24 +674,89 @@ than produce a debug-signed bundle, and then re-reads the signing certificate
 off the finished AAB as a second check. Both guards exist because of what the
 *first* upload does — see below.
 
-**The four secrets** (Settings → Secrets and variables → Actions):
+**The three secrets** (Settings → Secrets and variables → Actions):
 
 | Secret | Value |
 | --- | --- |
 | `ANDROID_UPLOAD_KEYSTORE_BASE64` | `base64 -i ~/igt-upload.jks` |
 | `ANDROID_UPLOAD_KEYSTORE_PASSWORD` | the keystore password |
 | `ANDROID_UPLOAD_KEY_ALIAS` | `upload` |
-| `PLAY_SERVICE_ACCOUNT_JSON` | the whole service-account JSON, pasted |
 
 Any one of them empty fails `play-build` outright rather than falling back to
 the debug key, so a half-finished setup turns the next staging deploy red.
 
-**The service account.** In the Google Cloud project, create a service
-account and a JSON key, then Play Console → Users and permissions → Invite
-user → paste its email → grant **Release to testing tracks** on both apps.
-The Google Play Android Developer API must be enabled on that Cloud project.
-Permission changes take a few minutes to propagate; a fresh invite that
-401s usually just needs another try.
+**And two repository Variables** (same page, Variables tab — these identify,
+they don't authorize, so they are not secrets):
+
+| Variable | Value |
+| --- | --- |
+| `GCP_WORKLOAD_IDENTITY_PROVIDER` | `projects/<number>/locations/global/workloadIdentityPools/github/providers/i-got-that` |
+| `GCP_PLAY_SERVICE_ACCOUNT` | `play-publisher@<project-id>.iam.gserviceaccount.com` |
+
+Repository-level variables resolve inside a reusable workflow without being
+passed through; *environment*-level ones would not, so these must be set at
+the repository level.
+
+**The service account — no key.** `play-upload` authenticates with **Workload
+Identity Federation**: GitHub's OIDC token is exchanged for a short-lived
+token impersonating the service account, so there is no downloadable JSON key
+to leak or rotate. That is also the only option available on an organization
+carrying the `iam.disableServiceAccountKeyCreation` policy, which Google
+enables by default for new organizations.
+
+This needs no support from the upload action — it builds a bare
+`new google.auth.GoogleAuth({scopes})`, i.e. Application Default Credentials,
+and ADC treats the `external_account` file `google-github-actions/auth` writes
+as a first-class credential type.
+
+One-time setup, from a shell with `gcloud` authenticated as a project owner:
+
+```bash
+PROJECT_ID=your-project-id
+REPO=kylebjordahl/i-got-that
+POOL=github
+PROVIDER=i-got-that
+PROJECT_NUMBER=$(gcloud projects describe "$PROJECT_ID" --format='value(projectNumber)')
+SA=play-publisher@$PROJECT_ID.iam.gserviceaccount.com
+
+gcloud services enable \
+  iamcredentials.googleapis.com sts.googleapis.com androidpublisher.googleapis.com \
+  --project="$PROJECT_ID"
+
+gcloud iam service-accounts create play-publisher \
+  --project="$PROJECT_ID" --display-name="Play publisher (CI)"
+
+gcloud iam workload-identity-pools create "$POOL" \
+  --project="$PROJECT_ID" --location=global --display-name="GitHub Actions"
+
+# The attribute condition is required, not optional: Google rejects a provider
+# on a well-known public issuer without one. Without it, *any* GitHub repo
+# anywhere could exchange a token against this provider.
+gcloud iam workload-identity-pools providers create-oidc "$PROVIDER" \
+  --project="$PROJECT_ID" --location=global --workload-identity-pool="$POOL" \
+  --issuer-uri="https://token.actions.githubusercontent.com" \
+  --attribute-mapping="google.subject=assertion.sub,attribute.repository=assertion.repository" \
+  --attribute-condition="assertion.repository == '$REPO'"
+
+# Let only this repository's workflows impersonate the service account.
+gcloud iam service-accounts add-iam-policy-binding "$SA" \
+  --project="$PROJECT_ID" --role=roles/iam.workloadIdentityUser \
+  --member="principalSet://iam.googleapis.com/projects/$PROJECT_NUMBER/locations/global/workloadIdentityPools/$POOL/attribute.repository/$REPO"
+
+echo "GCP_WORKLOAD_IDENTITY_PROVIDER=projects/$PROJECT_NUMBER/locations/global/workloadIdentityPools/$POOL/providers/$PROVIDER"
+echo "GCP_PLAY_SERVICE_ACCOUNT=$SA"
+```
+
+Then Play Console → Users and permissions → Invite user → paste `$SA` →
+grant **Release apps to testing tracks** on both apps. That permission covers
+testing-track releases and explicitly cannot publish to production, which is
+the scope we want. Permission changes take a few minutes to propagate; a fresh
+invite that 401s usually just needs another try.
+
+The federation is scoped by repository. To tighten it further — say, only
+`refs/heads/main` — add `attribute.ref=assertion.ref` to the mapping and
+`&& assertion.ref == 'refs/heads/main'` to the condition, and extend the
+`principalSet` accordingly.
 
 **The first upload of each app must be done by hand.** The Play Developer API
 refuses to create a release for an app that has never had one, so

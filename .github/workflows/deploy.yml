@@ -75,8 +75,6 @@ on:
         required: false
       ANDROID_UPLOAD_KEY_ALIAS:
         required: false
-      PLAY_SERVICE_ACCOUNT_JSON:
-        required: false
 
 jobs:
   # Computed once and shared via job outputs, rather than in the `deploy` and
@@ -664,7 +662,7 @@ jobs:
           [ -n "$KEY_ALIAS" ]         || missing="$missing ANDROID_UPLOAD_KEY_ALIAS"
           if [ -n "$missing" ]; then
             echo "::error::Empty or unset secret(s):$missing." \
-                 "Set all four ANDROID_*/PLAY_* secrets (docs/DEPLOYMENT.md § 11)." \
+                 "Set all three ANDROID_UPLOAD_* secrets (docs/DEPLOYMENT.md § 11)." \
                  "Refusing to continue — this build would be signed with the debug key."
             exit 1
           fi
@@ -761,6 +759,14 @@ jobs:
     # strict. Temporary — remove once Play staging is reliable.
     continue-on-error: ${{ inputs.environment == 'staging' }}
     runs-on: ubuntu-latest
+    # `id-token: write` mints the OIDC token that Workload Identity Federation
+    # exchanges for Google credentials (see the auth step below). A reusable
+    # workflow's job is capped by the *caller's* grant, so this also has to be
+    # granted in deploy-staging.yml and deploy-production.yml — the same trap
+    # `actions: read` already hit for check-mobile-changed.
+    permissions:
+      contents: read
+      id-token: write
     # Separate per-stage Environment from `deploy`'s "-backend" one, matching
     # the TestFlight split — see the comment on that job. Also what
     # check-mobile-changed's "last successful store build" lookup keys off of
@@ -789,14 +795,53 @@ jobs:
           fi
           echo "path=$aab_path" >> "$GITHUB_OUTPUT"
 
+      # Workload Identity Federation rather than a service-account key: the
+      # org policy `iam.disableServiceAccountKeyCreation` (on by default for
+      # new organizations) blocks creating one at all, and a long-lived Play
+      # publishing credential sitting in a repo secret is the thing WIF
+      # exists to remove. GitHub's OIDC token is exchanged for a short-lived
+      # token impersonating the Play publisher service account.
+      #
+      # Deliberately no `actions/checkout` in this job: the auth action's own
+      # guidance is to check out *before* it, because a later checkout can
+      # clobber the credentials file it writes. Nothing here needs the repo.
+      - id: auth
+        name: Authenticate to Google Cloud (WIF)
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_PLAY_SERVICE_ACCOUNT }}
+
+      # Both are repository-level Variables, not secrets — a provider resource
+      # name and a service-account email identify, they don't authorize.
+      # Repository vars resolve inside a reusable workflow without being
+      # passed through; *environment*-level vars would not.
+      - name: Check the WIF configuration is present
+        run: |
+          set -euo pipefail
+          missing=""
+          [ -n "${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}" ] || missing="$missing GCP_WORKLOAD_IDENTITY_PROVIDER"
+          [ -n "${{ vars.GCP_PLAY_SERVICE_ACCOUNT }}" ]       || missing="$missing GCP_PLAY_SERVICE_ACCOUNT"
+          if [ -n "$missing" ]; then
+            echo "::error::Unset repository variable(s):$missing (docs/DEPLOYMENT.md § 11)."
+            exit 1
+          fi
+
       # Note: this cannot perform an app's *first* upload — the Play Developer
       # API refuses to create a release on an app that has never had one, so
       # the very first bundle for each entry goes up by hand through the
       # console (docs/DEPLOYMENT.md § 11). Every upload after that is this.
+      #
+      # The action builds a bare `new google.auth.GoogleAuth({scopes})`, i.e.
+      # Application Default Credentials, and ADC treats the external_account
+      # file the auth step wrote as a first-class credential type — so WIF
+      # needs no support from the action itself. It has none: WIF is still an
+      # open feature request there (r0adkll/upload-google-play#146), which
+      # refers only to its own inputs.
       - name: Upload to Play (internal track)
         uses: r0adkll/upload-google-play@v1
         with:
-          serviceAccountJsonPlainText: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+          serviceAccountJson: ${{ steps.auth.outputs.credentials_file_path }}
           packageName: ${{ env.PACKAGE_NAME }}
           releaseFiles: ${{ steps.locate-aab.outputs.path }}
           releaseName: ${{ needs.version.outputs.build_name }} (${{ github.run_number }})
