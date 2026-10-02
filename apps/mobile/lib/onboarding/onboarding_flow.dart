@@ -168,7 +168,6 @@ class _OnboardingFlowState extends ConsumerState<OnboardingFlow> {
         return CreateFamilyStep(
           onNext: () => _go(_Step.addMembers),
           onBack: () => _go(_Step.connect),
-          onExit: _exit,
         );
       case _Step.addMembers:
         return AddMembersStep(
