@@ -332,6 +332,9 @@ class AuthController extends StateNotifier<AuthState> {
   /// user dismissed it.
   Future<({String idToken, String? serverAuthCode})?>
   _requestGoogleIdentity() async {
+    // google_sign_in remembers the last account and, on Android, silently
+    // reuses it — so without this the account chooser never appears again.
+    await _forgetGoogleAccount();
     final account = await _googleSignIn.signIn();
     if (account == null) return null; // user dismissed the sheet
     final auth = await account.authentication;
@@ -442,10 +445,22 @@ class AuthController extends StateNotifier<AuthState> {
     await _clearLocalSession();
   }
 
+  /// Clear google_sign_in's cached account (native only) so the next Google
+  /// sign-in shows the account chooser. Best-effort.
+  Future<void> _forgetGoogleAccount() async {
+    if (kIsWeb) return;
+    try {
+      await _googleSignIn.signOut();
+    } catch (_) {
+      // Nothing cached or plugin unavailable — sign-in proceeds regardless.
+    }
+  }
+
   /// Drop the persisted session token (native only) and reset to signed-out.
   /// Best-effort — a Keychain delete failure still clears the in-memory state.
   Future<void> _clearLocalSession() async {
     if (!kIsWeb) {
+      await _forgetGoogleAccount();
       try {
         await _storage.delete(key: _sessionStorageKey);
       } catch (_) {
