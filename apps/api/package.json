@@ -9,7 +9,7 @@
     "@igt/delivery": "workspace:*",
     "@igt/domain": "workspace:*",
     "@igt/ical": "workspace:*",
-    "hono": "^4.6.0"
+    "hono": "^4.8.0"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20240909.0"

@@ -238,6 +238,39 @@ echo "<a different one>"   | pnpm wrangler secret put OPS_DASHBOARD_PASSWORD --e
 Unset ⇒ `/ops/*` 401s unconditionally (fails closed) rather than falling back
 to the checked-in dev value.
 
+**Request telemetry (Analytics Engine)**. Staging and production write one
+Workers Analytics Engine data point per API request — route *pattern* (never
+the concrete path, so no ids), method, client kind (`web` / `native` / `other`),
+status class and latency — to the `ANALYTICS` binding
+(`middleware/telemetry.ts`). Datasets are `igt_ops_staging` / `igt_ops_prod`; they
+are created on the first write, so there is nothing to provision in Terraform.
+Analytics Engine needs Workers Paid and is billed on usage above the plan's
+included allowance; data is kept for 90 days. `/health*` and `/ops*` aren't
+recorded, and local dev and tests leave `ANALYTICS` unbound, which makes
+telemetry a no-op.
+
+A Worker can only *write* to its dataset. The `/ops` API-traffic charts read it
+back through Cloudflare's account-level SQL API, which needs two more secrets
+per env (`OPS_ANALYTICS_DATASET` is already a `var` in `wrangler.jsonc`; keep it
+equal to the binding's dataset):
+
+```bash
+# Create an API token: dash.cloudflare.com → My Profile → API Tokens → Create
+# Token → Custom. Permission: Account › Account Analytics › Read, scoped to this
+# account. Read-only; it can't touch the Worker or its data.
+cd apps/api
+echo "<account id>" | pnpm wrangler secret put CF_ACCOUNT_ID --env staging
+echo "<api token>"  | pnpm wrangler secret put CF_ANALYTICS_API_TOKEN --env staging
+# …and the same for --env production.
+```
+
+Either secret unset ⇒ requests are still recorded, and only the API-traffic
+section of `/ops` says it isn't configured (the D1 charts are unaffected). A
+rejected query (bad token, wrong account) shows the upstream error there
+instead. Counts are `SUM(_sample_interval)` — Analytics Engine samples under
+load and that column is the weight that undoes it — so treat busy-route numbers
+as estimates.
+
 #### Rotating the envelope-encryption KEK
 
 Rotation adds a new `KEK_V<n>` without ever invalidating already-stored

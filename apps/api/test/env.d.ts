@@ -13,6 +13,11 @@ declare module 'cloudflare:test' {
     EMAIL?: SendEmail;
     ALLOW_DEV_TOKENS?: string;
     OPS_DASHBOARD_PASSWORD?: string;
+    // Unbound/unset in tests; declared so a test can supply a deployed env's shape.
+    ANALYTICS?: AnalyticsEngineDataset;
+    OPS_ANALYTICS_DATASET?: string;
+    CF_ACCOUNT_ID?: string;
+    CF_ANALYTICS_API_TOKEN?: string;
     TEST_MIGRATIONS: D1Migration[];
   }
 }
