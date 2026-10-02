@@ -460,7 +460,9 @@ class AuthController extends StateNotifier<AuthState> {
   /// Best-effort — a Keychain delete failure still clears the in-memory state.
   Future<void> _clearLocalSession() async {
     if (!kIsWeb) {
-      await _forgetGoogleAccount();
+      // Not awaited: nothing depends on it finishing, and a slow or absent
+      // plugin must never hold up signing out.
+      unawaited(_forgetGoogleAccount());
       try {
         await _storage.delete(key: _sessionStorageKey);
       } catch (_) {
