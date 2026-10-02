@@ -1,0 +1,325 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>I Got That — Tester Guide</title>
+<meta name="description" content="How I Got That turns school and family calendars into a shared list of who's doing what, and how to set it up whatever your calendar situation looks like.">
+<style>
+:root{
+  --bg:#fbfaf7; --surface:#ffffff; --ink:#1d2330; --muted:#5b6475; --line:#e4e1d9;
+  --accent:#2f6f5e; --accent-ink:#ffffff; --accent-soft:#e3f0ec;
+  --warn:#8a5a00; --warn-soft:#fdf1d8; --ph:#fff3a8;
+}
+@media (prefers-color-scheme:dark){
+  :root{--bg:#14171d; --surface:#1c2028; --ink:#eceef2; --muted:#a2a9b8; --line:#2c323e;
+    --accent:#6fc2aa; --accent-ink:#0f1a16; --accent-soft:#1f2f2a; --warn:#f0c46a; --warn-soft:#2f2713; --ph:#5a4d00;}
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--bg);color:var(--ink);font:17px/1.6 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+.wrap{max-width:860px;margin:0 auto;padding:0 20px}
+header.hero{padding:56px 0 32px;border-bottom:1px solid var(--line)}
+.eyebrow{font-size:13px;letter-spacing:.08em;text-transform:uppercase;color:var(--accent);font-weight:700}
+h1{font-size:clamp(34px,6vw,52px);line-height:1.1;margin:.2em 0 .3em;letter-spacing:-.02em}
+.lede{font-size:clamp(19px,2.6vw,22px);color:var(--muted);max-width:640px;margin:0}
+nav.toc{display:flex;flex-wrap:wrap;gap:8px 18px;padding:16px 0;font-size:15px;border-bottom:1px solid var(--line)}
+nav.toc a{color:var(--accent);text-decoration:none;font-weight:600}
+section{padding:44px 0 8px}
+h2{font-size:clamp(26px,4vw,34px);line-height:1.2;margin:0 0 .4em;letter-spacing:-.01em}
+h3{font-size:20px;margin:1.6em 0 .3em}
+p{margin:.5em 0 1em}
+.muted{color:var(--muted)}
+.grid{display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));margin:18px 0}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:18px 18px 12px;break-inside:avoid}
+.card h3,.card h4{margin:0 0 .3em;font-size:18px}
+.card p{font-size:15.5px;margin:.3em 0 .8em}
+.pattern{background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:22px 22px 10px;margin:22px 0;break-inside:avoid}
+.pattern .tag{display:inline-block;font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;background:var(--accent-soft);color:var(--accent);padding:3px 10px;border-radius:99px}
+.pattern h3{margin:.5em 0 .2em;font-size:23px}
+.pattern dl{margin:14px 0 6px;display:grid;grid-template-columns:110px 1fr;gap:8px 14px;font-size:16px}
+.pattern dt{font-weight:700;color:var(--muted);font-size:13px;text-transform:uppercase;letter-spacing:.05em;padding-top:3px}
+.pattern dd{margin:0}
+ol.steps{counter-reset:s;list-style:none;padding:0;margin:14px 0}
+ol.steps li{counter-increment:s;position:relative;padding:0 0 14px 44px}
+ol.steps li::before{content:counter(s);position:absolute;left:0;top:0;width:30px;height:30px;border-radius:50%;background:var(--accent);color:var(--accent-ink);font-weight:700;display:grid;place-items:center;font-size:15px}
+.flow{display:flex;flex-wrap:wrap;align-items:stretch;gap:8px;margin:20px 0}
+.flow .node{flex:1 1 130px;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:12px;font-size:14.5px;line-height:1.4;text-align:center}
+.flow .node b{display:block;font-size:15.5px;margin-bottom:3px}
+.flow .arrow{align-self:center;color:var(--accent);font-weight:700}
+.callout{border-left:4px solid var(--accent);background:var(--accent-soft);padding:12px 16px;border-radius:0 10px 10px 0;margin:18px 0;font-size:16px}
+.callout.warn{border-color:var(--warn);background:var(--warn-soft)}
+.example{font-size:15px;color:var(--muted);border-top:1px dashed var(--line);padding-top:10px;margin-top:10px}
+table{border-collapse:collapse;width:100%;font-size:15.5px;margin:14px 0}
+th,td{text-align:left;padding:10px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+th{font-size:13px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted)}
+details{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:12px 16px;margin:10px 0}
+summary{cursor:pointer;font-weight:700}
+details p{margin:.6em 0 .2em;font-size:16px}
+.ph{background:var(--ph);padding:0 4px;border-radius:4px;font-weight:600}
+footer{padding:36px 0 60px;color:var(--muted);font-size:14px;border-top:1px solid var(--line);margin-top:40px}
+kbd,code{font:14px ui-monospace,Menlo,monospace;background:var(--accent-soft);padding:1px 6px;border-radius:5px}
+@media (max-width:560px){.pattern dl{grid-template-columns:1fr}.pattern dt{padding-top:0}.flow .arrow{display:none}}
+@media print{
+  :root{--bg:#fff;--surface:#fff;--ink:#111;--muted:#444;--line:#ccc;--accent:#1f5546;--accent-soft:#eef5f2;--ph:#fff3a8}
+  body{font-size:11.5pt}
+  nav.toc{display:none}
+  section{padding-top:24px;break-before:auto}
+  h2,h3{break-after:avoid}
+  details{border:1px solid #ccc}
+  details>*{display:block}
+  .wrap{max-width:none;padding:0}
+  @page{margin:18mm}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+  <div class="eyebrow">Trusted tester guide · v0.1</div>
+  <h1>I Got That</h1>
+  <p class="lede">Your family's calendars already know where everyone needs to be. I Got That turns that into a short list of <strong>who's taking which drop-off, pickup or event</strong> — and puts the answer on the calendar each person actually looks at.</p>
+</header>
+
+<nav class="toc" aria-label="Contents">
+  <a href="#idea">The idea</a>
+  <a href="#day">A day with it</a>
+  <a href="#setups">Setups</a>
+  <a href="#daily">Daily use</a>
+  <a href="#messy">When life gets messy</a>
+  <a href="#trust">Privacy &amp; control</a>
+  <a href="#testing">Testing &amp; feedback</a>
+  <a href="#faq">FAQ</a>
+</nav>
+
+<section id="idea">
+  <h2>The idea in one minute</h2>
+  <p>Most family logistics fail at the handoff, not the calendar. The school calendar says early release at noon; your co-parent's calendar says they're in meetings; nobody has said out loud who's driving. I Got That watches the calendars you already have, works out what <em>trips and appearances</em> they imply, and asks one question: <strong>who's got it?</strong></p>
+  <p>It never replaces your calendar app. You keep using Apple Calendar, Google Calendar or whatever you use now. I Got That reads from the calendars you point it at and writes back to <em>one</em> calendar per person.</p>
+
+  <div class="grid">
+    <div class="card">
+      <h4>Sources</h4>
+      <p>Where the facts come from: a school's calendar link, a team schedule, a shared family calendar, a partner's work free/busy.</p>
+    </div>
+    <div class="card">
+      <h4>Unified calendar</h4>
+      <p>Each person (kids included) gets one combined calendar that merges their sources and applies your rules. This is the one that shows up in their calendar app.</p>
+    </div>
+    <div class="card">
+      <h4>Tasks</h4>
+      <p>The work an event creates. A school day becomes a <b>drop-off</b> and a <b>pickup</b>. A recital becomes an <b>attendance</b> task (one or several people can go).</p>
+    </div>
+    <div class="card">
+      <h4>Claiming</h4>
+      <p>A caretaker claims a task and it lands on <em>their</em> calendar, with travel time. Unclaimed tasks stay on Home until someone does.</p>
+    </div>
+  </div>
+
+  <div class="callout"><strong>The one rule it follows:</strong> if it can't tell what an event means, it doesn't guess. It asks you. You'll see these as "Needs a decision" cards on Home.</div>
+</section>
+
+<section id="day">
+  <h2>A day with it</h2>
+  <div class="flow" role="img" aria-label="Flow: calendars to unified calendar to tasks to claim to your calendar">
+    <div class="node"><b>Your calendars</b>school, teams, family, work</div>
+    <div class="arrow">→</div>
+    <div class="node"><b>Each person's unified calendar</b>merged, with your rules applied</div>
+    <div class="arrow">→</div>
+    <div class="node"><b>Tasks</b>drop-offs, pickups, attendance</div>
+    <div class="arrow">→</div>
+    <div class="node"><b>Someone claims it</b>by hand, or by an auto rule</div>
+    <div class="arrow">→</div>
+    <div class="node"><b>Their calendar</b>event + travel time</div>
+  </div>
+  <ol class="steps">
+    <li><strong>Sunday evening.</strong> A push notification (if you've set one up) says three things are unclaimed this week. You open Home.</li>
+    <li><strong>You claim Tuesday's pickup</strong> with one tap. It appears on your calendar, starting early by the estimated drive.</li>
+    <li><strong>Wednesday is an early-release day.</strong> The school's calendar says so. The school day shortens automatically and so does the pickup time.</li>
+    <li><strong>Thursday's recital</strong> was added to the family calendar and nobody's rules matched it. Home asks "who is this for?" You pick both parents and it lands on both calendars.</li>
+    <li><strong>Friday you're double-booked</strong> (dentist vs. pickup). Home flags it; you split the day into a pickup and a drop-off, or tell it to ignore the clash.</li>
+  </ol>
+</section>
+
+<section id="setups">
+  <h2>Pick the setup that looks like your family</h2>
+  <p>You don't need to reorganise your calendars first. Find the closest match below. You can mix them, and change your mind later.</p>
+
+  <div class="pattern">
+    <span class="tag">Pattern A</span>
+    <h3>One shared family calendar</h3>
+    <dl>
+      <dt>You have</dt><dd>A single calendar everyone adds to — soccer, school, dentist, all in one place.</dd>
+      <dt>You do</dt><dd>Add it as a source and mark it as a <b>shared family calendar</b>. Then set a "keep" rule per person (e.g. anything with "Maya" belongs to Maya). Events that match nobody's rule go to Home as a "who is this for?" question.</dd>
+      <dt>You get</dt><dd>The shared calendar is split back out so each person sees only theirs. An event can land on several people. The answer to a "who is this for?" can optionally become a rule so it only asks once.</dd>
+    </dl>
+    <p class="example">Best for: families who've already built the habit of one shared calendar and don't want to change it.</p>
+  </div>
+
+  <div class="pattern">
+    <span class="tag">Pattern B</span>
+    <h3>One calendar per family member</h3>
+    <dl>
+      <dt>You have</dt><dd>A calendar for each kid and each parent, maybe on different accounts.</dd>
+      <dt>You do</dt><dd>Add each person's calendar as a source for that person. Pick one writable calendar per person as their unified calendar.</dd>
+      <dt>You get</dt><dd>Everything on each person's calendar, plus claimed tasks from other family members. No routing questions, because the calendar already says whose it is.</dd>
+    </dl>
+    <p class="example">Best for: families who colour-code by person and want to keep it that way.</p>
+  </div>
+
+  <div class="pattern">
+    <span class="tag">Pattern C</span>
+    <h3>A mix</h3>
+    <dl>
+      <dt>You have</dt><dd>A shared family calendar <em>and</em> some personal ones — say, the kids' activities are shared but each parent keeps their own.</dd>
+      <dt>You do</dt><dd>Use A for the shared one and B for the personal ones. A single source can serve several kids, and each kid can have several sources.</dd>
+      <dt>You get</dt><dd>One merged view per person. When two sources overlap, you drag to set which one wins, and anything you add by hand always outranks a feed.</dd>
+    </dl>
+  </div>
+
+  <div class="pattern">
+    <span class="tag">Pattern D</span>
+    <h3>A school that publishes a "no school / early release" calendar</h3>
+    <dl>
+      <dt>You have</dt><dd>A school calendar link that only lists exceptions — closures, early release, field trips — not every normal day.</dd>
+      <dt>You do</dt><dd>Add it as an <b>exception feed</b> and give it a baseline: the normal school day (say, Mon–Fri, 8:30–2:45). Then set override rules: "no school" cancels the day, "early" ends the day at noon, "community dinner" gets added beside a normal day. Set task rules too: field trips become attendance, ordinary days become drop-off and pickup.</dd>
+      <dt>You get</dt><dd>A correct school day every day, with drop-off and pickup tasks that follow the real schedule. If the school adds new hours from a given date (after-care starting, say), you can schedule that change in advance.</dd>
+    </dl>
+  </div>
+
+  <div class="pattern">
+    <span class="tag">Pattern E</span>
+    <h3>Two (or more) parents splitting the load</h3>
+    <dl>
+      <dt>You have</dt><dd>Two caretakers who each have their own calendar and different availability.</dd>
+      <dt>You do</dt><dd>Add both as caretakers. Each connects the calendar their claimed tasks should land on. Optionally add <b>assignment rules</b>: "Mondays are Sam's; every other Thursday is Alex's".</dd>
+      <dt>You get</dt><dd>Tasks that match a rule are claimed for that person automatically. Anything else waits on Home for whoever grabs it first. Claiming or unassigning by hand always overrides a rule.</dd>
+    </dl>
+    <p class="example">Anyone who can't or won't install the app can still get calendar invites by email (see below).</p>
+  </div>
+
+  <div class="pattern">
+    <span class="tag">Pattern F</span>
+    <h3>A work calendar you can't (or won't) share</h3>
+    <dl>
+      <dt>You have</dt><dd>A parent whose work calendar is full of confidential meetings.</dd>
+      <dt>You do</dt><dd>Share the work Google Calendar with your personal Google account as <b>"See only free/busy (hide details)"</b>, then add it as a free/busy source.</dd>
+      <dt>You get</dt><dd>Plain "Busy" blocks on that parent's unified calendar so the family can see when they're not available. Titles, attendees and locations never reach I Got That — Google strips them before they leave. Unshare at work and it stops.</dd>
+    </dl>
+  </div>
+</section>
+
+<section id="daily">
+  <h2>Daily use: four tabs</h2>
+  <div class="grid">
+    <div class="card">
+      <h4>Home</h4>
+      <p>What needs you. <b>Double-booked</b> conflicts, <b>Needs a decision</b> cards, and <b>Needs an owner</b> tasks to claim. When it's empty, it says so.</p>
+    </div>
+    <div class="card">
+      <h4>Plan</h4>
+      <p>The calendar view. See any family member's day: events, tasks, who owns what. Filter by person or show completed work.</p>
+    </div>
+    <div class="card">
+      <h4>Family</h4>
+      <p>Members, their calendars and sources, task rules, assignment rules, email invites, and invite codes for adding a partner.</p>
+    </div>
+    <div class="card">
+      <h4>Me</h4>
+      <p>Your login methods, connected calendar accounts and notification schedules.</p>
+    </div>
+  </div>
+
+  <h3>Tapping a task</h3>
+  <p>From any task you can <b>claim it for yourself</b>, <b>assign it</b> to someone, <b>return it</b> to the queue, or <b>mark it not needed</b>. Attendance tasks can have several people on them. You can also change travel time, or switch a task between "drop-off + pickup" and "attendance" if the rule guessed wrong.</p>
+
+  <h3>Getting set up in about ten minutes</h3>
+  <ol class="steps">
+    <li>Sign in and create your family.</li>
+    <li>Add the people: kids (check "needs a caretaker") and adults who'll claim tasks. Add everyone now or just yourself; you can invite a partner after.</li>
+    <li>Connect the calendar accounts you use (Google, or iCloud via an app-specific password). We open the provider's own sign-in and never see your password.</li>
+    <li>For each kid, add their sources — the school link, the team schedule, the shared calendar — and choose their unified calendar.</li>
+    <li>For each adult, choose where claimed tasks should land.</li>
+  </ol>
+  <p class="muted">Partners join with an invite. The heavy setup is already done by then; they log in once and pick where their tasks land.</p>
+</section>
+
+<section id="messy">
+  <h2>When life gets messy</h2>
+
+  <h3>"Needs a decision"</h3>
+  <p>Two cases. A school-style event the rules don't recognise ("what should this generate?"), or an event on a shared family calendar that nobody's rules claimed ("who is this for?"). Answer once; you can have the answer saved as a rule so it doesn't ask again.</p>
+
+  <h3>Double-booked</h3>
+  <p>When a person has overlapping events, you're shown both. If one is a long school day and the other is an appointment in the middle, you can <b>split</b> the day: drag the handles to set the pickup and drop-off times and it creates those tasks. Or <b>ignore</b> the conflict and keep both.</p>
+
+  <h3>Travel time</h3>
+  <p>Give an event a place and claimed tasks show a travel block on the claimer's calendar, estimated from where they're coming from. If the estimate is wrong, set your own number; yours always wins. Travel blocks are drawn by Apple Calendar today.</p>
+
+  <h3>Reminders that don't nag</h3>
+  <p>Set one or more notification schedules ("Evening brief") covering a stretch of days and the things you want to hear about. There's an "only when there's something" option so clear days stay silent. The app-icon badge counts what still needs <em>you</em> and goes down as you claim things.</p>
+
+  <h3>People who won't use the app</h3>
+  <p>A grandparent, a nanny, a co-parent. Add an <b>email output</b> for them: they get calendar invites for the slice you choose (claimed tasks only, a child's schedule, or busy blocks) at an address that's confirmed by the owner first. Every email has an unsubscribe link.</p>
+</section>
+
+<section id="trust">
+  <h2>Privacy and control</h2>
+  <table>
+    <tr><th>Question</th><th>Answer</th></tr>
+    <tr><td>Do you see my password?</td><td>No. Sign-in happens on Google's or Apple's own page. Calendar credentials are encrypted and never sent back to the app.</td></tr>
+    <tr><td>Will it change my existing calendars?</td><td>It writes only to the one calendar you pick for each person. Events it creates are tagged so it never re-imports its own output.</td></tr>
+    <tr><td>Can my partner see my private appointments?</td><td>A member linked to a different user keeps their calendar target private, even from family admins. Work calendars come in as free/busy only.</td></tr>
+    <tr><td>Who can change what?</td><td>Feeds, family structure and roles are admin-only. Caretakers claim and complete tasks.</td></tr>
+    <tr><td>What if I disagree with it?</td><td>Anything added by hand outranks a feed, and claiming or unassigning by hand outranks a rule.</td></tr>
+    <tr><td>What if a feed stops working?</td><td>The feed shows an error with the reason and keeps retrying. It won't quietly go stale.</td></tr>
+    <tr><td>Can I remove everything?</td><td>Yes. Removing a member or deleting a family permanently deletes its data, and the next sync cancels the copies it made.</td></tr>
+  </table>
+</section>
+
+<section id="testing">
+  <h2>What we'd like you to try</h2>
+  <p>You don't need to test everything. Pick the setup that matches your family and use it for a real week. These are the questions we care about most:</p>
+  <ol class="steps">
+    <li><strong>Setup.</strong> Where did you get stuck or have to guess? How long did it take?</li>
+    <li><strong>Trust.</strong> Did the tasks match reality? Any missed or invented events?</li>
+    <li><strong>The handoff.</strong> Did claiming something actually change who showed up?</li>
+    <li><strong>The odd stuff.</strong> Early release, a cancelled practice, a double-booking. Did it cope?</li>
+  </ol>
+
+  <div class="callout warn">
+    <strong>This is a pre-release build.</strong> Things will be rough and data may be reset between builds. Don't rely on it as your only reminder yet, and keep your existing calendars as they are.
+  </div>
+
+  <h3>Getting access</h3>
+  <table>
+    <tr><th>Platform</th><th>How</th></tr>
+    <tr><td>iPhone</td><td><span class="ph">[TestFlight link or instructions]</span></td></tr>
+    <tr><td>Android</td><td><span class="ph">[Play internal-testing link or instructions]</span></td></tr>
+    <tr><td>Web</td><td><span class="ph">[staging URL]</span></td></tr>
+  </table>
+
+  <h3>Telling us what happened</h3>
+  <p>Send feedback to <span class="ph">[email / form / group chat]</span>. Screenshots help most. Say which setup pattern you used, and whether it's something that went wrong or something you wished it did. If something looks wrong, tell us before you fix it, so we can see it.</p>
+</section>
+
+<section id="faq">
+  <h2>FAQ</h2>
+  <details><summary>Do I need to change how my family uses calendars?</summary><p>No. Start with what you have. Patterns A to C cover one shared calendar, one per person, or a mix.</p></details>
+  <details><summary>Which calendar apps work?</summary><p>Google Calendar, and iCloud via CalDAV with an app-specific password. School, team and other subscription calendars (an .ics link) can be added as inputs.</p></details>
+  <details><summary>Do my kids need accounts?</summary><p>No. Kids are members of the family with a calendar of their own. Only adults who claim tasks need to log in.</p></details>
+  <details><summary>Why did it ask me about an event instead of just handling it?</summary><p>Because guessing wrong about a pickup is worse than asking. Answer once and you can save it as a rule.</p></details>
+  <details><summary>How fast does it update?</summary><p>Feeds are polled in the background, and Refresh pulls them on demand. Calendars that publishers cache for hours are fetched fresh when you press it.</p></details>
+  <details><summary>Can two people claim the same pickup?</summary><p>A drop-off or pickup is one person's trip, so no. Attendance tasks (a recital) can have several people.</p></details>
+  <details><summary>A task is wrong. What now?</summary><p>Open it. You can change its type, mark it not needed, or change who has it. If a whole kind of event is mistyped, fix it in that source's task rules.</p></details>
+  <details><summary>How do I leave the test?</summary><p>Tell us, and delete your family in the app if you'd like the data removed.</p></details>
+</section>
+
+<footer>
+  I Got That — trusted tester guide. Pre-release; features and wording may change. Print this page to save it as a PDF.
+</footer>
+
+</div>
+</body>
+</html>
