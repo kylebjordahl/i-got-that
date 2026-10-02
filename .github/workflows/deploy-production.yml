@@ -17,6 +17,10 @@ concurrency:
 permissions:
   contents: read
   actions: read
+  # For the Play upload's Workload Identity Federation exchange. Reusable
+  # workflows are capped by the caller's grant, so deploy.yml's own job-level
+  # `id-token: write` only takes effect if it's granted here too.
+  id-token: write
 
 jobs:
   # Safety net: a release should only be cut off a commit that already went green
@@ -102,5 +106,3 @@ jobs:
       ANDROID_UPLOAD_KEYSTORE_BASE64: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_BASE64 }}
       ANDROID_UPLOAD_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_PASSWORD }}
       ANDROID_UPLOAD_KEY_ALIAS: ${{ secrets.ANDROID_UPLOAD_KEY_ALIAS }}
-      ANDROID_UPLOAD_KEY_PASSWORD: ${{ secrets.ANDROID_UPLOAD_KEY_PASSWORD }}
-      PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
