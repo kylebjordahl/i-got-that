@@ -250,10 +250,17 @@ id breaks Android sign-in with a `401` that reads like a bad token rather than
 a missing config entry; `test/auth-google-native.spec.ts` pins both cases.
 
 **Android signing fingerprints.** Google trusts an Android app by package name
-+ signing certificate, so every certificate that will ever produce a build
-needs its SHA-1 on that package's Android client: your local **debug** key, the
-**upload** key, and the **Play App Signing** key. Missing the last one is the
-classic "works over USB, `ApiException: 10` from the internal track" failure.
++ signing certificate, and a Cloud Console Android OAuth client holds exactly
+**one** such pair — so every certificate that will ever produce a build needs
+its *own* client, all sharing that package name: your local **debug** key, the
+**Play App Signing** key, and the **upload** key if you sideload locally built
+release APKs. The Play App Signing one is the easiest to miss and the one that
+matters most — Play re-signs every artifact it distributes, so that is the
+certificate a tester's device presents, and omitting it gives the classic
+"works over USB, `ApiException: 10` from the internal track" failure. (A
+package + SHA-1 pair must also be unique across *all* Cloud and Firebase
+projects, so "an OAuth2 client already exists for this package name and SHA-1"
+means it's registered somewhere else, not that you did it wrong.)
 
 ## Sign in with Apple
 

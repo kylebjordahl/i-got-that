@@ -75,8 +75,6 @@ on:
         required: false
       ANDROID_UPLOAD_KEY_ALIAS:
         required: false
-      ANDROID_UPLOAD_KEY_PASSWORD:
-        required: false
       PLAY_SERVICE_ACCOUNT_JSON:
         required: false
 
@@ -658,27 +656,30 @@ jobs:
           KEYSTORE_BASE64: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_BASE64 }}
           KEYSTORE_PASSWORD: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.ANDROID_UPLOAD_KEY_ALIAS }}
-          KEY_PASSWORD: ${{ secrets.ANDROID_UPLOAD_KEY_PASSWORD }}
         run: |
           set -euo pipefail
           missing=""
           [ -n "$KEYSTORE_BASE64" ]   || missing="$missing ANDROID_UPLOAD_KEYSTORE_BASE64"
           [ -n "$KEYSTORE_PASSWORD" ] || missing="$missing ANDROID_UPLOAD_KEYSTORE_PASSWORD"
           [ -n "$KEY_ALIAS" ]         || missing="$missing ANDROID_UPLOAD_KEY_ALIAS"
-          [ -n "$KEY_PASSWORD" ]      || missing="$missing ANDROID_UPLOAD_KEY_PASSWORD"
           if [ -n "$missing" ]; then
             echo "::error::Empty or unset secret(s):$missing." \
-                 "Set all five ANDROID_*/PLAY_* secrets (docs/DEPLOYMENT.md § 11)." \
+                 "Set all four ANDROID_*/PLAY_* secrets (docs/DEPLOYMENT.md § 11)." \
                  "Refusing to continue — this build would be signed with the debug key."
             exit 1
           fi
           printf '%s' "$KEYSTORE_BASE64" | base64 --decode > upload-keystore.jks
+          # No keyPassword: build.gradle.kts defaults it to storePassword,
+          # which is the only thing a PKCS12 keystore can use anyway (keytool
+          # ignores -keypass there). A legacy JKS keystore with a distinct key
+          # password would need one added here and as a fifth secret.
+          #
           # Written with printf rather than a heredoc: a heredoc terminator
           # can't be indented inside a YAML block scalar, and `<<-` only
           # strips tabs. storeFile is relative on purpose — rootProject.file()
           # resolves it against this same directory.
-          printf 'storeFile=%s\nstorePassword=%s\nkeyAlias=%s\nkeyPassword=%s\n' \
-            'upload-keystore.jks' "$KEYSTORE_PASSWORD" "$KEY_ALIAS" "$KEY_PASSWORD" \
+          printf 'storeFile=%s\nstorePassword=%s\nkeyAlias=%s\n' \
+            'upload-keystore.jks' "$KEYSTORE_PASSWORD" "$KEY_ALIAS" \
             > key.properties
 
       # Marketing version + build number come from the `version` job, the same

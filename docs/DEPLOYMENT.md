@@ -654,26 +654,37 @@ gitignored `apps/mobile/android/key.properties`:
 storeFile=/absolute/path/to/igt-upload.jks
 storePassword=…
 keyAlias=upload
-keyPassword=…
 ```
 
-Absolute path — Gradle does not expand `~`. Without that file, release builds
-fall back to the **debug** key so `flutter build apk --release` still works
-for anyone who clones the repo. CI never relies on that fallback: `play-build`
+Absolute path — Gradle does not expand `~`.
+
+There is deliberately **no `keyPassword`**: it defaults to `storePassword`.
+keytool has produced PKCS12 keystores by default since JDK 9, and PKCS12 has
+no per-entry password — pass `-keypass` and keytool tells you it's ignoring it
+(`Warning: Different store and key passwords not supported for PKCS12
+KeyStores`), protecting the key with the store password instead. Only a legacy
+`-storetype jks` keystore can hold a distinct key password; if yours is one,
+set `keyPassword` here and add a matching fifth secret below.
+
+Without that file, release builds fall back to the **debug** key so
+`flutter build apk --release` still works for anyone who clones the repo. CI
+never relies on that fallback: `play-build`
 sets `IGT_REQUIRE_RELEASE_SIGNING=true`, which makes the build fail rather
 than produce a debug-signed bundle, and then re-reads the signing certificate
 off the finished AAB as a second check. Both guards exist because of what the
 *first* upload does — see below.
 
-**The five secrets** (Settings → Secrets and variables → Actions):
+**The four secrets** (Settings → Secrets and variables → Actions):
 
 | Secret | Value |
 | --- | --- |
 | `ANDROID_UPLOAD_KEYSTORE_BASE64` | `base64 -i ~/igt-upload.jks` |
 | `ANDROID_UPLOAD_KEYSTORE_PASSWORD` | the keystore password |
 | `ANDROID_UPLOAD_KEY_ALIAS` | `upload` |
-| `ANDROID_UPLOAD_KEY_PASSWORD` | the key password |
 | `PLAY_SERVICE_ACCOUNT_JSON` | the whole service-account JSON, pasted |
+
+Any one of them empty fails `play-build` outright rather than falling back to
+the debug key, so a half-finished setup turns the next staging deploy red.
 
 **The service account.** In the Google Cloud project, create a service
 account and a JSON key, then Play Console → Users and permissions → Invite
@@ -695,11 +706,23 @@ console once per app. Two things become permanent at that moment:
   something you can quietly correct.
 
 **Then, and only then**, the OAuth fingerprints: Play Console → Test and
-release → Setup → **App signing** gives you the Play App Signing SHA-1 (which
-does not exist before that first upload) alongside your upload key's. Add
-both to that flavor's Android OAuth client in the Cloud Console. Skipping the
-Play App Signing one is the classic "works over USB, `ApiException: 10` from
-the internal track" failure — see docs/AUTH.md.
+release → Setup → **App signing** gives you the Play App Signing SHA-1 — which
+does not exist before that first upload — alongside your upload key's.
+
+A Cloud Console Android OAuth client holds exactly **one** package name + SHA-1
+pair, so each fingerprint needs its own client (all carrying the same package
+name). Per flavor:
+
+| SHA-1 | Needed |
+| --- | --- |
+| debug keystore | already registered — keeps `flutter run` working |
+| **Play App Signing** | **required**: Play re-signs every artifact it distributes, so this is the certificate a tester's device actually presents |
+| upload key | only to sideload a locally built *release* APK |
+
+Registering the upload key but not the Play App Signing key is the classic
+"works over USB, `ApiException: 10` from the internal track" failure. The
+clients themselves are write-only — nothing in the app or the Worker ever
+references their ids (see docs/AUTH.md's "Why two audiences").
 
 **versionCode** comes from `--build-number=${{ github.run_number }}`, the same
 monotonic value TestFlight uses. Play requires it to strictly increase per

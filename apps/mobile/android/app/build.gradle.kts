@@ -15,7 +15,14 @@ plugins {
 //   storeFile=/absolute/path/to/igt-upload.jks   <- absolute: Gradle does not
 //   storePassword=…                                 expand `~`
 //   keyAlias=upload
-//   keyPassword=…
+//
+// `keyPassword` is optional and defaults to `storePassword`. keytool has
+// produced **PKCS12** keystores by default since JDK 9, and PKCS12 has no
+// per-entry password: pass `-keypass` and keytool says so outright ("Warning:
+// Different store and key passwords not supported for PKCS12 KeyStores.
+// Ignoring user-specified -keypass value") and protects the key with the store
+// password. Only a legacy `-storetype jks` keystore can hold a distinct key
+// password — there, set `keyPassword` explicitly.
 val keystorePropertiesFile = rootProject.file("key.properties")
 val hasUploadKeystore = keystorePropertiesFile.exists()
 val keystoreProperties = Properties().apply {
@@ -28,7 +35,7 @@ val keystoreProperties = Properties().apply {
 // fail deep inside the signing task, or — if a property silently resolves to
 // null — produce an unsigned bundle. Name the missing keys up front instead.
 if (hasUploadKeystore) {
-    val missing = listOf("storeFile", "storePassword", "keyAlias", "keyPassword")
+    val missing = listOf("storeFile", "storePassword", "keyAlias")
         .filter { keystoreProperties.getProperty(it).isNullOrBlank() }
     if (missing.isNotEmpty()) {
         throw GradleException(
@@ -134,7 +141,11 @@ android {
                 storeFile = rootProject.file(keystoreProperties.getProperty("storeFile"))
                 storePassword = keystoreProperties.getProperty("storePassword")
                 keyAlias = keystoreProperties.getProperty("keyAlias")
+                // Falls back to the store password — the only possibility for
+                // a PKCS12 keystore; see the note above key.properties.
                 keyPassword = keystoreProperties.getProperty("keyPassword")
+                    ?.takeIf { it.isNotBlank() }
+                    ?: keystoreProperties.getProperty("storePassword")
             }
         }
     }
