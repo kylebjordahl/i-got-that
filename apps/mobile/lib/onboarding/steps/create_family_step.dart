@@ -11,18 +11,17 @@ import '../onboarding_scaffold.dart';
 /// 1c — create the family and name yourself. One step, two records: the family
 /// row and the caller's (admin) member, created together (the route makes the
 /// member; we then stamp the chosen color). The color is the accent used
-/// everywhere you appear.
+/// everywhere you appear. There is deliberately no "Finish later" here: the
+/// rest of the wizard (and the app) needs a family, so this step can't be skipped.
 class CreateFamilyStep extends ConsumerStatefulWidget {
   const CreateFamilyStep({
     super.key,
     required this.onNext,
     required this.onBack,
-    required this.onExit,
   });
 
   final VoidCallback onNext;
   final VoidCallback onBack;
-  final VoidCallback onExit;
 
   @override
   ConsumerState<CreateFamilyStep> createState() => _CreateFamilyStepState();
@@ -42,7 +41,7 @@ class _CreateFamilyStepState extends ConsumerState<CreateFamilyStep> {
     super.dispose();
   }
 
-  Future<void> _submit({required bool exit}) async {
+  Future<void> _submit() async {
     if (_family.text.trim().isEmpty) {
       setState(() => _error = 'Give your family a name');
       return;
@@ -71,7 +70,7 @@ class _CreateFamilyStepState extends ConsumerState<CreateFamilyStep> {
       ref.invalidate(currentMemberProvider);
       await ref.read(familyProvider.future);
       if (!mounted) return;
-      exit ? widget.onExit() : widget.onNext();
+      widget.onNext();
     } catch (e) {
       if (mounted) setState(() => _error = '$e');
     } finally {
@@ -84,8 +83,6 @@ class _CreateFamilyStepState extends ConsumerState<CreateFamilyStep> {
     return OnboardingScaffold(
       progress: 0.33,
       onBack: widget.onBack,
-      trailingLabel: 'Finish later',
-      onTrailing: _busy ? null : () => _submit(exit: true),
       title: 'Create your family',
       subtitle:
           'The shared space everyone coordinates in. You can rename it later.',
@@ -131,7 +128,7 @@ class _CreateFamilyStepState extends ConsumerState<CreateFamilyStep> {
       bottom: OnboardingButton(
         label: 'Create family',
         busy: _busy,
-        onPressed: () => _submit(exit: false),
+        onPressed: _submit,
       ),
     );
   }
