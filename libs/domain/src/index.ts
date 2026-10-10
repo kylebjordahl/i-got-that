@@ -1156,3 +1156,22 @@ export const UpdateNotificationScheduleInput = z
 export type UpdateNotificationScheduleInput = z.infer<
   typeof UpdateNotificationScheduleInput
 >;
+
+// --- Voice assistant (Siri App Intents) -----------------------------------
+
+/**
+ * "Who's picking up Felix tomorrow?" — one member's tasks on one local day.
+ *
+ * The date and zone come from the device, not the family: "tomorrow" is the
+ * asker's tomorrow, and Siri has already resolved it to a calendar date by the
+ * time the intent runs. `type` narrows to one kind of task (`any` ⇒ all three);
+ * `q` is optional free text matched against the event title ("doctor").
+ */
+export const AssistantCoverageQuery = z.object({
+  memberId: z.string().min(1),
+  date: LocalDate,
+  tz: IanaTimezone,
+  type: z.enum(['any', ...TaskType.options]).default('any'),
+  q: z.string().trim().max(100).optional(),
+});
+export type AssistantCoverageQuery = z.infer<typeof AssistantCoverageQuery>;

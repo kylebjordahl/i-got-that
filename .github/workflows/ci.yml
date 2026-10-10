@@ -91,3 +91,32 @@ jobs:
       - name: Build debug APK (prod)
         working-directory: apps/mobile
         run: flutter build apk --debug --flavor prod
+
+  # The iOS twin of `Android (compile)`: the only PR check that runs the Swift
+  # compiler over `ios/Runner` (push/geocoding channels, the Siri App Intents)
+  # and Xcode's App Intents metadata extraction, which rejects a malformed
+  # App Shortcut phrase at build time. Otherwise the first thing to compile
+  # Swift is the TestFlight deploy, after merge. A debug simulator build needs
+  # no signing certs; one flavor is enough, since both compile the same sources
+  # and differ only in build settings.
+  ios:
+    name: iOS (compile)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      # Same reason as the TestFlight build: the image's default Xcode lags.
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - name: Regenerate ephemeral iOS project files
+        working-directory: apps/mobile
+        run: |
+          flutter create . --platforms=ios --project-name caretaker_app
+          flutter pub get
+      - name: Build for the simulator (staging, debug)
+        working-directory: apps/mobile
+        run: flutter build ios --simulator --debug --flavor staging
