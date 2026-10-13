@@ -53,6 +53,11 @@ bool get appleSignInAvailable =>
 /// keeping it out of localStorage/sessionStorage — web restores via the
 /// HttpOnly `igt_session` cookie instead.
 const _sessionStorageKey = 'session_token';
+
+/// The API base URL, stored beside the token for the iOS Siri intents
+/// (`ios/Runner/AssistantIntents.swift`), which read both Keychain items
+/// directly: `API_BASE_URL` is a dart-define, so native code can't see it.
+const _apiBaseUrlStorageKey = 'api_base_url';
 const _storage = FlutterSecureStorage();
 
 final apiClientProvider = Provider<ApiClient>(
@@ -195,6 +200,12 @@ class AuthController extends StateNotifier<AuthState> {
         state = AuthState(
           sessionToken: stored,
           user: me['user'] as Map<String, dynamic>?,
+        );
+        // A session from before the Siri intents existed never stored this.
+        unawaited(
+          _storage
+              .write(key: _apiBaseUrlStorageKey, value: apiBaseUrl)
+              .catchError((_) {}),
         );
       } catch (_) {
         // Stored token no longer valid (expired/revoked) — discard it and
@@ -421,6 +432,7 @@ class AuthController extends StateNotifier<AuthState> {
     if (kIsWeb) return;
     try {
       await _storage.write(key: _sessionStorageKey, value: token);
+      await _storage.write(key: _apiBaseUrlStorageKey, value: apiBaseUrl);
     } catch (_) {
       // Best-effort persistence; the session is still usable this launch
       // even if the Keychain write failed.

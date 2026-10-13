@@ -285,6 +285,20 @@ paths in particular).
   binding exists (`emailEnabled`): with a capture-only outbox the rows would
   record invites as sent that never left. Header values in `libs/delivery`'s
   MIME builder are sanitised there because subjects are feed-controlled.
+- **Siri reads the Flutter app's Keychain items directly.** The App Intents
+  in `ios/Runner/AssistantIntents.swift` ("Who's picking up Felix tomorrow
+  in IGT") run without Flutter, so they read `session_token` and
+  `api_base_url` from `flutter_secure_storage`'s own Keychain layout (service
+  `flutter_secure_storage_service`, the plugin default) and call
+  `GET /assistant/members` + `/assistant/coverage`, which composes the sentence
+  Siri speaks (`services/assistant.ts`). Changing that plugin's major version,
+  its `IOSOptions`, or those two keys in `lib/state/auth.dart` silently signs
+  Siri out ("Open IGT and sign in first") — nothing else will notice. Siri
+  allows one parameter per spoken phrase, which is why "today"/"tomorrow" are
+  separate intents; Apple caps an app at ten App Shortcuts and this uses nine.
+  There's no Android counterpart: Google Assistant is gone from phones, and
+  Gemini only calls third-party AppFunctions for apps Google admits to its
+  early-access program.
 - **CalDAV** does a direct authenticated `PUT`/`DELETE` to the discovered
   collection URL (`libs/delivery/src/caldav.ts`), not tsdav's create-only helper.
 - **Travel time is coordinate-driven, end to end.** `locationGeo` rides from the

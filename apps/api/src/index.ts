@@ -7,6 +7,7 @@ import { authMiddleware } from './middleware/auth.js';
 import { requestTelemetry } from './middleware/telemetry.js';
 import { deliveryQueueConsumer } from './services/mirror.js';
 import { accountRoutes } from './routes/accounts.js';
+import { assistantRoutes } from './routes/assistant.js';
 import { authRoutes } from './routes/auth.js';
 import { emailUnsubscribeRoutes, emailVerifyRoutes } from './routes/email-outputs.js';
 import { familyRoutes } from './routes/families.js';
@@ -121,6 +122,9 @@ app.route('/accounts', accountRoutes);
 // User-owned push devices + digest schedules — also not family-scoped: a digest
 // aggregates across every family the user belongs to.
 app.route('/notifications', notificationRoutes);
+
+// Voice-assistant answers (Siri) — user-scoped across families, like /notifications.
+app.route('/assistant', assistantRoutes);
 
 /** Current user + the families they belong to (with their member record). */
 app.get('/me', authMiddleware, async (c) => {

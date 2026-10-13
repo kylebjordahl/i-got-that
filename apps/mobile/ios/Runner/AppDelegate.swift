@@ -10,6 +10,11 @@ import UserNotifications
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
   ) -> Bool {
     UNUserNotificationCenter.current().delegate = self
+    // Re-reads the family members Siri's phrases can name ("Who's picking up
+    // Felix…"), so a member added since the last launch becomes askable.
+    if #available(iOS 17.0, *) {
+      IGTShortcuts.updateAppShortcutParameters()
+    }
     return super.application(application, didFinishLaunchingWithOptions: launchOptions)
   }
 
