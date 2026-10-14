@@ -26,6 +26,7 @@ import {
   exchangeGoogleCode,
   googleOAuthConfigured,
   googleRefresherFor,
+  missingGoogleScopes,
   revokeGoogleToken,
 } from '../lib/google-oauth.js';
 import { authMiddleware } from '../middleware/auth.js';
@@ -177,6 +178,11 @@ async function connectGoogleFromCode(
     return c.json({ error: 'google_exchange_failed' }, 400);
   }
   if (!tokens.refreshToken) return c.json({ error: 'google_no_refresh_token' }, 400);
+  // A partial consent would overwrite a working grant with one that 403s.
+  const missingScopes = missingGoogleScopes(tokens);
+  if (missingScopes.length > 0) {
+    return c.json({ error: 'google_scopes_missing', missingScopes }, 400);
+  }
   let email: string | undefined;
   if (tokens.idToken) {
     try {

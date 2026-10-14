@@ -18,6 +18,7 @@ import {
   decodeGoogleIdToken,
   exchangeGoogleCode,
   googleOAuthConfigured,
+  missingGoogleScopes,
   revokeGoogleToken,
 } from '../lib/google-oauth.js';
 import { emailEnabled } from '../lib/email.js';
@@ -139,6 +140,14 @@ async function autoConnectGoogleCalendarNative(
   if (!opts.serverAuthCode || !keys || !googleOAuthConfigured(env)) return;
   try {
     const tokens = await exchangeGoogleCode(env, { code: opts.serverAuthCode });
+    // A sign-in that granted less calendar access than we need must not
+    // replace the token of an account it matches by email (see
+    // missingGoogleScopes); the sign-in itself still goes ahead.
+    const missingScopes = missingGoogleScopes(tokens);
+    if (missingScopes.length > 0) {
+      console.warn(`google calendar auto-connect (native) skipped: missing ${missingScopes.join(' ')}`);
+      return;
+    }
     if (tokens.refreshToken) {
       await connectGoogleAccount(db, keys, {
         userId: opts.userId,
@@ -545,7 +554,14 @@ authRoutes.get('/google/callback', async (c) => {
 
   // Auto-connect the Google Calendar from the refresh token this consent yielded.
   const kekKeys = buildKekKeySet(c.env);
-  if (tokens.refreshToken && kekKeys) {
+  const missingScopes = missingGoogleScopes(tokens);
+  if (missingScopes.length > 0) {
+    // Same rule as the native path: don't store a grant that can't do the
+    // calendar reads. Asked-for in link mode, so the person hears why; a
+    // plain sign-in carries on without the calendar.
+    if (linkSessionToken) return back('auth_error=google_scopes_missing');
+    console.warn(`google calendar auto-connect skipped: missing ${missingScopes.join(' ')}`);
+  } else if (tokens.refreshToken && kekKeys) {
     try {
       await connectGoogleAccount(db, kekKeys, {
         userId,

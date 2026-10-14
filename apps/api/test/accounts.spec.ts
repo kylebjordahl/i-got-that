@@ -411,7 +411,7 @@ describe('Google external accounts — reconnecting the account you already have
   }
 
   /** Google's token endpoint answering a consent by `email` with refresh token `rt`. */
-  function stubTokenExchange(email: string | null, rt: string) {
+  function stubTokenExchange(email: string | null, rt: string, scope?: string) {
     const b64 = (o: object) => btoa(JSON.stringify(o)).replace(/=+$/, '');
     vi.stubGlobal(
       'fetch',
@@ -420,6 +420,7 @@ describe('Google external accounts — reconnecting the account you already have
           JSON.stringify({
             access_token: 'at',
             refresh_token: rt,
+            ...(scope ? { scope } : {}),
             ...(email ? { id_token: `${b64({ alg: 'none' })}.${b64({ sub: `sub-${email}`, email })}.sig` } : {}),
           }),
           { status: 200 },
@@ -532,6 +533,27 @@ describe('Google external accounts — reconnecting the account you already have
     expect(res.status).toBe(409);
     expect(((await res.json()) as { error: string }).error).toBe('google_account_mismatch');
     expect(await storedRefreshToken(account.id)).toBe('rt-kyle');
+  });
+
+  it('refuses a consent that unticked a calendar permission, keeping the working token', async () => {
+    const user = await login('acct-google-partial@example.com');
+    stubTokenExchange('kyle@example.com', 'rt-good');
+    const created = await fetchWith('/accounts', authed(user.token, { kind: 'google', name: 'Google', ...consent }));
+    const { account } = (await created.json()) as { account: Account };
+
+    // Everything but free/busy: the token would refresh fine and 403 every busy sync.
+    stubTokenExchange(
+      'kyle@example.com',
+      'rt-partial',
+      'openid email https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/calendar.readonly',
+    );
+    const res = await fetchWith(`/accounts/${account.id}/reconnect`, authed(user.token, consent));
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: 'google_scopes_missing',
+      missingScopes: ['https://www.googleapis.com/auth/calendar.freebusy'],
+    });
+    expect(await storedRefreshToken(account.id)).toBe('rt-good');
   });
 
   it("won't reconnect another user's account", async () => {

@@ -555,6 +555,12 @@ feedRoutes.patch('/:feedId/member-links/:linkId', requireAdmin, async (c) => {
  * Remove a link (admin). Its synthesized events + pending decisions cascade;
  * that member's event-derived tasks (any status) are removed explicitly, and
  * the family mirror reconcile cancels the remote copies.
+ *
+ * Removing the feed's *last* link deletes the feed too (its source events and
+ * any remaining decisions cascade). Unlinking is the app's only way to remove
+ * a calendar, and a feed nobody is linked to has no purpose — but it used to
+ * stay behind, re-ingested every tick (and for an account feed whose account
+ * is gone, failing every tick) forever.
  */
 feedRoutes.delete('/:feedId/member-links/:linkId', requireAdmin, async (c) => {
   const db = getDb(c.env.DB);
@@ -571,6 +577,14 @@ feedRoutes.delete('/:feedId/member-links/:linkId', requireAdmin, async (c) => {
   const eventIds = linkEvents.map((e) => e.id);
 
   await db.delete(familyMemberFeeds).where(eq(familyMemberFeeds.id, link.id));
+  const remaining = await db
+    .select({ id: familyMemberFeeds.id })
+    .from(familyMemberFeeds)
+    .where(eq(familyMemberFeeds.feedId, feedId))
+    .limit(1);
+  if (remaining.length === 0) {
+    await db.delete(feeds).where(and(eq(feeds.id, feedId), eq(feeds.familyId, familyId)));
+  }
   if (eventIds.length > 0) {
     // Deleting the tasks also cascades their claimed events off the owners'
     // calendars; the family reconcile then cancels every remote copy. Chunked

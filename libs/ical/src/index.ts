@@ -772,7 +772,7 @@ export async function fetchGoogleOccurrences(
       `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events?${params.toString()}`,
       { headers: { Authorization: `Bearer ${accessToken}` } },
     );
-    if (!res.ok) throw new Error(`google events.list failed: ${res.status}`);
+    if (!res.ok) throw await googleApiError('events.list', res);
     const json = (await res.json()) as GoogleEventsResponse;
     if (!timezone && json.timeZone) timezone = json.timeZone;
     for (const ev of json.items ?? []) {
@@ -782,6 +782,26 @@ export async function fetchGoogleOccurrences(
     pageToken = json.nextPageToken;
   } while (pageToken);
   return { occurrences: out, timezone };
+}
+
+/**
+ * A failed Google Calendar API call, carrying Google's own reason. The bare
+ * status says almost nothing: a 403 is a missing OAuth scope, a disabled API,
+ * a quota or a rate limit, and only the body says which. The message lands in
+ * `feeds.lastErrorMessage`, so it has to be enough to act on.
+ */
+async function googleApiError(call: string, res: Response): Promise<GoogleApiError> {
+  let detail = '';
+  try {
+    const json = (await res.json()) as {
+      error?: { message?: string; errors?: { reason?: string }[]; details?: { reason?: string }[] };
+    };
+    const reason = json.error?.details?.[0]?.reason ?? json.error?.errors?.[0]?.reason;
+    detail = [reason, json.error?.message].filter(Boolean).join(': ');
+  } catch {
+    // Not JSON: the status alone will have to do.
+  }
+  return new GoogleApiError(`google ${call} failed: ${res.status}${detail ? ` ${detail}` : ''}`, res.status);
 }
 
 interface GoogleFreeBusyInterval {
@@ -835,7 +855,7 @@ export async function fetchGoogleFreeBusy(
       items: [{ id: calendarId }],
     }),
   });
-  if (!res.ok) throw new Error(`google freebusy failed: ${res.status}`);
+  if (!res.ok) throw await googleApiError('freebusy', res);
   const json = (await res.json()) as GoogleFreeBusyResponse;
   // Google keys the response by the requested id; fall back to the single
   // entry in case it canonicalizes (we only ever query one calendar).
@@ -893,7 +913,7 @@ export async function fetchGoogleCalendars(
     'https://www.googleapis.com/calendar/v3/users/me/calendarList',
     { headers: { Authorization: `Bearer ${accessToken}` } },
   );
-  if (!res.ok) throw new GoogleApiError(`google calendarList failed: ${res.status}`, res.status);
+  if (!res.ok) throw await googleApiError('calendarList', res);
   const json = (await res.json()) as {
     items?: { id?: string; summary?: string; summaryOverride?: string }[];
   };

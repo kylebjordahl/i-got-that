@@ -76,6 +76,25 @@ export interface GoogleTokens {
   refreshToken?: string;
   /** OpenID Connect id_token (present only when identity scopes were granted). */
   idToken?: string;
+  /**
+   * The scopes Google actually granted — Google's consent screen lets the
+   * person untick individual permissions, so this can be narrower than what
+   * was asked for. Null when the response didn't say.
+   */
+  scopes: string[] | null;
+}
+
+/**
+ * The calendar scopes (from `SCOPE`) a grant is missing. A grant without them
+ * still refreshes fine and so looks connected, then fails every read it can't
+ * do — a busy feed without `calendar.freebusy` 403s on each sync — so a
+ * connect refuses it instead of storing it. Empty when nothing is missing, or
+ * when Google didn't report the granted scopes (nothing to check against).
+ */
+export function missingGoogleScopes(tokens: Pick<GoogleTokens, 'scopes'>): string[] {
+  if (!tokens.scopes) return [];
+  const granted = new Set(tokens.scopes);
+  return SCOPE.split(' ').filter((s) => !granted.has(s));
 }
 
 /** The identity claims we read out of a Google id_token. */
@@ -136,11 +155,13 @@ export async function exchangeGoogleCode(
     access_token: string;
     refresh_token?: string;
     id_token?: string;
+    scope?: string;
   };
   return {
     accessToken: json.access_token,
     refreshToken: json.refresh_token,
     idToken: json.id_token,
+    scopes: json.scope ? json.scope.split(' ').filter(Boolean) : null,
   };
 }
 
