@@ -15,7 +15,7 @@ import {
   GoogleAuthorizeUrlInput,
   GoogleReconnectInput,
 } from '@igt/domain';
-import { createCalDavClient, fetchGoogleCalendars } from '@igt/ical';
+import { createCalDavClient, fetchGoogleCalendars, GoogleApiError } from '@igt/ical';
 import { type Context, Hono } from 'hono';
 import type { HonoEnv } from '../env.js';
 import { resolveAccountCredential } from '../lib/account-credentials.js';
@@ -325,6 +325,12 @@ accountRoutes.post('/:accountId/calendars', async (c) => {
     // to a URL the caller chose, so reflecting it turns a failed discovery
     // into a read primitive. The detail stays in the Worker's logs.
     console.error(`calendar discovery failed for account ${account.id}`, err);
+    // Google refusing the grant (not a blip) is the person's to fix by
+    // reconnecting — typically an account signed in natively before the
+    // calendar.readonly scope was requested.
+    if (err instanceof GoogleApiError && (err.status === 401 || err.status === 403)) {
+      return c.json({ error: 'google_reauth_required' }, 400);
+    }
     return c.json({ error: 'list_failed' }, 400);
   }
 });

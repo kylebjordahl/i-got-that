@@ -325,6 +325,40 @@ describe('Google external accounts — revoke on disconnect', () => {
     expect(revokeCall!.body.get('token')).toBe('the-refresh-token');
   });
 
+  it('tells the client to reconnect when Google refuses the calendar list (missing scope)', async () => {
+    const user = await login('acct-google-scope@example.com');
+    vi.stubGlobal(
+      'fetch',
+      async () =>
+        new Response(JSON.stringify({ access_token: 'at', refresh_token: 'rt' }), { status: 200 }),
+    );
+    const created = await fetchWith(
+      '/accounts',
+      googleEnv,
+      authed(user.token, {
+        kind: 'google',
+        name: 'Google',
+        authCode: 'code',
+        redirectUri: 'https://app.example/cb',
+      }),
+    );
+    const accountId = ((await created.json()) as { account: Account }).account.id;
+
+    // Token refresh works, but calendarList answers 403 insufficient scopes —
+    // an account signed in natively with only `calendar.events`.
+    vi.stubGlobal('fetch', async (url: RequestInfo | URL) =>
+      String(url).includes('oauth2.googleapis.com/token')
+        ? new Response(JSON.stringify({ access_token: 'fresh' }), { status: 200 })
+        : new Response(JSON.stringify({ error: { status: 'PERMISSION_DENIED' } }), { status: 403 }),
+    );
+    const res = await fetchWith(`/accounts/${accountId}/calendars`, googleEnv, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${user.token}` },
+    });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toBe('google_reauth_required');
+  });
+
   it('a failed upstream revoke never blocks the disconnect', async () => {
     const user = await login('acct-google-revoke-fail@example.com');
 

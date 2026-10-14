@@ -29,8 +29,17 @@ const apiBaseUrl = String.fromEnvironment(
 /// --dart-define=GOOGLE_SERVER_CLIENT_ID=...
 const _googleServerClientId = String.fromEnvironment('GOOGLE_SERVER_CLIENT_ID');
 
+/// Must cover everything the API's Google provider uses (`SCOPE` in
+/// apps/api/src/lib/google-oauth.ts): `calendar.readonly` is what lets the
+/// "pick a calendar" list work, `calendar.freebusy` backs busy-mode feeds. The
+/// `serverAuthCode` is only good for the scopes asked for here.
 final _googleSignIn = GoogleSignIn(
-  scopes: ['email', 'https://www.googleapis.com/auth/calendar.events'],
+  scopes: [
+    'email',
+    'https://www.googleapis.com/auth/calendar.events',
+    'https://www.googleapis.com/auth/calendar.readonly',
+    'https://www.googleapis.com/auth/calendar.freebusy',
+  ],
   serverClientId: _googleServerClientId.isEmpty ? null : _googleServerClientId,
 );
 
