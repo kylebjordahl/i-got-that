@@ -322,6 +322,10 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.text('Google'));
       await tester.pumpAndSettle();
+      // A Google account offers Reconnect beside Disconnect first.
+      expect(find.text('Reconnect'), findsOneWidget);
+      await tester.tap(find.text('Disconnect'));
+      await tester.pumpAndSettle();
 
       // The audit names the actual linked feed and member up front, in the
       // sheet itself — not a toast surfaced after a failed attempt.

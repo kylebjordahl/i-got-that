@@ -396,6 +396,21 @@ class ApiClient {
   );
 
   /// Google OAuth consent URL for connecting a new account.
+  /// Renew an existing Google account's grant with a fresh consent `authCode`.
+  /// 409 `google_account_mismatch` when a different Google account consented.
+  Future<Map<String, dynamic>> reconnectGoogleAccount(
+    String accountId, {
+    required String authCode,
+    required String redirectUri,
+  }) async {
+    final res = await _dio.post(
+      '/accounts/$accountId/reconnect',
+      data: {'authCode': authCode, 'redirectUri': redirectUri},
+      options: _auth,
+    );
+    return _obj(res);
+  }
+
   Future<String> accountGoogleAuthorizeUrl(String redirectUri) async {
     final res = await _dio.post(
       '/accounts/google/authorize-url',

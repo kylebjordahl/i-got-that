@@ -13,13 +13,16 @@ import {
 import {
   CreateExternalAccountInput,
   GoogleAuthorizeUrlInput,
+  GoogleReconnectInput,
 } from '@igt/domain';
 import { createCalDavClient, fetchGoogleCalendars } from '@igt/ical';
-import { Hono } from 'hono';
+import { type Context, Hono } from 'hono';
 import type { HonoEnv } from '../env.js';
 import { resolveAccountCredential } from '../lib/account-credentials.js';
+import { connectGoogleAccount, GoogleAccountMismatchError } from '../lib/google-account.js';
 import {
   buildGoogleAuthorizeUrl,
+  decodeGoogleIdToken,
   exchangeGoogleCode,
   googleOAuthConfigured,
   googleRefresherFor,
@@ -32,7 +35,13 @@ import {
   outboundPolicy,
   UnsafeOutboundUrlError,
 } from '../lib/outbound-url.js';
-import { buildKekKeySet, kekStatus, kekUsable, storeSecret } from '../lib/secrets.js';
+import {
+  buildKekKeySet,
+  type KekKeySet,
+  kekStatus,
+  kekUsable,
+  storeSecret,
+} from '../lib/secrets.js';
 
 /** iCloud's well-known CalDAV endpoint (used when no serverUrl is given). */
 const ICLOUD_CALDAV_URL = 'https://caldav.icloud.com';
@@ -69,7 +78,12 @@ accountRoutes.post('/google/authorize-url', async (c) => {
   }
   const parsed = GoogleAuthorizeUrlInput.safeParse(await c.req.json().catch(() => null));
   if (!parsed.success) return c.json({ error: 'invalid', issues: parsed.error.issues }, 400);
-  return c.json({ url: buildGoogleAuthorizeUrl(c.env, { redirectUri: parsed.data.redirectUri }) });
+  // `identity`: also ask for openid/email, so the code exchange yields an
+  // id_token naming the Google account. Without it every connect landed on a
+  // new nameless row, and a reconnect could never find the account it renews.
+  return c.json({
+    url: buildGoogleAuthorizeUrl(c.env, { redirectUri: parsed.data.redirectUri, identity: true }),
+  });
 });
 
 /**
@@ -103,18 +117,7 @@ accountRoutes.post('/', async (c) => {
   let username: string | null = null;
 
   if (d.kind === 'google') {
-    if (!googleOAuthConfigured(c.env)) return c.json({ error: 'google_oauth_not_configured' }, 501);
-    try {
-      const tokens = await exchangeGoogleCode(c.env, {
-        code: d.authCode!,
-        redirectUri: d.redirectUri!,
-      });
-      if (!tokens.refreshToken) return c.json({ error: 'google_no_refresh_token' }, 400);
-      payload = JSON.stringify({ kind: 'oauth', refreshToken: tokens.refreshToken });
-    } catch (err) {
-      console.error('google code exchange failed', err);
-      return c.json({ error: 'google_exchange_failed' }, 400);
-    }
+    return connectGoogleFromCode(c, db, keys, user.id, d.authCode!, d.redirectUri!);
   } else {
     serverUrl = d.kind === 'icloud' ? d.serverUrl ?? ICLOUD_CALDAV_URL : d.serverUrl!;
     // We do authenticated discovery against this URL — and send the stored
@@ -148,6 +151,108 @@ accountRoutes.post('/', async (c) => {
   )[0]!;
 
   return c.json({ account: safeAccount(row) }, 201);
+});
+
+/**
+ * Exchange a Google consent code and land it on an account via
+ * `connectGoogleAccount` — a repeat consent for a known Google account (or,
+ * with `accountId`, the one the person chose to reconnect) renews that row
+ * instead of adding another. 201 for a new account, 200 for a renewed one.
+ */
+async function connectGoogleFromCode(
+  c: Context<HonoEnv>,
+  db: Db,
+  keys: KekKeySet,
+  userId: string,
+  code: string,
+  redirectUri: string,
+  accountId?: string,
+) {
+  if (!googleOAuthConfigured(c.env)) return c.json({ error: 'google_oauth_not_configured' }, 501);
+  let tokens;
+  try {
+    tokens = await exchangeGoogleCode(c.env, { code, redirectUri });
+  } catch (err) {
+    console.error('google code exchange failed', err);
+    return c.json({ error: 'google_exchange_failed' }, 400);
+  }
+  if (!tokens.refreshToken) return c.json({ error: 'google_no_refresh_token' }, 400);
+  let email: string | undefined;
+  if (tokens.idToken) {
+    try {
+      email = decodeGoogleIdToken(tokens.idToken).email;
+    } catch {
+      // An unreadable id_token only costs us the email; the calendar grant stands.
+    }
+  }
+  const before = accountId
+    ? null
+    : email
+      ? (
+          await db
+            .select({ id: externalAccounts.id })
+            .from(externalAccounts)
+            .where(
+              and(
+                eq(externalAccounts.userId, userId),
+                eq(externalAccounts.kind, 'google'),
+                eq(externalAccounts.username, email),
+              ),
+            )
+            .limit(1)
+        )[0]
+      : undefined;
+  let id: string;
+  try {
+    id = await connectGoogleAccount(db, keys, {
+      userId,
+      refreshToken: tokens.refreshToken,
+      email,
+      accountId,
+    });
+  } catch (err) {
+    if (err instanceof GoogleAccountMismatchError) {
+      // Not revoked: revoking a refresh token ends the whole grant for that
+      // Google account, which may be the one backing another of this user's
+      // rows. The unstored token is simply never used.
+      return err.reason === 'not_found'
+        ? c.json({ error: 'not_found' }, 404)
+        : c.json({ error: 'google_account_mismatch' }, 409);
+    }
+    throw err;
+  }
+  const row = (await db.select().from(externalAccounts).where(eq(externalAccounts.id, id)))[0]!;
+  return c.json({ account: safeAccount(row) }, accountId || before ? 200 : 201);
+}
+
+/**
+ * Renew one Google account's grant (owner only) — the fix for a feed stuck on
+ * `invalid_grant` once its refresh token has expired or been revoked. The
+ * client runs the same consent as the connect wizard and posts the code here;
+ * the row keeps its id, so every feed and delivery target drawing on it picks
+ * up the new token (and failing feeds are re-queued) without being rebuilt.
+ */
+accountRoutes.post('/:accountId/reconnect', async (c) => {
+  const parsed = GoogleReconnectInput.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) return c.json({ error: 'invalid', issues: parsed.error.issues }, 400);
+  const keys = buildKekKeySet(c.env);
+  if (!keys || !kekUsable(kekStatus(c.env))) {
+    return c.json({ error: 'kek_unconfigured', reason: kekStatus(c.env) }, 503);
+  }
+  const db = getDb(c.env.DB);
+  const user = c.get('user');
+  const account = await loadOwnAccount(db, user.id, c.req.param('accountId'));
+  if (!account) return c.json({ error: 'not_found' }, 404);
+  if (account.kind !== 'google') return c.json({ error: 'not_google' }, 400);
+  return connectGoogleFromCode(
+    c,
+    db,
+    keys,
+    user.id,
+    parsed.data.authCode,
+    parsed.data.redirectUri,
+    account.id,
+  );
 });
 
 /** List the current user's connected accounts (credentials never returned). */

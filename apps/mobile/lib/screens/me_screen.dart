@@ -3,8 +3,11 @@ import 'dart:async';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show PlatformException;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_web_auth_2/flutter_web_auth_2.dart';
 import 'package:package_info_plus/package_info_plus.dart';
+import '../env.dart';
 import '../models.dart';
 import '../services/push.dart';
 import '../state/auth.dart';
@@ -105,7 +108,9 @@ class MeScreen extends ConsumerWidget {
                     title: a.kindLabel,
                     subtitle: a.username ?? a.name,
                     trailing: const _ConnectedPill(),
-                    onTap: () => _disconnect(context, ref, a),
+                    onTap: () => a.kind == 'google'
+                        ? _googleAccountActions(context, ref, a)
+                        : _disconnect(context, ref, a),
                   ),
                   const Divider(height: 20),
                 ],
@@ -343,6 +348,102 @@ class MeScreen extends ConsumerWidget {
         ),
       ),
     );
+  }
+
+  /// A Google account's grant can lapse (Google expires refresh tokens, or the
+  /// person revokes access), after which every feed on it fails with
+  /// `invalid_grant`. Reconnecting renews *this* row — its feeds and targets
+  /// keep pointing at it — rather than adding a second account beside it.
+  Future<void> _googleAccountActions(
+    BuildContext context,
+    WidgetRef ref,
+    ExternalAccount a,
+  ) async {
+    final choice = await showModalBottomSheet<String>(
+      context: context,
+      useSafeArea: true,
+      useRootNavigator: true,
+      showDragHandle: true,
+      builder: (sheetContext) => Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          ListTile(
+            leading: const Icon(Icons.refresh_rounded),
+            title: const Text('Reconnect'),
+            subtitle: const Text(
+              'Sign in to Google again if calendars from this account stopped updating.',
+            ),
+            onTap: () => Navigator.of(sheetContext).pop('reconnect'),
+          ),
+          ListTile(
+            leading: const Icon(Icons.link_off_rounded),
+            title: const Text('Disconnect'),
+            onTap: () => Navigator.of(sheetContext).pop('disconnect'),
+          ),
+          const SizedBox(height: 12),
+        ],
+      ),
+    );
+    if (!context.mounted || choice == null) return;
+    if (choice == 'disconnect') return _disconnect(context, ref, a);
+    return _reconnectGoogle(context, ref, a);
+  }
+
+  Future<void> _reconnectGoogle(
+    BuildContext context,
+    WidgetRef ref,
+    ExternalAccount a,
+  ) async {
+    // Web navigates away and comes back to `#connected=google`.
+    if (kIsWeb) {
+      ref.read(authControllerProvider.notifier).reconnectGoogleCalendar(a.id);
+      return;
+    }
+    final api = ref.read(apiClientProvider);
+    String message;
+    try {
+      // Same system-browser consent as the connect wizard (see
+      // ConnectAccountWizard._connectGoogleNative).
+      const redirectUri = '$apiBaseUrl/auth/google/native-callback';
+      final authorizeUrl = await api.accountGoogleAuthorizeUrl(redirectUri);
+      final callback = await FlutterWebAuth2.authenticate(
+        url: authorizeUrl,
+        callbackUrlScheme: googleOAuthCallbackScheme,
+      );
+      final code = Uri.parse(callback).queryParameters['code'];
+      if (code == null) {
+        message = 'Google did not return an authorization code.';
+      } else {
+        await api.reconnectGoogleAccount(
+          a.id,
+          authCode: code,
+          redirectUri: redirectUri,
+        );
+        ref.invalidate(accountsProvider);
+        message = 'Reconnected. Its calendars will catch up on the next sync.';
+      }
+    } on DioException catch (e) {
+      final data = e.response?.data;
+      final code = data is Map ? data['error'] : null;
+      message = switch (code) {
+        'google_account_mismatch' =>
+          'That was a different Google account. Sign in as '
+              '${a.username ?? 'the account you connected'} to reconnect it.',
+        'google_no_refresh_token' =>
+          'Google did not grant offline access. Remove I Got That from your '
+              'Google account permissions, then try again.',
+        _ => 'Could not reconnect (HTTP ${e.response?.statusCode ?? '?'}).',
+      };
+    } on PlatformException catch (e) {
+      // FlutterWebAuth2 reports a closed browser sheet as CANCELED.
+      if (e.code == 'CANCELED') return;
+      message = 'Could not reconnect: ${e.message ?? e.code}';
+    }
+    if (context.mounted) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(message)));
+    }
   }
 
   /// Audits what's linked to the account up front (like

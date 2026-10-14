@@ -1,7 +1,10 @@
 import { createExecutionContext, env, waitOnExecutionContext } from 'cloudflare:test';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { eq, externalAccounts, feeds, getDb } from '@igt/db';
 import app from '../src/index.js';
-import { authed, bearer, call, createFamily, login } from './helpers.js';
+import { resolveAccountCredential } from '../src/lib/account-credentials.js';
+import { storeSecret } from '../src/lib/secrets.js';
+import { authed, bearer, call, createFamily, login, testKeys } from './helpers.js';
 
 type Account = { id: string; kind: string; serverUrl: string | null };
 
@@ -355,5 +358,155 @@ describe('Google external accounts — revoke on disconnect', () => {
 
     const list = await fetchWith('/accounts', googleEnv, bearer(user.token));
     expect(((await list.json()) as { accounts: Account[] }).accounts).toHaveLength(0);
+  });
+});
+
+describe('Google external accounts — reconnecting the account you already have', () => {
+  const googleEnv = {
+    ...env,
+    GOOGLE_OAUTH_CLIENT_ID: 'client-id-123',
+    GOOGLE_OAUTH_CLIENT_SECRET: 'client-secret-xyz',
+  };
+  const db = () => getDb(env.DB);
+
+  async function fetchWith(path: string, init?: RequestInit): Promise<Response> {
+    const ctx = createExecutionContext();
+    const res = await app.fetch(new Request(`https://api.test${path}`, init), googleEnv, ctx);
+    await waitOnExecutionContext(ctx);
+    return res;
+  }
+
+  /** Google's token endpoint answering a consent by `email` with refresh token `rt`. */
+  function stubTokenExchange(email: string | null, rt: string) {
+    const b64 = (o: object) => btoa(JSON.stringify(o)).replace(/=+$/, '');
+    vi.stubGlobal(
+      'fetch',
+      async () =>
+        new Response(
+          JSON.stringify({
+            access_token: 'at',
+            refresh_token: rt,
+            ...(email ? { id_token: `${b64({ alg: 'none' })}.${b64({ sub: `sub-${email}`, email })}.sig` } : {}),
+          }),
+          { status: 200 },
+        ),
+    );
+  }
+
+  const consent = { authCode: 'code', redirectUri: 'https://app.example/cb' };
+
+  async function storedRefreshToken(accountId: string) {
+    const row = (await db().select().from(externalAccounts).where(eq(externalAccounts.id, accountId)))[0]!;
+    const cred = await resolveAccountCredential(db(), testKeys(), row.id);
+    return cred?.kind === 'oauth' ? cred.refreshToken : undefined;
+  }
+
+  /** A Google row the old wizard left behind: no email, generic name, dead token. */
+  async function legacyAccount(userId: string) {
+    const credentialsRef = await storeSecret(
+      db(),
+      testKeys(),
+      null,
+      JSON.stringify({ kind: 'oauth', refreshToken: 'expired-rt' }),
+    );
+    return (
+      await db()
+        .insert(externalAccounts)
+        .values({ userId, kind: 'google', name: 'Google Calendar', credentialsRef })
+        .returning()
+    )[0]!;
+  }
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("asks Google who the account is, so the wizard's consent carries an email", async () => {
+    const user = await login('acct-google-identity@example.com');
+    const res = await fetchWith(
+      '/accounts/google/authorize-url',
+      authed(user.token, { redirectUri: 'https://app.example/cb' }),
+    );
+    const { url } = (await res.json()) as { url: string };
+    const scope = new URL(url).searchParams.get('scope')!.split(' ');
+    expect(scope).toEqual(expect.arrayContaining(['openid', 'email']));
+  });
+
+  it('connecting the same Google account twice renews one row instead of adding another', async () => {
+    const user = await login('acct-google-dedupe@example.com');
+    stubTokenExchange('kyle@example.com', 'rt-1');
+    const first = await fetchWith('/accounts', authed(user.token, { kind: 'google', name: 'Google', ...consent }));
+    expect(first.status).toBe(201);
+    const { account } = (await first.json()) as { account: Account & { username: string } };
+    expect(account.username).toBe('kyle@example.com');
+
+    stubTokenExchange('kyle@example.com', 'rt-2');
+    const second = await fetchWith('/accounts', authed(user.token, { kind: 'google', name: 'Google', ...consent }));
+    expect(second.status).toBe(200);
+    expect(((await second.json()) as { account: Account }).account.id).toBe(account.id);
+
+    const rows = await db().select().from(externalAccounts).where(eq(externalAccounts.userId, user.userId));
+    expect(rows).toHaveLength(1);
+    expect(await storedRefreshToken(account.id)).toBe('rt-2');
+  });
+
+  it('reconnects a legacy no-email account in place and re-queues its failing feed', async () => {
+    const user = await login('acct-google-reconnect@example.com');
+    const familyId = await createFamily(user.token, 'Reconnect Fam');
+    const legacy = await legacyAccount(user.userId);
+    // The same Google account also has a newer, unused row under its email —
+    // the explicit reconnect must still land on the row the feed uses.
+    stubTokenExchange('kyle@example.com', 'rt-unused');
+    await fetchWith('/accounts', authed(user.token, { kind: 'google', name: 'Google', ...consent }));
+    const feed = (
+      await db()
+        .insert(feeds)
+        .values({
+          familyId,
+          kind: 'google',
+          externalAccountId: legacy.id,
+          sourceCalendarId: 'work@example.com',
+          mode: 'busy',
+          status: 'error',
+          consecutiveFailures: 66,
+          lastErrorMessage: 'google token refresh failed: 400 invalid_grant',
+        })
+        .returning()
+    )[0]!;
+
+    stubTokenExchange('kyle@example.com', 'rt-fresh');
+    const res = await fetchWith(`/accounts/${legacy.id}/reconnect`, authed(user.token, consent));
+    expect(res.status).toBe(200);
+    const { account } = (await res.json()) as { account: Account & { username: string; name: string } };
+    expect(account.id).toBe(legacy.id);
+    expect(account.username).toBe('kyle@example.com');
+    expect(account.name).toBe('kyle@example.com');
+    expect(await storedRefreshToken(legacy.id)).toBe('rt-fresh');
+
+    const after = (await db().select().from(feeds).where(eq(feeds.id, feed.id)))[0]!;
+    expect(after.status).toBe('active');
+    expect(after.consecutiveFailures).toBe(0);
+    expect(after.lastErrorMessage).toBeNull();
+  });
+
+  it('refuses a reconnect by a different Google account than the one on record', async () => {
+    const user = await login('acct-google-mismatch@example.com');
+    stubTokenExchange('kyle@example.com', 'rt-kyle');
+    const created = await fetchWith('/accounts', authed(user.token, { kind: 'google', name: 'Google', ...consent }));
+    const { account } = (await created.json()) as { account: Account };
+
+    stubTokenExchange('someone-else@example.com', 'rt-other');
+    const res = await fetchWith(`/accounts/${account.id}/reconnect`, authed(user.token, consent));
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { error: string }).error).toBe('google_account_mismatch');
+    expect(await storedRefreshToken(account.id)).toBe('rt-kyle');
+  });
+
+  it("won't reconnect another user's account", async () => {
+    const owner = await login('acct-google-owner@example.com');
+    const other = await login('acct-google-intruder@example.com');
+    const legacy = await legacyAccount(owner.userId);
+    stubTokenExchange('intruder@example.com', 'rt-x');
+    const res = await fetchWith(`/accounts/${legacy.id}/reconnect`, authed(other.token, consent));
+    expect(res.status).toBe(404);
+    expect(await storedRefreshToken(legacy.id)).toBe('expired-rt');
   });
 });
