@@ -54,6 +54,14 @@ The same happens for the server-to-server `account-delete` case
 (`handleAppleAccountEvent`). Families are deleted before the user row, so a
 crash midway leaves a still-retryable account rather than a stranded family.
 
+Anything in a surviving family wired to the user's calendar accounts is removed
+too (`removeAccountAttachments`): feeds read through those accounts (cascading
+their member links, rules, source events, and synthesized events), and member
+mirror targets drawn from them, with their mirror bookkeeping and read-back
+(`human`) events. The member's unified calendar stays, DB-only. Copies we
+already wrote into the user's own calendar are not cancelled (the credentials
+go with the account).
+
 The account's login emails (magic-link identities, plus a `username` that is an
 address) are also purged from `auth_tokens`, `invites.email`, and
 `email_recipients`. A recipient row is kept if the address has unsubscribed (it

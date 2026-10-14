@@ -1,12 +1,17 @@
 import {
   authTokens,
+  calendarEvents,
   emailRecipients,
+  eventMirrors,
   eq,
   externalAccounts,
   families,
+  familyMemberFeeds,
   familyMembers,
+  feeds,
   getDb,
   invites as invitesTable,
+  memberCalendars,
   secrets,
 } from '@igt/db';
 import {
@@ -627,6 +632,104 @@ describe('delete account: what is erased', () => {
       .where(eq(familyMembers.familyId, sharedId));
     expect(kept).toHaveLength(2);
     expect(kept.filter((m) => m.userId === null)).toHaveLength(1);
+  });
+
+  it('detaches feeds and mirror targets that ran through the deleted user’s calendar account', async () => {
+    const alice = await login('erase-cal-alice@example.com');
+    const bob = await login('erase-cal-bob@example.com');
+    const fam = await call('/families', authed(alice.token, { name: 'Cal Fam' }));
+    const familyId = ((await fam.json()) as { family: { id: string } }).family.id;
+    const addBob = await call(
+      `/families/${familyId}/members`,
+      authed(alice.token, { relationName: 'uncle', isCaretaker: true, isAdmin: true }),
+    );
+    const bobMemberId = ((await addBob.json()) as { member: { id: string } }).member.id;
+    await linkMember(alice.token, familyId, bobMemberId, bob.token);
+
+    const created = await call(
+      '/accounts',
+      authed(alice.token, {
+        kind: 'caldav',
+        name: 'Alice CalDAV',
+        serverUrl: 'https://dav.example.com',
+        username: 'u',
+        password: 'p',
+      }),
+    );
+    const accountId = ((await created.json()) as { account: { id: string } }).account.id;
+
+    const db = getDb(env.DB);
+    const aliceMember = (
+      await db.select().from(familyMembers).where(eq(familyMembers.userId, alice.userId))
+    )[0]!;
+    const feed = (
+      await db
+        .insert(feeds)
+        .values({
+          familyId,
+          kind: 'caldav',
+          externalAccountId: accountId,
+          sourceCalendarId: 'cal-1',
+          mode: 'standard',
+        })
+        .returning()
+    )[0]!;
+    await db.insert(familyMemberFeeds).values({ familyId, feedId: feed.id, familyMemberId: bobMemberId });
+    // Bob keeps a feed of his own that must be untouched.
+    const bobFeed = (
+      await db
+        .insert(feeds)
+        .values({ familyId, kind: 'ics', url: 'https://example.com/b.ics', mode: 'standard' })
+        .returning()
+    )[0]!;
+
+    // Bob's mirror target is drawn from Alice's account, with read-back history.
+    await db.insert(memberCalendars).values({
+      familyId,
+      familyMemberId: bobMemberId,
+      targetExternalAccountId: accountId,
+      targetMethod: 'caldav',
+      targetCalendarId: 'https://dav.example.com/cal/',
+    });
+    const human = (
+      await db
+        .insert(calendarEvents)
+        .values({
+          familyId,
+          familyMemberId: bobMemberId,
+          provenance: 'human',
+          synthKey: 'ext:abc:',
+          dtstart: new Date('2026-07-06T15:00:00Z'),
+          contentHash: 'h',
+        })
+        .returning()
+    )[0]!;
+    await db.insert(eventMirrors).values({
+      familyMemberId: bobMemberId,
+      calendarEventId: human.id,
+      icalUid: `igt-${human.id}`,
+    });
+
+    expect((await call('/auth/me', delMe(alice.token))).status).toBe(204);
+
+    expect(await db.select().from(externalAccounts).where(eq(externalAccounts.id, accountId))).toHaveLength(0);
+    expect(await db.select().from(feeds).where(eq(feeds.id, feed.id))).toHaveLength(0);
+    expect(
+      await db.select().from(familyMemberFeeds).where(eq(familyMemberFeeds.feedId, feed.id)),
+    ).toHaveLength(0);
+    expect(await db.select().from(feeds).where(eq(feeds.id, bobFeed.id))).toHaveLength(1);
+    expect(
+      await db.select().from(memberCalendars).where(eq(memberCalendars.familyMemberId, bobMemberId)),
+    ).toHaveLength(0);
+    expect(
+      await db.select().from(eventMirrors).where(eq(eventMirrors.familyMemberId, bobMemberId)),
+    ).toHaveLength(0);
+    expect(await db.select().from(calendarEvents).where(eq(calendarEvents.id, human.id))).toHaveLength(0);
+
+    // Both members, and the family, remain; Alice's role is unlinked.
+    const members = await db.select().from(familyMembers).where(eq(familyMembers.familyId, familyId));
+    expect(members).toHaveLength(2);
+    expect(members.find((m) => m.id === aliceMember.id)?.userId).toBeNull();
   });
 
   it('purges login tokens, invites, and recipient rows for the deleted account’s email', async () => {

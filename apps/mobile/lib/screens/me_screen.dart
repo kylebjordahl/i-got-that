@@ -579,7 +579,8 @@ class MeScreen extends ConsumerWidget {
           ? 'Before you can delete your account, you must either leave or '
                 'delete all the families you are involved in.'
           : 'This permanently deletes your login and connected calendar '
-                "accounts. This can't be undone.",
+                'accounts. Feeds and calendar targets that use those accounts '
+                "are removed from every family. This can't be undone.",
       details: blocked ? null : _DeletionOutcomes(plan: plan),
       slideLabel: 'Slide to delete account',
       blocked: blocked,

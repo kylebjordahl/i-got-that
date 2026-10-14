@@ -2,18 +2,22 @@ import {
   and,
   appleNotificationReceipts,
   authTokens,
+  calendarEvents,
   type Db,
   emailOutputs,
   emailRecipients,
   eq,
+  eventMirrors,
   externalAccounts,
   families,
   familyMembers,
+  feeds,
   gt,
   identities,
   inArray,
   invites,
   isNull,
+  memberCalendars,
   secrets,
   sessions,
   users,
@@ -234,6 +238,42 @@ async function purgeEmailTraces(db: Db, emails: string[]): Promise<void> {
   }
 }
 
+/**
+ * Detach everything in the surviving families that was wired to the deleted
+ * user's calendar accounts. The FKs only `set null`, which would leave feeds
+ * that error on every sync and mirror targets that point nowhere.
+ *   - Feeds read through the account are deleted (their member links, rules,
+ *     source events, and the events synthesized from them cascade).
+ *   - Mirror targets drawn from the account are deleted, along with the
+ *     mirror bookkeeping and the read-back (`human`) events that came from
+ *     that calendar. The member's own unified calendar stays, DB-only.
+ * The remote copies we wrote into the target calendar can't be cancelled —
+ * the credentials go with the account — so they stay in the user's own
+ * calendar, which is theirs to clear.
+ */
+async function removeAccountAttachments(db: Db, accountIds: string[]): Promise<void> {
+  await runChunked(accountIds, async (chunk) => {
+    await db.delete(feeds).where(inArray(feeds.externalAccountId, chunk));
+    const targets = await db
+      .select({ memberId: memberCalendars.familyMemberId })
+      .from(memberCalendars)
+      .where(inArray(memberCalendars.targetExternalAccountId, chunk));
+    const memberIds = targets.map((t) => t.memberId);
+    await runChunked(memberIds, async (members) => {
+      await db.delete(eventMirrors).where(inArray(eventMirrors.familyMemberId, members));
+      await db
+        .delete(calendarEvents)
+        .where(
+          and(
+            inArray(calendarEvents.familyMemberId, members),
+            eq(calendarEvents.provenance, 'human'),
+          ),
+        );
+      await db.delete(memberCalendars).where(inArray(memberCalendars.familyMemberId, members));
+    }, 1);
+  });
+}
+
 async function deleteUserAndCleanupCredentials(
   db: Db,
   userId: string,
@@ -272,9 +312,11 @@ async function deleteUserAndCleanupCredentials(
   // crash here leaves the account intact and the delete retryable.
   const plan = await planAccountFamilies(db, userId);
   const familyIds = plan.deleted.map((f) => f.id);
-  if (familyIds.length > 0) {
-    await db.delete(families).where(inArray(families.id, familyIds));
-  }
+  await runChunked(familyIds, (chunk) => db.delete(families).where(inArray(families.id, chunk)));
+  await removeAccountAttachments(
+    db,
+    accounts.map((a) => a.id),
+  );
 
   const emails = await loginEmails(db, userId);
   await db.delete(users).where(eq(users.id, userId));
