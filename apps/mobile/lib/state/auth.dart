@@ -241,6 +241,14 @@ class AuthController extends StateNotifier<AuthState> {
   void connectGoogleCalendar() =>
       startWebRedirect('$apiBaseUrl/auth/google/start?link=1');
 
+  /// Web: renew the grant of one existing Google account (its refresh token
+  /// expired or was revoked). Same redirect as [connectGoogleCalendar], but
+  /// `account` tells the callback which row to renew — older accounts have no
+  /// email on record, so the consent alone can't identify them.
+  void reconnectGoogleCalendar(String accountId) => startWebRedirect(
+    '$apiBaseUrl/auth/google/start?link=1&account=${Uri.encodeQueryComponent(accountId)}',
+  );
+
   /// Native (iOS): request an Apple ID credential from the OS sheet and post
   /// its identity token (+ the raw nonce behind the digest Apple echoed back)
   /// to `/auth/apple` to obtain a session.
