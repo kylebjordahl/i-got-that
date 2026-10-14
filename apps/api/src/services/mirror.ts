@@ -16,6 +16,7 @@ import {
 import {
   CalDavProvider,
   type DeliveryEvent,
+  type DeliveryProvider,
   DeliveryProviderRegistry,
   type DeliveryTarget,
   GoogleCalendarProvider,
@@ -27,9 +28,11 @@ import { emailEnabled, emailLinkBase, getOutbox } from '../lib/email.js';
 import { googleRefresherFor } from '../lib/google-oauth.js';
 import { createGuardedFetch } from '../lib/outbound-url.js';
 import { resolveAccountCredential } from '../lib/account-credentials.js';
+import { selectChunked } from '../lib/d1.js';
 import { buildKekKeySet, type KekKeySet } from '../lib/secrets.js';
 import { syncFamilyEmailOutputs, syncMemberEmailOutputs } from './email-outputs.js';
 import { deliverDigest, type PushDigestJob } from './notifications.js';
+import { synthesisWindow } from './synthesis.js';
 
 type CalendarEventRow = typeof calendarEvents.$inferSelect;
 type MemberCalendarRow = typeof memberCalendars.$inferSelect;
@@ -337,14 +340,21 @@ function hashMirrorPayload(
     alertMinutes.join(','),
     timezone ?? '',
     String(travelMinutes),
+    // Payload format version: bumping it re-sends every mirrored event once.
+    // v2 stamps Google events with the deployment that wrote them, which the
+    // orphan sweep relies on (see `sweepOrphanedRemoteEvents`).
+    'v2',
   ].join('|');
   let h = 5381;
   for (let i = 0; i < parts.length; i++) h = ((h << 5) + h) ^ parts.charCodeAt(i);
   return (h >>> 0).toString(16);
 }
 
+/** Our own mirrored events' UID prefix (also read-back's recursion guard). */
+const MIRROR_UID_PREFIX = 'igt-';
+
 function mirrorUid(calendarEventId: string): string {
-  return `igt-${calendarEventId}`;
+  return `${MIRROR_UID_PREFIX}${calendarEventId}`;
 }
 
 async function mirrorTarget(
@@ -478,13 +488,17 @@ export async function syncMemberMirror(
     .where(eq(eventMirrors.familyMemberId, memberId));
   const existingByEvent = new Map(existing.map((m) => [m.calendarEventId, m]));
 
-  // Cancel remote copies of vanished events, then drop their rows.
+  // Cancel remote copies of vanished events, then drop their rows. A failed
+  // cancel keeps its row so the next pass retries it: the row is the only
+  // record that the remote copy exists, and dropping it on failure is how
+  // Google busy blocks used to outlive the meetings behind them.
   for (const m of existing) {
     if (desiredById.has(m.calendarEventId)) continue;
     try {
       await provider.cancel(
         {
           uid: m.icalUid,
+          externalRef: m.externalRef,
           sequence: m.sequence + 1,
           start: new Date(),
           end: null,
@@ -498,6 +512,7 @@ export async function syncMemberMirror(
         calendarEventId: m.calendarEventId,
         error: String(err),
       });
+      continue;
     }
     await db.delete(eventMirrors).where(eq(eventMirrors.id, m.id));
     result.removed++;
@@ -518,6 +533,7 @@ export async function syncMemberMirror(
     const sequence = prior ? prior.sequence + 1 : 0;
     const deliveryEvent: DeliveryEvent = {
       uid,
+      externalRef: prior?.externalRef,
       sequence,
       start: event.dtstart,
       end: event.dtend,
@@ -561,11 +577,96 @@ export async function syncMemberMirror(
     }
   }
 
+  if (provider.listOwned) {
+    try {
+      result.removed += await sweepOrphanedRemoteEvents(db, provider, target);
+    } catch (err) {
+      result.errors.push({ memberId, calendarEventId: '', error: String(err) });
+    }
+  }
+
   await db
     .update(memberCalendars)
     .set({ lastMirroredAt: new Date() })
     .where(eq(memberCalendars.id, cal.id));
   return result;
+}
+
+/**
+ * A remote event touched this recently may belong to a mirror pass still in
+ * flight — one that has written the event but not yet its `event_mirrors` row —
+ * so the sweep leaves it for a later pass.
+ */
+const ORPHAN_GRACE_MS = 15 * 60_000;
+
+/**
+ * Exactly a mirror UID — `igt-<calendarEventId uuid>`. The bare `igt-` prefix
+ * is shared with email-output invites (`igt-em-…`), which a person may have
+ * accepted onto this same calendar and which no `event_mirrors` row tracks.
+ */
+const MIRROR_UID_PATTERN = /^igt-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** How far behind the synthesis window the orphan sweep reaches. */
+const SWEEP_LOOKBACK_MS = 30 * 24 * 60 * 60_000;
+
+/**
+ * Delete our own (`igt-`) events on a target that no `event_mirrors` row
+ * accounts for. The row is the mirror's only memory of a remote copy; until
+ * the Google provider deleted by Google's event id, every cancel 404'd
+ * silently and its row was dropped anyway, stranding the copy for good (a
+ * week of busy blocks still standing after the meetings behind them were
+ * cancelled). This finds those and any future strays.
+ *
+ * Checked against every member's rows, not just this one's: two members can
+ * share one target calendar, and `igt-<calendarEventId>` UIDs are globally
+ * unique, so an event some other row owns is never touched. Bounded to the
+ * synthesis window plus the 30 days behind it, so the recent past is cleaned
+ * too without listing a calendar's whole history every pass.
+ */
+async function sweepOrphanedRemoteEvents(
+  db: Db,
+  provider: DeliveryProvider,
+  target: DeliveryTarget,
+): Promise<number> {
+  const window = synthesisWindow();
+  const remote = await provider.listOwned!(target, {
+    uidPrefix: MIRROR_UID_PREFIX,
+    start: new Date(window.start.getTime() - SWEEP_LOOKBACK_MS),
+    end: window.end,
+  });
+  const cutoff = Date.now() - ORPHAN_GRACE_MS;
+  const candidates = remote.filter(
+    (r) =>
+      MIRROR_UID_PATTERN.test(r.uid) && r.updatedAt != null && r.updatedAt.getTime() < cutoff,
+  );
+  if (candidates.length === 0) return 0;
+  const known = new Set(
+    (
+      await selectChunked(candidates, (chunk) =>
+        db
+          .select({ icalUid: eventMirrors.icalUid })
+          .from(eventMirrors)
+          .where(inArray(eventMirrors.icalUid, chunk.map((c) => c.uid))),
+      )
+    ).map((r) => r.icalUid),
+  );
+  let removed = 0;
+  for (const orphan of candidates) {
+    if (known.has(orphan.uid)) continue;
+    await provider.cancel(
+      {
+        uid: orphan.uid,
+        externalRef: orphan.externalRef,
+        sequence: 0,
+        start: new Date(),
+        end: null,
+        summary: 'Cancelled',
+      },
+      target,
+    );
+    removed++;
+  }
+  return removed;
 }
 
 /** Periodic true-up: reconcile every configured target in a family. */
@@ -617,6 +718,7 @@ export async function purgeMemberMirror(
           await provider.cancel(
             {
               uid: m.icalUid,
+              externalRef: m.externalRef,
               sequence: m.sequence + 1,
               start: new Date(),
               end: null,
@@ -651,5 +753,5 @@ export function getProductionRegistry(env: Bindings): DeliveryProviderRegistry {
   const guardedFetch = createGuardedFetch(env);
   return new DeliveryProviderRegistry()
     .register(new CalDavProvider(guardedFetch))
-    .register(new GoogleCalendarProvider(guardedFetch, googleRefresher));
+    .register(new GoogleCalendarProvider(guardedFetch, googleRefresher, env.ENVIRONMENT));
 }

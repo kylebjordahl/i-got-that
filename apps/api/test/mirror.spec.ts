@@ -802,3 +802,85 @@ describe('member calendar-target routes', () => {
     expect(forbidden.status).toBe(403);
   });
 });
+
+describe('mirror reconcile: losing track of remote copies', () => {
+  /** A provider whose cancels fail until told otherwise, and that can list what it holds. */
+  class ListingProvider extends FakeProvider {
+    failCancels = false;
+    remote: { uid: string; externalRef: string; updatedAt: Date | null }[] = [];
+    override async cancel(event: DeliveryEvent, target: DeliveryTarget) {
+      if (this.failCancels) throw new Error('google calendar delete failed: 500');
+      await super.cancel(event, target);
+    }
+    async listOwned() {
+      return this.remote;
+    }
+  }
+
+  it("hands the provider the ref it returned, and keeps a mirror row whose cancel failed so it's retried", async () => {
+    const fam = await setupFamily('mirror-cancel-retry@example.com');
+    const db = getDb(env.DB);
+    await connectTarget(db, fam, fam.childId);
+    const event = await insertEvent(db, fam.familyId, fam.childId, { synthKey: 'fb:l1:x' });
+    const fake = new ListingProvider('caldav');
+    const registry = new DeliveryProviderRegistry().register(fake);
+    await syncMemberMirror(db, registry, testKeys(), fam.childId);
+
+    // An update addresses the remote copy by the provider's own ref.
+    await db.update(calendarEvents).set({ location: 'Elsewhere' }).where(eq(calendarEvents.id, event.id));
+    await syncMemberMirror(db, registry, testKeys(), fam.childId);
+    expect(fake.upserts[1]!.event.externalRef).toBe(`fake-igt-${event.id}`);
+
+    // The meeting behind the busy block is cancelled, but the remote delete fails.
+    await db.delete(calendarEvents).where(eq(calendarEvents.id, event.id));
+    fake.failCancels = true;
+    const failed = await syncMemberMirror(db, registry, testKeys(), fam.childId);
+    expect(failed.errors).toHaveLength(1);
+    expect(failed.removed).toBe(0);
+    expect(
+      await db.select().from(eventMirrors).where(eq(eventMirrors.calendarEventId, event.id)),
+    ).toHaveLength(1);
+
+    // Next pass retries — by ref — and only then forgets the copy.
+    fake.failCancels = false;
+    const retried = await syncMemberMirror(db, registry, testKeys(), fam.childId);
+    expect(retried.removed).toBe(1);
+    expect(fake.cancels).toHaveLength(1);
+    expect(fake.cancels[0]!.event.externalRef).toBe(`fake-igt-${event.id}`);
+    expect(
+      await db.select().from(eventMirrors).where(eq(eventMirrors.calendarEventId, event.id)),
+    ).toHaveLength(0);
+  });
+
+  it('sweeps our own remote events that no mirror row accounts for', async () => {
+    const fam = await setupFamily('mirror-orphan-sweep@example.com');
+    const db = getDb(env.DB);
+    await connectTarget(db, fam, fam.childId);
+    // The admin's mirror shares the target calendar; its row must protect its event.
+    const adminEvent = await insertEvent(db, fam.familyId, fam.adminMemberId, { synthKey: 'fb:l2:y' });
+    await db.insert(eventMirrors).values({
+      familyMemberId: fam.adminMemberId,
+      calendarEventId: adminEvent.id,
+      icalUid: `igt-${adminEvent.id}`,
+      externalRef: 'admin-ref',
+    });
+
+    const fake = new ListingProvider('caldav');
+    const longAgo = new Date(Date.now() - 24 * 60 * 60_000);
+    fake.remote = [
+      // A busy block stranded by the old silent-404 cancel: no row anywhere.
+      { uid: `igt-${crypto.randomUUID()}`, externalRef: 'stranded-ref', updatedAt: longAgo },
+      { uid: `igt-${adminEvent.id}`, externalRef: 'admin-ref', updatedAt: longAgo },
+      // Just written by a pass that hasn't recorded its row yet.
+      { uid: `igt-${crypto.randomUUID()}`, externalRef: 'in-flight-ref', updatedAt: new Date() },
+      // An email-output invite someone accepted onto this calendar: not the mirror's.
+      { uid: `igt-em-${crypto.randomUUID()}-${crypto.randomUUID()}`, externalRef: 'invite-ref', updatedAt: longAgo },
+    ];
+    const registry = new DeliveryProviderRegistry().register(fake);
+
+    const r = await syncMemberMirror(db, registry, testKeys(), fam.childId);
+    expect(r.errors).toEqual([]);
+    expect(r.removed).toBe(1);
+    expect(fake.cancels.map((c) => c.event.externalRef)).toEqual(['stranded-ref']);
+  });
+});

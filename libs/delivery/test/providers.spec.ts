@@ -214,6 +214,166 @@ describe('GoogleCalendarProvider', () => {
   });
 });
 
+/**
+ * In-memory Google Calendar events collection with the API's real addressing:
+ * events live under Google's own opaque `id` (base32hex — `igt-…` can never be
+ * one), `iCalUID` is a separate unique field, inserting an existing iCalUID is
+ * a 409, and `events/{eventId}` 404s for anything that isn't an id.
+ */
+class FakeGoogleCalendar {
+  readonly events = new Map<
+    string,
+    { id: string; iCalUID: string; status: string; updated: string; body: Record<string, unknown> }
+  >();
+  readonly requests: { method: string; url: string }[] = [];
+  private seq = 0;
+
+  fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const url = new URL(String(input));
+    const method = init?.method ?? 'GET';
+    this.requests.push({ method, url: url.toString() });
+    const m = url.pathname.match(/\/events(?:\/([^/]+))?$/);
+    if (!m) return new Response('', { status: 400 });
+    const eventId = m[1] ? decodeURIComponent(m[1]) : undefined;
+    const json = (body: unknown, status = 200) =>
+      new Response(JSON.stringify(body), { status });
+    const now = new Date().toISOString();
+
+    if (method === 'GET' && !eventId) {
+      const uid = url.searchParams.get('iCalUID');
+      const showDeleted = url.searchParams.get('showDeleted') === 'true';
+      const items = [...this.events.values()]
+        .filter((e) => (uid ? e.iCalUID === uid : true))
+        .filter((e) => showDeleted || e.status !== 'cancelled')
+        .map((e) => ({ ...e.body, id: e.id, iCalUID: e.iCalUID, status: e.status, updated: e.updated }));
+      return json({ items });
+    }
+    if (method === 'POST' && !eventId) {
+      const body = JSON.parse(String(init!.body));
+      if ([...this.events.values()].some((e) => e.iCalUID === body.iCalUID)) {
+        return json({ error: { code: 409, message: 'The requested identifier already exists.' } }, 409);
+      }
+      const id = `ev${(this.seq++).toString(32).padStart(4, '0')}`;
+      this.events.set(id, { id, iCalUID: body.iCalUID, status: 'confirmed', updated: now, body });
+      return json({ id, iCalUID: body.iCalUID });
+    }
+    const existing = eventId ? this.events.get(eventId) : undefined;
+    if (!existing) return json({ error: { code: 404 } }, 404);
+    if (method === 'PUT') {
+      const body = JSON.parse(String(init!.body));
+      this.events.set(existing.id, { ...existing, status: body.status ?? 'confirmed', updated: now, body });
+      return json({ id: existing.id });
+    }
+    if (method === 'DELETE') {
+      if (existing.status === 'cancelled') return json({ error: { code: 410 } }, 410);
+      existing.status = 'cancelled';
+      return new Response(null, { status: 204 });
+    }
+    return new Response('', { status: 405 });
+  };
+
+  live() {
+    return [...this.events.values()].filter((e) => e.status !== 'cancelled');
+  }
+}
+
+describe('GoogleCalendarProvider (against a fake Google Calendar)', () => {
+  const target: DeliveryTarget = {
+    method: 'google',
+    addressOrUrl: '',
+    externalCalendarId: 'me@example.com',
+    credential: { kind: 'oauth', accessToken: 'tok' },
+  };
+
+  it('deletes by the Google event id it was handed back, not the iCalUID', async () => {
+    const cal = new FakeGoogleCalendar();
+    const provider = new GoogleCalendarProvider(cal.fetch);
+    const { externalRef } = await provider.upsert(event, target);
+    expect(externalRef).not.toBe(event.uid);
+
+    await provider.cancel({ ...event, externalRef }, target);
+    expect(cal.live()).toHaveLength(0);
+    const del = cal.requests.find((r) => r.method === 'DELETE')!;
+    expect(del.url).toContain(`/events/${externalRef}`);
+  });
+
+  it('finds the id by iCalUID when no ref was recorded', async () => {
+    const cal = new FakeGoogleCalendar();
+    const provider = new GoogleCalendarProvider(cal.fetch);
+    await provider.upsert(event, target);
+
+    await provider.cancel(event, target);
+    expect(cal.live()).toHaveLength(0);
+  });
+
+  it('treats an already-deleted event as cancelled, and throws on a real failure', async () => {
+    const cal = new FakeGoogleCalendar();
+    const provider = new GoogleCalendarProvider(cal.fetch);
+    const { externalRef } = await provider.upsert(event, target);
+    await provider.cancel({ ...event, externalRef }, target);
+    await expect(provider.cancel({ ...event, externalRef }, target)).resolves.toBeUndefined();
+
+    const failing = new GoogleCalendarProvider(async () => new Response('', { status: 500 }));
+    await expect(failing.cancel({ ...event, externalRef: 'abc12' }, target)).rejects.toThrow(/500/);
+  });
+
+  it('updates an event in place instead of re-inserting it (which Google 409s)', async () => {
+    const cal = new FakeGoogleCalendar();
+    const provider = new GoogleCalendarProvider(cal.fetch);
+    const first = await provider.upsert(event, target);
+    const moved = { ...event, sequence: 1, externalRef: first.externalRef, summary: 'Moved' };
+    const second = await provider.upsert(moved, target);
+
+    expect(second.externalRef).toBe(first.externalRef);
+    expect(cal.live()).toHaveLength(1);
+    expect(cal.live()[0]!.body.summary).toBe('Moved');
+  });
+
+  it('recovers from a lost ref: the 409 on insert turns into an update', async () => {
+    const cal = new FakeGoogleCalendar();
+    const provider = new GoogleCalendarProvider(cal.fetch);
+    const first = await provider.upsert(event, target);
+    const second = await provider.upsert({ ...event, summary: 'Again' }, target);
+    expect(second.externalRef).toBe(first.externalRef);
+    expect(cal.live()).toHaveLength(1);
+    expect(cal.live()[0]!.body.summary).toBe('Again');
+  });
+
+  it('revives a UID whose event was deleted, rather than failing on its tombstone', async () => {
+    const cal = new FakeGoogleCalendar();
+    const provider = new GoogleCalendarProvider(cal.fetch);
+    const { externalRef } = await provider.upsert(event, target);
+    await provider.cancel({ ...event, externalRef }, target);
+    await provider.upsert(event, target);
+    expect(cal.live()).toHaveLength(1);
+  });
+
+  it('re-inserts when the user deleted the event out from under its ref', async () => {
+    const cal = new FakeGoogleCalendar();
+    const provider = new GoogleCalendarProvider(cal.fetch);
+    await provider.upsert({ ...event, externalRef: 'gone1' }, target);
+    expect(cal.live()).toHaveLength(1);
+  });
+
+  it('lists only our own events, skipping ones another deployment stamped', async () => {
+    const cal = new FakeGoogleCalendar();
+    const prod = new GoogleCalendarProvider(cal.fetch, undefined, 'production');
+    const staging = new GoogleCalendarProvider(cal.fetch, undefined, 'staging');
+    await prod.upsert({ ...event, uid: 'igt-a' }, target);
+    await staging.upsert({ ...event, uid: 'igt-b' }, target);
+    await new GoogleCalendarProvider(cal.fetch).upsert({ ...event, uid: 'igt-legacy' }, target);
+    await prod.upsert({ ...event, uid: 'someone-elses' }, target);
+
+    const owned = await prod.listOwned(target, {
+      uidPrefix: 'igt-',
+      start: new Date('2026-03-01T00:00:00Z'),
+      end: new Date('2026-04-01T00:00:00Z'),
+    });
+    expect(owned.map((o) => o.uid).sort()).toEqual(['igt-a', 'igt-legacy']);
+    expect(owned.every((o) => o.externalRef && o.updatedAt)).toBe(true);
+  });
+});
+
 describe('CalDavProvider (against a fake CalDAV server)', () => {
   const collection = 'https://p01-caldav.icloud.com/123/calendars/home/';
   const target: DeliveryTarget = {

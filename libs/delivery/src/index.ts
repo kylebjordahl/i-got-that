@@ -17,6 +17,14 @@ export { buildInviteEmailMime, buildTextEmailMime, type ExtraHeaders } from './m
 export interface DeliveryEvent {
   /** Stable UID we own for this (task, target) so updates/cancels are idempotent. */
   uid: string;
+  /**
+   * The provider's own id for an event it already holds — whatever a prior
+   * `upsert` returned as `externalRef`. Google addresses events by its own
+   * opaque id, not the iCalUID, so updating or deleting needs this; CalDAV
+   * addresses by UID and ignores it. Absent ⇒ never delivered, or delivered
+   * before the ref was recorded (the provider looks it up by UID).
+   */
+  externalRef?: string | null;
   sequence: number;
   start: Date;
   end: Date | null;
@@ -75,6 +83,23 @@ export interface DeliveryProvider {
   upsert(event: DeliveryEvent, target: DeliveryTarget): Promise<DeliveryResult>;
   /** Remove a previously-delivered event (unassignment / cancellation). */
   cancel(event: DeliveryEvent, target: DeliveryTarget): Promise<void>;
+  /**
+   * Every event on the target whose UID starts with `uidPrefix` (ours) and
+   * that overlaps `[start, end)`, for the mirror's orphan sweep. Optional: only
+   * providers that can lose track of a remote copy need it.
+   */
+  listOwned?(
+    target: DeliveryTarget,
+    query: { uidPrefix: string; start: Date; end: Date },
+  ): Promise<OwnedRemoteEvent[]>;
+}
+
+/** One of our own events as it sits on a target calendar. */
+export interface OwnedRemoteEvent {
+  uid: string;
+  externalRef: string;
+  /** When the target last saw the event change (its own clock). */
+  updatedAt: Date | null;
 }
 
 /** Inbound iMIP REPLY parse result (Email Worker → RSVP state). */
