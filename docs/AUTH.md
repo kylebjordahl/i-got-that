@@ -38,10 +38,28 @@ pattern.
 
 `DELETE /auth/me` deletes the signed-in user (`services/auth.ts`'s
 `deleteUserAccount`). FK cascades drop their `sessions`, `identities`, and
-`external_accounts`; each `family_members` row they held is kept but unlinked
-(`userId` → `null`) rather than removed — the person stays in the family, just
-loses login capability, same outcome as `handleAppleAccountEvent`'s
-server-to-server `account-delete` case.
+`external_accounts`. What happens to each family they belonged to
+(`services/families.ts`'s `planAccountFamilies`) depends on whether anyone else
+can still log in to it:
+
+- **Someone else has a login** — the `family_members` row they held is kept but
+  unlinked (`userId` → `null`) rather than removed: the person stays on the
+  roster, just loses login capability.
+- **No one else has a login** (they were the only member, or every other member
+  has been unlinked) — the family is deleted with the account, cascading its
+  feeds, events, tasks, and family-owned secrets. Otherwise it would be data
+  nobody can reach, manage, or delete.
+
+The same happens for the server-to-server `account-delete` case
+(`handleAppleAccountEvent`). Families are deleted before the user row, so a
+crash midway leaves a still-retryable account rather than a stranded family.
+
+The account's login emails (magic-link identities, plus a `username` that is an
+address) are also purged from `auth_tokens`, `invites.email`, and
+`email_recipients`. A recipient row is kept if the address has unsubscribed (it
+is the suppression record) or a surviving email output still targets it.
+Known gap: `event_mirrors` has no FK, so remote calendar copies for a deleted
+family are not cancelled (same as `DELETE /families/:familyId`).
 
 Blocked with `409 last_admin` if the user is the sole admin of a family that
 still has other members — deleting the account would leave that family with no
@@ -52,8 +70,11 @@ delete the family outright (`DELETE /families/:familyId`, admin-only —
 cascades the whole family away), before deleting their own account.
 
 `GET /auth/me/deletable` reports whether the signed-in user is currently free
-to delete their account (`{ deletable: boolean }`), backed by the same guard
-(`services/auth.ts`'s `accountDeletionBlocked`). The client checks this before
+to delete their account, backed by the same guard (`services/auth.ts`'s
+`accountDeletionBlocked`), plus what deletion would do to each family:
+`{ deletable, deletesFamilies: [{id, name}], keepsFamilies: [{id, name,
+relationName}] }`. The delete-account sheet lists both so the user sees which
+families go and which keep their role. The client checks this before
 opening the delete-account speedbump so a block reads as the sheet's own
 message ("Before you can delete your account, you must either leave or delete
 all the families you are involved in.") instead of a toast raised after a

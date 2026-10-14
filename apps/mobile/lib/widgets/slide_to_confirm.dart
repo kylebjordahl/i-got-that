@@ -14,6 +14,9 @@ import 'app_bottom_nav.dart';
 /// Callers precompute [blocked] from state they already have (or a cheap
 /// server check) so a guard the server would otherwise 409 on shows up front,
 /// not as a toast surfaced after a failed slide.
+///
+/// [details] is an optional widget shown between the description and the
+/// slide control, for consequences too structured to read well as prose.
 Future<void> showSlideToConfirmSheet(
   BuildContext context, {
   required String title,
@@ -23,6 +26,7 @@ Future<void> showSlideToConfirmSheet(
   required String Function(Object error) errorMessage,
   IconData icon = Icons.delete_forever_rounded,
   bool blocked = false,
+  Widget? details,
 }) {
   return showModalBottomSheet<void>(
     context: context,
@@ -44,6 +48,7 @@ Future<void> showSlideToConfirmSheet(
           Text(title, style: AppText.subPageTitle),
           const SizedBox(height: 8),
           Text(description, style: AppText.subtitle),
+          if (details != null) ...[const SizedBox(height: 16), details],
           const SizedBox(height: 24),
           if (!blocked) ...[
             SlideToConfirm(

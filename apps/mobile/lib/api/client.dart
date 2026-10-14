@@ -122,22 +122,26 @@ class ApiClient {
     _sessionToken = null;
   }
 
-  /// Delete the signed-in user's own account. Family memberships are kept but
-  /// unlinked, not removed; the server 409s (`last_admin`) if this would leave
-  /// a family with other members and no admin.
+  /// Delete the signed-in user's own account. In a family someone else can
+  /// still log in to, their membership is kept but unlinked; a family nobody
+  /// else can log in to is deleted with the account. The server 409s
+  /// (`last_admin`) if this would leave a family with other members and no
+  /// admin.
   Future<void> deleteMyAccount() async {
     await _dio.delete('/auth/me', options: _auth);
     _sessionToken = null;
   }
 
   /// Whether the signed-in user is currently free to delete their account —
-  /// false while they're the sole admin of a family that has other members.
-  /// Checked before opening the delete-account speedbump so a block shows
-  /// immediately rather than as a toast behind a failed slide attempt.
-  Future<bool> accountDeletable() async {
-    final res = await _dio.get('/auth/me/deletable', options: _auth);
-    return _obj(res)['deletable'] as bool;
-  }
+  /// false while they're the sole admin of a family that has other members —
+  /// and which families the deletion would remove vs. leave in place. Checked
+  /// before opening the delete-account speedbump so a block (or the families
+  /// about to go) shows immediately rather than as a toast behind a failed
+  /// slide attempt.
+  Future<AccountDeletionPlan> accountDeletionPlan() async =>
+      AccountDeletionPlan.fromJson(
+        _obj(await _dio.get('/auth/me/deletable', options: _auth)),
+      );
 
   // --- Login methods (thread multiple identities into one account) --------
 
