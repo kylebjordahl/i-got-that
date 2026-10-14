@@ -110,6 +110,26 @@ describe('fetchGoogleFreeBusy', () => {
     ).rejects.toThrow(/401/);
   });
 
+  it("carries Google's reason, so a 403 says what it is (here, a missing scope)", async () => {
+    const fetchImpl = (async () =>
+      new Response(
+        JSON.stringify({
+          error: {
+            code: 403,
+            message: 'Request had insufficient authentication scopes.',
+            errors: [{ reason: 'insufficientPermissions' }],
+            details: [{ reason: 'ACCESS_TOKEN_SCOPE_INSUFFICIENT' }],
+          },
+        }),
+        { status: 403 },
+      )) as unknown as typeof fetch;
+    await expect(
+      fetchGoogleFreeBusy('at', 'kyle@work.example', WINDOW, fetchImpl),
+    ).rejects.toThrow(
+      'google freebusy failed: 403 ACCESS_TOKEN_SCOPE_INSUFFICIENT: Request had insufficient authentication scopes.',
+    );
+  });
+
   it('falls back to the single response entry when Google canonicalizes the id', async () => {
     const fetchImpl = (async () => ({
       ok: true,

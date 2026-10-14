@@ -179,6 +179,10 @@ class _ConnectAccountWizardState extends ConsumerState<ConnectAccountWizard> {
       'google_no_refresh_token' =>
         'Google did not grant offline access. Remove I Got That from your '
             'Google account permissions, then try connecting again.',
+      'google_scopes_missing' =>
+        "Google didn't grant all the calendar access I Got That needs. "
+            'Try again and leave every calendar permission ticked on '
+            "Google's consent screen.",
       'google_exchange_failed' =>
         'Google rejected the sign-in. That usually means the code expired — '
             'please try again.',

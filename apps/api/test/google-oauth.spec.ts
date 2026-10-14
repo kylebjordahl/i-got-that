@@ -5,6 +5,7 @@ import {
   decodeGoogleIdToken,
   exchangeGoogleCode,
   googleOAuthConfigured,
+  missingGoogleScopes,
   refreshGoogleAccessToken,
   revokeGoogleToken,
 } from '../src/lib/google-oauth.js';
@@ -79,11 +80,28 @@ describe('Google OAuth', () => {
       { code: 'auth-code', redirectUri: 'https://app.example/cb' },
       fakeFetch as typeof fetch,
     );
-    expect(tokens).toEqual({ accessToken: 'at', refreshToken: 'rt' });
+    expect(tokens).toEqual({ accessToken: 'at', refreshToken: 'rt', scopes: null });
     expect(captured!.url).toBe('https://oauth2.googleapis.com/token');
     expect(captured!.body.get('grant_type')).toBe('authorization_code');
     expect(captured!.body.get('code')).toBe('auth-code');
     expect(captured!.body.get('client_secret')).toBe('client-secret-xyz');
+  });
+
+  it('reports the scopes Google actually granted, and which calendar ones are missing', async () => {
+    const granted =
+      'openid https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/calendar.readonly';
+    const tokens = await exchangeGoogleCode(
+      env,
+      { code: 'auth-code', redirectUri: 'https://app.example/cb' },
+      (async () =>
+        new Response(JSON.stringify({ access_token: 'at', refresh_token: 'rt', scope: granted }), {
+          status: 200,
+        })) as typeof fetch,
+    );
+    expect(tokens.scopes).toEqual(granted.split(' '));
+    expect(missingGoogleScopes(tokens)).toEqual(['https://www.googleapis.com/auth/calendar.freebusy']);
+    // Nothing to check against when Google doesn't say.
+    expect(missingGoogleScopes({ scopes: null })).toEqual([]);
   });
 
   it('refreshes a refresh token into an access token', async () => {

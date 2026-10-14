@@ -4,6 +4,7 @@ import {
   calendarEvents,
   eq,
   externalAccounts,
+  familyMemberFeeds,
   feeds as feedsTable,
   getDb,
   memberCalendars,
@@ -657,5 +658,43 @@ describe('member feed-link priority ordering', () => {
       put(outsider.token, { familyMemberId: f.childId, linkIds: [links[1], links[0]] }),
     );
     expect(res.status).toBe(403);
+  });
+});
+
+describe('unlinking a feed', () => {
+  async function feedWithLinks(email: string, memberCount: 1 | 2) {
+    const fam = await setupFamily(email);
+    const db = getDb(env.DB);
+    const feed = (
+      await db
+        .insert(feedsTable)
+        .values({ familyId: fam.familyId, kind: 'ics', url: 'https://school.example/cal.ics', mode: 'standard' })
+        .returning()
+    )[0]!;
+    const members = [fam.childId, fam.adminMemberId].slice(0, memberCount);
+    const links = await db
+      .insert(familyMemberFeeds)
+      .values(members.map((familyMemberId) => ({ familyId: fam.familyId, feedId: feed.id, familyMemberId })))
+      .returning();
+    const unlink = (linkId: string) =>
+      call(`/families/${fam.familyId}/feeds/${feed.id}/member-links/${linkId}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${fam.admin.token}` },
+      });
+    const feedRow = async () =>
+      (await db.select().from(feedsTable).where(eq(feedsTable.id, feed.id)))[0];
+    return { links, unlink, feedRow };
+  }
+
+  it('keeps the feed while another member is still linked to it', async () => {
+    const t = await feedWithLinks('unlink-shared@example.com', 2);
+    expect((await t.unlink(t.links[0]!.id)).status).toBe(200);
+    expect(await t.feedRow()).toBeDefined();
+  });
+
+  it('deletes the feed with its last link, so it stops being polled', async () => {
+    const t = await feedWithLinks('unlink-last@example.com', 1);
+    expect((await t.unlink(t.links[0]!.id)).status).toBe(200);
+    expect(await t.feedRow()).toBeUndefined();
   });
 });

@@ -60,6 +60,7 @@ async function startFlow(
 function stubTokenExchange(tokens: {
   refresh_token?: string;
   id_token?: string;
+  scope?: string;
 }): void {
   vi.stubGlobal(
     'fetch',
@@ -263,6 +264,33 @@ describe('Sign in with Google — redirect flow', () => {
       { redirect: 'manual', headers: { cookie: again.cookie } },
     );
     expect(refused.headers.get('location')).toContain('auth_error=google_account_mismatch');
+  });
+
+  it("link mode refuses a partial consent and leaves the account's working token alone", async () => {
+    const alice = await login('g-partial-web@example.com');
+    const db = getDb(env.DB);
+    const accountId = await connectGoogleAccount(db, testKeys(), {
+      userId: alice.userId,
+      refreshToken: 'working',
+      email: 'gcal-partial@example.com',
+    });
+    const before = (await db.select().from(externalAccounts).where(eq(externalAccounts.id, accountId)))[0]!;
+    const { state, cookie } = await startFlow(googleEnv, {
+      link: true,
+      headers: { Authorization: `Bearer ${alice.token}`, cookie: `igt_session=${alice.token}` },
+    });
+    stubTokenExchange({
+      refresh_token: 'narrow',
+      id_token: fakeIdToken({ sub: 'g-partial-sub', email: 'gcal-partial@example.com' }),
+      scope: 'openid email https://www.googleapis.com/auth/calendar.events',
+    });
+    const res = await fetchWith(`/auth/google/callback?code=abc&state=${state}`, googleEnv, {
+      redirect: 'manual',
+      headers: { cookie },
+    });
+    expect(res.headers.get('location')).toContain('auth_error=google_scopes_missing');
+    const after = (await db.select().from(externalAccounts).where(eq(externalAccounts.id, accountId)))[0]!;
+    expect(after.credentialsRef).toBe(before.credentialsRef);
   });
 
   it('rejects a mismatched state (CSRF guard)', async () => {

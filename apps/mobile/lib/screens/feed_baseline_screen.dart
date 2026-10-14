@@ -224,7 +224,8 @@ class _FeedBaselineScreenState extends ConsumerState<FeedBaselineScreen> {
         title: const Text('Unlink feed?'),
         content: Text(
           'Stop synthesizing ${widget.member.relationName}\'s events '
-          'from this feed? Its events, rules, and generated tasks are removed.',
+          'from this feed? Its events, rules, and generated tasks are removed. '
+          "If no one else is linked to it, the feed itself is deleted.",
         ),
         actions: [
           TextButton(

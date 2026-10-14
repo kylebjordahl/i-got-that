@@ -429,6 +429,10 @@ class MeScreen extends ConsumerWidget {
         'google_account_mismatch' =>
           'That was a different Google account. Sign in as '
               '${a.username ?? 'the account you connected'} to reconnect it.',
+        'google_scopes_missing' =>
+          "Google didn't grant all the calendar access I Got That needs. "
+              'Try again and leave every calendar permission ticked on '
+              "Google's consent screen.",
         'google_no_refresh_token' =>
           'Google did not grant offline access. Remove I Got That from your '
               'Google account permissions, then try again.',
