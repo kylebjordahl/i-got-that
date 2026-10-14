@@ -668,7 +668,10 @@ class MeScreen extends ConsumerWidget {
     // Checked up front (rather than letting the slide fail) so a block reads
     // as the sheet's own message, not a toast that lands behind the sheet and
     // the floating nav.
-    final blocked = !(await ref.read(accountDeletableProvider.future));
+    // Refreshed each time: joining, leaving, or deleting a family since the
+    // last open changes both the block and which families this would delete.
+    final plan = await ref.refresh(accountDeletionPlanProvider.future);
+    final blocked = !plan.deletable;
     if (!context.mounted) return;
     return showSlideToConfirmSheet(
       context,
@@ -676,10 +679,10 @@ class MeScreen extends ConsumerWidget {
       description: blocked
           ? 'Before you can delete your account, you must either leave or '
                 'delete all the families you are involved in.'
-          : "This permanently deletes your login and connected "
-                "calendar accounts. Families you belong to keep their data — "
-                "you're just removed as a member with login access. This can't be "
-                'undone.',
+          : 'This permanently deletes your login and connected calendar '
+                'accounts. Feeds and calendar targets that use those accounts '
+                "are removed from every family. This can't be undone.",
+      details: blocked ? null : _DeletionOutcomes(plan: plan),
       slideLabel: 'Slide to delete account',
       blocked: blocked,
       onConfirmed: () =>
@@ -706,6 +709,89 @@ class MeScreen extends ConsumerWidget {
     'icloud' => AppColors.indigo,
     _ => AppColors.purple,
   };
+}
+
+/// The delete-account sheet's per-family consequences: which families are
+/// deleted outright (nobody else can log in to them) and which stay, with the
+/// user's role kept but no longer tied to a login.
+class _DeletionOutcomes extends StatelessWidget {
+  const _DeletionOutcomes({required this.plan});
+
+  final AccountDeletionPlan plan;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        if (plan.deletesFamilies.isNotEmpty)
+          _section(
+            icon: Icons.delete_forever_rounded,
+            color: AppColors.coral,
+            heading: plan.deletesFamilies.length == 1
+                ? 'This family will be deleted'
+                : 'These families will be deleted',
+            note:
+                'No one else can log in to them, so their feeds, events and '
+                'tasks go too.',
+            lines: [for (final f in plan.deletesFamilies) f.name],
+          ),
+        if (plan.deletesFamilies.isNotEmpty && plan.keepsFamilies.isNotEmpty)
+          const SizedBox(height: 14),
+        if (plan.keepsFamilies.isNotEmpty)
+          _section(
+            icon: Icons.person_off_rounded,
+            color: AppColors.textSecondary,
+            heading: plan.keepsFamilies.length == 1
+                ? 'This family stays'
+                : 'These families stay',
+            note:
+                'Your role stays on the roster, but no longer has a login '
+                'attached.',
+            lines: [
+              for (final f in plan.keepsFamilies)
+                f.relationName == null
+                    ? f.name
+                    : '${f.name} — you stay listed as ${f.relationName}',
+            ],
+          ),
+      ],
+    );
+  }
+
+  Widget _section({
+    required IconData icon,
+    required Color color,
+    required String heading,
+    required String note,
+    required List<String> lines,
+  }) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Icon(icon, size: 18, color: color),
+            const SizedBox(width: 8),
+            Flexible(
+              child: Text(
+                heading,
+                style: font(kBodyFont, 14, 700, color: color),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 4),
+        Text(note, style: AppText.subtitle),
+        const SizedBox(height: 4),
+        for (final line in lines)
+          Padding(
+            padding: const EdgeInsets.only(top: 2),
+            child: Text('• $line', style: font(kBodyFont, 14, 600)),
+          ),
+      ],
+    );
+  }
 }
 
 /// Push notifications: the device-level master switch, then the user's digest

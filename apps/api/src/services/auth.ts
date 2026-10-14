@@ -2,14 +2,22 @@ import {
   and,
   appleNotificationReceipts,
   authTokens,
+  calendarEvents,
   type Db,
+  emailOutputs,
+  emailRecipients,
   eq,
+  eventMirrors,
   externalAccounts,
+  families,
   familyMembers,
+  feeds,
   gt,
   identities,
   inArray,
+  invites,
   isNull,
+  memberCalendars,
   secrets,
   sessions,
   users,
@@ -19,7 +27,7 @@ import type { AppleNotificationEvent } from '../lib/apple.js';
 import { randomToken, sha256hex } from '../lib/crypto.js';
 import { runChunked } from '../lib/d1.js';
 import { loadSecret, type KekKeySet } from '../lib/secrets.js';
-import { wouldOrphanFamily } from './families.js';
+import { planAccountFamilies, wouldOrphanFamily } from './families.js';
 
 const MAGIC_LINK_TTL_MS = 15 * 60 * 1000; // 15 minutes
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
@@ -182,6 +190,90 @@ export type AccountCleanupOptions = {
   revokeGoogleToken?: (refreshToken: string) => Promise<void>;
 };
 
+/**
+ * Every email address the account is known by, lower-cased: magic-link
+ * identities plus a `username` that is an address (Apple/Google sign-in).
+ * Read before the user row goes, since the identities cascade away with it.
+ */
+async function loginEmails(db: Db, userId: string): Promise<string[]> {
+  const [rows, user] = await Promise.all([
+    db
+      .select({ provider: identities.provider, ref: identities.providerRef })
+      .from(identities)
+      .where(eq(identities.userId, userId)),
+    db.select({ username: users.username }).from(users).where(eq(users.id, userId)).limit(1),
+  ]);
+  const emails = new Set<string>();
+  for (const r of rows) if (r.provider === 'magic_link') emails.add(r.ref.toLowerCase());
+  const username = user[0]?.username;
+  if (username?.includes('@')) emails.add(username.toLowerCase());
+  return [...emails];
+}
+
+/**
+ * Remove the rows that hold a deleted account's addresses outside the user
+ * tables, so they don't cascade away on their own: login tokens, invites sent
+ * to them, and their `email_recipients` entry.
+ *
+ * The recipient row is kept when the address has unsubscribed — that row is
+ * the suppression record, and dropping it would let another family's email
+ * output mail someone who opted out — or while any email output (in a family
+ * that survived) still targets the address.
+ */
+async function purgeEmailTraces(db: Db, emails: string[]): Promise<void> {
+  if (emails.length === 0) return;
+  await db.delete(authTokens).where(inArray(authTokens.email, emails));
+  await db.delete(invites).where(inArray(invites.email, emails));
+
+  const stillTargeted = await db
+    .select({ email: emailOutputs.email })
+    .from(emailOutputs)
+    .where(inArray(emailOutputs.email, emails));
+  const keep = new Set(stillTargeted.map((r) => r.email));
+  const purge = emails.filter((e) => !keep.has(e));
+  if (purge.length > 0) {
+    await db
+      .delete(emailRecipients)
+      .where(and(inArray(emailRecipients.email, purge), isNull(emailRecipients.unsubscribedAt)));
+  }
+}
+
+/**
+ * Detach everything in the surviving families that was wired to the deleted
+ * user's calendar accounts. The FKs only `set null`, which would leave feeds
+ * that error on every sync and mirror targets that point nowhere.
+ *   - Feeds read through the account are deleted (their member links, rules,
+ *     source events, and the events synthesized from them cascade).
+ *   - Mirror targets drawn from the account are deleted, along with the
+ *     mirror bookkeeping and the read-back (`human`) events that came from
+ *     that calendar. The member's own unified calendar stays, DB-only.
+ * The remote copies we wrote into the target calendar can't be cancelled —
+ * the credentials go with the account — so they stay in the user's own
+ * calendar, which is theirs to clear.
+ */
+async function removeAccountAttachments(db: Db, accountIds: string[]): Promise<void> {
+  await runChunked(accountIds, async (chunk) => {
+    await db.delete(feeds).where(inArray(feeds.externalAccountId, chunk));
+    const targets = await db
+      .select({ memberId: memberCalendars.familyMemberId })
+      .from(memberCalendars)
+      .where(inArray(memberCalendars.targetExternalAccountId, chunk));
+    const memberIds = targets.map((t) => t.memberId);
+    await runChunked(memberIds, async (members) => {
+      await db.delete(eventMirrors).where(inArray(eventMirrors.familyMemberId, members));
+      await db
+        .delete(calendarEvents)
+        .where(
+          and(
+            inArray(calendarEvents.familyMemberId, members),
+            eq(calendarEvents.provenance, 'human'),
+          ),
+        );
+      await db.delete(memberCalendars).where(inArray(memberCalendars.familyMemberId, members));
+    }, 1);
+  });
+}
+
 async function deleteUserAndCleanupCredentials(
   db: Db,
   userId: string,
@@ -213,7 +305,22 @@ async function deleteUserAndCleanupCredentials(
     }
   }
 
+  // Families no one else can log in to go with the account (cascading to
+  // their feeds, events, tasks, and family-owned secrets). Done before the
+  // user row: that delete is what unlinks the memberships this plan is read
+  // from, so a crash in between would strand the family for good, whereas a
+  // crash here leaves the account intact and the delete retryable.
+  const plan = await planAccountFamilies(db, userId);
+  const familyIds = plan.deleted.map((f) => f.id);
+  await runChunked(familyIds, (chunk) => db.delete(families).where(inArray(families.id, chunk)));
+  await removeAccountAttachments(
+    db,
+    accounts.map((a) => a.id),
+  );
+
+  const emails = await loginEmails(db, userId);
   await db.delete(users).where(eq(users.id, userId));
+  await purgeEmailTraces(db, emails);
 
   const secretIds = accounts
     .map((a) => a.credentialsRef)
@@ -490,10 +597,12 @@ export async function accountDeletionBlocked(db: Db, userId: string): Promise<bo
 
 /**
  * Delete the user's own account. FK cascades drop their sessions, identities,
- * and external accounts; each `family_members` row they held is kept but
- * unlinked (`userId` → null, same outcome as `handleAppleAccountEvent`'s
- * `account-delete` case) rather than removed — the person stays in the
- * family, just loses login capability.
+ * and external accounts. In a family that someone else can still log in to,
+ * their `family_members` row is kept but unlinked (`userId` → null, same
+ * outcome as `handleAppleAccountEvent`'s `account-delete` case) — the person
+ * stays in the family, just loses login capability. A family nobody else can
+ * log in to is deleted outright (see {@link planAccountFamilies}). Their
+ * login emails are also purged from tokens, invites, and recipients.
  *
  * Blocked (`last_admin`) if the user is the sole admin of a family that still
  * has other members — deleting the account would leave that family with no

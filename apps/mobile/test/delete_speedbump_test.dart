@@ -24,6 +24,10 @@ class _FakeApiClient extends ApiClient {
   /// before showing its slide control.
   bool accountIsDeletable = true;
 
+  /// Which families the up-front check says the deletion removes / leaves.
+  List<PlannedFamily> deletesFamilies = [];
+  List<PlannedFamily> keepsFamilies = [];
+
   /// What the disconnect-account sheet's up-front audit reports — the
   /// calendar-account equivalent of [accountIsDeletable].
   AccountUsage accountUsageResult = AccountUsage(feeds: [], targets: []);
@@ -39,7 +43,12 @@ class _FakeApiClient extends ApiClient {
   }
 
   @override
-  Future<bool> accountDeletable() async => accountIsDeletable;
+  Future<AccountDeletionPlan> accountDeletionPlan() async =>
+      AccountDeletionPlan(
+        deletable: accountIsDeletable,
+        deletesFamilies: deletesFamilies,
+        keepsFamilies: keepsFamilies,
+      );
 
   @override
   Future<void> deleteFamily(String familyId) async {
@@ -207,6 +216,59 @@ void main() {
       await tester.tap(find.text('OK'));
       await tester.pumpAndSettle();
       expect(api.deletedAccount, isFalse);
+    },
+  );
+
+  testWidgets(
+    'the delete-account sheet says which families are deleted and which keep '
+    'a role',
+    (tester) async {
+      final api = _FakeApiClient()
+        ..deletesFamilies = [PlannedFamily(id: 'f1', name: 'Solo Fam')]
+        ..keepsFamilies = [
+          PlannedFamily(id: 'f2', name: 'Shared Fam', relationName: 'Uncle'),
+        ];
+      final me = Member(
+        id: 'me',
+        relationName: 'Me',
+        isCaretaker: true,
+        isAdmin: false,
+        requiresCaretaker: false,
+      );
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            apiClientProvider.overrideWithValue(api),
+            currentMemberProvider.overrideWith((ref) async => me),
+            familyInfoProvider.overrideWith(
+              (ref) async => (name: 'Test Family', count: 1),
+            ),
+            accountsProvider.overrideWith(
+              (ref) async => const <ExternalAccount>[],
+            ),
+            loginIdentitiesProvider.overrideWith(
+              (ref) async => const <LoginIdentity>[],
+            ),
+          ],
+          child: const MaterialApp(home: Scaffold(body: MeScreen())),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.scrollUntilVisible(find.text('Delete account'), 300);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Delete account'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('This family will be deleted'), findsOneWidget);
+      expect(find.text('• Solo Fam'), findsOneWidget);
+      expect(find.text('This family stays'), findsOneWidget);
+      expect(
+        find.text('• Shared Fam — you stay listed as Uncle'),
+        findsOneWidget,
+      );
+      expect(find.byType(SlideToConfirm), findsOneWidget);
     },
   );
 

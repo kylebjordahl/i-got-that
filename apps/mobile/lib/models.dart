@@ -172,6 +172,48 @@ class AccountUsage {
   );
 }
 
+/// A family named in an [AccountDeletionPlan]. [relationName] is the user's
+/// own role there (only sent for families that survive).
+class PlannedFamily {
+  PlannedFamily({required this.id, required this.name, this.relationName});
+
+  final String id;
+  final String name;
+  final String? relationName;
+
+  factory PlannedFamily.fromJson(Map<String, dynamic> j) => PlannedFamily(
+    id: j['id'] as String,
+    name: j['name'] as String,
+    relationName: j['relationName'] as String?,
+  );
+}
+
+/// What deleting the signed-in account would do: whether it is allowed, which
+/// families are deleted along with it (nobody else can log in to them), and
+/// which survive with the user's member row kept but unlinked.
+class AccountDeletionPlan {
+  AccountDeletionPlan({
+    required this.deletable,
+    this.deletesFamilies = const [],
+    this.keepsFamilies = const [],
+  });
+
+  final bool deletable;
+  final List<PlannedFamily> deletesFamilies;
+  final List<PlannedFamily> keepsFamilies;
+
+  factory AccountDeletionPlan.fromJson(Map<String, dynamic> j) =>
+      AccountDeletionPlan(
+        deletable: j['deletable'] as bool,
+        deletesFamilies: _plannedFamilies(j['deletesFamilies']),
+        keepsFamilies: _plannedFamilies(j['keepsFamilies']),
+      );
+
+  static List<PlannedFamily> _plannedFamilies(Object? v) => (v as List? ?? [])
+      .map((e) => PlannedFamily.fromJson(e as Map<String, dynamic>))
+      .toList();
+}
+
 /// A login method threaded to the current user (Sign in with Apple, or a
 /// magic-link email). Multiple identities resolve to one account — see
 /// docs/AUTH.md.

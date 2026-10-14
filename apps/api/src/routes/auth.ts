@@ -44,6 +44,7 @@ import {
   unlinkIdentity,
   verifyMagicLink,
 } from '../services/auth.js';
+import { planAccountFamilies } from '../services/families.js';
 
 export const authRoutes = new Hono<HonoEnv>();
 
@@ -677,15 +678,21 @@ authRoutes.delete('/me', authMiddleware, async (c) => {
 });
 
 /**
- * Whether the signed-in user is currently free to delete their account. Lets
+ * Whether the signed-in user is currently free to delete their account, and
+ * what deleting it would do to each of their families (`deletesFamilies` go
+ * away entirely; `keepsFamilies` keep the member row, unlinked). Lets
  * the client warn before the delete-confirm sheet's slide control is even
  * shown, instead of letting the user slide and then surfacing the same
  * `last_admin` block as a failed-action toast.
  */
 authRoutes.get('/me/deletable', authMiddleware, async (c) => {
   const user = c.get('user');
-  const blocked = await accountDeletionBlocked(getDb(c.env.DB), user.id);
-  return c.json({ deletable: !blocked });
+  const db = getDb(c.env.DB);
+  const [blocked, plan] = await Promise.all([
+    accountDeletionBlocked(db, user.id),
+    planAccountFamilies(db, user.id),
+  ]);
+  return c.json({ deletable: !blocked, deletesFamilies: plan.deleted, keepsFamilies: plan.kept });
 });
 
 // --- Identity linking (thread multiple login methods into one user) -------

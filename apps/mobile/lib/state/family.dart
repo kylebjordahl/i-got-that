@@ -367,10 +367,13 @@ final loginIdentitiesProvider = FutureProvider<List<LoginIdentity>>((
 });
 
 /// Whether the signed-in user is currently free to delete their account (not
-/// the sole admin of any family with other members). Backed by the server —
-/// unlike [currentMemberProvider], it needs every family's full member list,
-/// not just the caller's own row in each.
-final accountDeletableProvider = FutureProvider<bool>((ref) async {
+/// the sole admin of any family with other members) and what it would do to
+/// each of their families. Backed by the server — unlike
+/// [currentMemberProvider], it needs every family's full member list, not just
+/// the caller's own row in each.
+final accountDeletionPlanProvider = FutureProvider<AccountDeletionPlan>((
+  ref,
+) async {
   final api = ref.watch(apiClientProvider);
-  return api.accountDeletable();
+  return api.accountDeletionPlan();
 });
