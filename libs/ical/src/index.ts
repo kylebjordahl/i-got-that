@@ -872,6 +872,18 @@ export interface CalendarChoice {
   name: string;
 }
 
+/** A Google API call that failed; `status` is Google's HTTP status. A 401/403
+ *  means the stored grant can't do this (token revoked, or a scope the account
+ *  was connected without) — the person has to reconnect, not retry. */
+export class GoogleApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+  }
+}
+
 /** List the calendars in a Google account (for the input/output feed picker). */
 export async function fetchGoogleCalendars(
   accessToken: string,
@@ -881,7 +893,7 @@ export async function fetchGoogleCalendars(
     'https://www.googleapis.com/calendar/v3/users/me/calendarList',
     { headers: { Authorization: `Bearer ${accessToken}` } },
   );
-  if (!res.ok) throw new Error(`google calendarList failed: ${res.status}`);
+  if (!res.ok) throw new GoogleApiError(`google calendarList failed: ${res.status}`, res.status);
   const json = (await res.json()) as {
     items?: { id?: string; summary?: string; summaryOverride?: string }[];
   };

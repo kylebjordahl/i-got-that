@@ -130,7 +130,14 @@ class _AddCalendarSheetState extends ConsumerState<_AddCalendarSheet> {
           .listAccountCalendars(accountId);
       setState(() => _calendars = cals.cast<Map<String, dynamic>>());
     } catch (e) {
-      setState(() => _error = '$e');
+      final data = e is DioException ? e.response?.data : null;
+      var message = '$e';
+      if (data is Map && data['error'] == 'google_reauth_required') {
+        message =
+            'Google has not granted this account calendar access. Open '
+            'Me → Accounts, reconnect it, and try again.';
+      }
+      setState(() => _error = message);
     } finally {
       if (mounted) setState(() => _loadingCals = false);
     }
