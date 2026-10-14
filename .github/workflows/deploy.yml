@@ -247,6 +247,21 @@ jobs:
           fi
           echo "Serving $(find apps/api/public/app -type f | wc -l) web asset file(s)."
 
+      # Static legal pages (privacy / terms / cookies) are committed under
+      # apps/api/legal and served at /legal/* from the same assets binding.
+      # Independent of the Flutter cache above, so it always runs.
+      - name: Stage legal pages
+        run: |
+          rm -rf apps/api/public/legal
+          mkdir -p apps/api/public/legal
+          cp -r apps/api/legal/. apps/api/public/legal/
+          for f in privacy.html terms.html cookies.html legal.css; do
+            if [ ! -f "apps/api/public/legal/$f" ]; then
+              echo "::error::Legal page missing: apps/api/public/legal/$f. The /legal/* URLs are referenced from store listings and OAuth consent screens."
+              exit 1
+            fi
+          done
+
       # Runs unconditionally, even on a cache hit: `flutter build web` bakes
       # the marketing version + build number into this one small JSON file
       # (fetched at runtime by package_info_plus, not compiled into the JS/wasm
