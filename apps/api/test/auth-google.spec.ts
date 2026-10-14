@@ -40,10 +40,11 @@ function fakeIdToken(claims: Record<string, unknown>): string {
 /** Drive `/auth/google/start` and return the minted `state` + the raw state cookie. */
 async function startFlow(
   bindings: typeof env,
-  init?: RequestInit & { link?: boolean },
+  init?: RequestInit & { link?: boolean; account?: string },
 ): Promise<{ state: string; cookie: string }> {
-  const { link, ...rest } = init ?? {};
-  const res = await fetchWith(`/auth/google/start${link ? '?link=1' : ''}`, bindings, {
+  const { link, account, ...rest } = init ?? {};
+  const query = [link ? 'link=1' : '', account ? `account=${account}` : ''].filter(Boolean).join('&');
+  const res = await fetchWith(`/auth/google/start${query ? `?${query}` : ''}`, bindings, {
     redirect: 'manual',
     ...rest,
   });
@@ -217,6 +218,51 @@ describe('Sign in with Google — redirect flow', () => {
       .from(externalAccounts)
       .where(and(eq(externalAccounts.userId, alice.userId), eq(externalAccounts.kind, 'google')));
     expect(acct).toHaveLength(1);
+  });
+
+  it('link mode with ?account= renews that account even though it has no email yet', async () => {
+    const alice = await login('g-reconnect-web@example.com');
+    const db = getDb(env.DB);
+    // A row from the old native wizard (no email), and a second consent's row
+    // under the email: an email match alone would pick the wrong one.
+    const legacyId = await connectGoogleAccount(db, testKeys(), {
+      userId: alice.userId,
+      refreshToken: 'expired',
+    });
+    await connectGoogleAccount(db, testKeys(), {
+      userId: alice.userId,
+      refreshToken: 'other',
+      email: 'gcal-web@example.com',
+    });
+    const headers = { Authorization: `Bearer ${alice.token}`, cookie: `igt_session=${alice.token}` };
+
+    const { state, cookie } = await startFlow(googleEnv, { link: true, account: legacyId, headers });
+    stubTokenExchange({
+      refresh_token: 'renewed',
+      id_token: fakeIdToken({ sub: 'g-reconnect-sub', email: 'gcal-web@example.com' }),
+    });
+    const res = await fetchWith(`/auth/google/callback?code=abc&state=${state}`, googleEnv, {
+      redirect: 'manual',
+      headers: { cookie },
+    });
+    expect(res.headers.get('location')).toContain('/app/#connected=google');
+    const legacy = (
+      await db.select().from(externalAccounts).where(eq(externalAccounts.id, legacyId))
+    )[0]!;
+    expect(legacy.username).toBe('gcal-web@example.com');
+
+    // A different Google account can't take the row over.
+    const again = await startFlow(googleEnv, { link: true, account: legacyId, headers });
+    stubTokenExchange({
+      refresh_token: 'intruder',
+      id_token: fakeIdToken({ sub: 'g-other-sub', email: 'someone-else@example.com' }),
+    });
+    const refused = await fetchWith(
+      `/auth/google/callback?code=abc&state=${again.state}`,
+      googleEnv,
+      { redirect: 'manual', headers: { cookie: again.cookie } },
+    );
+    expect(refused.headers.get('location')).toContain('auth_error=google_account_mismatch');
   });
 
   it('rejects a mismatched state (CSRF guard)', async () => {

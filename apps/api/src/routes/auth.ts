@@ -10,7 +10,7 @@ import { deleteCookie, getSignedCookie, setSignedCookie } from 'hono/cookie';
 import type { HonoEnv } from '../env.js';
 import { verifyAppleIdentityToken, verifyAppleNotificationToken } from '../lib/apple.js';
 import { randomToken, sha256hex } from '../lib/crypto.js';
-import { connectGoogleAccount } from '../lib/google-account.js';
+import { connectGoogleAccount, GoogleAccountMismatchError } from '../lib/google-account.js';
 import { verifyGoogleIdentityToken } from '../lib/google-identity.js';
 import { buildKekKeySet } from '../lib/secrets.js';
 import {
@@ -57,6 +57,10 @@ const APPLE_CALLBACK_PATH = '/api/auth/apple/callback';
 /** Short-lived cookie carrying the `state` + link-user we minted for a Google flow. */
 const GOOGLE_OAUTH_COOKIE = 'igt_google_oauth';
 const GOOGLE_OAUTH_TTL_S = 10 * 60; // 10 minutes to complete the round-trip
+
+/** A row id (`crypto.randomUUID()`), the only thing accepted as `?account=`. */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 /** Public path Google redirects the auth code back to (behind the `/api` prefix). */
 const GOOGLE_CALLBACK_PATH = '/api/auth/google/callback';
 
@@ -438,12 +442,17 @@ authRoutes.get('/google/start', async (c) => {
     const user = token ? await getUserBySessionToken(getDb(c.env.DB), token) : null;
     if (user && token) linkSessionToken = token;
   }
+  // `&account=<id>` (link mode only): renew that Google account's grant rather
+  // than whichever row the consent's email matches — see connectGoogleAccount.
+  // Ownership is checked at the callback, against the re-resolved user.
+  const reconnectAccountId =
+    linkSessionToken && UUID_RE.test(c.req.query('account') ?? '') ? c.req.query('account')! : '';
 
   const state = randomToken();
   await setSignedCookie(
     c,
     GOOGLE_OAUTH_COOKIE,
-    `${state}.${linkSessionToken}`,
+    `${state}.${linkSessionToken}.${reconnectAccountId}`,
     web.cookieSigningKey,
     {
       httpOnly: true,
@@ -492,7 +501,7 @@ authRoutes.get('/google/callback', async (c) => {
 
   // CSRF guard: the echoed `state` must match the one bound to this browser.
   // A second segment (possibly empty) carries the live session token for link mode.
-  const [expectedState, linkSessionToken] = (cookie || '').split('.');
+  const [expectedState, linkSessionToken, reconnectAccountId] = (cookie || '').split('.');
   if (!cookie || !state || !expectedState || state !== expectedState) {
     return back('auth_error=state_mismatch');
   }
@@ -541,9 +550,14 @@ authRoutes.get('/google/callback', async (c) => {
         userId,
         refreshToken: tokens.refreshToken,
         email: identity.email,
+        accountId: (linkSessionToken && reconnectAccountId) || undefined,
       });
     } catch (err) {
-      // A calendar-connect failure shouldn't block login — log and carry on.
+      // A reconnect the person asked for and we refused is theirs to see; any
+      // other calendar-connect failure shouldn't block login — log and carry on.
+      if (err instanceof GoogleAccountMismatchError && linkSessionToken) {
+        return back('auth_error=google_account_mismatch');
+      }
       console.error('google calendar auto-connect failed', err);
     }
   }

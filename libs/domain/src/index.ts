@@ -969,6 +969,13 @@ export const GoogleAuthorizeUrlInput = z.object({
 });
 export type GoogleAuthorizeUrlInput = z.infer<typeof GoogleAuthorizeUrlInput>;
 
+/** Renew an existing Google account's grant with a fresh consent code. */
+export const GoogleReconnectInput = z.object({
+  authCode: z.string().min(1),
+  redirectUri: z.string().url(),
+});
+export type GoogleReconnectInput = z.infer<typeof GoogleReconnectInput>;
+
 /**
  * Default alerts for a mirror target: minutes before the event start, at most
  * two. An empty array clears alerts. Capped at 4 weeks (40320 min).
