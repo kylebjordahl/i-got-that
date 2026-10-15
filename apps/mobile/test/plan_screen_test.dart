@@ -68,6 +68,8 @@ void main() {
           calendarEventsProvider.overrideWith((ref) async => const []),
           pendingDecisionsProvider.overrideWith((ref) async => const []),
           threadingThresholdProvider.overrideWith((ref) async => 30),
+          // The event sheets ask whether the event has an absence email; never hit the network.
+          absenceNoticeProvider.overrideWith((ref, id) async => null),
         ],
         child: MaterialApp(
           theme: buildAppTheme(),
@@ -124,6 +126,8 @@ void main() {
           calendarEventsProvider.overrideWith((ref) async => const []),
           pendingDecisionsProvider.overrideWith((ref) async => const []),
           threadingThresholdProvider.overrideWith((ref) async => 30),
+          // The event sheets ask whether the event has an absence email; never hit the network.
+          absenceNoticeProvider.overrideWith((ref, id) async => null),
         ],
         child: MaterialApp(
           theme: buildAppTheme(),
@@ -166,6 +170,8 @@ void main() {
           calendarEventsProvider.overrideWith((ref) async => const []),
           pendingDecisionsProvider.overrideWith((ref) async => const []),
           threadingThresholdProvider.overrideWith((ref) async => 30),
+          // The event sheets ask whether the event has an absence email; never hit the network.
+          absenceNoticeProvider.overrideWith((ref, id) async => null),
         ],
         child: MaterialApp(
           theme: buildAppTheme(),
@@ -231,6 +237,8 @@ void main() {
             calendarEventsProvider.overrideWith((ref) async => const []),
             pendingDecisionsProvider.overrideWith((ref) async => const []),
             threadingThresholdProvider.overrideWith((ref) async => 30),
+            // The event sheets ask whether the event has an absence email; never hit the network.
+            absenceNoticeProvider.overrideWith((ref, id) async => null),
           ],
           child: MaterialApp(
             theme: buildAppTheme(),
@@ -343,6 +351,8 @@ void main() {
             calendarEventsProvider.overrideWith((ref) async => events),
             pendingDecisionsProvider.overrideWith((ref) async => const []),
             threadingThresholdProvider.overrideWith((ref) async => 30),
+            // The event sheets ask whether the event has an absence email; never hit the network.
+            absenceNoticeProvider.overrideWith((ref, id) async => null),
           ],
           child: MaterialApp(
             theme: buildAppTheme(),
@@ -412,6 +422,8 @@ void main() {
           calendarEventsProvider.overrideWith((ref) async => events),
           pendingDecisionsProvider.overrideWith((ref) async => const []),
           threadingThresholdProvider.overrideWith((ref) async => 30),
+          // The event sheets ask whether the event has an absence email; never hit the network.
+          absenceNoticeProvider.overrideWith((ref, id) async => null),
         ],
         child: MaterialApp(
           theme: buildAppTheme(),
@@ -486,6 +498,8 @@ void main() {
           calendarEventsProvider.overrideWith((ref) async => events),
           pendingDecisionsProvider.overrideWith((ref) async => const []),
           threadingThresholdProvider.overrideWith((ref) async => 30),
+          // The event sheets ask whether the event has an absence email; never hit the network.
+          absenceNoticeProvider.overrideWith((ref, id) async => null),
         ],
         child: MaterialApp(
           theme: buildAppTheme(),
@@ -545,6 +559,8 @@ void main() {
           calendarEventsProvider.overrideWith((ref) async => events),
           pendingDecisionsProvider.overrideWith((ref) async => const []),
           threadingThresholdProvider.overrideWith((ref) async => 30),
+          // The event sheets ask whether the event has an absence email; never hit the network.
+          absenceNoticeProvider.overrideWith((ref, id) async => null),
         ],
         child: MaterialApp(
           theme: buildAppTheme(),
@@ -603,6 +619,8 @@ void main() {
           calendarEventsProvider.overrideWith((ref) async => events),
           pendingDecisionsProvider.overrideWith((ref) async => const []),
           threadingThresholdProvider.overrideWith((ref) async => 30),
+          // The event sheets ask whether the event has an absence email; never hit the network.
+          absenceNoticeProvider.overrideWith((ref, id) async => null),
         ],
         child: MaterialApp(
           theme: buildAppTheme(),
@@ -713,6 +731,8 @@ void main() {
           calendarEventsProvider.overrideWith((ref) async => events),
           pendingDecisionsProvider.overrideWith((ref) async => const []),
           threadingThresholdProvider.overrideWith((ref) async => 30),
+          // The event sheets ask whether the event has an absence email; never hit the network.
+          absenceNoticeProvider.overrideWith((ref, id) async => null),
         ],
         child: MaterialApp(
           theme: buildAppTheme(),
@@ -812,6 +832,8 @@ void main() {
           calendarEventsProvider.overrideWith((ref) async => events),
           pendingDecisionsProvider.overrideWith((ref) async => const []),
           threadingThresholdProvider.overrideWith((ref) async => 30),
+          // The event sheets ask whether the event has an absence email; never hit the network.
+          absenceNoticeProvider.overrideWith((ref, id) async => null),
         ],
         child: MaterialApp(
           theme: buildAppTheme(),
@@ -880,6 +902,8 @@ void main() {
             calendarEventsProvider.overrideWith((ref) async => events),
             pendingDecisionsProvider.overrideWith((ref) async => const []),
             threadingThresholdProvider.overrideWith((ref) async => 30),
+            // The event sheets ask whether the event has an absence email; never hit the network.
+            absenceNoticeProvider.overrideWith((ref, id) async => null),
           ],
           child: MaterialApp(
             theme: buildAppTheme(),
@@ -955,6 +979,8 @@ void main() {
           calendarEventsProvider.overrideWith((ref) async => events),
           pendingDecisionsProvider.overrideWith((ref) async => const []),
           threadingThresholdProvider.overrideWith((ref) async => 30),
+          // The event sheets ask whether the event has an absence email; never hit the network.
+          absenceNoticeProvider.overrideWith((ref, id) async => null),
         ],
         child: MaterialApp(
           theme: buildAppTheme(),
@@ -1021,6 +1047,8 @@ void main() {
             calendarEventsProvider.overrideWith((ref) async => events),
             pendingDecisionsProvider.overrideWith((ref) async => const []),
             threadingThresholdProvider.overrideWith((ref) async => 30),
+            // The event sheets ask whether the event has an absence email; never hit the network.
+            absenceNoticeProvider.overrideWith((ref, id) async => null),
           ],
           child: MaterialApp(
             theme: buildAppTheme(),
@@ -1089,6 +1117,8 @@ void main() {
           calendarEventsProvider.overrideWith((ref) async => events),
           pendingDecisionsProvider.overrideWith((ref) async => const []),
           threadingThresholdProvider.overrideWith((ref) async => 30),
+          // The event sheets ask whether the event has an absence email; never hit the network.
+          absenceNoticeProvider.overrideWith((ref, id) async => null),
         ],
         child: MaterialApp(
           theme: buildAppTheme(),
@@ -1153,6 +1183,8 @@ void main() {
           calendarEventsProvider.overrideWith((ref) async => events),
           pendingDecisionsProvider.overrideWith((ref) async => const []),
           threadingThresholdProvider.overrideWith((ref) async => 30),
+          // The event sheets ask whether the event has an absence email; never hit the network.
+          absenceNoticeProvider.overrideWith((ref, id) async => null),
         ],
         child: MaterialApp(
           theme: buildAppTheme(),
@@ -1279,6 +1311,8 @@ void main() {
             calendarEventsProvider.overrideWith((ref) async => events),
             pendingDecisionsProvider.overrideWith((ref) async => const []),
             threadingThresholdProvider.overrideWith((ref) async => 30),
+            // The event sheets ask whether the event has an absence email; never hit the network.
+            absenceNoticeProvider.overrideWith((ref, id) async => null),
           ],
           child: MaterialApp(
             theme: buildAppTheme(),
@@ -1344,6 +1378,8 @@ void main() {
           calendarEventsProvider.overrideWith((ref) async => events),
           pendingDecisionsProvider.overrideWith((ref) async => const []),
           threadingThresholdProvider.overrideWith((ref) async => 30),
+          // The event sheets ask whether the event has an absence email; never hit the network.
+          absenceNoticeProvider.overrideWith((ref, id) async => null),
         ],
         child: MaterialApp(
           theme: buildAppTheme(),
@@ -1396,6 +1432,8 @@ void main() {
           calendarEventsProvider.overrideWith((ref) async => events),
           pendingDecisionsProvider.overrideWith((ref) async => const []),
           threadingThresholdProvider.overrideWith((ref) async => 30),
+          // The event sheets ask whether the event has an absence email; never hit the network.
+          absenceNoticeProvider.overrideWith((ref, id) async => null),
         ],
         child: MaterialApp(
           theme: buildAppTheme(),
@@ -1443,6 +1481,8 @@ void main() {
           calendarEventsProvider.overrideWith((ref) async => events),
           pendingDecisionsProvider.overrideWith((ref) async => const []),
           threadingThresholdProvider.overrideWith((ref) async => 30),
+          // The event sheets ask whether the event has an absence email; never hit the network.
+          absenceNoticeProvider.overrideWith((ref, id) async => null),
         ],
         child: MaterialApp(
           theme: buildAppTheme(),
@@ -1513,6 +1553,8 @@ void main() {
           calendarEventsProvider.overrideWith((ref) async => events),
           pendingDecisionsProvider.overrideWith((ref) async => const []),
           threadingThresholdProvider.overrideWith((ref) async => 30),
+          // The event sheets ask whether the event has an absence email; never hit the network.
+          absenceNoticeProvider.overrideWith((ref, id) async => null),
         ],
         child: MaterialApp(
           theme: buildAppTheme(),
@@ -1570,6 +1612,8 @@ void main() {
           calendarEventsProvider.overrideWith((ref) async => events),
           pendingDecisionsProvider.overrideWith((ref) async => const []),
           threadingThresholdProvider.overrideWith((ref) async => 30),
+          // The event sheets ask whether the event has an absence email; never hit the network.
+          absenceNoticeProvider.overrideWith((ref, id) async => null),
         ],
         child: MaterialApp(
           theme: buildAppTheme(),
@@ -1621,6 +1665,8 @@ void main() {
           calendarEventsProvider.overrideWith((ref) async => events),
           pendingDecisionsProvider.overrideWith((ref) async => const []),
           threadingThresholdProvider.overrideWith((ref) async => 30),
+          // The event sheets ask whether the event has an absence email; never hit the network.
+          absenceNoticeProvider.overrideWith((ref, id) async => null),
         ],
         child: MaterialApp(
           theme: buildAppTheme(),
@@ -1683,6 +1729,8 @@ void main() {
           calendarEventsProvider.overrideWith((ref) async => events),
           pendingDecisionsProvider.overrideWith((ref) async => const []),
           threadingThresholdProvider.overrideWith((ref) async => 30),
+          // The event sheets ask whether the event has an absence email; never hit the network.
+          absenceNoticeProvider.overrideWith((ref, id) async => null),
         ],
         child: MaterialApp(
           theme: buildAppTheme(),
@@ -1765,6 +1813,8 @@ void main() {
             calendarEventsProvider.overrideWith((ref) async => events),
             pendingDecisionsProvider.overrideWith((ref) async => const []),
             threadingThresholdProvider.overrideWith((ref) async => 30),
+            // The event sheets ask whether the event has an absence email; never hit the network.
+            absenceNoticeProvider.overrideWith((ref, id) async => null),
           ],
           child: MaterialApp(
             theme: buildAppTheme(),
@@ -1843,6 +1893,8 @@ void main() {
             calendarEventsProvider.overrideWith((ref) async => events),
             pendingDecisionsProvider.overrideWith((ref) async => const []),
             threadingThresholdProvider.overrideWith((ref) async => 30),
+            // The event sheets ask whether the event has an absence email; never hit the network.
+            absenceNoticeProvider.overrideWith((ref, id) async => null),
           ],
           child: MaterialApp(
             theme: buildAppTheme(),
@@ -1932,6 +1984,8 @@ void main() {
             conflictsProvider.overrideWith((ref) async => [conflict]),
             pendingDecisionsProvider.overrideWith((ref) async => const []),
             threadingThresholdProvider.overrideWith((ref) async => 30),
+            // The event sheets ask whether the event has an absence email; never hit the network.
+            absenceNoticeProvider.overrideWith((ref, id) async => null),
           ],
           child: MaterialApp(
             theme: buildAppTheme(),
@@ -1978,6 +2032,8 @@ void main() {
           calendarEventsProvider.overrideWith((ref) async => const []),
           pendingDecisionsProvider.overrideWith((ref) async => const []),
           threadingThresholdProvider.overrideWith((ref) async => 30),
+          // The event sheets ask whether the event has an absence email; never hit the network.
+          absenceNoticeProvider.overrideWith((ref, id) async => null),
         ],
         child: MaterialApp(
           theme: buildAppTheme(),
@@ -2075,6 +2131,8 @@ void main() {
             calendarEventsProvider.overrideWith((ref) async => events),
             pendingDecisionsProvider.overrideWith((ref) async => const []),
             threadingThresholdProvider.overrideWith((ref) async => 30),
+            // The event sheets ask whether the event has an absence email; never hit the network.
+            absenceNoticeProvider.overrideWith((ref, id) async => null),
           ],
           child: MaterialApp(
             theme: buildAppTheme(),
