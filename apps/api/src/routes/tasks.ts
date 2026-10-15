@@ -798,8 +798,10 @@ taskRoutes.post('/conflicts/:conflictId/resolve', async (c) => {
     })
     .where(eq(conflicts.id, conflict.id));
   await reconcileMemberConflicts(db, conflict.familyMemberId);
-  await buildMemberTasks(db, conflict.familyMemberId);
-  enqueueReconcile(c, { kind: 'member', memberId: conflict.familyMemberId });
+  const built = await buildMemberTasks(db, conflict.familyMemberId);
+  for (const memberId of new Set([conflict.familyMemberId, ...built.releasedOwnerIds])) {
+    enqueueReconcile(c, { kind: 'member', memberId });
+  }
   return c.json({ ok: true });
 });
 
@@ -829,8 +831,10 @@ taskRoutes.post('/conflicts/:conflictId/dismiss', async (c) => {
     })
     .where(eq(conflicts.id, conflict.id));
   await reconcileMemberConflicts(db, conflict.familyMemberId);
-  await buildMemberTasks(db, conflict.familyMemberId);
-  enqueueReconcile(c, { kind: 'member', memberId: conflict.familyMemberId });
+  const built = await buildMemberTasks(db, conflict.familyMemberId);
+  for (const memberId of new Set([conflict.familyMemberId, ...built.releasedOwnerIds])) {
+    enqueueReconcile(c, { kind: 'member', memberId });
+  }
   return c.json({ ok: true });
 });
 
@@ -863,8 +867,10 @@ taskRoutes.post('/conflicts/:conflictId/revert', async (c) => {
     })
     .where(eq(conflicts.id, conflict.id));
   await reconcileMemberConflicts(db, conflict.familyMemberId);
-  await buildMemberTasks(db, conflict.familyMemberId);
-  enqueueReconcile(c, { kind: 'member', memberId: conflict.familyMemberId });
+  const built = await buildMemberTasks(db, conflict.familyMemberId);
+  for (const memberId of new Set([conflict.familyMemberId, ...built.releasedOwnerIds])) {
+    enqueueReconcile(c, { kind: 'member', memberId });
+  }
   return c.json({ ok: true });
 });
 

@@ -7,6 +7,7 @@ import {
   familyMemberFeeds,
   familyMembers,
   inArray,
+  isNotNull,
   isNull,
   ne,
   or,
@@ -36,6 +37,8 @@ export interface TaskGenResult {
   familyMemberId: string;
   tasksCreated: number;
   tasksRemoved: number;
+  /** Caretakers whose claim was released (their calendar needs a mirror pass). */
+  releasedOwnerIds: string[];
 }
 
 function toTaskRuleLike(r: typeof taskRules.$inferSelect): TaskRuleLike {
@@ -232,7 +235,12 @@ export async function buildMemberTasks(
   db: Db,
   familyMemberId: string,
 ): Promise<TaskGenResult> {
-  const result: TaskGenResult = { familyMemberId, tasksCreated: 0, tasksRemoved: 0 };
+  const result: TaskGenResult = {
+    familyMemberId,
+    tasksCreated: 0,
+    tasksRemoved: 0,
+    releasedOwnerIds: [],
+  };
 
   const member = (
     await db.select().from(familyMembers).where(eq(familyMembers.id, familyMemberId)).limit(1)
@@ -439,6 +447,28 @@ export async function buildMemberTasks(
       .update(calendarEvents)
       .set({ tasksBuiltHash: event.contentHash })
       .where(eq(calendarEvents.id, event.id));
+  }
+
+  // A claimed drop-off/pickup still parked on a conflict-masked day wasn't
+  // adopted by a segment (its boundary moved, or no segment is left). The time
+  // it was claimed for no longer exists, so release it: it leaves the
+  // caretaker's calendar and the segment's own unclaimed task is the new
+  // decision about who takes it. The orphan sweep below then drops the husk.
+  const stranded = await db
+    .select({ task: tasks })
+    .from(tasks)
+    .innerJoin(calendarEvents, eq(calendarEvents.id, tasks.calendarEventId))
+    .where(
+      and(
+        eq(tasks.familyMemberId, familyMemberId),
+        eq(tasks.status, 'owned'),
+        isNotNull(calendarEvents.maskedAt),
+      ),
+    );
+  for (const { task } of stranded) {
+    const owners = (await ownerRowsFor(db, [task.id])).get(task.id) ?? [];
+    await setTaskOwners(db, task, [], { manual: false });
+    result.releasedOwnerIds.push(...owners.map((o) => o.familyMemberId));
   }
 
   // Orphan sweep: unowned event-derived tasks (generated OR converted) whose

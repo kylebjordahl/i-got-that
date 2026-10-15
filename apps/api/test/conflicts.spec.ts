@@ -306,6 +306,64 @@ describe('conflict detection & masking', () => {
     expect(dropoffs[0]!.dtstart.toISOString()).toBe(futureAt(3, 10, 0).toISOString());
   });
 
+  it('releases a claimed pickup whose time a split moved, back to the unclaimed pool', async () => {
+    const f = await fixture('conflict-released-pickup@example.com');
+    const blKey = 'bl:' + f.linkId + ':day';
+    await f.db.insert(calendarEvents).values({
+      familyId: f.familyId,
+      familyMemberId: f.childId,
+      provenance: 'synthesized',
+      synthKey: blKey,
+      linkId: f.linkId,
+      dtstart: futureAt(3, 8, 30),
+      dtend: futureAt(3, 15, 0),
+      summary: 'School day',
+      contentHash: 'bl-hash',
+    });
+    await buildMemberTasks(f.db, f.childId);
+    const claimed = (
+      await f.db.select().from(tasks).where(eq(tasks.familyMemberId, f.childId))
+    ).find((t) => t.type === 'pickup')!;
+    await setTaskOwners(f.db, claimed, [f.adminMemberId], { manual: true });
+    const claimEvents = () =>
+      f.db.select().from(calendarEvents).where(eq(calendarEvents.provenance, 'claimed_task'));
+    expect(await claimEvents()).toHaveLength(1);
+
+    // An afternoon appointment trims the END of the day, so the pickup moves.
+    await f.db.insert(calendarEvents).values({
+      familyId: f.familyId,
+      familyMemberId: f.childId,
+      provenance: 'human',
+      synthKey: 'ext:afternoon:',
+      externalUid: 'afternoon',
+      dtstart: futureAt(3, 13, 0),
+      dtend: futureAt(3, 16, 0),
+      summary: 'Orthodontist',
+      contentHash: 'afternoon-hash',
+    });
+    await reconcileMemberConflicts(f.db, f.childId);
+    const conflict = (
+      await f.db.select().from(conflicts).where(eq(conflicts.familyMemberId, f.childId))
+    )[0]!;
+    await f.db
+      .update(conflicts)
+      .set({ status: 'resolved', resolvedAt: new Date() })
+      .where(eq(conflicts.id, conflict.id));
+    await reconcileMemberConflicts(f.db, f.childId);
+    const res = await buildMemberTasks(f.db, f.childId);
+
+    expect(res.releasedOwnerIds).toEqual([f.adminMemberId]);
+    // The claim is gone from the caretaker's calendar...
+    expect(await claimEvents()).toHaveLength(0);
+    // ...and exactly one pickup remains: the segment's, unclaimed, at 13:00.
+    const pickups = (
+      await f.db.select().from(tasks).where(eq(tasks.familyMemberId, f.childId))
+    ).filter((t) => t.type === 'pickup');
+    expect(pickups).toHaveLength(1);
+    expect(pickups[0]!.status).toBe('unowned');
+    expect(pickups[0]!.dtstart.toISOString()).toBe(futureAt(3, 13, 0).toISOString());
+  });
+
   it('resolving with travel buffers pulls the split halves back, leaving a gap', async () => {
     const f = await fixture('conflict-travel@example.com');
     const { blKey } = await schoolAndDoctor(f.db, f);
