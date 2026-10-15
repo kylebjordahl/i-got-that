@@ -265,10 +265,10 @@ final conflictsProvider = FutureProvider<List<Conflict>>((ref) async {
   return rows.map((e) => Conflict.fromJson(e as Map<String, dynamic>)).toList();
 });
 
-/// Overrides currently in effect for one member — resolved conflicts, i.e.
-/// events that have been split/masked around a higher-priority one. Backs the
-/// review-and-revert list on the member detail screen.
-final memberOverridesProvider = FutureProvider.family<List<Conflict>, String>((
+/// Every conflict on one member's calendar however it was handled — pending,
+/// split (resolved) or ignored (dismissed). Backs the review-and-revisit list
+/// on the member detail screen.
+final memberConflictsProvider = FutureProvider.family<List<Conflict>, String>((
   ref,
   memberId,
 ) async {
@@ -276,7 +276,7 @@ final memberOverridesProvider = FutureProvider.family<List<Conflict>, String>((
   final familyId = await ref.watch(familyProvider.future);
   final rows = await api.listConflicts(
     familyId,
-    status: 'resolved',
+    status: 'all',
     memberId: memberId,
   );
   return rows.map((e) => Conflict.fromJson(e as Map<String, dynamic>)).toList();

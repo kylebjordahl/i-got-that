@@ -1047,11 +1047,17 @@ class Conflict {
     required this.familyMemberId,
     required this.loser,
     required this.winner,
+    this.status = 'pending',
     this.suggestedTravelMin,
   });
 
   final String id;
   final String familyMemberId;
+
+  /// How the conflict has been handled: `pending` (awaiting a decision),
+  /// `resolved` (the loser was split around the winner) or `dismissed` (both
+  /// events kept as scheduled).
+  final String status;
   final ConflictEventRef loser;
   final ConflictEventRef winner;
 
@@ -1065,6 +1071,7 @@ class Conflict {
     familyMemberId: j['familyMemberId'] as String,
     loser: ConflictEventRef.fromJson(j['loser'] as Map<String, dynamic>),
     winner: ConflictEventRef.fromJson(j['winner'] as Map<String, dynamic>),
+    status: j['status'] as String? ?? 'pending',
     suggestedTravelMin: j['suggestedTravelMin'] as int?,
   );
 }

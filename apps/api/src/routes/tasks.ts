@@ -664,17 +664,22 @@ taskRoutes.post('/pending-decisions/:decisionId/dismiss', async (c) => {
  *
  * Defaults to `status=pending` (Home's decision queue). Pass `status=resolved`
  * to list overrides currently in effect (e.g. a member's masked/split events),
- * and `memberId` to scope to one member.
+ * `status=all` for every conflict however it was handled (each row carries its
+ * `status`), and `memberId` to scope to one member.
  */
 taskRoutes.get('/conflicts', async (c) => {
   const db = getDb(c.env.DB);
   const familyId = c.get('member').familyId;
   const statusParam = c.req.query('status') ?? 'pending';
-  const status = ConflictStatus.options.includes(statusParam as ConflictStatus)
-    ? (statusParam as ConflictStatus)
-    : 'pending';
+  const status =
+    statusParam === 'all'
+      ? 'all'
+      : ConflictStatus.options.includes(statusParam as ConflictStatus)
+        ? (statusParam as ConflictStatus)
+        : 'pending';
   const memberId = c.req.query('memberId');
-  const conditions = [eq(conflicts.familyId, familyId), eq(conflicts.status, status)];
+  const conditions = [eq(conflicts.familyId, familyId)];
+  if (status !== 'all') conditions.push(eq(conflicts.status, status));
   if (memberId) conditions.push(eq(conflicts.familyMemberId, memberId));
   const rows = await db
     .select()

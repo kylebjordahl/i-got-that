@@ -18,7 +18,7 @@ import 'add_calendar_sheet.dart';
 import 'email_outputs_section.dart';
 import 'feed_baseline_screen.dart';
 import 'member_editor_screen.dart';
-import 'member_overrides_sheet.dart';
+import 'member_conflicts_sheet.dart';
 import 'task_rules_screen.dart';
 
 /// One detail screen for every family member — child and caretaker alike (6e).
@@ -880,10 +880,11 @@ class _UnifiedCalendarSection extends ConsumerWidget {
     final target = ref.watch(memberCalendarProvider(member.id)).valueOrNull;
     final accounts =
         ref.watch(accountsProvider).valueOrNull ?? const <ExternalAccount>[];
-    final overrides = activeOverrides(
-      ref.watch(memberOverridesProvider(member.id)).valueOrNull ??
+    final conflicts = upcomingConflicts(
+      ref.watch(memberConflictsProvider(member.id)).valueOrNull ??
           const <Conflict>[],
     );
+    final pendingCount = conflicts.where((c) => c.status == 'pending').length;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -964,24 +965,29 @@ class _UnifiedCalendarSection extends ConsumerWidget {
             enabled: canEdit,
             onTap: () => _pickTarget(context, ref, null),
           ),
-        // Reviewing the splits is a side errand, not part of setting the
+        // Reviewing double-bookings is a side errand, not part of setting the
         // target — so it lives one tap away, and the button only exists while
-        // there's something in effect to review.
-        if (overrides.isNotEmpty) ...[
+        // there's something upcoming to review.
+        if (conflicts.isNotEmpty) ...[
           const SizedBox(height: 12),
           AppCard(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
             child: SettingRow(
               icon: Icons.content_cut_rounded,
               iconColor: AppColors.green,
-              title: 'Overrides in effect',
-              subtitle: overrides.length == 1
-                  ? '1 event split by a conflict decision'
-                  : '${overrides.length} events split by a conflict decision',
+              title: 'Double-bookings',
+              subtitle: pendingCount > 0
+                  ? '$pendingCount need${pendingCount == 1 ? 's' : ''} a decision'
+                  : conflicts.length == 1
+                  ? '1 upcoming, already handled'
+                  : '${conflicts.length} upcoming, all handled',
               trailing: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  TintBadge('${overrides.length}', color: AppColors.green),
+                  TintBadge(
+                    '${conflicts.length}',
+                    color: pendingCount > 0 ? AppColors.amber : AppColors.green,
+                  ),
                   const SizedBox(width: 6),
                   const Icon(
                     Icons.chevron_right_rounded,
@@ -990,7 +996,7 @@ class _UnifiedCalendarSection extends ConsumerWidget {
                 ],
               ),
               onTap: () =>
-                  showMemberOverridesSheet(context, member, canEdit: canEdit),
+                  showMemberConflictsSheet(context, member, canEdit: canEdit),
             ),
           ),
         ],
