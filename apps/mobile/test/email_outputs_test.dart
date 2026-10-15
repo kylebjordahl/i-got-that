@@ -24,9 +24,13 @@ class _FakeApiClient extends ApiClient {
     String? label,
     required Map<String, dynamic> filters,
     bool padTravelTime = false,
+    String? maskTitle,
   }) async {
     created = {'email': email, 'label': label, 'filters': filters};
     if (padTravelTime) created!['padTravelTime'] = true;
+    if (maskTitle != null && maskTitle.isNotEmpty) {
+      created!['maskTitle'] = maskTitle;
+    }
     return {'verificationSent': true};
   }
 
@@ -39,12 +43,15 @@ class _FakeApiClient extends ApiClient {
     bool clearLabel = false,
     Map<String, dynamic>? filters,
     bool? padTravelTime,
+    String? maskTitle,
+    bool clearMaskTitle = false,
     bool? active,
   }) async {
     updated = {
       'filters': filters,
       'active': active,
       'padTravelTime': padTravelTime,
+      'maskTitle': clearMaskTitle ? null : maskTitle,
     };
     return {};
   }
