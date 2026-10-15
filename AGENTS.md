@@ -306,9 +306,14 @@ paths in particular).
   `isCaretaker` member may view, compose and mark sent. The digest category
   `absence_notices` counts toward `actionable`, so the badge includes it *for
   users whose schedule selects that category* (the badge only unions the
-  categories of enabled schedules) and the client re-syncs the badge when
-  `absenceNoticesProvider` settles. Keep the default templates in
-  `libs/domain` and `absence_notice_settings.dart` in step.
+  categories of enabled schedules; migration 0026 added it to every existing
+  schedule) and the client re-syncs the badge when `absenceNoticesProvider`
+  settles. A notice that was sent and whose absence then disappears (appointment
+  cancelled or moved off the day, or the conflict dismissed) resurfaces as
+  `needs_update` on the `bl:` day — "will now attend the full day", quoting the
+  earlier times — unless the conflict is pending again or the school day is
+  gone. The default templates live only in `libs/domain` (settings GET returns
+  them).
 - **CalDAV** does a direct authenticated `PUT`/`DELETE` to the discovered
   collection URL (`libs/delivery/src/caldav.ts`), not tsdav's create-only helper.
 - **Travel time is coordinate-driven, end to end.** `locationGeo` rides from the

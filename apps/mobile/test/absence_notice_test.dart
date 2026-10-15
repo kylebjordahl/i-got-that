@@ -402,75 +402,75 @@ void main() {
   });
 
   group('settings', () {
-    testWidgets(
-      'previews the wording and explains that an address enables it',
-      (tester) async {
-        final link = FeedLink(
-          id: 'link1',
-          familyMemberId: 'theo',
-          active: true,
-          dayStart: '08:30',
-          dayEnd: '15:00',
-        );
-        final feed = FeedItem(
-          id: 'feed1',
-          kind: 'ics',
-          mode: 'exception',
-          status: 'active',
-          sourceCalendarName: 'Lincoln',
-        );
-        await tester.pumpWidget(
-          ProviderScope(
-            overrides: [currentMemberProvider.overrideWith((ref) async => dad)],
-            child: MaterialApp(
-              theme: buildAppTheme(),
-              themeMode: ThemeMode.dark,
-              home: Scaffold(
-                body: AbsenceNoticeSettingsSheet(
-                  feed: feed,
-                  link: link,
-                  member: theo,
-                  initial: AbsenceNoticeSettings(
-                    to: const [],
-                    cc: const [],
-                    subjectTemplate: kDefaultAbsenceSubject,
-                    bodyTemplate: kDefaultAbsenceBody,
-                    includeReason: false,
-                  ),
+    testWidgets('previews the wording and explains that an address enables it', (
+      tester,
+    ) async {
+      final link = FeedLink(
+        id: 'link1',
+        familyMemberId: 'theo',
+        active: true,
+        dayStart: '08:30',
+        dayEnd: '15:00',
+      );
+      final feed = FeedItem(
+        id: 'feed1',
+        kind: 'ics',
+        mode: 'exception',
+        status: 'active',
+        sourceCalendarName: 'Lincoln',
+      );
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [currentMemberProvider.overrideWith((ref) async => dad)],
+          child: MaterialApp(
+            theme: buildAppTheme(),
+            themeMode: ThemeMode.dark,
+            home: Scaffold(
+              body: AbsenceNoticeSettingsSheet(
+                feed: feed,
+                link: link,
+                member: theo,
+                initial: AbsenceNoticeSettings(
+                  to: const [],
+                  cc: const [],
+                  subjectTemplate: 'Absence notice for {child} on {date}',
+                  defaultSubject: 'Absence notice for {child} on {date}',
+                  defaultBody: 'Hello {child}',
+                  bodyTemplate:
+                      'Theo will be {schedule} because of {reason}.\n{parent}',
+                  includeReason: false,
                 ),
               ),
             ),
           ),
-        );
-        await tester.pumpAndSettle();
-        expect(
-          find.textContaining('Add an address to turn it on'),
-          findsOneWidget,
-        );
-        expect(
-          tester
-              .widget<Text>(find.byKey(const Key('absence-preview-subject')))
-              .data,
-          'Absence notice for Theo on Tuesday, March 3',
-        );
-        expect(
-          tester
-              .widget<Text>(find.byKey(const Key('absence-preview-body')))
-              .data,
-          allOf(contains('because of an appointment'), contains('Dad')),
-        );
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(
+        find.textContaining('Add an address to turn it on'),
+        findsOneWidget,
+      );
+      expect(
+        tester
+            .widget<Text>(find.byKey(const Key('absence-preview-subject')))
+            .data,
+        'Absence notice for Theo on Tuesday, March 3',
+      );
+      expect(
+        tester.widget<Text>(find.byKey(const Key('absence-preview-body'))).data,
+        allOf(contains('because of an appointment'), contains('Dad')),
+      );
 
-        // Adding an address turns it on.
-        await tester.enterText(
-          find.byKey(const Key('absence-to-field')),
-          'office@school.test',
-        );
-        await tester.testTextInput.receiveAction(TextInputAction.done);
-        await tester.pumpAndSettle();
-        expect(find.text('office@school.test'), findsOneWidget);
-        expect(find.textContaining('On for Theo'), findsOneWidget);
-      },
-    );
+      // Adding an address turns it on.
+      await tester.enterText(
+        find.byKey(const Key('absence-to-field')),
+        'office@school.test',
+      );
+      await tester.testTextInput.receiveAction(TextInputAction.done);
+      await tester.pumpAndSettle();
+      expect(find.text('office@school.test'), findsOneWidget);
+      expect(find.textContaining('On for Theo'), findsOneWidget);
+    });
 
     test('preview fills every placeholder and leaves unknown ones', () {
       expect(

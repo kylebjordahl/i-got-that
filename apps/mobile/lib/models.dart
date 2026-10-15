@@ -1446,6 +1446,8 @@ class AbsenceNoticeSettings {
     required this.subjectTemplate,
     required this.bodyTemplate,
     required this.includeReason,
+    required this.defaultSubject,
+    required this.defaultBody,
   });
 
   final List<String> to;
@@ -1453,6 +1455,10 @@ class AbsenceNoticeSettings {
   final String subjectTemplate;
   final String bodyTemplate;
   final bool includeReason;
+
+  /// The server's stock wording — what "Reset wording" goes back to.
+  final String defaultSubject;
+  final String defaultBody;
 
   /// No recipient ⇒ the feature is off for this link.
   bool get enabled => to.isNotEmpty || cc.isNotEmpty;
@@ -1464,5 +1470,10 @@ class AbsenceNoticeSettings {
         subjectTemplate: j['subjectTemplate'] as String,
         bodyTemplate: j['bodyTemplate'] as String,
         includeReason: j['includeReason'] as bool? ?? false,
+        defaultSubject:
+            (j['defaults'] as Map<String, dynamic>)['subjectTemplate']
+                as String,
+        defaultBody:
+            (j['defaults'] as Map<String, dynamic>)['bodyTemplate'] as String,
       );
 }

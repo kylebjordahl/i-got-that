@@ -8,16 +8,6 @@ import '../theme/app_text.dart';
 import '../widgets/primitives.dart';
 import '../widgets/settings.dart';
 
-// Keep in step with DEFAULT_ABSENCE_SUBJECT / DEFAULT_ABSENCE_BODY in
-// libs/domain — the server fills these in for a link that has never saved any.
-const kDefaultAbsenceSubject = 'Absence notice for {child} on {date}';
-const kDefaultAbsenceBody =
-    'Hello,\n\n'
-    'Please note that {child} will be {schedule} on {date} because of '
-    '{reason}.\n\n'
-    'Thank you,\n'
-    '{parent}';
-
 /// The placeholders a template may use, with what each becomes.
 const kAbsencePlaceholders = <(String, String)>[
   ('{child}', 'the child’s name'),
@@ -372,8 +362,8 @@ class _AbsenceNoticeSettingsSheetState
               children: [
                 TextButton(
                   onPressed: () => setState(() {
-                    _subject.text = kDefaultAbsenceSubject;
-                    _body.text = kDefaultAbsenceBody;
+                    _subject.text = widget.initial.defaultSubject;
+                    _body.text = widget.initial.defaultBody;
                   }),
                   child: const Text('Reset wording'),
                 ),

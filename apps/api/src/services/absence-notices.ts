@@ -194,6 +194,8 @@ export interface ComposeInput {
   reasons: string[];
   /** The gaps of the earlier notice that this one replaces, if any. */
   previous?: AbsenceGap[] | null;
+  /** The absence is off: the child will now attend the whole day. */
+  attendsFullDay?: boolean;
 }
 
 /** Fill the templates; when replacing an earlier notice, say so and quote its times. */
@@ -213,11 +215,15 @@ export function composeNotice(i: ComposeInput): { subject: string; body: string 
   };
   let subject = fillTemplate(i.subjectTemplate, values);
   let body = fillTemplate(i.bodyTemplate, values);
-  if (i.previous && i.previous.length > 0) {
+  if (i.attendsFullDay) {
+    const was = i.previous && i.previous.length > 0 ? `, which said ${i.child} would be ${schedulePhrase(i.previous, i.tz)}` : '';
+    subject = `Updated: ${subject}`;
+    body = `Update: ${i.child} will now attend the full school day on ${values.date}. This replaces my earlier notice${was}.\n\n${i.parent}`;
+  } else if (i.previous) {
     subject = `Updated: ${subject}`;
     body =
       `This replaces my earlier notice, which said ${i.child} would be ` +
-      `${schedulePhrase(i.previous, i.tz)}.\n\n${body}`;
+      `${i.previous.length > 0 ? schedulePhrase(i.previous, i.tz) : 'attending the full day'}.\n\n${body}`;
   }
   return { subject, body };
 }
@@ -271,15 +277,6 @@ export async function loadAbsenceNotices(
 ): Promise<EligibleNotice[]> {
   if (familyIds.length === 0) return [];
 
-  const rows = await db
-    .select()
-    .from(conflicts)
-    .where(and(inArray(conflicts.familyId, familyIds), eq(conflicts.status, 'resolved')));
-  const baselineRows = rows.filter(
-    (r) => r.loserKey.startsWith('bl:') && (!opts.memberId || r.familyMemberId === opts.memberId),
-  );
-  if (baselineRows.length === 0) return [];
-
   // Links that have recipients, with the school feed's timezone.
   const settingsRows = await db
     .select({
@@ -302,12 +299,21 @@ export async function loadAbsenceNotices(
   );
   if (settingsByLink.size === 0) return [];
 
+  const allConflicts = await db
+    .select()
+    .from(conflicts)
+    .where(inArray(conflicts.familyId, familyIds));
+  const baselineRows = allConflicts.filter(
+    (r) =>
+      r.status === 'resolved' &&
+      r.loserKey.startsWith('bl:') &&
+      (!opts.memberId || r.familyMemberId === opts.memberId),
+  );
+
   const hydrated = (await hydrateConflicts(db, familyIds, baselineRows)).filter((h) => {
     const linkId = linkIdOfBaselineKey(h.loser.synthKey);
     return linkId != null && settingsByLink.has(linkId) && h.loser.dtend != null;
   });
-  if (hydrated.length === 0) return [];
-
   // Group by child + link + school date.
   interface Group {
     familyId: string;
@@ -336,11 +342,19 @@ export async function loadAbsenceNotices(
   }
 
   // Sent records for the dates in play, and the names to show.
+  // Records reach back two days so a notice for a school day that was just
+  // called off can still be retracted.
+  const floor = new Date(Date.now() - 2 * 86_400_000).toISOString().slice(0, 10);
   const dates = [...groups.values()].map((g) => g.date).sort();
   const sent = await db
     .select()
     .from(absenceNotices)
-    .where(and(inArray(absenceNotices.familyId, familyIds), gte(absenceNotices.date, dates[0]!)));
+    .where(
+      and(
+        inArray(absenceNotices.familyId, familyIds),
+        gte(absenceNotices.date, dates[0] && dates[0] < floor ? dates[0] : floor),
+      ),
+    );
   const sentByKey = new Map(sent.map((s) => [`${s.familyMemberId}|${s.linkId}|${s.date}`, s]));
   const members = await db
     .select({ id: familyMembers.id, relationName: familyMembers.relationName })
@@ -350,7 +364,12 @@ export async function loadAbsenceNotices(
 
   // The appointment's event id, so a client can open the notice from it.
   const winnerKeys = [...new Set(hydrated.map((h) => h.conflict.winnerKey))];
-  const winnerMemberIds = [...new Set(hydrated.map((h) => h.conflict.familyMemberId))];
+  const winnerMemberIds = [
+    ...new Set([
+      ...hydrated.map((h) => h.conflict.familyMemberId),
+      ...sent.map((r) => r.familyMemberId),
+    ]),
+  ];
   const winnerEvents = await selectChunked(
     winnerKeys,
     (chunk) =>
@@ -434,6 +453,93 @@ export async function loadAbsenceNotices(
       loserKeys: g.items.map((h) => h.conflict.loserKey),
       winnerKeys: g.items.map((h) => h.conflict.winnerKey),
     });
+  }
+
+  // --- Retractions: sent, but the absence has gone away. ---------------------
+  // The appointment was cancelled or moved off the school day (the conflict row
+  // is deleted) or the conflict was dismissed. If the school day still exists,
+  // hasn't been resolved/reopened as a conflict, and the school was told the
+  // child would be away, they need telling the child will attend after all.
+  const conflictedLoserKeys = new Set(
+    allConflicts
+      .filter((c) => c.status !== 'dismissed')
+      .map((c) => `${c.familyMemberId}|${c.loserKey}`),
+  );
+  const candidates = sent.filter(
+    (r) =>
+      !groups.has(`${r.familyMemberId}|${r.linkId}|${r.date}`) &&
+      settingsByLink.has(r.linkId) &&
+      (!opts.memberId || r.familyMemberId === opts.memberId) &&
+      !conflictedLoserKeys.has(`${r.familyMemberId}|bl:${r.linkId}:${r.date}`),
+  );
+  if (candidates.length > 0) {
+    const blKeys = [...new Set(candidates.map((r) => `bl:${r.linkId}:${r.date}`))];
+    const blEvents = await selectChunked(
+      blKeys,
+      (chunk) =>
+        db
+          .select({
+            id: calendarEvents.id,
+            familyMemberId: calendarEvents.familyMemberId,
+            synthKey: calendarEvents.synthKey,
+            dtstart: calendarEvents.dtstart,
+            dtend: calendarEvents.dtend,
+          })
+          .from(calendarEvents)
+          .where(
+            and(
+              inArray(calendarEvents.familyMemberId, winnerMemberIds),
+              inArray(calendarEvents.synthKey, chunk),
+            ),
+          ),
+      winnerMemberIds.length,
+    );
+    const blByKey = new Map(blEvents.map((e) => [`${e.familyMemberId}|${e.synthKey}`, e]));
+    for (const r of candidates) {
+      const bl = blByKey.get(`${r.familyMemberId}|bl:${r.linkId}:${r.date}`);
+      if (!bl || !bl.dtend) continue; // the school day itself is gone: nothing to say
+      const settings = settingsByLink.get(r.linkId)!;
+      const tz = safeTz(settings.timezone);
+      const stamp = gapStampOf([]);
+      const state: AbsenceNoticeState = r.gapStamp === stamp ? 'sent' : 'needs_update';
+      const child = nameOf.get(r.familyMemberId) ?? '';
+      const previous = parseGapStamp(r.gapStamp);
+      const composed = composeNotice({
+        subjectTemplate: settings.subjectTemplate,
+        bodyTemplate: settings.bodyTemplate,
+        includeReason: settings.includeReason,
+        child,
+        parent: opts.composerName ?? '',
+        dateKey: r.date,
+        tz,
+        gaps: [],
+        reasons: [],
+        previous,
+        attendsFullDay: true,
+      });
+      out.push({
+        familyId: r.familyId,
+        familyMemberId: r.familyMemberId,
+        linkId: r.linkId,
+        date: r.date,
+        to: settings.to,
+        cc: settings.cc,
+        subject: composed.subject,
+        body: composed.body,
+        state,
+        sentBy: r.sentByMemberId ? (nameOf.get(r.sentByMemberId) ?? null) : null,
+        sentAt: r.sentAt,
+        gapStamp: stamp,
+        child,
+        schedule: 'attending the full day after all',
+        dayStartMs: bl.dtstart.getTime(),
+        dayEndMs: bl.dtend.getTime(),
+        leaveMs: previous[0]?.leaveMs ?? bl.dtstart.getTime(),
+        eventId: bl.id,
+        loserKeys: [bl.synthKey],
+        winnerKeys: [],
+      });
+    }
   }
   return out.sort((a, b) => a.dayStartMs - b.dayStartMs || a.child.localeCompare(b.child));
 }

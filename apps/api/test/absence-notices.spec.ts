@@ -493,6 +493,107 @@ describe('absence notices: send record', () => {
   });
 });
 
+describe('absence notices: retraction when the absence goes away', () => {
+  /** A sent notice for a resolved appointment; returns what the tests need. */
+  async function sentNotice(email: string) {
+    const f = await fixture(email);
+    await setRecipients(f);
+    const blKey = await schoolDay(f);
+    const doc = await appointment(f, 'Doctor', 3, [10, 0], [11, 0]);
+    await resolveAll(f);
+    const first = await notice(f, doc.id);
+    const res = await call(
+      `/families/${f.familyId}/calendar-events/${doc.id}/absence-notice/sent`,
+      authed(f.admin.token, { gapStamp: first.gapStamp }),
+    );
+    expect(res.status).toBe(200);
+    return { f, blKey, doc };
+  }
+
+  async function expectRetraction(f: Fx, blKey: string) {
+    const blId = await eventIdOf(f, blKey);
+    const n = await notice(f, blId);
+    expect(n.available).toBe(true);
+    expect(n.state).toBe('needs_update');
+    expect(n.subject).toMatch(/^Updated: /);
+    expect(n.body).toContain('will now attend the full school day');
+    expect(n.body).toContain('leaving at 10:00 AM and returning at 11:00 AM');
+    // On Home, in the digest and in the badge.
+    const list = await call(`/families/${f.familyId}/absence-notices`, bearer(f.admin.token));
+    expect(((await list.json()) as { notices: unknown[] }).notices).toHaveLength(1);
+    const digest = await buildUserDigest(
+      f.db,
+      f.admin.userId,
+      { from: new Date(), to: futureAt(7, 0) },
+      ['absence_notices'],
+    );
+    expect(digest.actionable).toBe(1);
+    // Marking it sent records it the same way and clears it.
+    const sent = await call(
+      `/families/${f.familyId}/calendar-events/${blId}/absence-notice/sent`,
+      authed(f.admin.token, { gapStamp: n.gapStamp }),
+    );
+    expect(sent.status).toBe(200);
+    expect((await notice(f, blId)).state).toBe('sent');
+    const after = await call(`/families/${f.familyId}/absence-notices`, bearer(f.admin.token));
+    expect(((await after.json()) as { notices: unknown[] }).notices).toHaveLength(0);
+  }
+
+  it('prompts to tell the school when the appointment is cancelled', async () => {
+    const { f, blKey, doc } = await sentNotice('absence-cancel@example.com');
+    await f.db.delete(calendarEvents).where(eq(calendarEvents.id, doc.id));
+    await reconcileMemberConflicts(f.db, f.childId);
+    await expectRetraction(f, blKey);
+  });
+
+  it('prompts when the appointment moves off the school day', async () => {
+    const { f, blKey, doc } = await sentNotice('absence-moveoff@example.com');
+    await f.db
+      .update(calendarEvents)
+      .set({ dtstart: futureAt(4, 10, 0), dtend: futureAt(4, 11, 0) })
+      .where(eq(calendarEvents.id, doc.id));
+    await reconcileMemberConflicts(f.db, f.childId);
+    await expectRetraction(f, blKey);
+  });
+
+  it('prompts when the conflict is dismissed', async () => {
+    const { f, blKey } = await sentNotice('absence-dismiss@example.com');
+    const [c] = await f.db.select().from(conflicts).where(eq(conflicts.familyMemberId, f.childId));
+    await call(`/families/${f.familyId}/conflicts/${c!.id}/dismiss`, authed(f.admin.token));
+    await expectRetraction(f, blKey);
+  });
+
+  it('does not prompt while the conflict is pending again', async () => {
+    const { f, blKey } = await sentNotice('absence-pending@example.com');
+    const [c] = await f.db.select().from(conflicts).where(eq(conflicts.familyMemberId, f.childId));
+    await call(`/families/${f.familyId}/conflicts/${c!.id}/revert`, authed(f.admin.token));
+    const n = await notice(f, await eventIdOf(f, blKey));
+    expect(n.available).toBe(false);
+    const list = await call(`/families/${f.familyId}/absence-notices`, bearer(f.admin.token));
+    expect(((await list.json()) as { notices: unknown[] }).notices).toHaveLength(0);
+  });
+
+  it('does not prompt when the school day itself is gone', async () => {
+    const { f, blKey, doc } = await sentNotice('absence-daygone@example.com');
+    await f.db.delete(calendarEvents).where(eq(calendarEvents.id, doc.id));
+    await reconcileMemberConflicts(f.db, f.childId);
+    await f.db.delete(calendarEvents).where(eq(calendarEvents.synthKey, blKey));
+    const list = await call(`/families/${f.familyId}/absence-notices`, bearer(f.admin.token));
+    expect(((await list.json()) as { notices: unknown[] }).notices).toHaveLength(0);
+  });
+
+  it('does not prompt for a notice that was never sent', async () => {
+    const f = await fixture('absence-neversent@example.com');
+    await setRecipients(f);
+    const blKey = await schoolDay(f);
+    const doc = await appointment(f, 'Doctor', 3, [10, 0], [11, 0]);
+    await resolveAll(f);
+    await f.db.delete(calendarEvents).where(eq(calendarEvents.id, doc.id));
+    await reconcileMemberConflicts(f.db, f.childId);
+    expect((await notice(f, await eventIdOf(f, blKey))).available).toBe(false);
+  });
+});
+
 describe('absence notices: permissions and settings', () => {
   it('lets any caretaker compose and mark sent, but only an admin edit settings', async () => {
     const f = await fixture('absence-perms@example.com');
@@ -549,10 +650,17 @@ describe('absence notices: permissions and settings', () => {
     const f = await fixture('absence-settings@example.com');
     const fresh = await call(settingsUrl(f), bearer(f.admin.token));
     const { settings } = (await fresh.json()) as {
-      settings: { to: string[]; enabled: boolean; subjectTemplate: string; includeReason: boolean };
+      settings: {
+        to: string[];
+        enabled: boolean;
+        subjectTemplate: string;
+        includeReason: boolean;
+        defaults: { subjectTemplate: string; bodyTemplate: string };
+      };
     };
     expect(settings).toMatchObject({ to: [], enabled: false, includeReason: false });
     expect(settings.subjectTemplate).toContain('{child}');
+    expect(settings.defaults.bodyTemplate).toContain('{schedule}');
 
     const bad = await call(settingsUrl(f), put(f.admin.token, { to: ['not-an-email'] }));
     expect(bad.status).toBe(400);

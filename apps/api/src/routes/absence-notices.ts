@@ -71,6 +71,8 @@ function settingsBody(row: typeof absenceNoticeSettings.$inferSelect | undefined
     subjectTemplate: row?.subjectTemplate ?? DEFAULT_ABSENCE_SUBJECT,
     bodyTemplate: row?.bodyTemplate ?? DEFAULT_ABSENCE_BODY,
     includeReason: row?.includeReason ?? false,
+    // What "Reset wording" goes back to, so clients don't duplicate the text.
+    defaults: { subjectTemplate: DEFAULT_ABSENCE_SUBJECT, bodyTemplate: DEFAULT_ABSENCE_BODY },
     // No recipient ⇒ the whole feature is off for this link.
     enabled: (row?.toAddresses.length ?? 0) + (row?.ccAddresses.length ?? 0) > 0,
   };
