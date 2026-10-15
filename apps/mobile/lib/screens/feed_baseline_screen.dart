@@ -8,6 +8,7 @@ import '../state/family.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_text.dart';
 import '../util/format.dart';
+import 'absence_notice_settings.dart';
 import '../widgets/app_bottom_nav.dart';
 import '../widgets/location_picker.dart';
 import '../widgets/primitives.dart';
@@ -411,6 +412,11 @@ class _FeedBaselineScreenState extends ConsumerState<FeedBaselineScreen> {
                     ),
                     const SizedBox(height: 16),
                     _BaselineChanges(feed: _feed, link: widget.existingLink),
+                    AbsenceNoticeSettingsCard(
+                      feed: _feed,
+                      link: widget.existingLink,
+                      member: widget.member,
+                    ),
                     const SizedBox(height: 24),
                     _OverridePipeline(
                       feed: _feed,

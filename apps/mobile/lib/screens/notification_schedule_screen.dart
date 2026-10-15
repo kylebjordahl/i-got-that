@@ -62,6 +62,7 @@ class _NotificationScheduleScreenState
       _categories = {
         NotificationCategory.conflicts,
         NotificationCategory.pendingDecisions,
+        NotificationCategory.absenceNotices,
         NotificationCategory.unclaimedTasks,
       };
     }
@@ -405,6 +406,7 @@ class _NotificationScheduleScreenState
 IconData _categoryIcon(NotificationCategory c) => switch (c) {
   NotificationCategory.conflicts => Icons.warning_amber_rounded,
   NotificationCategory.pendingDecisions => Icons.help_outline_rounded,
+  NotificationCategory.absenceNotices => Icons.mail_outline_rounded,
   NotificationCategory.unclaimedTasks => Icons.pan_tool_alt_rounded,
   NotificationCategory.myTasks => Icons.check_circle_outline_rounded,
 };
@@ -412,6 +414,7 @@ IconData _categoryIcon(NotificationCategory c) => switch (c) {
 Color _categoryColor(NotificationCategory c) => switch (c) {
   NotificationCategory.conflicts => AppColors.coral,
   NotificationCategory.pendingDecisions => AppColors.amber,
+  NotificationCategory.absenceNotices => AppColors.blue,
   NotificationCategory.unclaimedTasks => AppColors.indigo,
   NotificationCategory.myTasks => AppColors.green,
 };

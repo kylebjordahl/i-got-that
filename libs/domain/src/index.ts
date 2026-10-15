@@ -186,6 +186,7 @@ export const NotificationCategory = z.enum([
   'pending_decisions',
   'unclaimed_tasks',
   'my_tasks',
+  'absence_notices',
 ]);
 export type NotificationCategory = z.infer<typeof NotificationCategory>;
 
@@ -1175,3 +1176,96 @@ export const UpdateNotificationScheduleInput = z
 export type UpdateNotificationScheduleInput = z.infer<
   typeof UpdateNotificationScheduleInput
 >;
+
+// --- Absence email notices ------------------------------------------------
+
+/**
+ * Placeholders a notice template may use. `{schedule}` is the natural-language
+ * phrase for the whole day ("leaving at 10:00 AM and returning at 11:30 AM",
+ * "arriving at 11:30 AM", "absent all day") and is what the default body uses;
+ * `{leaveTime}` / `{returnTime}` are the raw times for custom wording.
+ */
+export const ABSENCE_NOTICE_PLACEHOLDERS = [
+  'child',
+  'date',
+  'leaveTime',
+  'returnTime',
+  'reason',
+  'parent',
+  'schedule',
+] as const;
+
+export const DEFAULT_ABSENCE_SUBJECT = 'Absence notice for {child} on {date}';
+export const DEFAULT_ABSENCE_BODY = [
+  'Hello,',
+  '',
+  'Please note that {child} will be {schedule} on {date} because of {reason}.',
+  '',
+  'Thank you,',
+  '{parent}',
+].join('\n');
+
+const AbsenceAddress = z
+  .string()
+  .trim()
+  .max(254)
+  .regex(/^[^\s@,;<>]+@[^\s@,;<>]+\.[^\s@,;<>]+$/, 'invalid email address');
+
+const AbsenceAddressList = z
+  .array(AbsenceAddress)
+  .max(10)
+  .transform((l) => [...new Set(l.map((a) => a.toLowerCase()))]);
+
+/**
+ * Per child-to-school-calendar link: who the "Email school" notice goes to and
+ * how it is worded. Nothing is sent by the server; the phone's Mail app does
+ * it. No recipients means the feature is off for that link.
+ */
+export const AbsenceNoticeSettingsInput = z.object({
+  to: AbsenceAddressList.default([]),
+  cc: AbsenceAddressList.default([]),
+  subjectTemplate: z.string().trim().max(200).default(DEFAULT_ABSENCE_SUBJECT),
+  bodyTemplate: z.string().max(4000).default(DEFAULT_ABSENCE_BODY),
+  includeReason: z.boolean().default(false),
+});
+export type AbsenceNoticeSettingsInput = z.infer<typeof AbsenceNoticeSettingsInput>;
+
+/** A notice has gone out for these times (`sent`), changed since (`needs_update`), or never (`outstanding`). */
+export const AbsenceNoticeState = z.enum(['outstanding', 'sent', 'needs_update']);
+export type AbsenceNoticeState = z.infer<typeof AbsenceNoticeState>;
+
+/** Why an event has no notice: not a resolved school-day conflict, or no recipients configured. */
+export const AbsenceNoticeUnavailableReason = z.enum(['not_eligible']);
+export type AbsenceNoticeUnavailableReason = z.infer<
+  typeof AbsenceNoticeUnavailableReason
+>;
+
+export const AbsenceNotice = z.object({
+  familyMemberId: z.string(),
+  linkId: z.string(),
+  /** School date, `YYYY-MM-DD` in the school feed's timezone. */
+  date: z.string(),
+  to: z.array(z.string()),
+  cc: z.array(z.string()),
+  subject: z.string(),
+  body: z.string(),
+  state: AbsenceNoticeState,
+  /** relationName of the member who marked it sent. */
+  sentBy: z.string().nullable(),
+  sentAt: z.coerce.date().nullable(),
+  /** Snapshot of the gaps this composition describes; echo it to `/sent`. */
+  gapStamp: z.string(),
+  /** The child's relationName. */
+  child: z.string(),
+  /** Plain-language times, e.g. "leaving at 10:00 AM and returning at 11:30 AM". */
+  schedule: z.string(),
+  /** An event (the appointment) the notice can be opened from. */
+  eventId: z.string(),
+});
+export type AbsenceNotice = z.infer<typeof AbsenceNotice>;
+
+/** Body of `POST .../absence-notice/sent`. `gapStamp` guards against a stale compose. */
+export const MarkAbsenceNoticeSentInput = z.object({
+  gapStamp: z.string().max(2000).optional(),
+});
+export type MarkAbsenceNoticeSentInput = z.infer<typeof MarkAbsenceNoticeSentInput>;
