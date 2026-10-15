@@ -1325,6 +1325,80 @@ export const notificationSchedules = sqliteTable(
   }),
 );
 
+/**
+ * "Email school" settings for one child-to-school-calendar link: where the
+ * absence notice goes and how it is worded. No recipients means the feature is
+ * off. Nothing is ever sent from the server (the phone's Mail app does it), so
+ * the addresses are never verified.
+ */
+export const absenceNoticeSettings = sqliteTable(
+  'absence_notice_settings',
+  {
+    id: id(),
+    familyId: text('family_id')
+      .notNull()
+      .references(() => families.id, { onDelete: 'cascade' }),
+    linkId: text('link_id')
+      .notNull()
+      .references(() => familyMemberFeeds.id, { onDelete: 'cascade' }),
+    toAddresses: text('to_addresses', { mode: 'json' })
+      .notNull()
+      .$type<string[]>(),
+    ccAddresses: text('cc_addresses', { mode: 'json' })
+      .notNull()
+      .$type<string[]>(),
+    subjectTemplate: text('subject_template').notNull(),
+    bodyTemplate: text('body_template').notNull(),
+    includeReason: integer('include_reason', { mode: 'boolean' })
+      .notNull()
+      .default(false),
+    createdAt: createdAt(),
+  },
+  (t) => ({
+    linkUq: uniqueIndex('absence_notice_settings_link_uq').on(t.linkId),
+    familyIdx: index('absence_notice_settings_family_idx').on(t.familyId),
+  }),
+);
+
+/**
+ * Record that an absence email was sent for one child + school link + school
+ * date. `gapStamp` snapshots the gap(s) that were emailed; when the current
+ * computed gap differs the notice is outstanding again ("needs update").
+ */
+export const absenceNotices = sqliteTable(
+  'absence_notices',
+  {
+    id: id(),
+    familyId: text('family_id')
+      .notNull()
+      .references(() => families.id, { onDelete: 'cascade' }),
+    familyMemberId: text('family_member_id')
+      .notNull()
+      .references(() => familyMembers.id, { onDelete: 'cascade' }),
+    linkId: text('link_id')
+      .notNull()
+      .references(() => familyMemberFeeds.id, { onDelete: 'cascade' }),
+    // School date, YYYY-MM-DD in the school feed's timezone.
+    date: text('date').notNull(),
+    sentByMemberId: text('sent_by_member_id').references(() => familyMembers.id, {
+      onDelete: 'set null',
+    }),
+    sentAt: integer('sent_at', { mode: 'timestamp_ms' }).notNull(),
+    gapStamp: text('gap_stamp').notNull(),
+  },
+  (t) => ({
+    keyUq: uniqueIndex('absence_notices_key_uq').on(
+      t.familyMemberId,
+      t.linkId,
+      t.date,
+    ),
+    familyDateIdx: index('absence_notices_family_date_idx').on(
+      t.familyId,
+      t.date,
+    ),
+  }),
+);
+
 export const schema = {
   users,
   identities,
@@ -1355,6 +1429,8 @@ export const schema = {
   appleNotificationReceipts,
   pushDevices,
   notificationSchedules,
+  absenceNoticeSettings,
+  absenceNotices,
 };
 
 // Keep `sql` referenced for future raw defaults without tripping lint.

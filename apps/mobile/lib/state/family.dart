@@ -265,6 +265,42 @@ final conflictsProvider = FutureProvider<List<Conflict>>((ref) async {
   return rows.map((e) => Conflict.fromJson(e as Map<String, dynamic>)).toList();
 });
 
+/// "Email school" notices still to send — resolved school-day conflicts on a
+/// link with recipients, not yet emailed for their current times, whose school
+/// day hasn't ended. Empty for anyone who isn't a caretaker (they can't send).
+final absenceNoticesProvider = FutureProvider<List<AbsenceNotice>>((ref) async {
+  final me = await ref.watch(currentMemberProvider.future);
+  if (me == null || !me.isCaretaker) return const [];
+  final api = ref.watch(apiClientProvider);
+  final familyId = await ref.watch(familyProvider.future);
+  return api.listAbsenceNotices(familyId);
+});
+
+/// The notice an event leads to (the appointment, the school day or one of its
+/// trimmed segments), or null when it has none — which is also what a
+/// non-caretaker gets, so the button simply never appears for them.
+final absenceNoticeProvider = FutureProvider.family<AbsenceNotice?, String>((
+  ref,
+  eventId,
+) async {
+  final me = await ref.watch(currentMemberProvider.future);
+  if (me == null || !me.isCaretaker) return null;
+  final api = ref.watch(apiClientProvider);
+  final familyId = await ref.watch(familyProvider.future);
+  return api.getAbsenceNotice(familyId, eventId);
+});
+
+/// A link's "Email school" recipients and templates (admin-only on the server).
+final absenceNoticeSettingsProvider =
+    FutureProvider.family<
+      AbsenceNoticeSettings,
+      ({String feedId, String linkId})
+    >((ref, key) async {
+      final api = ref.watch(apiClientProvider);
+      final familyId = await ref.watch(familyProvider.future);
+      return api.getAbsenceNoticeSettings(familyId, key.feedId, key.linkId);
+    });
+
 /// Every conflict on one member's calendar however it was handled — pending,
 /// split (resolved) or ignored (dismissed). Backs the review-and-revisit list
 /// on the member detail screen.

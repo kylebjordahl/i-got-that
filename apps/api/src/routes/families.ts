@@ -21,6 +21,7 @@ import {
   revokeInvite,
 } from '../services/invites.js';
 import { assignmentRuleRoutes } from './assignment-rules.js';
+import { absenceNoticeRoutes } from './absence-notices.js';
 import { feedRoutes } from './feeds.js';
 import { emailOutputRoutes } from './email-outputs.js';
 import { memberCalendarRoutes } from './member-calendars.js';
@@ -43,6 +44,7 @@ familyRoutes.route('/:familyId/feeds', feedRoutes);
 
 // Tasks + pending decisions + calendar events under /families/:familyId/...
 familyRoutes.route('/:familyId', taskRoutes);
+familyRoutes.route('/:familyId', absenceNoticeRoutes);
 
 // Per-member unified-calendar targets under /families/:familyId/members/...
 familyRoutes.route('/:familyId', memberCalendarRoutes);

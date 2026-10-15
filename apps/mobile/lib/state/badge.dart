@@ -126,6 +126,8 @@ class _BadgeSyncScopeState extends ConsumerState<BadgeSyncScope>
     _onSettled(allTasksProvider);
     _onSettled(pendingDecisionsProvider);
     _onSettled(conflictsProvider);
+    // Marking an absence email sent can be what empties the queue.
+    _onSettled(absenceNoticesProvider);
     return widget.child;
   }
 }

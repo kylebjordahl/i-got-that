@@ -17,6 +17,7 @@ import {
 } from '@igt/db';
 import { DAY_MS, tzOffsetMs } from '@igt/classification';
 import type { NotificationCategory } from '@igt/domain';
+import { isOutstanding, loadAbsenceNotices } from './absence-notices.js';
 import { hydrateConflicts } from './conflicts.js';
 
 /**
@@ -80,6 +81,7 @@ const SAMPLE_LIMIT = 3;
 const CATEGORY_ORDER: NotificationCategory[] = [
   'conflicts',
   'pending_decisions',
+  'absence_notices',
   'unclaimed_tasks',
   'my_tasks',
 ];
@@ -370,6 +372,36 @@ async function conflictCount(
 }
 
 /**
+ * "Email school" notices still to send: a resolved school-day conflict on a
+ * link with recipients, not yet emailed for its current times, whose school day
+ * hasn't ended and overlaps the window. Caretakers only — a dependent with a
+ * login can't send them. Unlike `my_tasks` this is a gap, so it counts toward
+ * `actionable` (and so the badge).
+ */
+async function absenceNoticeCount(
+  db: Db,
+  scope: UserScope,
+  window: DigestWindow,
+): Promise<DigestBucket> {
+  if (scope.caretakerFamilyIds.length === 0) return bucket('absence_notices', 0, []);
+  const now = new Date();
+  const outstanding = (await loadAbsenceNotices(db, scope.caretakerFamilyIds)).filter(
+    (n) =>
+      isOutstanding(n, now) &&
+      n.dayEndMs > window.from.getTime() &&
+      n.dayStartMs < window.to.getTime(),
+  );
+  return bucket(
+    'absence_notices',
+    outstanding.length,
+    outstanding.map((n) => ({
+      label: qualify(scope, n.familyId, `email school about ${n.child}`),
+      at: new Date(n.leaveMs),
+    })),
+  );
+}
+
+/**
  * Build the digest for one user over one window. Each category is a single
  * query batched across every family the user belongs to — never a loop per
  * family, since this runs on the cron tick for every due schedule.
@@ -396,6 +428,8 @@ export async function buildUserDigest(
           return conflictCount(db, scope, window);
         case 'pending_decisions':
           return pendingDecisionCount(db, scope, window);
+        case 'absence_notices':
+          return absenceNoticeCount(db, scope, window);
         case 'unclaimed_tasks':
           return unclaimedTasks(db, scope, window);
         case 'my_tasks':
@@ -427,6 +461,8 @@ function bucketPhrase(b: DigestBucket): string {
       return plural(b.count, 'double-booking', 'double-bookings');
     case 'pending_decisions':
       return plural(b.count, 'event to sort out', 'events to sort out');
+    case 'absence_notices':
+      return plural(b.count, 'absence email to send', 'absence emails to send');
     case 'unclaimed_tasks':
       return plural(b.count, 'unclaimed task', 'unclaimed tasks');
     case 'my_tasks':

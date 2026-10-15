@@ -10,6 +10,7 @@ import '../theme/person_colors.dart';
 import '../util/format.dart';
 import '../util/google_reconnect.dart';
 import '../util/task_visuals.dart';
+import '../widgets/absence_notice.dart';
 import '../widgets/app_bottom_nav.dart';
 import '../widgets/conflict_card.dart';
 import '../widgets/primitives.dart';
@@ -65,6 +66,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     ref.invalidate(allTasksProvider);
     ref.invalidate(pendingDecisionsProvider);
     ref.invalidate(conflictsProvider);
+    ref.invalidate(absenceNoticesProvider);
     ref.invalidate(calendarEventsProvider);
     ref.invalidate(accountsProvider);
   }
@@ -124,6 +126,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final decisionCards = groupDecisions(decisions);
     final conflicts =
         ref.watch(conflictsProvider).valueOrNull ?? const <Conflict>[];
+    final absenceNotices =
+        ref.watch(absenceNoticesProvider).valueOrNull ??
+        const <AbsenceNotice>[];
     // My own Google accounts whose grant stopped working: only I can fix
     // them, and every calendar drawn from them has stopped updating.
     final needsReconnect = [
@@ -181,6 +186,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         needsReconnect.isEmpty &&
         conflicts.isEmpty &&
         decisions.isEmpty &&
+        absenceNotices.isEmpty &&
         unowned.isEmpty &&
         covering.isEmpty;
 
@@ -271,6 +277,24 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                             : _openRuleEditor(g.first),
                         onDismiss: () => _dismissDecision(g.first),
                       ),
+                      const SizedBox(height: 10),
+                    ],
+                    const SizedBox(height: 8),
+                  ],
+                  // "Email school": a child leaves the school day for a resolved
+                  // appointment and the school hasn't been told yet.
+                  if (absenceNotices.isNotEmpty) ...[
+                    SectionEyebrow(
+                      'Absence emails',
+                      color: AppColors.indigo,
+                      trailing: TintBadge(
+                        '${absenceNotices.length}',
+                        color: AppColors.indigo,
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    for (final n in absenceNotices) ...[
+                      AbsenceNoticeCard(notice: n),
                       const SizedBox(height: 10),
                     ],
                     const SizedBox(height: 8),

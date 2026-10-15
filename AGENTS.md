@@ -285,6 +285,30 @@ paths in particular).
   binding exists (`emailEnabled`): with a capture-only outbox the rows would
   record invites as sent that never left. Header values in `libs/delivery`'s
   MIME builder are sanitised there because subjects are feed-controlled.
+- **"Email school" absence notices are computed server-side and sent by the
+  phone.** A `resolved` conflict whose loser is a `bl:` baseline day, on a
+  school link with at least one `absence_notice_settings` recipient, is
+  *eligible* (`services/absence-notices.ts` is the one place that decides, times
+  and wording included). Pending, dismissed or reopened conflicts are not — a
+  moved event reopens its conflict, so the notice disappears until someone
+  re-resolves it. The gap is winner start minus `travelBeforeMin` to winner end
+  plus `travelAfterMin`, clamped to the school day and read in the school
+  *feed's* timezone; a skipped half becomes "arriving at" / "leaving at …, not
+  returning", both skipped "absent all day". One notice per child + link +
+  school date, so two conflicts on a day are merged into one email. The server
+  never sends: the app opens a `mailto:` and, when the app returns to the
+  foreground, asks "Did you send it?" — only Yes calls `POST
+  /calendar-events/:id/absence-notice/sent`, which stores `absence_notices`
+  (who, when, and a `gapStamp` snapshot of the gaps). A current gap that differs
+  from the stamp is `needs_update` and outstanding again, and the new body says
+  it replaces the earlier one. The feature is **off for a link with no
+  recipients** (no button, card or digest line). Settings are admin-only; any
+  `isCaretaker` member may view, compose and mark sent. The digest category
+  `absence_notices` counts toward `actionable`, so the badge includes it *for
+  users whose schedule selects that category* (the badge only unions the
+  categories of enabled schedules) and the client re-syncs the badge when
+  `absenceNoticesProvider` settles. Keep the default templates in
+  `libs/domain` and `absence_notice_settings.dart` in step.
 - **CalDAV** does a direct authenticated `PUT`/`DELETE` to the discovered
   collection URL (`libs/delivery/src/caldav.ts`), not tsdav's create-only helper.
 - **Travel time is coordinate-driven, end to end.** `locationGeo` rides from the
