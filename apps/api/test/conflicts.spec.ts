@@ -407,8 +407,8 @@ describe('conflict detection & masking', () => {
           .set({ status: 'pending', resolvedAt: null })
           .where(eq(conflicts.id, conflict.id));
         const r = await reconcileMemberConflicts(f.db, f.childId);
-        const b = await buildMemberTasks(f.db, f.childId);
-        return [...r.releasedOwnerIds, ...b.releasedOwnerIds];
+        await buildMemberTasks(f.db, f.childId);
+        return r.releasedOwnerIds;
       };
       const childTasks = (type: string) =>
         f.db
@@ -644,6 +644,8 @@ describe('conflict detection & masking', () => {
       expect(dropoffs).toHaveLength(1);
       expect(dropoffs[0]!.status).toBe('unowned');
       expect(dropoffs[0]!.dtstart.toISOString()).toBe(iso(10, 30));
+      // Back under the assignment rules, not stuck on the old human override.
+      expect(dropoffs[0]!.manualOwnerOverride).toBe(false);
       const pickups = await s.childTasks('pickup');
       expect(pickups).toHaveLength(1);
       expect(pickups[0]!.id).toBe(pickup.id);
@@ -670,31 +672,71 @@ describe('conflict detection & masking', () => {
       expect(await s.claimEvents()).toHaveLength(0);
     });
 
-    it('does not move a user-converted task onto a segment (it would freeze the type set)', async () => {
-      const s = await resolvedSplit('revert-manual@example.com', [10, 0], [11, 0]);
-      const dropoff = (await s.childTasks('dropoff')).find(
-        (t) => t.dtstart.toISOString() === futureAt(3, 8, 30).toISOString(),
-      )!;
-      await s.f.db.update(tasks).set({ createdVia: 'manual' }).where(eq(tasks.id, dropoff.id));
-      await setTaskOwners(s.f.db, { ...dropoff, createdVia: 'manual' }, [s.f.adminMemberId], {
-        manual: true,
-      });
-
-      // Re-resolve with a travel buffer so cf:0 is rebuilt around a new end.
-      const c = (await s.f.db.select().from(conflicts))[0]!;
-      await s.f.db.update(conflicts).set({ travelBeforeMin: 30 }).where(eq(conflicts.id, c.id));
-      await reconcileMemberConflicts(s.f.db, s.f.childId);
-      await buildMemberTasks(s.f.db, s.f.childId);
-
-      // cf:0 still generates its own pickup rather than being frozen.
-      const cf0 = (
+    it('does not move a user-converted claim onto another segment; the target keeps its own task', async () => {
+      const s = await resolvedSplit('revert-manual@example.com', [11, 0], [12, 0]);
+      // Converting an event makes every task on it manual; claim its 15:00 pickup.
+      const cf1 = (
         await s.f.db
           .select()
           .from(calendarEvents)
-          .where(eq(calendarEvents.synthKey, `cf:${s.blKey}:0`))
+          .where(eq(calendarEvents.synthKey, `cf:${s.blKey}:1`))
       )[0]!;
-      const onCf0 = (await s.childTasks('pickup')).filter((t) => t.calendarEventId === cf0.id);
-      expect(onCf0).toHaveLength(1);
+      await s.f.db
+        .update(tasks)
+        .set({ createdVia: 'manual' })
+        .where(eq(tasks.calendarEventId, cf1.id));
+      const manualPickup = await claim(s, 'pickup', iso(15));
+
+      // A second winner shifts the indices: the 15:00 end now belongs to cf:2.
+      const r = await addAndResolve(s, 'second', [9, 0], [10, 0]);
+
+      expect(r.releasedOwnerIds).toEqual([s.f.adminMemberId]);
+      expect(await s.claimEvents()).toHaveLength(0);
+      const cf2 = (
+        await s.f.db
+          .select()
+          .from(calendarEvents)
+          .where(eq(calendarEvents.synthKey, `cf:${s.blKey}:2`))
+      )[0]!;
+      const onCf2 = (await s.childTasks('pickup')).filter((t) => t.calendarEventId === cf2.id);
+      expect(onCf2).toHaveLength(1);
+      expect(onCf2[0]!.id).not.toBe(manualPickup.id);
+      expect(onCf2[0]!.status).toBe('unowned');
+      expect(onCf2[0]!.dtstart.toISOString()).toBe(iso(15));
+    });
+
+    it('moves two claims at once when shifted segments swap slots (order must not matter)', async () => {
+      const s = await resolvedSplit('revert-swap@example.com', [11, 0], [12, 0]);
+      await claim(s, 'pickup', iso(11));
+      await claim(s, 'pickup', iso(15));
+
+      // New split: cf:0 08:30-09, cf:1 10-11, cf:2 12-15. The 11:00 claim moves
+      // to cf:1 — whose old row still holds the 15:00 claim until that moves too.
+      const r = await addAndResolve(s, 'second', [9, 0], [10, 0]);
+
+      expect(r.releasedOwnerIds).toEqual([]);
+      const owned = (await s.childTasks('pickup'))
+        .filter((t) => t.status === 'owned')
+        .map((t) => t.dtstart.toISOString())
+        .sort();
+      expect(owned).toEqual([iso(11), iso(15)]);
+      expect(await s.claimEvents()).toHaveLength(2);
+    });
+
+    it('moves a claimed drop-off back to the day on revert when only the end was trimmed', async () => {
+      const s = await resolvedSplit('revert-dropoff-back@example.com', [13, 0], [16, 0]);
+      const dropoff = await claim(s, 'dropoff', iso(8, 30));
+
+      const released = await s.revert();
+      expect(released).toEqual([]);
+      const dropoffs = (await s.childTasks('dropoff')).filter((t) => t.status === 'owned');
+      expect(dropoffs).toHaveLength(1);
+      expect(dropoffs[0]!.id).toBe(dropoff.id);
+      const bl = (
+        await s.f.db.select().from(calendarEvents).where(eq(calendarEvents.synthKey, s.blKey))
+      )[0]!;
+      expect(dropoffs[0]!.calendarEventId).toBe(bl.id);
+      expect(await s.claimEvents()).toHaveLength(1);
     });
   });
 

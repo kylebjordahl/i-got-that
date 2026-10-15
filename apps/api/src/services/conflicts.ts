@@ -563,40 +563,75 @@ async function reassignClaimedTasks(
         inArray(tasks.status, ['owned', 'dismissed']),
       ),
     );
+  // Phase 1: decide every task's fate before touching any, so a task can't be
+  // blocked by one that is itself leaving the same row.
+  const moving = new Map<string, { task: (typeof held)[number]; to: Span }>();
+  const leaving: (typeof held)[number][] = [];
   for (const t of held) {
     const from = sources.find((s) => s.id === t.calendarEventId)!;
     const to = targets.find((x) => sameBoundary(t.type, from, x));
     if (to && to.id === from.id) continue; // never moved
-    if (to && t.createdVia !== 'manual') {
-      // The segment's own unclaimed twin (built before this claim could move)
-      // gives way; anything else of that type on the target blocks the move.
-      await db
-        .delete(tasks)
-        .where(
-          and(
-            eq(tasks.calendarEventId, to.id),
-            eq(tasks.type, t.type),
-            eq(tasks.status, 'unowned'),
-            eq(tasks.createdVia, 'generated'),
-          ),
-        );
-      const blocking = await db
-        .select({ id: tasks.id })
-        .from(tasks)
-        .where(and(eq(tasks.calendarEventId, to.id), eq(tasks.type, t.type)))
-        .limit(1);
-      if (blocking.length === 0) {
-        await db.update(tasks).set({ calendarEventId: to.id }).where(eq(tasks.id, t.id));
-        continue;
-      }
-    }
+    if (to && t.createdVia !== 'manual') moving.set(t.id, { task: t, to });
+    else leaving.push(t);
+  }
+
+  // A target keeps at most one task per type; a second claimant for the same
+  // slot (two claims landing on one boundary) can't both move.
+  const slotTaken = new Set<string>();
+  for (const [id, { task, to }] of moving) {
+    const slot = `${to.id}|${task.type}`;
+    if (slotTaken.has(slot)) {
+      moving.delete(id);
+      leaving.push(task);
+    } else slotTaken.add(slot);
+  }
+
+  // Phase 2a: release claims / drop dismissals that have no home.
+  for (const t of leaving) {
     if (t.status === 'dismissed') {
       await db.delete(tasks).where(eq(tasks.id, t.id));
       continue;
     }
     const owners = (await ownerRowsFor(db, [t.id])).get(t.id) ?? [];
     await setTaskOwners(db, t, [], { manual: false });
+    // Back to the pool means back under the assignment rules too.
+    await db.update(tasks).set({ manualOwnerOverride: false }).where(eq(tasks.id, t.id));
     result.releasedOwnerIds.push(...owners.map((o) => o.familyMemberId));
+  }
+
+  // Phase 2b: move the rest. The target's own unclaimed generated twin gives
+  // way; a leftover of any other kind (manual, or a claim that isn't leaving)
+  // blocks the move and the task is released instead.
+  const movingIds = new Set(moving.keys());
+  for (const { task: t, to } of moving.values()) {
+    await db
+      .delete(tasks)
+      .where(
+        and(
+          eq(tasks.calendarEventId, to.id),
+          eq(tasks.type, t.type),
+          eq(tasks.status, 'unowned'),
+          eq(tasks.createdVia, 'generated'),
+        ),
+      );
+    const others = (
+      await db
+        .select({ id: tasks.id })
+        .from(tasks)
+        .where(and(eq(tasks.calendarEventId, to.id), eq(tasks.type, t.type)))
+    ).filter((o) => !movingIds.has(o.id));
+    if (others.length === 0) {
+      await db.update(tasks).set({ calendarEventId: to.id }).where(eq(tasks.id, t.id));
+      continue;
+    }
+    const owners = (await ownerRowsFor(db, [t.id])).get(t.id) ?? [];
+    if (t.status === 'dismissed') {
+      await db.delete(tasks).where(eq(tasks.id, t.id));
+    } else {
+      await setTaskOwners(db, t, [], { manual: false });
+      await db.update(tasks).set({ manualOwnerOverride: false }).where(eq(tasks.id, t.id));
+      result.releasedOwnerIds.push(...owners.map((o) => o.familyMemberId));
+    }
   }
 }
 

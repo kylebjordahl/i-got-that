@@ -609,12 +609,8 @@ taskRoutes.post('/pending-decisions/:decisionId/resolve', async (c) => {
   // task typing then flows through the member's task rules like any event.
   await acceptOnto(decision);
   const reconciled = await reconcileMemberConflicts(db, decision.familyMemberId);
-  const built = await buildMemberTasks(db, decision.familyMemberId);
-  for (const memberId of new Set([
-    decision.familyMemberId,
-    ...reconciled.releasedOwnerIds,
-    ...built.releasedOwnerIds,
-  ])) {
+  await buildMemberTasks(db, decision.familyMemberId);
+  for (const memberId of new Set([decision.familyMemberId, ...reconciled.releasedOwnerIds])) {
     enqueueReconcile(c, { kind: 'member', memberId });
   }
   return c.json({ ok: true });
@@ -805,12 +801,8 @@ taskRoutes.post('/conflicts/:conflictId/resolve', async (c) => {
     })
     .where(eq(conflicts.id, conflict.id));
   const reconciled = await reconcileMemberConflicts(db, conflict.familyMemberId);
-  const built = await buildMemberTasks(db, conflict.familyMemberId);
-  const touched = new Set([
-    conflict.familyMemberId,
-    ...reconciled.releasedOwnerIds,
-    ...built.releasedOwnerIds,
-  ]);
+  await buildMemberTasks(db, conflict.familyMemberId);
+  const touched = new Set([conflict.familyMemberId, ...reconciled.releasedOwnerIds]);
   for (const memberId of touched) {
     enqueueReconcile(c, { kind: 'member', memberId });
   }
@@ -843,12 +835,8 @@ taskRoutes.post('/conflicts/:conflictId/dismiss', async (c) => {
     })
     .where(eq(conflicts.id, conflict.id));
   const reconciled = await reconcileMemberConflicts(db, conflict.familyMemberId);
-  const built = await buildMemberTasks(db, conflict.familyMemberId);
-  const touched = new Set([
-    conflict.familyMemberId,
-    ...reconciled.releasedOwnerIds,
-    ...built.releasedOwnerIds,
-  ]);
+  await buildMemberTasks(db, conflict.familyMemberId);
+  const touched = new Set([conflict.familyMemberId, ...reconciled.releasedOwnerIds]);
   for (const memberId of touched) {
     enqueueReconcile(c, { kind: 'member', memberId });
   }
@@ -884,12 +872,8 @@ taskRoutes.post('/conflicts/:conflictId/revert', async (c) => {
     })
     .where(eq(conflicts.id, conflict.id));
   const reconciled = await reconcileMemberConflicts(db, conflict.familyMemberId);
-  const built = await buildMemberTasks(db, conflict.familyMemberId);
-  const touched = new Set([
-    conflict.familyMemberId,
-    ...reconciled.releasedOwnerIds,
-    ...built.releasedOwnerIds,
-  ]);
+  await buildMemberTasks(db, conflict.familyMemberId);
+  const touched = new Set([conflict.familyMemberId, ...reconciled.releasedOwnerIds]);
   for (const memberId of touched) {
     enqueueReconcile(c, { kind: 'member', memberId });
   }
@@ -1064,10 +1048,7 @@ taskRoutes.post('/calendar-events/:eventId/tasks', async (c) => {
     .update(calendarEvents)
     .set({ tasksBuiltHash: null })
     .where(eq(calendarEvents.id, event.id));
-  const built = await buildMemberTasks(db, event.familyMemberId);
-  for (const memberId of new Set([event.familyMemberId, ...built.releasedOwnerIds])) {
-    enqueueReconcile(c, { kind: 'member', memberId });
-  }
+  await buildMemberTasks(db, event.familyMemberId);
 
   const rows = await db
     .select()

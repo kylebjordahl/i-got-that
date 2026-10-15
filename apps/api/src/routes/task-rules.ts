@@ -47,10 +47,8 @@ async function afterChange(
   db: ReturnType<typeof getDb>,
   memberId: string,
 ): Promise<void> {
-  const built = await rebuildMemberTasks(db, memberId);
-  for (const id of new Set([memberId, ...built.releasedOwnerIds])) {
-    enqueueReconcile(c, { kind: 'member', memberId: id });
-  }
+  await rebuildMemberTasks(db, memberId);
+  enqueueReconcile(c, { kind: 'member', memberId });
 }
 
 /**
