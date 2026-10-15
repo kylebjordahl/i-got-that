@@ -13,6 +13,8 @@ import { estimateTravelMinutes } from '@igt/classification';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { reconcileMemberConflicts } from '../src/services/conflicts.js';
 import { synthesizeFeed } from '../src/services/synthesis.js';
+import { buildMemberTasks } from '../src/services/task-gen.js';
+import { setTaskOwners } from '../src/services/task-owners.js';
 import { authed, bearer, call, setupFamily } from './helpers.js';
 
 type Db = ReturnType<typeof getDb>;
@@ -247,6 +249,61 @@ describe('conflict detection & masking', () => {
     const { events } = (await view.json()) as { events: { id: string }[] };
     expect(events.map((e) => e.id)).not.toContain(bl.id);
     expect(events.map((e) => e.id)).toContain(seg0.id);
+  });
+
+  it('shortening a day keeps its claimed pickup instead of spawning an unclaimed twin', async () => {
+    const f = await fixture('conflict-claimed-pickup@example.com');
+    const blKey = 'bl:' + f.linkId + ':day';
+    await f.db.insert(calendarEvents).values({
+      familyId: f.familyId,
+      familyMemberId: f.childId,
+      provenance: 'synthesized',
+      synthKey: blKey,
+      linkId: f.linkId,
+      dtstart: futureAt(3, 8, 30),
+      dtend: futureAt(3, 15, 0),
+      summary: 'School day',
+      contentHash: 'bl-hash',
+    });
+    // Pickup claimed, drop-off left open — before any conflict exists.
+    await buildMemberTasks(f.db, f.childId);
+    const before = await f.db.select().from(tasks).where(eq(tasks.familyMemberId, f.childId));
+    const claimedPickup = before.find((t) => t.type === 'pickup')!;
+    await setTaskOwners(f.db, claimedPickup, [f.adminMemberId], { manual: true });
+
+    // A morning appointment overlaps the start of the day; resolving trims it.
+    await f.db.insert(calendarEvents).values({
+      familyId: f.familyId,
+      familyMemberId: f.childId,
+      provenance: 'human',
+      synthKey: 'ext:morning:',
+      externalUid: 'morning',
+      dtstart: futureAt(3, 8, 0),
+      dtend: futureAt(3, 10, 0),
+      summary: 'Dentist',
+      contentHash: 'morning-hash',
+    });
+    await reconcileMemberConflicts(f.db, f.childId);
+    const conflict = (
+      await f.db.select().from(conflicts).where(eq(conflicts.familyMemberId, f.childId))
+    )[0]!;
+    await f.db
+      .update(conflicts)
+      .set({ status: 'resolved', resolvedAt: new Date() })
+      .where(eq(conflicts.id, conflict.id));
+    await reconcileMemberConflicts(f.db, f.childId);
+    await buildMemberTasks(f.db, f.childId);
+
+    const after = await f.db.select().from(tasks).where(eq(tasks.familyMemberId, f.childId));
+    const pickups = after.filter((t) => t.type === 'pickup');
+    expect(pickups).toHaveLength(1);
+    expect(pickups[0]!.id).toBe(claimedPickup.id);
+    expect(pickups[0]!.status).toBe('owned');
+    // The drop-off moved to the later start and is still open.
+    const dropoffs = after.filter((t) => t.type === 'dropoff');
+    expect(dropoffs).toHaveLength(1);
+    expect(dropoffs[0]!.status).toBe('unowned');
+    expect(dropoffs[0]!.dtstart.toISOString()).toBe(futureAt(3, 10, 0).toISOString());
   });
 
   it('resolving with travel buffers pulls the split halves back, leaving a gap', async () => {
