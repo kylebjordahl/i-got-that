@@ -13,6 +13,8 @@ import { estimateTravelMinutes } from '@igt/classification';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { reconcileMemberConflicts } from '../src/services/conflicts.js';
 import { synthesizeFeed } from '../src/services/synthesis.js';
+import { buildMemberTasks } from '../src/services/task-gen.js';
+import { setTaskOwners } from '../src/services/task-owners.js';
 import { authed, bearer, call, setupFamily } from './helpers.js';
 
 type Db = ReturnType<typeof getDb>;
@@ -247,6 +249,495 @@ describe('conflict detection & masking', () => {
     const { events } = (await view.json()) as { events: { id: string }[] };
     expect(events.map((e) => e.id)).not.toContain(bl.id);
     expect(events.map((e) => e.id)).toContain(seg0.id);
+  });
+
+  it('shortening a day keeps its claimed pickup instead of spawning an unclaimed twin', async () => {
+    const f = await fixture('conflict-claimed-pickup@example.com');
+    const blKey = 'bl:' + f.linkId + ':day';
+    await f.db.insert(calendarEvents).values({
+      familyId: f.familyId,
+      familyMemberId: f.childId,
+      provenance: 'synthesized',
+      synthKey: blKey,
+      linkId: f.linkId,
+      dtstart: futureAt(3, 8, 30),
+      dtend: futureAt(3, 15, 0),
+      summary: 'School day',
+      contentHash: 'bl-hash',
+    });
+    // Pickup claimed, drop-off left open — before any conflict exists.
+    await buildMemberTasks(f.db, f.childId);
+    const before = await f.db.select().from(tasks).where(eq(tasks.familyMemberId, f.childId));
+    const claimedPickup = before.find((t) => t.type === 'pickup')!;
+    await setTaskOwners(f.db, claimedPickup, [f.adminMemberId], { manual: true });
+
+    // A morning appointment overlaps the start of the day; resolving trims it.
+    await f.db.insert(calendarEvents).values({
+      familyId: f.familyId,
+      familyMemberId: f.childId,
+      provenance: 'human',
+      synthKey: 'ext:morning:',
+      externalUid: 'morning',
+      dtstart: futureAt(3, 8, 0),
+      dtend: futureAt(3, 10, 0),
+      summary: 'Dentist',
+      contentHash: 'morning-hash',
+    });
+    await reconcileMemberConflicts(f.db, f.childId);
+    const conflict = (
+      await f.db.select().from(conflicts).where(eq(conflicts.familyMemberId, f.childId))
+    )[0]!;
+    await f.db
+      .update(conflicts)
+      .set({ status: 'resolved', resolvedAt: new Date() })
+      .where(eq(conflicts.id, conflict.id));
+    await reconcileMemberConflicts(f.db, f.childId);
+    await buildMemberTasks(f.db, f.childId);
+
+    const after = await f.db.select().from(tasks).where(eq(tasks.familyMemberId, f.childId));
+    const pickups = after.filter((t) => t.type === 'pickup');
+    expect(pickups).toHaveLength(1);
+    expect(pickups[0]!.id).toBe(claimedPickup.id);
+    expect(pickups[0]!.status).toBe('owned');
+    // The drop-off moved to the later start and is still open.
+    const dropoffs = after.filter((t) => t.type === 'dropoff');
+    expect(dropoffs).toHaveLength(1);
+    expect(dropoffs[0]!.status).toBe('unowned');
+    expect(dropoffs[0]!.dtstart.toISOString()).toBe(futureAt(3, 10, 0).toISOString());
+  });
+
+  it('releases a claimed pickup whose time a split moved, back to the unclaimed pool', async () => {
+    const f = await fixture('conflict-released-pickup@example.com');
+    const blKey = 'bl:' + f.linkId + ':day';
+    await f.db.insert(calendarEvents).values({
+      familyId: f.familyId,
+      familyMemberId: f.childId,
+      provenance: 'synthesized',
+      synthKey: blKey,
+      linkId: f.linkId,
+      dtstart: futureAt(3, 8, 30),
+      dtend: futureAt(3, 15, 0),
+      summary: 'School day',
+      contentHash: 'bl-hash',
+    });
+    await buildMemberTasks(f.db, f.childId);
+    const claimed = (
+      await f.db.select().from(tasks).where(eq(tasks.familyMemberId, f.childId))
+    ).find((t) => t.type === 'pickup')!;
+    await setTaskOwners(f.db, claimed, [f.adminMemberId], { manual: true });
+    const claimEvents = () =>
+      f.db.select().from(calendarEvents).where(eq(calendarEvents.provenance, 'claimed_task'));
+    expect(await claimEvents()).toHaveLength(1);
+
+    // An afternoon appointment trims the END of the day, so the pickup moves.
+    await f.db.insert(calendarEvents).values({
+      familyId: f.familyId,
+      familyMemberId: f.childId,
+      provenance: 'human',
+      synthKey: 'ext:afternoon:',
+      externalUid: 'afternoon',
+      dtstart: futureAt(3, 13, 0),
+      dtend: futureAt(3, 16, 0),
+      summary: 'Orthodontist',
+      contentHash: 'afternoon-hash',
+    });
+    await reconcileMemberConflicts(f.db, f.childId);
+    const conflict = (
+      await f.db.select().from(conflicts).where(eq(conflicts.familyMemberId, f.childId))
+    )[0]!;
+    await f.db
+      .update(conflicts)
+      .set({ status: 'resolved', resolvedAt: new Date() })
+      .where(eq(conflicts.id, conflict.id));
+    const res = await reconcileMemberConflicts(f.db, f.childId);
+    await buildMemberTasks(f.db, f.childId);
+
+    expect(res.releasedOwnerIds).toEqual([f.adminMemberId]);
+    // The claim is gone from the caretaker's calendar...
+    expect(await claimEvents()).toHaveLength(0);
+    // ...and exactly one pickup remains: the segment's, unclaimed, at 13:00.
+    const pickups = (
+      await f.db.select().from(tasks).where(eq(tasks.familyMemberId, f.childId))
+    ).filter((t) => t.type === 'pickup');
+    expect(pickups).toHaveLength(1);
+    expect(pickups[0]!.status).toBe('unowned');
+    expect(pickups[0]!.dtstart.toISOString()).toBe(futureAt(3, 13, 0).toISOString());
+  });
+
+  describe('reverting a resolved split', () => {
+    /** A 08:30–15:00 school day overlapped by an appointment [from, to), resolved. */
+    async function resolvedSplit(email: string, from: [number, number], to: [number, number]) {
+      const f = await fixture(email);
+      const blKey = 'bl:' + f.linkId + ':day';
+      await f.db.insert(calendarEvents).values({
+        familyId: f.familyId,
+        familyMemberId: f.childId,
+        provenance: 'synthesized',
+        synthKey: blKey,
+        linkId: f.linkId,
+        dtstart: futureAt(3, 8, 30),
+        dtend: futureAt(3, 15, 0),
+        summary: 'School day',
+        contentHash: 'bl-hash',
+      });
+      await f.db.insert(calendarEvents).values({
+        familyId: f.familyId,
+        familyMemberId: f.childId,
+        provenance: 'human',
+        synthKey: 'ext:appt:',
+        externalUid: 'appt',
+        dtstart: futureAt(3, ...from),
+        dtend: futureAt(3, ...to),
+        summary: 'Appointment',
+        contentHash: 'appt-hash',
+      });
+      await reconcileMemberConflicts(f.db, f.childId);
+      const conflict = (
+        await f.db.select().from(conflicts).where(eq(conflicts.familyMemberId, f.childId))
+      )[0]!;
+      await f.db
+        .update(conflicts)
+        .set({ status: 'resolved', resolvedAt: new Date() })
+        .where(eq(conflicts.id, conflict.id));
+      await reconcileMemberConflicts(f.db, f.childId);
+      await buildMemberTasks(f.db, f.childId);
+      const revert = async () => {
+        await f.db
+          .update(conflicts)
+          .set({ status: 'pending', resolvedAt: null })
+          .where(eq(conflicts.id, conflict.id));
+        const r = await reconcileMemberConflicts(f.db, f.childId);
+        await buildMemberTasks(f.db, f.childId);
+        return r.releasedOwnerIds;
+      };
+      const childTasks = (type: string) =>
+        f.db
+          .select()
+          .from(tasks)
+          .where(eq(tasks.familyMemberId, f.childId))
+          .then((rows) => rows.filter((t) => t.type === type));
+      const claimEvents = () =>
+        f.db.select().from(calendarEvents).where(eq(calendarEvents.provenance, 'claimed_task'));
+      return { f, blKey, revert, childTasks, claimEvents };
+    }
+
+    it('moves a claim back to the day when its time is unchanged', async () => {
+      // Appointment trims the start, so the segment still ends at 15:00.
+      const s = await resolvedSplit('revert-same@example.com', [8, 0], [10, 0]);
+      const pickup = (await s.childTasks('pickup'))[0]!;
+      await setTaskOwners(s.f.db, pickup, [s.f.adminMemberId], { manual: true });
+
+      const released = await s.revert();
+      expect(released).toEqual([]);
+      const pickups = await s.childTasks('pickup');
+      expect(pickups).toHaveLength(1);
+      expect(pickups[0]!.id).toBe(pickup.id);
+      expect(pickups[0]!.status).toBe('owned');
+      expect(pickups[0]!.dtstart.toISOString()).toBe(futureAt(3, 15, 0).toISOString());
+      const bl = (
+        await s.f.db.select().from(calendarEvents).where(eq(calendarEvents.synthKey, s.blKey))
+      )[0]!;
+      expect(pickups[0]!.calendarEventId).toBe(bl.id);
+      expect(await s.claimEvents()).toHaveLength(1);
+    });
+
+    it('releases a claim back to the queue when its time would change', async () => {
+      // Appointment trims the end, so the segment's pickup is 13:00, not 15:00.
+      const s = await resolvedSplit('revert-moved@example.com', [13, 0], [16, 0]);
+      const pickup = (await s.childTasks('pickup'))[0]!;
+      expect(pickup.dtstart.toISOString()).toBe(futureAt(3, 13, 0).toISOString());
+      await setTaskOwners(s.f.db, pickup, [s.f.adminMemberId], { manual: true });
+
+      const released = await s.revert();
+      expect(released).toEqual([s.f.adminMemberId]);
+      const pickups = await s.childTasks('pickup');
+      expect(pickups).toHaveLength(1);
+      expect(pickups[0]!.status).toBe('unowned');
+      expect(pickups[0]!.dtstart.toISOString()).toBe(futureAt(3, 15, 0).toISOString());
+      expect(await s.claimEvents()).toHaveLength(0);
+    });
+
+    /** Add a human appointment and resolve every pending conflict. */
+    async function addAndResolve(
+      s: Awaited<ReturnType<typeof resolvedSplit>>,
+      uid: string,
+      from: [number, number],
+      to: [number, number],
+      params: Partial<typeof conflicts.$inferInsert> = {},
+    ) {
+      await s.f.db.insert(calendarEvents).values({
+        familyId: s.f.familyId,
+        familyMemberId: s.f.childId,
+        provenance: 'human',
+        synthKey: `ext:${uid}:`,
+        externalUid: uid,
+        dtstart: futureAt(3, ...from),
+        dtend: futureAt(3, ...to),
+        summary: uid,
+        contentHash: `${uid}-hash`,
+      });
+      await reconcileMemberConflicts(s.f.db, s.f.childId);
+      await s.f.db
+        .update(conflicts)
+        .set({ status: 'resolved', resolvedAt: new Date(), ...params })
+        .where(eq(conflicts.status, 'pending'));
+      const r = await reconcileMemberConflicts(s.f.db, s.f.childId);
+      await buildMemberTasks(s.f.db, s.f.childId);
+      return r;
+    }
+
+    it('keeps a claimed pickup when a second winner shifts the segment indices', async () => {
+      const s = await resolvedSplit('revert-second@example.com', [10, 0], [11, 0]);
+      const pickup = (await s.childTasks('pickup')).find(
+        (t) => t.dtstart.toISOString() === futureAt(3, 15, 0).toISOString(),
+      )!;
+      await setTaskOwners(s.f.db, pickup, [s.f.adminMemberId], { manual: true });
+
+      // cf:1 (11-15) becomes 11-13 and a new cf:2 (14-15) now holds the 15:00 end.
+      await addAndResolve(s, 'second', [13, 0], [14, 0]);
+
+      const at15 = (await s.childTasks('pickup')).filter(
+        (t) => t.dtstart.toISOString() === futureAt(3, 15, 0).toISOString(),
+      );
+      expect(at15).toHaveLength(1);
+      expect(at15[0]!.id).toBe(pickup.id);
+      expect(at15[0]!.status).toBe('owned');
+      const claim = (await s.claimEvents())[0]!;
+      expect(claim.dtstart.toISOString()).toBe(futureAt(3, 15, 0).toISOString());
+      // Nothing left claimed at a time that no longer exists.
+      const owned = (await s.childTasks('pickup')).filter((t) => t.status === 'owned');
+      expect(owned).toHaveLength(1);
+    });
+
+    it('releases a claimed drop-off whose segment start moved in place', async () => {
+      const s = await resolvedSplit('revert-dropoff@example.com', [10, 0], [11, 0]);
+      const dropoff = (await s.childTasks('dropoff')).find(
+        (t) => t.dtstart.toISOString() === futureAt(3, 8, 30).toISOString(),
+      )!;
+      await setTaskOwners(s.f.db, dropoff, [s.f.adminMemberId], { manual: true });
+
+      // "Morning part not needed" drops cf:0, so the old 08:30 drop-off is gone.
+      const r = await s.f.db.select().from(conflicts);
+      await s.f.db
+        .update(conflicts)
+        .set({ beforeNeeded: false })
+        .where(eq(conflicts.id, r[0]!.id));
+      const res = await reconcileMemberConflicts(s.f.db, s.f.childId);
+      await buildMemberTasks(s.f.db, s.f.childId);
+
+      expect(res.releasedOwnerIds).toEqual([s.f.adminMemberId]);
+      expect(await s.claimEvents()).toHaveLength(0);
+      expect(
+        (await s.childTasks('dropoff')).every((t) => t.status === 'unowned'),
+      ).toBe(true);
+      // The 15:00 pickup, whose boundary didn't move, is undisturbed.
+      expect((await s.childTasks('pickup')).length).toBe(1);
+    });
+
+    it('transfers a claim already parked on the masked day (pre-fix data) instead of releasing it', async () => {
+      const s = await resolvedSplit('revert-parked@example.com', [8, 0], [10, 0]);
+      const bl = (
+        await s.f.db.select().from(calendarEvents).where(eq(calendarEvents.synthKey, s.blKey))
+      )[0]!;
+      const twin = (await s.childTasks('pickup'))[0]!;
+      // Reproduce the old bug's leftovers: a claimed pickup on the masked day
+      // next to the segment's unclaimed twin.
+      const [parked] = await s.f.db
+        .insert(tasks)
+        .values({
+          familyId: s.f.familyId,
+          calendarEventId: bl.id,
+          familyMemberId: s.f.childId,
+          type: 'pickup',
+          dtstart: futureAt(3, 15, 0),
+          status: 'unowned',
+          createdVia: 'generated',
+        })
+        .returning();
+      await setTaskOwners(s.f.db, parked!, [s.f.adminMemberId], { manual: true });
+
+      const res = await reconcileMemberConflicts(s.f.db, s.f.childId);
+      await buildMemberTasks(s.f.db, s.f.childId);
+
+      expect(res.releasedOwnerIds).toEqual([]);
+      const pickups = await s.childTasks('pickup');
+      expect(pickups).toHaveLength(1);
+      expect(pickups[0]!.id).toBe(parked!.id);
+      expect(pickups[0]!.status).toBe('owned');
+      expect(pickups.some((t) => t.id === twin.id)).toBe(false);
+      expect(await s.claimEvents()).toHaveLength(1);
+    });
+
+    it('keeps a dismissed pickup dismissed across split and revert', async () => {
+      const s = await resolvedSplit('revert-dismissed@example.com', [8, 0], [10, 0]);
+      // Dismissed on the segment (as it would have been carried over).
+      const pickup = (await s.childTasks('pickup'))[0]!;
+      await s.f.db.update(tasks).set({ status: 'dismissed' }).where(eq(tasks.id, pickup.id));
+
+      await s.revert();
+      const pickups = await s.childTasks('pickup');
+      expect(pickups).toHaveLength(1);
+      expect(pickups[0]!.id).toBe(pickup.id);
+      expect(pickups[0]!.status).toBe('dismissed');
+    });
+
+    const iso = (h: number, m = 0) => futureAt(3, h, m).toISOString();
+    const claim = async (
+      s: Awaited<ReturnType<typeof resolvedSplit>>,
+      type: string,
+      at: string,
+    ) => {
+      const t = (await s.childTasks(type)).find((x) => x.dtstart.toISOString() === at)!;
+      expect(t, `${type} at ${at}`).toBeTruthy();
+      await setTaskOwners(s.f.db, t, [s.f.adminMemberId], { manual: true });
+      return t;
+    };
+    const moveAppointmentAway = async (s: Awaited<ReturnType<typeof resolvedSplit>>) => {
+      await s.f.db
+        .update(calendarEvents)
+        .set({ dtstart: futureAt(3, 17, 0), dtend: futureAt(3, 18, 0) })
+        .where(eq(calendarEvents.synthKey, 'ext:appt:'));
+      const r = await reconcileMemberConflicts(s.f.db, s.f.childId);
+      await buildMemberTasks(s.f.db, s.f.childId);
+      return r;
+    };
+
+    it('overlap clearing on its own: an unchanged-time claim returns to the day', async () => {
+      const s = await resolvedSplit('clear-same@example.com', [8, 0], [10, 0]);
+      const pickup = await claim(s, 'pickup', iso(15));
+
+      const r = await moveAppointmentAway(s);
+      expect(r.releasedOwnerIds).toEqual([]);
+      expect(await s.f.db.select().from(conflicts)).toHaveLength(0);
+      const pickups = await s.childTasks('pickup');
+      expect(pickups).toHaveLength(1);
+      expect(pickups[0]!.id).toBe(pickup.id);
+      expect(pickups[0]!.status).toBe('owned');
+      expect(await s.claimEvents()).toHaveLength(1);
+    });
+
+    it('overlap clearing on its own: a moved-time claim is released', async () => {
+      const s = await resolvedSplit('clear-moved@example.com', [13, 0], [16, 0]);
+      await claim(s, 'pickup', iso(13));
+
+      const r = await moveAppointmentAway(s);
+      expect(r.releasedOwnerIds).toEqual([s.f.adminMemberId]);
+      const pickups = await s.childTasks('pickup');
+      expect(pickups).toHaveLength(1);
+      expect(pickups[0]!.status).toBe('unowned');
+      expect(pickups[0]!.dtstart.toISOString()).toBe(iso(15));
+      expect(await s.claimEvents()).toHaveLength(0);
+    });
+
+    it('a travel buffer that moves the segment start releases the drop-off but keeps the pickup', async () => {
+      const s = await resolvedSplit('travel-start@example.com', [8, 0], [10, 0]);
+      await claim(s, 'dropoff', iso(10));
+      const pickup = await claim(s, 'pickup', iso(15));
+
+      const c = (await s.f.db.select().from(conflicts))[0]!;
+      await s.f.db.update(conflicts).set({ travelAfterMin: 30 }).where(eq(conflicts.id, c.id));
+      const r = await reconcileMemberConflicts(s.f.db, s.f.childId);
+      await buildMemberTasks(s.f.db, s.f.childId);
+
+      expect(r.releasedOwnerIds).toEqual([s.f.adminMemberId]);
+      const dropoffs = await s.childTasks('dropoff');
+      expect(dropoffs).toHaveLength(1);
+      expect(dropoffs[0]!.status).toBe('unowned');
+      expect(dropoffs[0]!.dtstart.toISOString()).toBe(iso(10, 30));
+      // Back under the assignment rules, not stuck on the old human override.
+      expect(dropoffs[0]!.manualOwnerOverride).toBe(false);
+      const pickups = await s.childTasks('pickup');
+      expect(pickups).toHaveLength(1);
+      expect(pickups[0]!.id).toBe(pickup.id);
+      expect(pickups[0]!.status).toBe('owned');
+      const claims = await s.claimEvents();
+      expect(claims).toHaveLength(1);
+      expect(claims[0]!.taskId).toBe(pickup.id);
+    });
+
+    it('a travel buffer that moves the segment end releases the pickup', async () => {
+      const s = await resolvedSplit('travel-end@example.com', [13, 0], [16, 0]);
+      await claim(s, 'pickup', iso(13));
+
+      const c = (await s.f.db.select().from(conflicts))[0]!;
+      await s.f.db.update(conflicts).set({ travelBeforeMin: 30 }).where(eq(conflicts.id, c.id));
+      const r = await reconcileMemberConflicts(s.f.db, s.f.childId);
+      await buildMemberTasks(s.f.db, s.f.childId);
+
+      expect(r.releasedOwnerIds).toEqual([s.f.adminMemberId]);
+      const pickups = await s.childTasks('pickup');
+      expect(pickups).toHaveLength(1);
+      expect(pickups[0]!.status).toBe('unowned');
+      expect(pickups[0]!.dtstart.toISOString()).toBe(iso(12, 30));
+      expect(await s.claimEvents()).toHaveLength(0);
+    });
+
+    it('does not move a user-converted claim onto another segment; the target keeps its own task', async () => {
+      const s = await resolvedSplit('revert-manual@example.com', [11, 0], [12, 0]);
+      // Converting an event makes every task on it manual; claim its 15:00 pickup.
+      const cf1 = (
+        await s.f.db
+          .select()
+          .from(calendarEvents)
+          .where(eq(calendarEvents.synthKey, `cf:${s.blKey}:1`))
+      )[0]!;
+      await s.f.db
+        .update(tasks)
+        .set({ createdVia: 'manual' })
+        .where(eq(tasks.calendarEventId, cf1.id));
+      const manualPickup = await claim(s, 'pickup', iso(15));
+
+      // A second winner shifts the indices: the 15:00 end now belongs to cf:2.
+      const r = await addAndResolve(s, 'second', [9, 0], [10, 0]);
+
+      expect(r.releasedOwnerIds).toEqual([s.f.adminMemberId]);
+      expect(await s.claimEvents()).toHaveLength(0);
+      const cf2 = (
+        await s.f.db
+          .select()
+          .from(calendarEvents)
+          .where(eq(calendarEvents.synthKey, `cf:${s.blKey}:2`))
+      )[0]!;
+      const onCf2 = (await s.childTasks('pickup')).filter((t) => t.calendarEventId === cf2.id);
+      expect(onCf2).toHaveLength(1);
+      expect(onCf2[0]!.id).not.toBe(manualPickup.id);
+      expect(onCf2[0]!.status).toBe('unowned');
+      expect(onCf2[0]!.dtstart.toISOString()).toBe(iso(15));
+    });
+
+    it('moves two claims at once when shifted segments swap slots (order must not matter)', async () => {
+      const s = await resolvedSplit('revert-swap@example.com', [11, 0], [12, 0]);
+      await claim(s, 'pickup', iso(11));
+      await claim(s, 'pickup', iso(15));
+
+      // New split: cf:0 08:30-09, cf:1 10-11, cf:2 12-15. The 11:00 claim moves
+      // to cf:1 — whose old row still holds the 15:00 claim until that moves too.
+      const r = await addAndResolve(s, 'second', [9, 0], [10, 0]);
+
+      expect(r.releasedOwnerIds).toEqual([]);
+      const owned = (await s.childTasks('pickup'))
+        .filter((t) => t.status === 'owned')
+        .map((t) => t.dtstart.toISOString())
+        .sort();
+      expect(owned).toEqual([iso(11), iso(15)]);
+      expect(await s.claimEvents()).toHaveLength(2);
+    });
+
+    it('moves a claimed drop-off back to the day on revert when only the end was trimmed', async () => {
+      const s = await resolvedSplit('revert-dropoff-back@example.com', [13, 0], [16, 0]);
+      const dropoff = await claim(s, 'dropoff', iso(8, 30));
+
+      const released = await s.revert();
+      expect(released).toEqual([]);
+      const dropoffs = (await s.childTasks('dropoff')).filter((t) => t.status === 'owned');
+      expect(dropoffs).toHaveLength(1);
+      expect(dropoffs[0]!.id).toBe(dropoff.id);
+      const bl = (
+        await s.f.db.select().from(calendarEvents).where(eq(calendarEvents.synthKey, s.blKey))
+      )[0]!;
+      expect(dropoffs[0]!.calendarEventId).toBe(bl.id);
+      expect(await s.claimEvents()).toHaveLength(1);
+    });
   });
 
   it('resolving with travel buffers pulls the split halves back, leaving a gap', async () => {
