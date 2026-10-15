@@ -176,6 +176,20 @@
       "when": 1792041874556,
       "tag": "0024_mute_black_bolt",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "6",
+      "when": 1792080296114,
+      "tag": "0025_bright_thunderbolt_ross",
+      "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "6",
+      "when": 1792081396330,
+      "tag": "0026_absence_notices_default_category",
+      "breakpoints": true
     }
   ]
 }

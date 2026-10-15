@@ -9,6 +9,7 @@ import '../theme/person_colors.dart';
 import '../util/assignment_text.dart';
 import '../util/format.dart';
 import '../util/task_visuals.dart';
+import '../widgets/absence_notice.dart';
 import '../widgets/app_bottom_nav.dart';
 import '../widgets/primitives.dart';
 import '../widgets/settings.dart';
@@ -181,6 +182,11 @@ Future<void> showTaskActions(
               const SizedBox(height: 14),
               _AutoAssignedNote(ruleIds: autoRuleIds),
             ],
+            // "Email school" — on a trimmed school-day segment (the drop-off /
+            // pick-up it carries) as well as on the appointment itself. Shows
+            // nothing unless this event leads to an eligible notice.
+            if (sourceEvent?.id ?? task.calendarEventId case final eventId?)
+              AbsenceNoticeSection(eventId: eventId),
             if (isFeedTask) ...[
               const SizedBox(height: 20),
               Text('TYPE', style: AppText.eyebrow()),
@@ -484,6 +490,7 @@ Future<void> showEventDetails(
               if (hasDescription)
                 _DetailRow(icon: Icons.notes_rounded, text: description),
             ],
+            AbsenceNoticeSection(eventId: event.id),
             // Travel time is a property of the trip *out to the target calendar*,
             // so it's offered on the events we mirror — above all a claim, which
             // is somebody's actual journey.

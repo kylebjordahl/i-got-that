@@ -1280,6 +1280,11 @@ enum NotificationCategory {
     'Events to sort out',
     'events to sort out',
   ),
+  absenceNotices(
+    'absence_notices',
+    'Absence emails to school',
+    'absence emails',
+  ),
   unclaimedTasks('unclaimed_tasks', 'Unclaimed tasks', 'unclaimed tasks'),
   myTasks('my_tasks', "Tasks I'm covering", 'what I’m covering');
 
@@ -1362,5 +1367,113 @@ class NotificationSchedule {
         lastSentAt: j['lastSentAt'] == null
             ? null
             : parseTimestamp(j['lastSentAt']),
+      );
+}
+
+/// The "Email school" notice for one child + school calendar + school day: who
+/// it goes to, the composed subject and body, and whether somebody has sent it.
+/// Nothing is sent by the server — the phone's mail app does it.
+class AbsenceNotice {
+  AbsenceNotice({
+    required this.familyMemberId,
+    required this.linkId,
+    required this.date,
+    required this.to,
+    required this.cc,
+    required this.subject,
+    required this.body,
+    required this.state,
+    required this.gapStamp,
+    required this.child,
+    required this.schedule,
+    required this.eventId,
+    this.sentBy,
+    this.sentAt,
+  });
+
+  final String familyMemberId;
+  final String linkId;
+
+  /// School date, `YYYY-MM-DD`.
+  final String date;
+  final List<String> to;
+  final List<String> cc;
+  final String subject;
+  final String body;
+
+  /// `outstanding` (never sent), `sent`, or `needs_update` (sent, but the times
+  /// have changed since).
+  final String state;
+
+  /// Snapshot of the times this composition describes; echoed to `/sent`.
+  final String gapStamp;
+  final String child;
+
+  /// "leaving at 10:00 AM and returning at 11:30 AM".
+  final String schedule;
+
+  /// An event (the appointment) the notice can be opened from.
+  final String eventId;
+  final String? sentBy;
+  final DateTime? sentAt;
+
+  bool get isSent => state == 'sent';
+  bool get needsUpdate => state == 'needs_update';
+
+  factory AbsenceNotice.fromJson(Map<String, dynamic> j) => AbsenceNotice(
+    familyMemberId: j['familyMemberId'] as String,
+    linkId: j['linkId'] as String,
+    date: j['date'] as String,
+    to: [for (final a in j['to'] as List<dynamic>) a as String],
+    cc: [for (final a in j['cc'] as List<dynamic>) a as String],
+    subject: j['subject'] as String,
+    body: j['body'] as String,
+    state: j['state'] as String,
+    gapStamp: j['gapStamp'] as String,
+    child: j['child'] as String? ?? '',
+    schedule: j['schedule'] as String? ?? '',
+    eventId: j['eventId'] as String? ?? '',
+    sentBy: j['sentBy'] as String?,
+    sentAt: j['sentAt'] == null ? null : parseTimestamp(j['sentAt']),
+  );
+}
+
+/// A child↔school-calendar link's "Email school" settings (admin-only).
+class AbsenceNoticeSettings {
+  AbsenceNoticeSettings({
+    required this.to,
+    required this.cc,
+    required this.subjectTemplate,
+    required this.bodyTemplate,
+    required this.includeReason,
+    required this.defaultSubject,
+    required this.defaultBody,
+  });
+
+  final List<String> to;
+  final List<String> cc;
+  final String subjectTemplate;
+  final String bodyTemplate;
+  final bool includeReason;
+
+  /// The server's stock wording — what "Reset wording" goes back to.
+  final String defaultSubject;
+  final String defaultBody;
+
+  /// No recipient ⇒ the feature is off for this link.
+  bool get enabled => to.isNotEmpty || cc.isNotEmpty;
+
+  factory AbsenceNoticeSettings.fromJson(Map<String, dynamic> j) =>
+      AbsenceNoticeSettings(
+        to: [for (final a in j['to'] as List<dynamic>) a as String],
+        cc: [for (final a in j['cc'] as List<dynamic>) a as String],
+        subjectTemplate: j['subjectTemplate'] as String,
+        bodyTemplate: j['bodyTemplate'] as String,
+        includeReason: j['includeReason'] as bool? ?? false,
+        defaultSubject:
+            (j['defaults'] as Map<String, dynamic>)['subjectTemplate']
+                as String,
+        defaultBody:
+            (j['defaults'] as Map<String, dynamic>)['bodyTemplate'] as String,
       );
 }

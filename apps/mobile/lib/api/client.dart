@@ -1045,6 +1045,90 @@ class ApiClient {
     );
   }
 
+  // --- Absence email notices ("Email school") --------------------------------
+
+  /// The composed notice for a calendar event (the appointment, the school day
+  /// or one of its trimmed segments), or null when the event has none — not a
+  /// resolved school-day conflict, or no recipients are configured.
+  Future<AbsenceNotice?> getAbsenceNotice(
+    String familyId,
+    String eventId,
+  ) async {
+    final res = await _dio.get(
+      '/families/$familyId/calendar-events/$eventId/absence-notice',
+      options: _auth,
+    );
+    final body = _obj(res);
+    if (body['available'] != true) return null;
+    return AbsenceNotice.fromJson(body);
+  }
+
+  /// Notices still to send (unsent or changed since sent, school day not over).
+  Future<List<AbsenceNotice>> listAbsenceNotices(String familyId) async => [
+    for (final n in _list(
+      await _dio.get('/families/$familyId/absence-notices', options: _auth),
+      'notices',
+    ))
+      AbsenceNotice.fromJson(n as Map<String, dynamic>),
+  ];
+
+  /// Record that this member sent the notice. [gapStamp] is the composition's
+  /// snapshot; the server refuses (409) if the times moved since.
+  Future<void> markAbsenceNoticeSent(
+    String familyId,
+    String eventId, {
+    String? gapStamp,
+  }) async {
+    await _dio.post(
+      '/families/$familyId/calendar-events/$eventId/absence-notice/sent',
+      data: <String, dynamic>{if (gapStamp != null) 'gapStamp': gapStamp},
+      options: _auth,
+    );
+  }
+
+  String _absenceSettingsPath(String familyId, String feedId, String linkId) =>
+      '/families/$familyId/feeds/$feedId/member-links/$linkId/absence-notice-settings';
+
+  Future<AbsenceNoticeSettings> getAbsenceNoticeSettings(
+    String familyId,
+    String feedId,
+    String linkId,
+  ) async {
+    final res = await _dio.get(
+      _absenceSettingsPath(familyId, feedId, linkId),
+      options: _auth,
+    );
+    return AbsenceNoticeSettings.fromJson(
+      _obj(res)['settings'] as Map<String, dynamic>,
+    );
+  }
+
+  Future<AbsenceNoticeSettings> saveAbsenceNoticeSettings(
+    String familyId,
+    String feedId,
+    String linkId, {
+    required List<String> to,
+    required List<String> cc,
+    required String subjectTemplate,
+    required String bodyTemplate,
+    required bool includeReason,
+  }) async {
+    final res = await _dio.put(
+      _absenceSettingsPath(familyId, feedId, linkId),
+      data: <String, dynamic>{
+        'to': to,
+        'cc': cc,
+        'subjectTemplate': subjectTemplate,
+        'bodyTemplate': bodyTemplate,
+        'includeReason': includeReason,
+      },
+      options: _auth,
+    );
+    return AbsenceNoticeSettings.fromJson(
+      _obj(res)['settings'] as Map<String, dynamic>,
+    );
+  }
+
   // --- Unified-calendar events -----------------------------------------------
 
   /// Events on unified calendars (family-wide, or one member's), optionally
