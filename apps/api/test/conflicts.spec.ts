@@ -581,6 +581,95 @@ describe('conflict detection & masking', () => {
       expect(pickups[0]!.status).toBe('dismissed');
     });
 
+    const iso = (h: number, m = 0) => futureAt(3, h, m).toISOString();
+    const claim = async (
+      s: Awaited<ReturnType<typeof resolvedSplit>>,
+      type: string,
+      at: string,
+    ) => {
+      const t = (await s.childTasks(type)).find((x) => x.dtstart.toISOString() === at)!;
+      expect(t, `${type} at ${at}`).toBeTruthy();
+      await setTaskOwners(s.f.db, t, [s.f.adminMemberId], { manual: true });
+      return t;
+    };
+    const moveAppointmentAway = async (s: Awaited<ReturnType<typeof resolvedSplit>>) => {
+      await s.f.db
+        .update(calendarEvents)
+        .set({ dtstart: futureAt(3, 17, 0), dtend: futureAt(3, 18, 0) })
+        .where(eq(calendarEvents.synthKey, 'ext:appt:'));
+      const r = await reconcileMemberConflicts(s.f.db, s.f.childId);
+      await buildMemberTasks(s.f.db, s.f.childId);
+      return r;
+    };
+
+    it('overlap clearing on its own: an unchanged-time claim returns to the day', async () => {
+      const s = await resolvedSplit('clear-same@example.com', [8, 0], [10, 0]);
+      const pickup = await claim(s, 'pickup', iso(15));
+
+      const r = await moveAppointmentAway(s);
+      expect(r.releasedOwnerIds).toEqual([]);
+      expect(await s.f.db.select().from(conflicts)).toHaveLength(0);
+      const pickups = await s.childTasks('pickup');
+      expect(pickups).toHaveLength(1);
+      expect(pickups[0]!.id).toBe(pickup.id);
+      expect(pickups[0]!.status).toBe('owned');
+      expect(await s.claimEvents()).toHaveLength(1);
+    });
+
+    it('overlap clearing on its own: a moved-time claim is released', async () => {
+      const s = await resolvedSplit('clear-moved@example.com', [13, 0], [16, 0]);
+      await claim(s, 'pickup', iso(13));
+
+      const r = await moveAppointmentAway(s);
+      expect(r.releasedOwnerIds).toEqual([s.f.adminMemberId]);
+      const pickups = await s.childTasks('pickup');
+      expect(pickups).toHaveLength(1);
+      expect(pickups[0]!.status).toBe('unowned');
+      expect(pickups[0]!.dtstart.toISOString()).toBe(iso(15));
+      expect(await s.claimEvents()).toHaveLength(0);
+    });
+
+    it('a travel buffer that moves the segment start releases the drop-off but keeps the pickup', async () => {
+      const s = await resolvedSplit('travel-start@example.com', [8, 0], [10, 0]);
+      await claim(s, 'dropoff', iso(10));
+      const pickup = await claim(s, 'pickup', iso(15));
+
+      const c = (await s.f.db.select().from(conflicts))[0]!;
+      await s.f.db.update(conflicts).set({ travelAfterMin: 30 }).where(eq(conflicts.id, c.id));
+      const r = await reconcileMemberConflicts(s.f.db, s.f.childId);
+      await buildMemberTasks(s.f.db, s.f.childId);
+
+      expect(r.releasedOwnerIds).toEqual([s.f.adminMemberId]);
+      const dropoffs = await s.childTasks('dropoff');
+      expect(dropoffs).toHaveLength(1);
+      expect(dropoffs[0]!.status).toBe('unowned');
+      expect(dropoffs[0]!.dtstart.toISOString()).toBe(iso(10, 30));
+      const pickups = await s.childTasks('pickup');
+      expect(pickups).toHaveLength(1);
+      expect(pickups[0]!.id).toBe(pickup.id);
+      expect(pickups[0]!.status).toBe('owned');
+      const claims = await s.claimEvents();
+      expect(claims).toHaveLength(1);
+      expect(claims[0]!.taskId).toBe(pickup.id);
+    });
+
+    it('a travel buffer that moves the segment end releases the pickup', async () => {
+      const s = await resolvedSplit('travel-end@example.com', [13, 0], [16, 0]);
+      await claim(s, 'pickup', iso(13));
+
+      const c = (await s.f.db.select().from(conflicts))[0]!;
+      await s.f.db.update(conflicts).set({ travelBeforeMin: 30 }).where(eq(conflicts.id, c.id));
+      const r = await reconcileMemberConflicts(s.f.db, s.f.childId);
+      await buildMemberTasks(s.f.db, s.f.childId);
+
+      expect(r.releasedOwnerIds).toEqual([s.f.adminMemberId]);
+      const pickups = await s.childTasks('pickup');
+      expect(pickups).toHaveLength(1);
+      expect(pickups[0]!.status).toBe('unowned');
+      expect(pickups[0]!.dtstart.toISOString()).toBe(iso(12, 30));
+      expect(await s.claimEvents()).toHaveLength(0);
+    });
+
     it('does not move a user-converted task onto a segment (it would freeze the type set)', async () => {
       const s = await resolvedSplit('revert-manual@example.com', [10, 0], [11, 0]);
       const dropoff = (await s.childTasks('dropoff')).find(
