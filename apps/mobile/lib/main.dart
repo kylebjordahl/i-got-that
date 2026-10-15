@@ -10,6 +10,7 @@ import 'onboarding/onboarding_entry.dart';
 import 'onboarding/steps/welcome_step.dart';
 import 'state/auth.dart';
 import 'state/badge.dart';
+import 'state/push_taps.dart';
 import 'state/nav.dart';
 import 'theme/app_theme.dart';
 import 'widgets/app_bottom_nav.dart';
@@ -138,35 +139,37 @@ class _AuthedRoot extends StatelessWidget {
     // Only meaningful while signed in, so it mounts and unmounts with the
     // session — see [BadgeSyncScope] for what keeps the app-icon badge honest.
     return BadgeSyncScope(
-      child: Stack(
-        children: [
-          // Inflate the keyboard inset this Navigator's screens see by the
-          // nav pill's own footprint, so their default scroll-into-view
-          // behavior reserves room for it too — PersistentAppNav reads the
-          // real, un-inflated MediaQuery below since it's a sibling, not a
-          // descendant, of this MediaQuery override.
-          MediaQuery(
-            data: mq.viewInsets.bottom > 0
-                ? mq.copyWith(
-                    viewInsets:
-                        mq.viewInsets +
-                        const EdgeInsets.only(bottom: kBottomNavClearance),
-                  )
-                : mq,
-            // Every toast under here floats above the nav pill by default.
-            child: SnackBarsAboveNav(
-              child: Navigator(
-                key: rootNavigatorKey,
-                observers: [AppNavObserver()],
-                onGenerateRoute: (settings) => MaterialPageRoute(
-                  builder: (_) => const AppShell(),
-                  settings: settings,
+      child: PushTapScope(
+        child: Stack(
+          children: [
+            // Inflate the keyboard inset this Navigator's screens see by the
+            // nav pill's own footprint, so their default scroll-into-view
+            // behavior reserves room for it too — PersistentAppNav reads the
+            // real, un-inflated MediaQuery below since it's a sibling, not a
+            // descendant, of this MediaQuery override.
+            MediaQuery(
+              data: mq.viewInsets.bottom > 0
+                  ? mq.copyWith(
+                      viewInsets:
+                          mq.viewInsets +
+                          const EdgeInsets.only(bottom: kBottomNavClearance),
+                    )
+                  : mq,
+              // Every toast under here floats above the nav pill by default.
+              child: SnackBarsAboveNav(
+                child: Navigator(
+                  key: rootNavigatorKey,
+                  observers: [AppNavObserver()],
+                  onGenerateRoute: (settings) => MaterialPageRoute(
+                    builder: (_) => const AppShell(),
+                    settings: settings,
+                  ),
                 ),
               ),
             ),
-          ),
-          const PersistentAppNav(),
-        ],
+            const PersistentAppNav(),
+          ],
+        ),
       ),
     );
   }

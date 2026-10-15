@@ -792,16 +792,21 @@ export async function fetchGoogleOccurrences(
  */
 async function googleApiError(call: string, res: Response): Promise<GoogleApiError> {
   let detail = '';
+  let reason: string | undefined;
   try {
     const json = (await res.json()) as {
       error?: { message?: string; errors?: { reason?: string }[]; details?: { reason?: string }[] };
     };
-    const reason = json.error?.details?.[0]?.reason ?? json.error?.errors?.[0]?.reason;
+    reason = json.error?.details?.[0]?.reason ?? json.error?.errors?.[0]?.reason;
     detail = [reason, json.error?.message].filter(Boolean).join(': ');
   } catch {
     // Not JSON: the status alone will have to do.
   }
-  return new GoogleApiError(`google ${call} failed: ${res.status}${detail ? ` ${detail}` : ''}`, res.status);
+  return new GoogleApiError(
+    `google ${call} failed: ${res.status}${detail ? ` ${detail}` : ''}`,
+    res.status,
+    reason,
+  );
 }
 
 interface GoogleFreeBusyInterval {
@@ -899,8 +904,23 @@ export class GoogleApiError extends Error {
   constructor(
     message: string,
     readonly status: number,
+    /** Google's machine-readable reason, e.g. `ACCESS_TOKEN_SCOPE_INSUFFICIENT`. */
+    readonly reason?: string,
   ) {
     super(message);
+  }
+
+  /**
+   * The stored grant itself can't do this — only its owner reconnecting fixes
+   * it. A 401 is a dead/revoked token; a 403 counts only for a missing scope,
+   * not a quota, rate limit or disabled API, which reconnecting wouldn't help.
+   */
+  get needsReauth(): boolean {
+    if (this.status === 401) return true;
+    return (
+      this.status === 403 &&
+      (this.reason === 'ACCESS_TOKEN_SCOPE_INSUFFICIENT' || this.reason === 'insufficientPermissions')
+    );
   }
 }
 

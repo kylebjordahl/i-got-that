@@ -87,6 +87,11 @@ export async function connectGoogleAccount(
       .update(externalAccounts)
       .set({
         credentialsRef,
+        // A fresh grant answers the reconnect prompt; if it still can't read,
+        // the next sync raises it again.
+        authFailedAt: null,
+        authFailureMessage: null,
+        reauthNotifiedAt: null,
         // Backfill who this is the first time Google tells us, so the next
         // consent for it matches by email instead of piling up a new row.
         ...(opts.email && !existing.username

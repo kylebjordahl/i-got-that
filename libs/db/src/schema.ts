@@ -60,6 +60,11 @@ export const users = sqliteTable('users', {
   // separately, on email delivery targets.
   username: text('username').notNull().unique(),
   displayName: text('display_name').notNull(),
+  // Push a "reconnect your calendar account" alert when one of this user's
+  // accounts stops authenticating (Me → Notifications toggle).
+  reauthAlertsEnabled: integer('reauth_alerts_enabled', { mode: 'boolean' })
+    .notNull()
+    .default(true),
   createdAt: createdAt(),
 });
 
@@ -180,6 +185,14 @@ export const externalAccounts = sqliteTable(
     credentialsRef: text('credentials_ref').references(() => secrets.id, {
       onDelete: 'set null',
     }),
+    // Set when a sync through this account failed in a way only its owner can
+    // fix by reconnecting (a revoked/expired grant, a missing scope); cleared
+    // by the next successful sync or a reconnect. Drives the Home screen's
+    // call to action and the reauth push.
+    authFailedAt: integer('auth_failed_at', { mode: 'timestamp_ms' }),
+    authFailureMessage: text('auth_failure_message'),
+    // When the reauth push for the current failure went out — one per episode.
+    reauthNotifiedAt: integer('reauth_notified_at', { mode: 'timestamp_ms' }),
     createdAt: createdAt(),
   },
   (t) => ({

@@ -165,6 +165,25 @@ export async function exchangeGoogleCode(
   };
 }
 
+/** A refresh-token exchange Google refused; `code` is its OAuth error code. */
+export class GoogleTokenRefreshError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly code?: string,
+  ) {
+    super(message);
+  }
+
+  /**
+   * `invalid_grant`: the refresh token expired (7 days for a "Testing" consent
+   * screen) or was revoked. Nothing but a fresh consent brings it back.
+   */
+  get needsReauth(): boolean {
+    return this.code === 'invalid_grant';
+  }
+}
+
 export async function refreshGoogleAccessToken(
   env: Bindings,
   refreshToken: string,
@@ -183,7 +202,14 @@ export async function refreshGoogleAccessToken(
     body,
   });
   if (!res.ok) {
-    throw new Error(`google token refresh failed: ${res.status} ${await res.text().catch(() => '')}`);
+    const text = await res.text().catch(() => '');
+    let code: string | undefined;
+    try {
+      code = (JSON.parse(text) as { error?: string }).error;
+    } catch {
+      // Not JSON; no code to report.
+    }
+    throw new GoogleTokenRefreshError(`google token refresh failed: ${res.status} ${text}`, res.status, code);
   }
   const json = (await res.json()) as { access_token: string };
   return json.access_token;

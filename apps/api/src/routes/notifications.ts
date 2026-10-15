@@ -6,12 +6,14 @@ import {
   getDb,
   notificationSchedules,
   pushDevices,
+  users,
 } from '@igt/db';
 import {
   CreateNotificationScheduleInput,
   RegisterPushDeviceInput,
   UnregisterPushDeviceInput,
   UpdateNotificationScheduleInput,
+  UpdateNotificationSettingsInput,
 } from '@igt/domain';
 import { Hono } from 'hono';
 import type { HonoEnv } from '../env.js';
@@ -146,6 +148,39 @@ notificationRoutes.get('/badge', async (c) => {
   const user = c.get('user');
   const count = await currentBadgeCount(getDb(c.env.DB), user.id);
   return c.json({ count });
+});
+
+// --- Settings --------------------------------------------------------------
+
+/**
+ * Switches that aren't a digest schedule. `reauthAlerts`: push when one of
+ * your calendar accounts needs reconnecting (see services/reauth-alerts.ts).
+ */
+notificationRoutes.get('/settings', async (c) => {
+  const user = c.get('user');
+  const row = (
+    await getDb(c.env.DB)
+      .select({ reauthAlerts: users.reauthAlertsEnabled })
+      .from(users)
+      .where(eq(users.id, user.id))
+      .limit(1)
+  )[0];
+  return c.json({ settings: { reauthAlerts: row?.reauthAlerts ?? true } });
+});
+
+notificationRoutes.patch('/settings', async (c) => {
+  const parsed = UpdateNotificationSettingsInput.safeParse(
+    await c.req.json().catch(() => ({})),
+  );
+  if (!parsed.success) {
+    return c.json({ error: 'invalid_input', issues: parsed.error.issues }, 400);
+  }
+  const user = c.get('user');
+  await getDb(c.env.DB)
+    .update(users)
+    .set({ reauthAlertsEnabled: parsed.data.reauthAlerts })
+    .where(eq(users.id, user.id));
+  return c.json({ settings: parsed.data });
 });
 
 // --- Schedules -------------------------------------------------------------

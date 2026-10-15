@@ -85,6 +85,7 @@ class ExternalAccount {
     required this.name,
     this.serverUrl,
     this.username,
+    this.authFailedAt,
   });
 
   final String id;
@@ -92,6 +93,14 @@ class ExternalAccount {
   final String name;
   final String? serverUrl;
   final String? username;
+
+  /// When a sync through this account started failing in a way only
+  /// reconnecting fixes (an expired/revoked grant, a missing permission).
+  /// Null while it's healthy.
+  final DateTime? authFailedAt;
+
+  /// The account needs its owner to sign in to it again.
+  bool get needsReconnect => authFailedAt != null;
 
   String get kindLabel => switch (kind) {
     'google' => 'Google',
@@ -108,6 +117,7 @@ class ExternalAccount {
     name: j['name'] as String,
     serverUrl: j['serverUrl'] as String?,
     username: j['username'] as String?,
+    authFailedAt: DateTime.tryParse(j['authFailedAt'] as String? ?? ''),
   );
 }
 
