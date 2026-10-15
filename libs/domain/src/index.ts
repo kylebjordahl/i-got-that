@@ -1050,6 +1050,8 @@ export const DEFAULT_EMAIL_OUTPUT_FILTERS: EmailOutputFilters = {
   sourceLinkIds: null,
 };
 
+const MaskTitle = z.string().trim().min(1).max(120);
+
 /**
  * Add an email invite output to a member. The address receives nothing until
  * someone opens the verification link mailed to it.
@@ -1061,6 +1063,8 @@ export const CreateEmailOutputInput = z.object({
   alertMinutes: AlertMinutes.optional(),
   /** Start invites earlier by the estimated travel time, marked with 🚗. */
   padTravelTime: z.boolean().optional(),
+  /** Replace every invite's title with this and strip all other non-time properties. */
+  maskTitle: MaskTitle.optional(),
 });
 export type CreateEmailOutputInput = z.infer<typeof CreateEmailOutputInput>;
 
@@ -1070,6 +1074,8 @@ export const UpdateEmailOutputInput = z.object({
   filters: EmailOutputFilters.optional(),
   alertMinutes: AlertMinutes.optional(),
   padTravelTime: z.boolean().optional(),
+  /** Null (or blank) turns masking off. */
+  maskTitle: MaskTitle.nullable().optional(),
   active: z.boolean().optional(),
 });
 export type UpdateEmailOutputInput = z.infer<typeof UpdateEmailOutputInput>;

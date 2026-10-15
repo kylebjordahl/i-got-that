@@ -1141,6 +1141,7 @@ class ApiClient {
     String? label,
     required Map<String, dynamic> filters,
     bool padTravelTime = false,
+    String? maskTitle,
   }) async {
     final res = await _dio.post(
       _emailOutputsBase(familyId, memberId),
@@ -1149,6 +1150,7 @@ class ApiClient {
         if (label != null && label.isNotEmpty) 'label': label,
         'filters': filters,
         'padTravelTime': padTravelTime,
+        if (maskTitle != null && maskTitle.isNotEmpty) 'maskTitle': maskTitle,
       },
       options: _auth,
     );
@@ -1163,6 +1165,8 @@ class ApiClient {
     bool clearLabel = false,
     Map<String, dynamic>? filters,
     bool? padTravelTime,
+    String? maskTitle,
+    bool clearMaskTitle = false,
     bool? active,
   }) async {
     final res = await _dio.patch(
@@ -1171,6 +1175,10 @@ class ApiClient {
         if (clearLabel) 'label': null else if (label != null) 'label': label,
         if (filters != null) 'filters': filters,
         if (padTravelTime != null) 'padTravelTime': padTravelTime,
+        if (clearMaskTitle)
+          'maskTitle': null
+        else if (maskTitle != null)
+          'maskTitle': maskTitle,
         if (active != null) 'active': active,
       },
       options: _auth,

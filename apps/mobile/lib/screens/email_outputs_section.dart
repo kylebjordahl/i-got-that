@@ -146,6 +146,9 @@ class _EmailOutputSheetState extends ConsumerState<EmailOutputSheet> {
   late Set<String>? _links = widget.existing?.filters.sourceLinkIds?.toSet();
   late bool _active = widget.existing?.active ?? true;
   late bool _padTravel = widget.existing?.padTravelTime ?? false;
+  late final _maskTitle = TextEditingController(
+    text: widget.existing?.maskTitle,
+  );
   bool _busy = false;
   String? _error;
 
@@ -155,6 +158,7 @@ class _EmailOutputSheetState extends ConsumerState<EmailOutputSheet> {
   void dispose() {
     _email.dispose();
     _label.dispose();
+    _maskTitle.dispose();
     super.dispose();
   }
 
@@ -216,6 +220,7 @@ class _EmailOutputSheetState extends ConsumerState<EmailOutputSheet> {
     final api = ref.read(apiClientProvider);
     final familyId = await ref.read(familyProvider.future);
     final label = _label.text.trim();
+    final mask = _maskTitle.text.trim();
     await _run(() async {
       if (_isNew) {
         final email = _email.text.trim();
@@ -226,6 +231,7 @@ class _EmailOutputSheetState extends ConsumerState<EmailOutputSheet> {
           label: label,
           filters: _filters.toJson(),
           padTravelTime: _padTravel,
+          maskTitle: mask,
         );
         return res['verificationSent'] == true
             ? 'Confirmation sent to $email — nothing is sent until they confirm.'
@@ -239,6 +245,8 @@ class _EmailOutputSheetState extends ConsumerState<EmailOutputSheet> {
         clearLabel: label.isEmpty,
         filters: _filters.toJson(),
         padTravelTime: _padTravel,
+        maskTitle: mask.isEmpty ? null : mask,
+        clearMaskTitle: mask.isEmpty,
         active: _active,
       );
       return null;
@@ -341,6 +349,18 @@ class _EmailOutputSheetState extends ConsumerState<EmailOutputSheet> {
               decoration: const InputDecoration(
                 labelText: 'Label (optional)',
                 hintText: 'e.g. Grandma',
+              ),
+            ),
+            const SizedBox(height: 8),
+            TextField(
+              controller: _maskTitle,
+              decoration: const InputDecoration(
+                labelText: 'Mask event details (optional)',
+                helperText:
+                    'Replaces every invite\'s title; description and location '
+                    'are left out. Times are still sent.',
+                helperMaxLines: 3,
+                hintText: 'e.g. Busy',
               ),
             ),
             const SizedBox(height: 20),

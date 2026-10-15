@@ -1,0 +1,1 @@
+ALTER TABLE `email_outputs` ADD `mask_title` text;

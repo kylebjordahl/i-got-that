@@ -106,9 +106,11 @@ function hashInvite(
   alertMinutes: number[],
   timezone: string | undefined,
   paddedMinutes: number,
+  masked: boolean,
 ): string {
   const parts = [
     summary,
+    masked ? 'm' : '',
     String(paddedMinutes),
     event.dtstart.toISOString(),
     event.dtend ? event.dtend.toISOString() : '',
@@ -160,9 +162,11 @@ function padForTravel(
   summary: string,
   minutes: number,
   timezone: string | undefined,
+  masked: boolean,
 ): { start: Date; summary: string; description: string | undefined } {
+  const body = masked ? undefined : (event.description ?? undefined);
   if (minutes <= 0 || event.allDay) {
-    return { start: event.dtstart, summary, description: event.description ?? undefined };
+    return { start: event.dtstart, summary, description: body };
   }
   const note =
     `Includes ${minutes} min travel. ${summary} itself starts at ` +
@@ -170,7 +174,7 @@ function padForTravel(
   return {
     start: new Date(event.dtstart.getTime() - minutes * 60_000),
     summary: `🚗 ${summary}`,
-    description: event.description ? `${note}\n\n${event.description}` : note,
+    description: body ? `${note}\n\n${body}` : note,
   };
 }
 
@@ -317,9 +321,16 @@ export async function syncMemberEmailOutputs(
       const timezone = event.linkId ? timezones.get(event.linkId) : task?.timezone;
       const travelMinutes =
         output.padTravelTime && travel ? eventTravelMinutes(travel, event, task?.type) : 0;
-      const padded = padForTravel(event, mirroredSummary(event), travelMinutes, timezone);
+      const masked = output.maskTitle != null && output.maskTitle.trim() !== '';
+      const padded = padForTravel(
+        event,
+        masked ? output.maskTitle! : mirroredSummary(event),
+        travelMinutes,
+        timezone,
+        masked,
+      );
       const summary = padded.summary;
-      const hash = hashInvite(summary, event, alertMinutes, timezone, travelMinutes);
+      const hash = hashInvite(summary, event, alertMinutes, timezone, travelMinutes, masked);
       const prior = existingByEvent.get(event.id);
       if (prior && prior.payloadHash === hash) continue;
       if (budget <= 0) break;
@@ -334,8 +345,8 @@ export async function syncMemberEmailOutputs(
         end: event.dtend,
         summary,
         description: padded.description,
-        location: event.location ?? undefined,
-        locationGeo: event.locationGeo ?? undefined,
+        location: masked ? undefined : (event.location ?? undefined),
+        locationGeo: masked ? undefined : (event.locationGeo ?? undefined),
         alertMinutes: alertMinutes.length > 0 ? alertMinutes : undefined,
         timezone,
       };
