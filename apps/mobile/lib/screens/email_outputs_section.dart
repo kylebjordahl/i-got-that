@@ -96,7 +96,7 @@ class EmailOutputsSection extends ConsumerWidget {
 }
 
 /// Create ([existing] null) or edit an email output. `useRootNavigator` layers
-/// it over the floating nav pill (see [showMemberOverridesSheet]).
+/// it over the floating nav pill (see [showMemberConflictsSheet]).
 Future<void> showEmailOutputSheet(
   BuildContext context,
   Member member, {
