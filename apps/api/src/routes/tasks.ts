@@ -797,9 +797,14 @@ taskRoutes.post('/conflicts/:conflictId/resolve', async (c) => {
       ...stamps,
     })
     .where(eq(conflicts.id, conflict.id));
-  await reconcileMemberConflicts(db, conflict.familyMemberId);
+  const reconciled = await reconcileMemberConflicts(db, conflict.familyMemberId);
   const built = await buildMemberTasks(db, conflict.familyMemberId);
-  for (const memberId of new Set([conflict.familyMemberId, ...built.releasedOwnerIds])) {
+  const touched = new Set([
+    conflict.familyMemberId,
+    ...reconciled.releasedOwnerIds,
+    ...built.releasedOwnerIds,
+  ]);
+  for (const memberId of touched) {
     enqueueReconcile(c, { kind: 'member', memberId });
   }
   return c.json({ ok: true });
@@ -830,9 +835,14 @@ taskRoutes.post('/conflicts/:conflictId/dismiss', async (c) => {
       ...stamps,
     })
     .where(eq(conflicts.id, conflict.id));
-  await reconcileMemberConflicts(db, conflict.familyMemberId);
+  const reconciled = await reconcileMemberConflicts(db, conflict.familyMemberId);
   const built = await buildMemberTasks(db, conflict.familyMemberId);
-  for (const memberId of new Set([conflict.familyMemberId, ...built.releasedOwnerIds])) {
+  const touched = new Set([
+    conflict.familyMemberId,
+    ...reconciled.releasedOwnerIds,
+    ...built.releasedOwnerIds,
+  ]);
+  for (const memberId of touched) {
     enqueueReconcile(c, { kind: 'member', memberId });
   }
   return c.json({ ok: true });
@@ -866,9 +876,14 @@ taskRoutes.post('/conflicts/:conflictId/revert', async (c) => {
       afterNeeded: true,
     })
     .where(eq(conflicts.id, conflict.id));
-  await reconcileMemberConflicts(db, conflict.familyMemberId);
+  const reconciled = await reconcileMemberConflicts(db, conflict.familyMemberId);
   const built = await buildMemberTasks(db, conflict.familyMemberId);
-  for (const memberId of new Set([conflict.familyMemberId, ...built.releasedOwnerIds])) {
+  const touched = new Set([
+    conflict.familyMemberId,
+    ...reconciled.releasedOwnerIds,
+    ...built.releasedOwnerIds,
+  ]);
+  for (const memberId of touched) {
     enqueueReconcile(c, { kind: 'member', memberId });
   }
   return c.json({ ok: true });

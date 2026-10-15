@@ -10,7 +10,9 @@ import {
   gte,
   inArray,
   lt,
+  ne,
   or,
+  tasks,
 } from '@igt/db';
 import { selectChunked } from '../lib/d1.js';
 import {
@@ -23,6 +25,7 @@ import {
   synthesisWindow,
   type SynthesisWindowOptions,
 } from './synthesis.js';
+import { ownerRowsFor, setTaskOwners } from './task-owners.js';
 
 type CalendarEventRow = typeof calendarEvents.$inferSelect;
 
@@ -35,6 +38,8 @@ export interface ConflictReconcileResult {
   conflictsOpen: number;
   /** How many losers were split/trimmed by a resolved conflict this pass. */
   masksApplied: number;
+  /** Caretakers whose claim was released because its time changed (need a mirror pass). */
+  releasedOwnerIds: string[];
 }
 
 /**
@@ -194,6 +199,7 @@ export async function reconcileMemberConflicts(
     familyMemberId,
     conflictsOpen: 0,
     masksApplied: 0,
+    releasedOwnerIds: [],
   };
   const member = (
     await db
@@ -447,6 +453,7 @@ export async function reconcileMemberConflicts(
   const existingCfByKey = new Map(existingCf.map((e) => [e.synthKey, e]));
   for (const cf of existingCf) {
     if (!desiredCf.has(cf.synthKey)) {
+      await handOffSegmentTasks(db, cf, byKey, maskedLoserKeys, result);
       await db.delete(calendarEvents).where(eq(calendarEvents.id, cf.id));
     }
   }
@@ -474,6 +481,57 @@ export async function reconcileMemberConflicts(
   }
 
   return result;
+}
+
+/**
+ * A `cf:` split segment is going away (conflict reverted, cleared, or its
+ * overlap changed) and may carry claimed tasks. Where the segment's boundary is
+ * the same instant as the unmasked parent day's — drop-off at the start, pickup
+ * at the end — the claim simply moves back onto the parent's task. Anywhere the
+ * time would change, the claim is released so the unclaimed task goes back to
+ * the queue for someone to decide on; the caretaker's claimed event goes with it.
+ */
+async function handOffSegmentTasks(
+  db: Db,
+  segment: CalendarEventRow,
+  byKey: Map<string, CalendarEventRow>,
+  maskedLoserKeys: Set<string>,
+  result: ConflictReconcileResult,
+): Promise<void> {
+  const claimed = await db
+    .select()
+    .from(tasks)
+    .where(and(eq(tasks.calendarEventId, segment.id), eq(tasks.status, 'owned')));
+  if (claimed.length === 0) return;
+  const parentKey = segment.synthKey.slice('cf:'.length).replace(/:\d+$/, '');
+  const parent = byKey.get(parentKey);
+  const parentLive = parent != null && !maskedLoserKeys.has(parentKey);
+  for (const t of claimed) {
+    const sameBoundary =
+      parentLive &&
+      ((t.type === 'dropoff' && parent.dtstart.getTime() === segment.dtstart.getTime()) ||
+        (t.type === 'pickup' &&
+          parent.dtend != null &&
+          segment.dtend != null &&
+          parent.dtend.getTime() === segment.dtend.getTime()));
+    if (sameBoundary) {
+      // Drop any unclaimed twin first so the parent keeps one task per type.
+      await db
+        .delete(tasks)
+        .where(
+          and(
+            eq(tasks.calendarEventId, parent.id),
+            eq(tasks.type, t.type),
+            ne(tasks.status, 'owned'),
+          ),
+        );
+      await db.update(tasks).set({ calendarEventId: parent.id }).where(eq(tasks.id, t.id));
+      continue;
+    }
+    const owners = (await ownerRowsFor(db, [t.id])).get(t.id) ?? [];
+    await setTaskOwners(db, t, [], { manual: false });
+    result.releasedOwnerIds.push(...owners.map((o) => o.familyMemberId));
+  }
 }
 
 /** Reconcile conflicts for every member of a family (cron + refresh-all). */

@@ -364,6 +364,100 @@ describe('conflict detection & masking', () => {
     expect(pickups[0]!.dtstart.toISOString()).toBe(futureAt(3, 13, 0).toISOString());
   });
 
+  describe('reverting a resolved split', () => {
+    /** A 08:30–15:00 school day overlapped by an appointment [from, to), resolved. */
+    async function resolvedSplit(email: string, from: [number, number], to: [number, number]) {
+      const f = await fixture(email);
+      const blKey = 'bl:' + f.linkId + ':day';
+      await f.db.insert(calendarEvents).values({
+        familyId: f.familyId,
+        familyMemberId: f.childId,
+        provenance: 'synthesized',
+        synthKey: blKey,
+        linkId: f.linkId,
+        dtstart: futureAt(3, 8, 30),
+        dtend: futureAt(3, 15, 0),
+        summary: 'School day',
+        contentHash: 'bl-hash',
+      });
+      await f.db.insert(calendarEvents).values({
+        familyId: f.familyId,
+        familyMemberId: f.childId,
+        provenance: 'human',
+        synthKey: 'ext:appt:',
+        externalUid: 'appt',
+        dtstart: futureAt(3, ...from),
+        dtend: futureAt(3, ...to),
+        summary: 'Appointment',
+        contentHash: 'appt-hash',
+      });
+      await reconcileMemberConflicts(f.db, f.childId);
+      const conflict = (
+        await f.db.select().from(conflicts).where(eq(conflicts.familyMemberId, f.childId))
+      )[0]!;
+      await f.db
+        .update(conflicts)
+        .set({ status: 'resolved', resolvedAt: new Date() })
+        .where(eq(conflicts.id, conflict.id));
+      await reconcileMemberConflicts(f.db, f.childId);
+      await buildMemberTasks(f.db, f.childId);
+      const revert = async () => {
+        await f.db
+          .update(conflicts)
+          .set({ status: 'pending', resolvedAt: null })
+          .where(eq(conflicts.id, conflict.id));
+        const r = await reconcileMemberConflicts(f.db, f.childId);
+        const b = await buildMemberTasks(f.db, f.childId);
+        return [...r.releasedOwnerIds, ...b.releasedOwnerIds];
+      };
+      const childTasks = (type: string) =>
+        f.db
+          .select()
+          .from(tasks)
+          .where(eq(tasks.familyMemberId, f.childId))
+          .then((rows) => rows.filter((t) => t.type === type));
+      const claimEvents = () =>
+        f.db.select().from(calendarEvents).where(eq(calendarEvents.provenance, 'claimed_task'));
+      return { f, blKey, revert, childTasks, claimEvents };
+    }
+
+    it('moves a claim back to the day when its time is unchanged', async () => {
+      // Appointment trims the start, so the segment still ends at 15:00.
+      const s = await resolvedSplit('revert-same@example.com', [8, 0], [10, 0]);
+      const pickup = (await s.childTasks('pickup'))[0]!;
+      await setTaskOwners(s.f.db, pickup, [s.f.adminMemberId], { manual: true });
+
+      const released = await s.revert();
+      expect(released).toEqual([]);
+      const pickups = await s.childTasks('pickup');
+      expect(pickups).toHaveLength(1);
+      expect(pickups[0]!.id).toBe(pickup.id);
+      expect(pickups[0]!.status).toBe('owned');
+      expect(pickups[0]!.dtstart.toISOString()).toBe(futureAt(3, 15, 0).toISOString());
+      const bl = (
+        await s.f.db.select().from(calendarEvents).where(eq(calendarEvents.synthKey, s.blKey))
+      )[0]!;
+      expect(pickups[0]!.calendarEventId).toBe(bl.id);
+      expect(await s.claimEvents()).toHaveLength(1);
+    });
+
+    it('releases a claim back to the queue when its time would change', async () => {
+      // Appointment trims the end, so the segment's pickup is 13:00, not 15:00.
+      const s = await resolvedSplit('revert-moved@example.com', [13, 0], [16, 0]);
+      const pickup = (await s.childTasks('pickup'))[0]!;
+      expect(pickup.dtstart.toISOString()).toBe(futureAt(3, 13, 0).toISOString());
+      await setTaskOwners(s.f.db, pickup, [s.f.adminMemberId], { manual: true });
+
+      const released = await s.revert();
+      expect(released).toEqual([s.f.adminMemberId]);
+      const pickups = await s.childTasks('pickup');
+      expect(pickups).toHaveLength(1);
+      expect(pickups[0]!.status).toBe('unowned');
+      expect(pickups[0]!.dtstart.toISOString()).toBe(futureAt(3, 15, 0).toISOString());
+      expect(await s.claimEvents()).toHaveLength(0);
+    });
+  });
+
   it('resolving with travel buffers pulls the split halves back, leaving a gap', async () => {
     const f = await fixture('conflict-travel@example.com');
     const { blKey } = await schoolAndDoctor(f.db, f);
