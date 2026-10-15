@@ -168,56 +168,6 @@ function anchorStart(event: CalendarEventRow, type: string): Date {
 }
 
 /**
- * A conflict split replaces a baseline day (`bl:`/`ev:`, now masked) with
- * `cf:<parentKey>:<i>` segments, but owned tasks are never swept, so a claimed
- * drop-off/pickup stays parked on the masked parent while the segment spawns a
- * fresh unowned twin — two pickups, one of them unclaimed. When a segment still
- * starts where the parent started (drop-off) or ends where it ended (pickup),
- * that boundary didn't move, so the parent's claimed task moves onto the segment
- * and stands in for the one task-gen would otherwise create.
- */
-async function adoptMaskedParentTasks(db: Db, segment: CalendarEventRow): Promise<void> {
-  const parentKey = segment.synthKey.slice('cf:'.length).replace(/:\d+$/, '');
-  const parent = (
-    await db
-      .select()
-      .from(calendarEvents)
-      .where(
-        and(
-          eq(calendarEvents.familyMemberId, segment.familyMemberId),
-          eq(calendarEvents.synthKey, parentKey),
-        ),
-      )
-      .limit(1)
-  )[0];
-  if (!parent || parent.maskedAt == null) return;
-
-  const keepsDropoff = parent.dtstart.getTime() === segment.dtstart.getTime();
-  const keepsPickup =
-    parent.dtend != null &&
-    segment.dtend != null &&
-    parent.dtend.getTime() === segment.dtend.getTime();
-  if (!keepsDropoff && !keepsPickup) return;
-
-  const onSegment = new Set(
-    (await db.select({ type: tasks.type }).from(tasks).where(eq(tasks.calendarEventId, segment.id))).map(
-      (t) => t.type,
-    ),
-  );
-  const claimed = await db
-    .select()
-    .from(tasks)
-    .where(and(eq(tasks.calendarEventId, parent.id), ne(tasks.status, 'unowned')));
-  for (const t of claimed) {
-    const boundaryHeld =
-      (t.type === 'dropoff' && keepsDropoff) || (t.type === 'pickup' && keepsPickup);
-    if (!boundaryHeld || onSegment.has(t.type)) continue;
-    await db.update(tasks).set({ calendarEventId: segment.id }).where(eq(tasks.id, t.id));
-    onSegment.add(t.type);
-  }
-}
-
-/**
  * Module B — task generation. Reads a member's unified-calendar events (never
  * `claimed_task` ones — the recursion guard) and reconciles the claimable tasks
  * each event spawns, keyed by (calendarEventId, type). Task TYPE is resolved at
@@ -366,8 +316,6 @@ export async function buildMemberTasks(
       fallback,
     );
     const intents = generateTaskIntents(event, resolution);
-
-    if (event.synthKey.startsWith('cf:')) await adoptMaskedParentTasks(db, event);
 
     const existing = await db
       .select()

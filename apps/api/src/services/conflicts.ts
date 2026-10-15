@@ -10,7 +10,6 @@ import {
   gte,
   inArray,
   lt,
-  ne,
   or,
   tasks,
 } from '@igt/db';
@@ -448,84 +447,151 @@ export async function reconcileMemberConflicts(
     }
   }
 
-  // Reconcile the cf: split segments: delete stale, upsert desired (hash skip).
+  // Reconcile the cf: split segments: upsert desired (hash skip), move or
+  // release claimed tasks across the old and new segment sets, then delete
+  // stale segments (their tasks have left by then).
   const existingCf = events.filter((e) => e.synthKey.startsWith('cf:'));
   const existingCfByKey = new Map(existingCf.map((e) => [e.synthKey, e]));
-  for (const cf of existingCf) {
-    if (!desiredCf.has(cf.synthKey)) {
-      await handOffSegmentTasks(db, cf, byKey, maskedLoserKeys, result);
-      await db.delete(calendarEvents).where(eq(calendarEvents.id, cf.id));
-    }
-  }
+  const desiredSpans = new Map<string, Span>();
   for (const [synthKey, row] of desiredCf) {
     const prior = existingCfByKey.get(synthKey);
+    let id: string;
     if (!prior) {
-      await db.insert(calendarEvents).values(row);
-    } else if (prior.contentHash !== row.contentHash) {
-      await db
-        .update(calendarEvents)
-        .set({
-          dtstart: row.dtstart,
-          dtend: row.dtend,
-          allDay: row.allDay,
-          summary: row.summary,
-          location: row.location,
-          locationGeo: row.locationGeo,
-          description: row.description,
-          linkId: row.linkId,
-          sourceEventId: row.sourceEventId,
-          contentHash: row.contentHash,
-        })
-        .where(eq(calendarEvents.id, prior.id));
+      id = (
+        await db.insert(calendarEvents).values(row).returning({ id: calendarEvents.id })
+      )[0]!.id;
+    } else {
+      id = prior.id;
+      if (prior.contentHash !== row.contentHash) {
+        await db
+          .update(calendarEvents)
+          .set({
+            dtstart: row.dtstart,
+            dtend: row.dtend,
+            allDay: row.allDay,
+            summary: row.summary,
+            location: row.location,
+            locationGeo: row.locationGeo,
+            description: row.description,
+            linkId: row.linkId,
+            sourceEventId: row.sourceEventId,
+            contentHash: row.contentHash,
+          })
+          .where(eq(calendarEvents.id, prior.id));
+      }
+    }
+    desiredSpans.set(synthKey, { id, dtstart: row.dtstart as Date, dtend: row.dtend ?? null });
+  }
+
+  // Every loser whose segments existed or now exist: claims on its old events
+  // (the parent day and its old segments, at their OLD times) are matched by
+  // boundary time to its new events (the new segments if it is masked, else the
+  // restored parent day).
+  const cfParentKey = (key: string) => key.slice('cf:'.length).replace(/:\d+$/, '');
+  const loserKeys = new Set([...maskedLoserKeys, ...existingCf.map((e) => cfParentKey(e.synthKey))]);
+  for (const loserKey of loserKeys) {
+    const parent = byKey.get(loserKey);
+    const sources: Span[] = [
+      ...(parent ? [parent] : []),
+      ...existingCf.filter((e) => cfParentKey(e.synthKey) === loserKey),
+    ].map((e) => ({ id: e.id, dtstart: e.dtstart, dtend: e.dtend }));
+    const targets: Span[] = maskedLoserKeys.has(loserKey)
+      ? [...desiredSpans].filter(([k]) => cfParentKey(k) === loserKey).map(([, v]) => v)
+      : parent
+        ? [{ id: parent.id, dtstart: parent.dtstart, dtend: parent.dtend }]
+        : [];
+    await reassignClaimedTasks(db, sources, targets, result);
+  }
+
+  for (const cf of existingCf) {
+    if (!desiredCf.has(cf.synthKey)) {
+      await db.delete(calendarEvents).where(eq(calendarEvents.id, cf.id));
     }
   }
 
   return result;
 }
 
+interface Span {
+  id: string;
+  dtstart: Date;
+  dtend: Date | null;
+}
+
 /**
- * A `cf:` split segment is going away (conflict reverted, cleared, or its
- * overlap changed) and may carry claimed tasks. Where the segment's boundary is
- * the same instant as the unmasked parent day's — drop-off at the start, pickup
- * at the end — the claim simply moves back onto the parent's task. Anywhere the
- * time would change, the claim is released so the unclaimed task goes back to
- * the queue for someone to decide on; the caretaker's claimed event goes with it.
+ * Whether a task anchored to `from`'s boundary is still anchored at the same
+ * instant on `to`: a drop-off rides its event's start, a pickup its end, an
+ * attendance the whole span.
  */
-async function handOffSegmentTasks(
+function sameBoundary(type: string, from: Span, to: Span): boolean {
+  const end = (e: Span) => e.dtend?.getTime() ?? null;
+  if (type === 'dropoff') return from.dtstart.getTime() === to.dtstart.getTime();
+  if (type === 'pickup') return end(from) != null && end(from) === end(to);
+  return from.dtstart.getTime() === to.dtstart.getTime() && end(from) === end(to);
+}
+
+/**
+ * A conflict split replaced one event (the day) with others (its segments), or
+ * back again, and claimed/dismissed tasks sit on the old ones. Owned tasks are
+ * never swept, so left alone they duplicate: a claimed pickup stays on the old
+ * event while the new one spawns an unclaimed twin.
+ *
+ * Each task is matched by boundary time to the new event set. Same instant → it
+ * moves there (replacing the unclaimed twin, if one was already built), so the
+ * claim carries over untouched. No match → a claim is released (the caretaker's
+ * claimed event goes with it and the unclaimed task is the decision about who
+ * takes the new time); a dismissal is dropped since the thing it dismissed no
+ * longer exists. User-converted (`manual`) tasks are never moved onto another
+ * event — they'd freeze its task types — so they're released instead.
+ */
+async function reassignClaimedTasks(
   db: Db,
-  segment: CalendarEventRow,
-  byKey: Map<string, CalendarEventRow>,
-  maskedLoserKeys: Set<string>,
+  sources: Span[],
+  targets: Span[],
   result: ConflictReconcileResult,
 ): Promise<void> {
-  const claimed = await db
+  if (sources.length === 0) return;
+  const held = await db
     .select()
     .from(tasks)
-    .where(and(eq(tasks.calendarEventId, segment.id), eq(tasks.status, 'owned')));
-  if (claimed.length === 0) return;
-  const parentKey = segment.synthKey.slice('cf:'.length).replace(/:\d+$/, '');
-  const parent = byKey.get(parentKey);
-  const parentLive = parent != null && !maskedLoserKeys.has(parentKey);
-  for (const t of claimed) {
-    const sameBoundary =
-      parentLive &&
-      ((t.type === 'dropoff' && parent.dtstart.getTime() === segment.dtstart.getTime()) ||
-        (t.type === 'pickup' &&
-          parent.dtend != null &&
-          segment.dtend != null &&
-          parent.dtend.getTime() === segment.dtend.getTime()));
-    if (sameBoundary) {
-      // Drop any unclaimed twin first so the parent keeps one task per type.
+    .where(
+      and(
+        inArray(
+          tasks.calendarEventId,
+          sources.map((s) => s.id),
+        ),
+        inArray(tasks.status, ['owned', 'dismissed']),
+      ),
+    );
+  for (const t of held) {
+    const from = sources.find((s) => s.id === t.calendarEventId)!;
+    const to = targets.find((x) => sameBoundary(t.type, from, x));
+    if (to && to.id === from.id) continue; // never moved
+    if (to && t.createdVia !== 'manual') {
+      // The segment's own unclaimed twin (built before this claim could move)
+      // gives way; anything else of that type on the target blocks the move.
       await db
         .delete(tasks)
         .where(
           and(
-            eq(tasks.calendarEventId, parent.id),
+            eq(tasks.calendarEventId, to.id),
             eq(tasks.type, t.type),
-            ne(tasks.status, 'owned'),
+            eq(tasks.status, 'unowned'),
+            eq(tasks.createdVia, 'generated'),
           ),
         );
-      await db.update(tasks).set({ calendarEventId: parent.id }).where(eq(tasks.id, t.id));
+      const blocking = await db
+        .select({ id: tasks.id })
+        .from(tasks)
+        .where(and(eq(tasks.calendarEventId, to.id), eq(tasks.type, t.type)))
+        .limit(1);
+      if (blocking.length === 0) {
+        await db.update(tasks).set({ calendarEventId: to.id }).where(eq(tasks.id, t.id));
+        continue;
+      }
+    }
+    if (t.status === 'dismissed') {
+      await db.delete(tasks).where(eq(tasks.id, t.id));
       continue;
     }
     const owners = (await ownerRowsFor(db, [t.id])).get(t.id) ?? [];

@@ -595,6 +595,7 @@ taskRoutes.post('/pending-decisions/:decisionId/resolve', async (c) => {
         await reconcileMemberConflicts(db, row.familyMemberId);
         await buildMemberTasks(db, row.familyMemberId);
       }
+      // Family-wide: also reaches any caretaker whose claim was released.
       enqueueReconcile(c, { kind: 'family', familyId: me.familyId });
     }
     return c.json({ ok: true, routedTo: targets.map((t) => t.familyMemberId) });
@@ -607,9 +608,15 @@ taskRoutes.post('/pending-decisions/:decisionId/resolve', async (c) => {
   // Resolving accepts the event onto the calendar as a normal scheduled day;
   // task typing then flows through the member's task rules like any event.
   await acceptOnto(decision);
-  await reconcileMemberConflicts(db, decision.familyMemberId);
-  await buildMemberTasks(db, decision.familyMemberId);
-  enqueueReconcile(c, { kind: 'member', memberId: decision.familyMemberId });
+  const reconciled = await reconcileMemberConflicts(db, decision.familyMemberId);
+  const built = await buildMemberTasks(db, decision.familyMemberId);
+  for (const memberId of new Set([
+    decision.familyMemberId,
+    ...reconciled.releasedOwnerIds,
+    ...built.releasedOwnerIds,
+  ])) {
+    enqueueReconcile(c, { kind: 'member', memberId });
+  }
   return c.json({ ok: true });
 });
 
@@ -1057,7 +1064,10 @@ taskRoutes.post('/calendar-events/:eventId/tasks', async (c) => {
     .update(calendarEvents)
     .set({ tasksBuiltHash: null })
     .where(eq(calendarEvents.id, event.id));
-  await buildMemberTasks(db, event.familyMemberId);
+  const built = await buildMemberTasks(db, event.familyMemberId);
+  for (const memberId of new Set([event.familyMemberId, ...built.releasedOwnerIds])) {
+    enqueueReconcile(c, { kind: 'member', memberId });
+  }
 
   const rows = await db
     .select()
