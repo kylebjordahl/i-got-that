@@ -234,12 +234,18 @@ void main() {
     },
   );
 
-  group('overrides in effect', () {
-    Conflict conflict(String id, String loserSummary, {Duration? offset}) {
+  group('double-bookings', () {
+    Conflict conflict(
+      String id,
+      String loserSummary, {
+      Duration? offset,
+      String status = 'resolved',
+    }) {
       final start = DateTime.now().add(offset ?? const Duration(hours: 2));
       return Conflict(
         id: id,
         familyMemberId: 'theo',
+        status: status,
         loser: ConflictEventRef(
           start: start,
           end: start.add(const Duration(hours: 2)),
@@ -265,7 +271,7 @@ void main() {
         accountsProvider.overrideWith((ref) async => const <ExternalAccount>[]),
         memberCalendarProvider.overrideWith((ref, id) async => null),
         calendarEventsProvider.overrideWith((ref) async => const []),
-        memberOverridesProvider.overrideWith((ref, id) async => overrides),
+        memberConflictsProvider.overrideWith((ref, id) async => overrides),
       ],
       child: MaterialApp(
         theme: buildAppTheme(),
@@ -282,14 +288,11 @@ void main() {
           appWith([conflict('c1', 'Soccer'), conflict('c2', 'Piano')]),
         );
 
-        expect(find.text('Overrides in effect'), findsOneWidget);
-        expect(
-          find.text('2 events split by a conflict decision'),
-          findsOneWidget,
-        );
+        expect(find.text('Double-bookings'), findsOneWidget);
+        expect(find.text('2 upcoming, all handled'), findsOneWidget);
         // The cards (and their revert controls) live in the sheet now.
         expect(find.text('Soccer'), findsNothing);
-        expect(find.text('Revert'), findsNothing);
+        expect(find.text('Revisit'), findsNothing);
       },
     );
 
@@ -300,8 +303,8 @@ void main() {
         appWith([conflict('c1', 'Soccer', offset: const Duration(days: -3))]),
       );
 
-      expect(find.text('Overrides in effect'), findsNothing);
-      expect(find.textContaining('split by a conflict decision'), findsNothing);
+      expect(find.text('Double-bookings'), findsNothing);
+      expect(find.textContaining('upcoming'), findsNothing);
     });
 
     testWidgets(
@@ -309,16 +312,38 @@ void main() {
       (tester) async {
         await pumpTall(tester, appWith([conflict('c1', 'Soccer')]));
 
-        expect(
-          find.text('1 event split by a conflict decision'),
-          findsOneWidget,
-        );
-        await tester.tap(find.text('Overrides in effect'));
+        expect(find.text('1 upcoming, already handled'), findsOneWidget);
+        await tester.tap(find.text('Double-bookings'));
         await tester.pumpAndSettle();
 
         // Sheet title (the button's own title is still mounted behind it).
-        expect(find.text('Overrides in effect'), findsNWidgets(2));
-        expect(find.text('Revert'), findsOneWidget);
+        expect(find.text('Double-bookings'), findsNWidgets(2));
+        expect(find.text('Revisit'), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'every status is listed with a badge saying how it was handled',
+      (tester) async {
+        await pumpTall(
+          tester,
+          appWith([
+            conflict('c1', 'Soccer', status: 'resolved'),
+            conflict('c2', 'Piano', status: 'dismissed'),
+            conflict('c3', 'Swim', status: 'pending'),
+          ]),
+        );
+        // A pending one makes the row ask for a decision.
+        expect(find.text('1 needs a decision'), findsOneWidget);
+        await tester.tap(find.text('Double-bookings'));
+        await tester.pumpAndSettle();
+
+        expect(find.text('Split'), findsOneWidget);
+        expect(find.text('Ignored'), findsOneWidget);
+        expect(find.text('Needs a decision'), findsOneWidget);
+        // Decided ones can be revisited; the pending one is decided from here.
+        expect(find.text('Revisit'), findsNWidgets(2));
+        expect(find.text('Decide'), findsOneWidget);
       },
     );
 
@@ -327,7 +352,7 @@ void main() {
       "member's avatar",
       (tester) async {
         await pumpTall(tester, appWith([conflict('c1', 'Soccer')]));
-        await tester.tap(find.text('Overrides in effect'));
+        await tester.tap(find.text('Double-bookings'));
         await tester.pumpAndSettle();
 
         // Both events, kept one first — order is what carries the priority.

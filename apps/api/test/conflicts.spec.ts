@@ -410,6 +410,39 @@ describe('conflict detection & masking', () => {
     ).toHaveLength(0);
   });
 
+  it('lists every conflict with its status for status=all, and a dismissed one can be reverted', async () => {
+    const f = await fixture('conflict-all@example.com');
+    await schoolAndDoctor(f.db, f);
+    await reconcileMemberConflicts(f.db, f.childId);
+    const conflict = (
+      await f.db.select().from(conflicts).where(eq(conflicts.familyMemberId, f.childId))
+    )[0]!;
+    const list = async (status: string) =>
+      (
+        (await (
+          await call(
+            `/families/${f.familyId}/conflicts?status=${status}&memberId=${f.childId}`,
+            bearer(f.admin.token),
+          )
+        ).json()) as { conflicts: { id: string; status: string }[] }
+      ).conflicts;
+
+    expect((await list('all')).map((c) => c.status)).toEqual(['pending']);
+    await call(
+      `/families/${f.familyId}/conflicts/${conflict.id}/dismiss`,
+      authed(f.admin.token),
+    );
+    expect((await list('all')).map((c) => c.status)).toEqual(['dismissed']);
+    expect(await list('pending')).toHaveLength(0);
+
+    const revert = await call(
+      `/families/${f.familyId}/conflicts/${conflict.id}/revert`,
+      authed(f.admin.token),
+    );
+    expect(revert.status).toBe(200);
+    expect((await list('all')).map((c) => c.status)).toEqual(['pending']);
+  });
+
   it('reopens a resolved conflict when the winner event is later edited, even though the overlap persists', async () => {
     const f = await fixture('conflict-reopen@example.com');
     const { blKey, docKey } = await schoolAndDoctor(f.db, f);
