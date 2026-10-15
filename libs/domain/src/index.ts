@@ -969,6 +969,12 @@ export const GoogleAuthorizeUrlInput = z.object({
 });
 export type GoogleAuthorizeUrlInput = z.infer<typeof GoogleAuthorizeUrlInput>;
 
+/** The user's notification switches beyond the digest schedules. */
+export const UpdateNotificationSettingsInput = z.object({
+  reauthAlerts: z.boolean(),
+});
+export type UpdateNotificationSettingsInput = z.infer<typeof UpdateNotificationSettingsInput>;
+
 /** Renew an existing Google account's grant with a fresh consent code. */
 export const GoogleReconnectInput = z.object({
   authCode: z.string().min(1),

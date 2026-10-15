@@ -164,10 +164,10 @@ function slotInstant(schedule: ScheduleRow, slot: string): Date {
   return localWallInstant(dateKey!, hhmm ?? schedule.sendAt, schedule.timezone);
 }
 
-type DeviceRow = typeof pushDevices.$inferSelect;
+export type DeviceRow = typeof pushDevices.$inferSelect;
 
 /** Every device of this user's that APNs hasn't already rejected. */
-async function liveDevices(db: Db, userId: string): Promise<DeviceRow[]> {
+export async function liveDevices(db: Db, userId: string): Promise<DeviceRow[]> {
   return db
     .select()
     .from(pushDevices)
@@ -177,10 +177,10 @@ async function liveDevices(db: Db, userId: string): Promise<DeviceRow[]> {
 /**
  * Send one message per device, disabling the ones APNs says are gone.
  *
- * Shared by the two sends below — the digest alert and the badge-only sync —
- * so a dead token is retired the same way whichever one found it.
+ * Shared by every send — the digest alert, the badge-only sync and the reauth
+ * alert — so a dead token is retired the same way whichever one found it.
  */
-async function pushToDevices(
+export async function pushToDevices(
   db: Db,
   pusher: Pusher,
   devices: DeviceRow[],

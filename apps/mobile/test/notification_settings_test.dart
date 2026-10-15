@@ -8,6 +8,7 @@ import 'package:caretaker_app/state/family.dart';
 import 'package:caretaker_app/state/notifications.dart';
 import 'package:caretaker_app/theme/app_theme.dart';
 import 'package:caretaker_app/util/notification_text.dart';
+import 'package:caretaker_app/widgets/settings.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -104,6 +105,16 @@ class _FakeApiClient extends ApiClient {
 
   @override
   Future<List<dynamic>> listNotificationSchedules() async => schedules;
+
+  bool reauthAlerts = true;
+
+  @override
+  Future<bool> fetchReauthAlertsEnabled() async => reauthAlerts;
+
+  @override
+  Future<void> setReauthAlertsEnabled(bool enabled) async {
+    reauthAlerts = enabled;
+  }
 
   @override
   Future<Map<String, dynamic>> createNotificationSchedule({
@@ -256,6 +267,30 @@ void main() {
         findsOneWidget,
       );
       expect(find.text('Add a notification'), findsOneWidget);
+    });
+
+    testWidgets('the calendar connection alerts switch saves the choice', (
+      tester,
+    ) async {
+      final api = _FakeApiClient(
+        devices: [
+          {'deviceToken': 'a' * 64},
+        ],
+      );
+      await tester.pumpWidget(meScreen(api, _FakePush()));
+      await tester.pumpAndSettle();
+
+      final row = find.ancestor(
+        of: find.text('Calendar connection alerts'),
+        matching: find.byType(SwitchRow),
+      );
+      expect(row, findsOneWidget);
+      expect(tester.widget<SwitchRow>(row).value, isTrue);
+
+      await tester.tap(find.descendant(of: row, matching: find.byType(Switch)));
+      await tester.pumpAndSettle();
+      expect(api.reauthAlerts, isFalse);
+      expect(tester.widget<SwitchRow>(row).value, isFalse);
     });
 
     testWidgets('hides the schedule list until push is on', (tester) async {

@@ -3,11 +3,8 @@ import 'dart:async';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart' show PlatformException;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:flutter_web_auth_2/flutter_web_auth_2.dart';
 import 'package:package_info_plus/package_info_plus.dart';
-import '../env.dart';
 import '../models.dart';
 import '../services/push.dart';
 import '../state/auth.dart';
@@ -23,6 +20,7 @@ import '../widgets/app_bottom_nav.dart';
 import '../widgets/primitives.dart';
 import '../widgets/settings.dart';
 import '../widgets/slide_to_confirm.dart';
+import '../util/google_reconnect.dart';
 import 'connect_account_wizard.dart';
 import 'dialogs.dart';
 import 'notification_schedule_screen.dart';
@@ -107,7 +105,7 @@ class MeScreen extends ConsumerWidget {
                     iconColor: _accountColor(a.kind),
                     title: a.kindLabel,
                     subtitle: a.username ?? a.name,
-                    trailing: const _ConnectedPill(),
+                    trailing: _ConnectedPill(needsReconnect: a.needsReconnect),
                     onTap: () => a.kind == 'google'
                         ? _googleAccountActions(context, ref, a)
                         : _disconnect(context, ref, a),
@@ -386,68 +384,7 @@ class MeScreen extends ConsumerWidget {
     );
     if (!context.mounted || choice == null) return;
     if (choice == 'disconnect') return _disconnect(context, ref, a);
-    return _reconnectGoogle(context, ref, a);
-  }
-
-  Future<void> _reconnectGoogle(
-    BuildContext context,
-    WidgetRef ref,
-    ExternalAccount a,
-  ) async {
-    // Web navigates away and comes back to `#connected=google`.
-    if (kIsWeb) {
-      ref.read(authControllerProvider.notifier).reconnectGoogleCalendar(a.id);
-      return;
-    }
-    final api = ref.read(apiClientProvider);
-    String message;
-    try {
-      // Same system-browser consent as the connect wizard (see
-      // ConnectAccountWizard._connectGoogleNative).
-      const redirectUri = '$apiBaseUrl/auth/google/native-callback';
-      final authorizeUrl = await api.accountGoogleAuthorizeUrl(redirectUri);
-      final callback = await FlutterWebAuth2.authenticate(
-        url: authorizeUrl,
-        callbackUrlScheme: googleOAuthCallbackScheme,
-      );
-      final code = Uri.parse(callback).queryParameters['code'];
-      if (code == null) {
-        message = 'Google did not return an authorization code.';
-      } else {
-        await api.reconnectGoogleAccount(
-          a.id,
-          authCode: code,
-          redirectUri: redirectUri,
-        );
-        ref.invalidate(accountsProvider);
-        message = 'Reconnected. Its calendars will catch up on the next sync.';
-      }
-    } on DioException catch (e) {
-      final data = e.response?.data;
-      final code = data is Map ? data['error'] : null;
-      message = switch (code) {
-        'google_account_mismatch' =>
-          'That was a different Google account. Sign in as '
-              '${a.username ?? 'the account you connected'} to reconnect it.',
-        'google_scopes_missing' =>
-          "Google didn't grant all the calendar access I Got That needs. "
-              'Try again and leave every calendar permission ticked on '
-              "Google's consent screen.",
-        'google_no_refresh_token' =>
-          'Google did not grant offline access. Remove I Got That from your '
-              'Google account permissions, then try again.',
-        _ => 'Could not reconnect (HTTP ${e.response?.statusCode ?? '?'}).',
-      };
-    } on PlatformException catch (e) {
-      // FlutterWebAuth2 reports a closed browser sheet as CANCELED.
-      if (e.code == 'CANCELED') return;
-      message = 'Could not reconnect: ${e.message ?? e.code}';
-    }
-    if (context.mounted) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text(message)));
-    }
+    return reconnectGoogleAccount(context, ref, a);
   }
 
   /// Audits what's linked to the account up front (like
@@ -812,6 +749,8 @@ class _NotificationsCard extends ConsumerWidget {
         ref.watch(notificationSchedulesProvider).valueOrNull ??
         const <NotificationSchedule>[];
     final on = push?.isOn ?? false;
+    final reauthAlerts =
+        ref.watch(reauthAlertsEnabledProvider).valueOrNull ?? true;
 
     return AppCard(
       child: Column(
@@ -855,6 +794,19 @@ class _NotificationsCard extends ConsumerWidget {
             ),
           ],
           if (on) ...[
+            const Divider(height: 20),
+            SwitchRow(
+              icon: Icons.sync_problem_rounded,
+              iconColor: AppColors.coral,
+              title: 'Calendar connection alerts',
+              subtitle:
+                  'When a connected account needs reconnecting. Never overnight.',
+              value: reauthAlerts,
+              onChanged: (v) async {
+                await ref.read(apiClientProvider).setReauthAlertsEnabled(v);
+                ref.invalidate(reauthAlertsEnabledProvider);
+              },
+            ),
             for (final schedule in schedules) ...[
               const Divider(height: 20),
               SettingRow(
@@ -952,14 +904,18 @@ class _ThreadingCardState extends ConsumerState<_ThreadingCard> {
 }
 
 class _ConnectedPill extends StatelessWidget {
-  const _ConnectedPill();
+  const _ConnectedPill({this.needsReconnect = false});
+
+  /// Syncs through this account are failing until it's reconnected.
+  final bool needsReconnect;
 
   @override
   Widget build(BuildContext context) {
+    final color = needsReconnect ? AppColors.coral : AppColors.green;
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
       decoration: BoxDecoration(
-        color: AppColors.tint(AppColors.green, 0.16),
+        color: AppColors.tint(color, 0.16),
         borderRadius: BorderRadius.circular(999),
       ),
       child: Row(
@@ -968,15 +924,12 @@ class _ConnectedPill extends StatelessWidget {
           Container(
             width: 6,
             height: 6,
-            decoration: const BoxDecoration(
-              color: AppColors.green,
-              shape: BoxShape.circle,
-            ),
+            decoration: BoxDecoration(color: color, shape: BoxShape.circle),
           ),
           const SizedBox(width: 6),
           Text(
-            'Connected',
-            style: font(kBodyFont, 11, 700, color: AppColors.green),
+            needsReconnect ? 'Needs reconnect' : 'Connected',
+            style: font(kBodyFont, 11, 700, color: color),
           ),
         ],
       ),

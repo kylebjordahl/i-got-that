@@ -10,6 +10,7 @@ import { syncFamilyEmailOutputs } from './services/email-outputs.js';
 import { getProductionRegistry, syncFamilyMirror } from './services/mirror.js';
 import { ingestFeed, isFeedDue } from './services/ingest.js';
 import { dispatchDueDigests } from './services/notifications.js';
+import { dispatchReauthAlerts } from './services/reauth-alerts.js';
 import { readBackFamily } from './services/readback.js';
 import { buildKekKeySet } from './lib/secrets.js';
 import { synthesizeFeed } from './services/synthesis.js';
@@ -71,6 +72,16 @@ export async function scheduled(
 
   // Digests due this tick. Each claims its slot before enqueuing, so
   // overlapping invocations can't double-send.
+  // Accounts that stopped authenticating, pushed to their owner (once per
+  // failure, never overnight).
+  ctx.waitUntil(
+    dispatchReauthAlerts(env, new Date(now))
+      .then((count) => {
+        if (count > 0) console.log(`sent ${count} reauth alert(s)`);
+      })
+      .catch((err) => console.error('reauth alert dispatch failed', err)),
+  );
+
   ctx.waitUntil(
     dispatchDueDigests({ env, executionCtx: ctx }, new Date(now))
       .then((count) => {

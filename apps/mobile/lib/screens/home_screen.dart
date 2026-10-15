@@ -8,6 +8,7 @@ import '../theme/app_colors.dart';
 import '../theme/app_text.dart';
 import '../theme/person_colors.dart';
 import '../util/format.dart';
+import '../util/google_reconnect.dart';
 import '../util/task_visuals.dart';
 import '../widgets/app_bottom_nav.dart';
 import '../widgets/conflict_card.dart';
@@ -65,6 +66,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     ref.invalidate(pendingDecisionsProvider);
     ref.invalidate(conflictsProvider);
     ref.invalidate(calendarEventsProvider);
+    ref.invalidate(accountsProvider);
   }
 
   Future<void> _refreshFeeds() async {
@@ -122,6 +124,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final decisionCards = groupDecisions(decisions);
     final conflicts =
         ref.watch(conflictsProvider).valueOrNull ?? const <Conflict>[];
+    // My own Google accounts whose grant stopped working: only I can fix
+    // them, and every calendar drawn from them has stopped updating.
+    final needsReconnect = [
+      for (final a
+          in ref.watch(accountsProvider).valueOrNull ??
+              const <ExternalAccount>[])
+        if (a.kind == 'google' && a.needsReconnect) a,
+    ];
     final threshold = ref.watch(threadingThresholdProvider).valueOrNull ?? 30;
     final events =
         ref.watch(calendarEventsProvider).valueOrNull ??
@@ -168,6 +178,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final unownedDays = unownedByDay.keys.toList()..sort();
     final coveringDays = coveringByDay.keys.toList()..sort();
     final nothing =
+        needsReconnect.isEmpty &&
         conflicts.isEmpty &&
         decisions.isEmpty &&
         unowned.isEmpty &&
@@ -189,8 +200,31 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                 children: [
                   _header(now),
                   const SizedBox(height: 18),
-                  // Agenda conflicts rank ABOVE everything — a member can't be
-                  // in two places at once, so they block until an admin acts.
+                  // A broken account ranks above everything: until it's
+                  // reconnected, nothing drawn from it is current — including
+                  // what the cards below are built from.
+                  if (needsReconnect.isNotEmpty) ...[
+                    SectionEyebrow(
+                      'Needs reconnecting',
+                      color: AppColors.coral,
+                      trailing: TintBadge(
+                        '${needsReconnect.length}',
+                        color: AppColors.coral,
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    for (final account in needsReconnect) ...[
+                      _ReconnectCard(
+                        account: account,
+                        onReconnect: () =>
+                            reconnectGoogleAccount(context, ref, account),
+                      ),
+                      const SizedBox(height: 10),
+                    ],
+                    const SizedBox(height: 8),
+                  ],
+                  // Agenda conflicts rank ABOVE everything else — a member can't
+                  // be in two places at once, so they block until an admin acts.
                   if (conflicts.isNotEmpty) ...[
                     SectionEyebrow(
                       'Double-booked',
@@ -896,6 +930,75 @@ class _DecisionCard extends StatelessWidget {
             ],
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// A connected Google account whose grant stopped working (expired, revoked,
+/// or missing a permission). Coral like a conflict, because it's as blocking:
+/// every calendar drawn from it is frozen at its last good sync.
+class _ReconnectCard extends StatelessWidget {
+  const _ReconnectCard({required this.account, required this.onReconnect});
+  final ExternalAccount account;
+  final VoidCallback onReconnect;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: AppColors.tint(AppColors.coral, 0.07),
+      borderRadius: BorderRadius.circular(18),
+      child: InkWell(
+        onTap: onReconnect,
+        borderRadius: BorderRadius.circular(18),
+        child: Container(
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(18),
+            border: Border.all(color: AppColors.coral.withValues(alpha: 0.45)),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  const Icon(
+                    Icons.sync_problem_rounded,
+                    color: AppColors.coral,
+                    size: 20,
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Google · ${account.username ?? account.name}',
+                      style: AppText.sectionItemTitle,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 6),
+              Text(
+                'Calendars from this account stopped syncing. Sign in to '
+                'Google again to bring them up to date.',
+                style: AppText.subtitle,
+              ),
+              const SizedBox(height: 10),
+              Row(
+                children: [
+                  Expanded(
+                    child: PillButton(
+                      label: 'Reconnect',
+                      variant: PillVariant.amber,
+                      dense: true,
+                      onPressed: onReconnect,
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }

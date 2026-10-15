@@ -184,6 +184,11 @@ final pushControllerProvider =
       PushController.new,
     );
 
+/// Whether the user gets a push when a calendar account needs reconnecting.
+final reauthAlertsEnabledProvider = FutureProvider<bool>(
+  (ref) => ref.watch(apiClientProvider).fetchReauthAlertsEnabled(),
+);
+
 /// The user's configured digests, newest send time first.
 final notificationSchedulesProvider =
     FutureProvider<List<NotificationSchedule>>((ref) async {

@@ -1444,6 +1444,22 @@ class ApiClient {
     return (_obj(res)['count'] as num?)?.toInt() ?? 0;
   }
 
+  /// Notification switches beyond the digests (`reauthAlerts`: push when a
+  /// calendar account needs reconnecting).
+  Future<bool> fetchReauthAlertsEnabled() async {
+    final res = await _dio.get('/notifications/settings', options: _auth);
+    final settings = _obj(res)['settings'] as Map<String, dynamic>?;
+    return settings?['reauthAlerts'] as bool? ?? true;
+  }
+
+  Future<void> setReauthAlertsEnabled(bool enabled) async {
+    await _dio.patch(
+      '/notifications/settings',
+      data: {'reauthAlerts': enabled},
+      options: _auth,
+    );
+  }
+
   Future<List<dynamic>> listNotificationSchedules() async => _list(
     await _dio.get('/notifications/schedules', options: _auth),
     'schedules',
