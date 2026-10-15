@@ -512,6 +512,49 @@ describe('email output reconcile', () => {
     expect(ics(unpadded.sent[0]!.mime)).toContain('DTSTART:20260706T140000Z');
   });
 
+  it('masks the title and strips non-time details, keeping the car on trips', async () => {
+    const fam = await setupFamily('eo-mask@example.com');
+    const db = getDb(env.DB);
+    const cal = await seedCalendar(db, fam);
+    await db
+      .update(calendarEvents)
+      .set({
+        location: 'Lincoln Elementary',
+        description: 'Bring the permission slip',
+        travelTimeOverrideMin: 20,
+      })
+      .where(eq(calendarEvents.id, cal.dropoff.id));
+    const output = await verifiedOutput(fam.admin.token, fam.familyId, fam.adminMemberId, {
+      email: 'mask@example.com',
+      padTravelTime: true,
+      maskTitle: 'Busy',
+      filters: { include: ['claimed_task', 'schedule'] },
+    });
+
+    const outbox = new DevOutbox();
+    await syncMemberEmailOutputs(db, outbox, fam.adminMemberId, NOW);
+    const all = outbox.sent.map((m) => ics(m.mime));
+    expect(all.length).toBeGreaterThan(1);
+    for (const body of all) {
+      expect(body).not.toContain('Drop-off');
+      expect(body).not.toContain('Book club');
+      expect(body).not.toContain('Lincoln Elementary');
+      expect(body).not.toContain('permission slip');
+      expect(body).not.toContain('LOCATION');
+    }
+    expect(all.some((b) => /SUMMARY:🚗 Busy/.test(b) && b.includes('DTSTART:20260706T134000Z'))).toBe(true);
+    expect(all.some((b) => /SUMMARY:Busy/.test(b))).toBe(true);
+
+    // Clearing the mask re-sends the real details.
+    await call(
+      `/families/${fam.familyId}/members/${fam.adminMemberId}/email-outputs/${output.id}`,
+      patched(fam.admin.token, { maskTitle: null }),
+    );
+    const unmasked = new DevOutbox();
+    await syncMemberEmailOutputs(db, unmasked, fam.adminMemberId, NOW);
+    expect(unmasked.sent.map((m) => ics(m.mime)).join('\n')).toContain('🚗 Drop-off');
+  });
+
   it('includes busy blocks only when asked', async () => {
     const fam = await setupFamily('eo-busy@example.com');
     const db = getDb(env.DB);

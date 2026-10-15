@@ -1022,6 +1022,10 @@ export const emailOutputs = sqliteTable(
     // travel block), and mark its title with 🚗. For recipients whose calendar
     // has no travel-time field of its own — which is most of them.
     padTravelTime: integer('pad_travel_time', { mode: 'boolean' }).notNull().default(false),
+    // Mask: when set, this replaces every invite's title and the event's other
+    // non-time properties (description, location) are dropped. Travel padding
+    // still applies.
+    maskTitle: text('mask_title'),
     active: integer('active', { mode: 'boolean' }).notNull().default(true),
     verifiedAt: integer('verified_at', { mode: 'timestamp_ms' }),
     lastMirroredAt: integer('last_mirrored_at', { mode: 'timestamp_ms' }),

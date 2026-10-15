@@ -1191,6 +1191,7 @@ class EmailOutput {
     required this.verified,
     this.unsubscribed = false,
     this.padTravelTime = false,
+    this.maskTitle,
     this.label,
   });
 
@@ -1208,6 +1209,10 @@ class EmailOutput {
   /// Trips are sent starting earlier by the estimated drive, marked 🚗.
   final bool padTravelTime;
 
+  /// When set, every invite is titled this and carries no other non-time
+  /// details (description, location).
+  final String? maskTitle;
+
   factory EmailOutput.fromJson(Map<String, dynamic> j) => EmailOutput(
     id: j['id'] as String,
     email: j['email'] as String,
@@ -1217,6 +1222,7 @@ class EmailOutput {
     verified: j['verified'] as bool? ?? false,
     unsubscribed: j['unsubscribed'] as bool? ?? false,
     padTravelTime: j['padTravelTime'] as bool? ?? false,
+    maskTitle: j['maskTitle'] as String?,
   );
 }
 
