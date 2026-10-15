@@ -89,9 +89,10 @@ export async function dispatchReauthAlerts(
       bundleId: device.bundleId,
       environment: device.environment,
       title: `Reconnect your ${provider} account`,
-      body: `Calendars from ${who} stopped syncing. Open I Got That to reconnect.`,
+      body: `Calendars from ${who} stopped syncing. Tap to reconnect.`,
       threadId: 'reauth',
       collapseId: `reauth-${account.id}`,
+      // The app opens Me with this account scrolled into view (PushTapScope).
       data: { type: 'reauth', accountId: account.id },
     }));
     if (outcome.delivered > 0) {

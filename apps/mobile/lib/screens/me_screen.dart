@@ -12,6 +12,7 @@ import '../state/badge.dart';
 import '../state/family.dart';
 import '../state/nav.dart';
 import '../state/notifications.dart';
+import '../state/push_taps.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_text.dart';
 import '../theme/person_colors.dart';
@@ -100,15 +101,20 @@ class MeScreen extends ConsumerWidget {
                 )
               else
                 for (final a in accounts) ...[
-                  SettingRow(
-                    icon: _accountIcon(a.kind),
-                    iconColor: _accountColor(a.kind),
-                    title: a.kindLabel,
-                    subtitle: a.username ?? a.name,
-                    trailing: _ConnectedPill(needsReconnect: a.needsReconnect),
-                    onTap: () => a.kind == 'google'
-                        ? _googleAccountActions(context, ref, a)
-                        : _disconnect(context, ref, a),
+                  _AccountFocusTarget(
+                    accountId: a.id,
+                    child: SettingRow(
+                      icon: _accountIcon(a.kind),
+                      iconColor: _accountColor(a.kind),
+                      title: a.kindLabel,
+                      subtitle: a.username ?? a.name,
+                      trailing: _ConnectedPill(
+                        needsReconnect: a.needsReconnect,
+                      ),
+                      onTap: () => a.kind == 'google'
+                          ? _googleAccountActions(context, ref, a)
+                          : _disconnect(context, ref, a),
+                    ),
                   ),
                   const Divider(height: 20),
                 ],
@@ -900,6 +906,64 @@ class _ThreadingCardState extends ConsumerState<_ThreadingCard> {
         .read(apiClientProvider)
         .updateFamily(familyId, threadingThresholdMinutes: minutes);
     ref.invalidate(threadingThresholdProvider);
+  }
+}
+
+/// An account row a tapped reauth push can point at: when it's the
+/// [focusedAccountIdProvider] account, it scrolls itself into view and glows
+/// briefly so it's obvious which one the alert meant, then clears the request.
+class _AccountFocusTarget extends ConsumerStatefulWidget {
+  const _AccountFocusTarget({required this.accountId, required this.child});
+
+  final String accountId;
+  final Widget child;
+
+  @override
+  ConsumerState<_AccountFocusTarget> createState() =>
+      _AccountFocusTargetState();
+}
+
+class _AccountFocusTargetState extends ConsumerState<_AccountFocusTarget> {
+  bool _highlight = false;
+
+  void _focus() {
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      // A rebuild before this frame lands queues a second callback; only the
+      // first one still finds the request pending.
+      if (!mounted || ref.read(focusedAccountIdProvider) != widget.accountId) {
+        return;
+      }
+      ref.read(focusedAccountIdProvider.notifier).state = null;
+      setState(() => _highlight = true);
+      await Scrollable.ensureVisible(
+        context,
+        alignment: 0.3,
+        duration: const Duration(milliseconds: 350),
+        curve: Curves.easeOut,
+      );
+      await Future<void>.delayed(const Duration(seconds: 2));
+      if (mounted) setState(() => _highlight = false);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // A push can land before the accounts have loaded, so the row also
+    // checks on first build, not only when the request changes.
+    ref.listen<String?>(focusedAccountIdProvider, (_, id) {
+      if (id == widget.accountId) _focus();
+    });
+    if (ref.read(focusedAccountIdProvider) == widget.accountId) _focus();
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 300),
+      decoration: BoxDecoration(
+        color: _highlight
+            ? AppColors.tint(AppColors.coral, 0.12)
+            : Colors.transparent,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: widget.child,
+    );
   }
 }
 
