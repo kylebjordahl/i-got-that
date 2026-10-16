@@ -1144,9 +1144,10 @@ feedRoutes.post('/:feedId/refresh', async (c) => {
 
 /**
  * Force-refresh all of a family's feeds now — `runPipeline` over the whole
- * family, so it runs the cron tick's stage order (a paused feed is not
- * synthesized). Without the read-back step, human edits made directly on a
- * member's target calendar wouldn't show up until the next cron tick.
+ * family, so it runs the cron tick's stage order. A paused feed is left alone
+ * (neither read nor synthesized): reading it would flip it back to 'active' and
+ * silently undo the pause. Without the read-back step, human edits made directly
+ * on a member's target calendar wouldn't show up until the next cron tick.
  */
 feedRoutes.post('/refresh-all', async (c) => {
   const db = getDb(c.env.DB);

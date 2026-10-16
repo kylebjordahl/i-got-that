@@ -101,9 +101,9 @@ export interface PipelineOptions {
    *   never a paused feed, and an 'error' feed only once its backoff elapsed);
    *   uses the stored ETag.
    * - `'force'`: a person pressed Refresh — ingest every feed in scope
-   *   unconditionally, dropping the ETag (see `IngestOptions.force`). Like the
-   *   refresh routes always have, this reads a paused feed too (which a
-   *   successful read flips back to 'active').
+   *   unconditionally, dropping the ETag (see `IngestOptions.force`). A
+   *   family-wide run (no `scope.feedIds`) skips a paused feed, as `'due'` does;
+   *   a feed the caller names is read even if paused.
    * - `'none'`: don't touch the network for feeds.
    */
   ingest: 'due' | 'force' | 'none';
@@ -209,10 +209,10 @@ const messageOf = (err: unknown): string => (err instanceof Error ? err.message 
  *
  * Scope rules:
  *  - `feedIds` names feeds the caller has acted on, so they are processed even
- *    if paused. A family-wide run never synthesizes a paused feed (only
- *    `paused`, a user's decision, is skipped outright) — judged from the feeds as
- *    they stood when the run began, since a forced read of a paused feed flips
- *    its status.
+ *    if paused. A family-wide run never ingests (`'due'` or `'force'`) or
+ *    synthesizes a paused feed: only `paused`, a user's decision, is skipped
+ *    outright. (A read of a paused feed would flip it back to 'active' or
+ *    'error', silently undoing the pause — so Refresh all must not make one.)
  *  - Read-back and the mirror are always family-wide; `memberIds` only narrows
  *    conflicts and task-gen. The claim true-up is family-wide too, so the
  *    `'enqueue'` job is a family reconcile: it has to reach any caretaker whose
@@ -316,11 +316,10 @@ export async function runPipeline(
   };
 
   // --- 1. ingest ---------------------------------------------------------------
-  const pausedAtStart = new Set<string>();
   if (opts.ingest !== 'none') {
     await stage('ingest', async () => {
       for (const feed of await loadFeeds()) {
-        if (feed.status === 'paused') pausedAtStart.add(feed.id);
+        if (!feedIds && feed.status === 'paused') continue;
         if (opts.ingest === 'due' && !isFeedDue(feed, now)) continue;
         try {
           result.ingest.push(
@@ -355,7 +354,7 @@ export async function runPipeline(
   if (synthesize) {
     await stage('synthesis', async () => {
       for (const feed of await loadFeeds()) {
-        if (!feedIds && (feed.status === 'paused' || pausedAtStart.has(feed.id))) continue;
+        if (!feedIds && feed.status === 'paused') continue;
         await unit('synthesis', 'feed', feed.id, async () => {
           result.synthesis.push(
             await synthesizeFeed(db, feed, opts.now ? { windowStart: opts.now } : {}),

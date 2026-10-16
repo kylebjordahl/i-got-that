@@ -379,7 +379,7 @@ describe('the refresh routes', () => {
 });
 
 describe('paused feeds', () => {
-  it('refresh-all does not synthesize a paused feed', async () => {
+  it('refresh-all leaves a paused feed alone: not read (so still paused), not synthesized', async () => {
     const f = await claimFixture('paused-refresh-all@example.com');
     // Pause it, and drop the days it already has so any synthesis would show.
     await f.db.update(feeds).set({ status: 'paused' }).where(eq(feeds.id, f.feed.id));
@@ -388,8 +388,15 @@ describe('paused feeds', () => {
     const res = await call(`/families/${f.familyId}/feeds/refresh-all`, authed(f.admin.token));
 
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { synthesis: unknown[] };
+    const body = (await res.json()) as { ingest: unknown[]; synthesis: unknown[] };
+    expect(body.ingest).toEqual([]);
     expect(body.synthesis).toEqual([]);
+    // Reading it would have flipped it to 'active' (or 'error' — the source is
+    // down), silently undoing the pause.
+    const row = await f.reloadFeed();
+    expect(row.status).toBe('paused');
+    expect(row.lastAttemptedAt).toBeNull();
+    expect(row.consecutiveFailures).toBe(0);
     expect(await f.baselineDays()).toBe(0);
   });
 
@@ -457,6 +464,22 @@ describe('runPipeline: what the options reach', () => {
       .set({ lastAttemptedAt: new Date(Date.now() - 24 * 60 * 60_000) })
       .where(eq(feeds.id, f.feed.id));
     expect((await run(f, {}, { ...base, ingest: 'due' })).ingest).toHaveLength(1);
+  });
+
+  it("'force' skips a paused feed family-wide but reads one the caller names", async () => {
+    const f = await claimFixture('opts-paused-force@example.com');
+    await f.db.update(feeds).set({ status: 'paused' }).where(eq(feeds.id, f.feed.id));
+
+    for (const ingest of ['due', 'force'] as const) {
+      const familyWide = await run(f, {}, { ...base, ingest });
+      expect(familyWide.ingest).toEqual([]);
+      expect(familyWide.synthesis).toEqual([]);
+    }
+    expect((await f.reloadFeed()).status).toBe('paused');
+
+    const named = await run(f, { feedIds: [f.feed.id] }, { ...base, ingest: 'force' });
+    expect(named.ingest).toEqual([expect.objectContaining({ feedId: f.feed.id })]);
+    expect(named.synthesis).toHaveLength(1);
   });
 
   it('synthesizes by default for a feed scope or an ingesting run, not for a bare member scope', async () => {
