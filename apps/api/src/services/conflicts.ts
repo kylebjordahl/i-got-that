@@ -735,20 +735,3 @@ async function reassignClaimedTasks(
     ]);
   }
 }
-
-/** Reconcile conflicts for every member of a family (cron + refresh-all). */
-export async function reconcileFamilyConflicts(
-  db: Db,
-  familyId: string,
-  opts: SynthesisWindowOptions = {},
-): Promise<ConflictReconcileResult[]> {
-  const members = await db
-    .select({ id: familyMembers.id })
-    .from(familyMembers)
-    .where(eq(familyMembers.familyId, familyId));
-  const results: ConflictReconcileResult[] = [];
-  for (const { id } of members) {
-    results.push(await reconcileMemberConflicts(db, id, opts));
-  }
-  return results;
-}
