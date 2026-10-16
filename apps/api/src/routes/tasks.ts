@@ -37,13 +37,9 @@ import { Hono } from 'hono';
 import type { HonoEnv } from '../env.js';
 import { requireFamilyMember } from '../middleware/auth.js';
 import { ownersOf, removeClaimEvent, syncClaimEvents } from '../services/claim.js';
-import {
-  hydrateConflicts,
-  reconcileMemberConflicts,
-  scheduleStamp,
-} from '../services/conflicts.js';
+import { hydrateConflicts, scheduleStamp } from '../services/conflicts.js';
 import { enqueueReconcile, getProductionRegistry, syncFamilyMirror } from '../services/mirror.js';
-import { resynthesizeFeed } from '../services/pipeline.js';
+import { type PipelineContext, resynthesizeFeed, runPipeline } from '../services/pipeline.js';
 import { buildKekKeySet } from '../lib/secrets.js';
 import { hashCalendarEvent } from '../services/synthesis.js';
 import { buildMemberTasks } from '../services/task-gen.js';
@@ -52,6 +48,27 @@ import { ownerRowsFor, setTaskOwners, withOwners } from '../services/task-owners
 /** Mounted under /families/:familyId (auth applied by parent router). */
 export const taskRoutes = new Hono<HonoEnv>();
 taskRoutes.use('*', requireFamilyMember);
+
+/**
+ * Re-run conflicts → task-gen → claim true-up for the members a decision just
+ * changed, then queue the mirror: `runPipeline` with nothing to ingest or
+ * synthesize. The mirror job is family-wide because the true-up can move a
+ * claimed event on any caretaker's calendar, and a released claim lands on one
+ * who isn't one of `memberIds`.
+ */
+function rerunMembers(
+  c: PipelineContext,
+  db: ReturnType<typeof getDb>,
+  familyId: string,
+  memberIds: string[],
+) {
+  return runPipeline(
+    c,
+    db,
+    { familyId, memberIds },
+    { ingest: 'none', synthesize: false, readBack: false, mirror: 'enqueue' },
+  );
+}
 
 // --- Tasks (the claim hub) -------------------------------------------------
 
@@ -593,12 +610,7 @@ taskRoutes.post('/pending-decisions/:decisionId/resolve', async (c) => {
     if (d.rule && feed) {
       await resynthesizeFeed(c, db, feed);
     } else {
-      for (const row of targets) {
-        await reconcileMemberConflicts(db, row.familyMemberId);
-        await buildMemberTasks(db, row.familyMemberId);
-      }
-      // Family-wide: also reaches any caretaker whose claim was released.
-      enqueueReconcile(c, { kind: 'family', familyId: me.familyId });
+      await rerunMembers(c, db, me.familyId, [...new Set(targets.map((t) => t.familyMemberId))]);
     }
     return c.json({ ok: true, routedTo: targets.map((t) => t.familyMemberId) });
   }
@@ -610,11 +622,7 @@ taskRoutes.post('/pending-decisions/:decisionId/resolve', async (c) => {
   // Resolving accepts the event onto the calendar as a normal scheduled day;
   // task typing then flows through the member's task rules like any event.
   await acceptOnto(decision);
-  const reconciled = await reconcileMemberConflicts(db, decision.familyMemberId);
-  await buildMemberTasks(db, decision.familyMemberId);
-  for (const memberId of new Set([decision.familyMemberId, ...reconciled.releasedOwnerIds])) {
-    enqueueReconcile(c, { kind: 'member', memberId });
-  }
+  await rerunMembers(c, db, me.familyId, [decision.familyMemberId]);
   return c.json({ ok: true });
 });
 
@@ -802,12 +810,7 @@ taskRoutes.post('/conflicts/:conflictId/resolve', async (c) => {
       ...stamps,
     })
     .where(eq(conflicts.id, conflict.id));
-  const reconciled = await reconcileMemberConflicts(db, conflict.familyMemberId);
-  await buildMemberTasks(db, conflict.familyMemberId);
-  const touched = new Set([conflict.familyMemberId, ...reconciled.releasedOwnerIds]);
-  for (const memberId of touched) {
-    enqueueReconcile(c, { kind: 'member', memberId });
-  }
+  await rerunMembers(c, db, me.familyId, [conflict.familyMemberId]);
   return c.json({ ok: true });
 });
 
@@ -836,12 +839,7 @@ taskRoutes.post('/conflicts/:conflictId/dismiss', async (c) => {
       ...stamps,
     })
     .where(eq(conflicts.id, conflict.id));
-  const reconciled = await reconcileMemberConflicts(db, conflict.familyMemberId);
-  await buildMemberTasks(db, conflict.familyMemberId);
-  const touched = new Set([conflict.familyMemberId, ...reconciled.releasedOwnerIds]);
-  for (const memberId of touched) {
-    enqueueReconcile(c, { kind: 'member', memberId });
-  }
+  await rerunMembers(c, db, me.familyId, [conflict.familyMemberId]);
   return c.json({ ok: true });
 });
 
@@ -873,12 +871,7 @@ taskRoutes.post('/conflicts/:conflictId/revert', async (c) => {
       afterNeeded: true,
     })
     .where(eq(conflicts.id, conflict.id));
-  const reconciled = await reconcileMemberConflicts(db, conflict.familyMemberId);
-  await buildMemberTasks(db, conflict.familyMemberId);
-  const touched = new Set([conflict.familyMemberId, ...reconciled.releasedOwnerIds]);
-  for (const memberId of touched) {
-    enqueueReconcile(c, { kind: 'member', memberId });
-  }
+  await rerunMembers(c, db, me.familyId, [conflict.familyMemberId]);
   return c.json({ ok: true });
 });
 
