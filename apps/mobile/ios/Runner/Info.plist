@@ -58,6 +58,11 @@
 	     is what stops the two from ever disagreeing. -->
 	<key>IGTApsEnvironment</key>
 	<string>$(APS_ENVIRONMENT)</string>
+	<!-- app_links (main.dart) owns Universal Links. Flutter 3.27+ defaults its own
+	     deep-link handler on; it claims the link, finds no matching route, and
+	     iOS then falls back to opening the URL in Safari. -->
+	<key>FlutterDeepLinkingEnabled</key>
+	<false/>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
 	<key>LSRequiresIPhoneOS</key>
