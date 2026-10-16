@@ -8,10 +8,12 @@ import {
   familyMembers,
   feeds,
   inArray,
+  isNotNull,
   isNull,
   memberCalendars,
   ne,
   or,
+  sourceEvents,
   sql,
   taskRules,
   tasks,
@@ -305,6 +307,24 @@ async function buildEventTasks(
     tasksByEvent.set(t.calendarEventId!, list);
   }
 
+  // The source DESCRIPTION of each feed event, which the task rules may match on
+  // but which is deliberately not on the calendar event (it would reach the
+  // mirror and email invites). One chunked read for the whole batch of events,
+  // looked up below; an event with no description isn't returned at all.
+  const sourceIds = [
+    ...new Set(buildable.flatMap((e) => (e.sourceEventId ? [e.sourceEventId] : []))),
+  ];
+  const sourceDescriptions = new Map(
+    (
+      await selectChunked(sourceIds, (chunk) =>
+        db
+          .select({ id: sourceEvents.id, description: sourceEvents.description })
+          .from(sourceEvents)
+          .where(and(inArray(sourceEvents.id, chunk), isNotNull(sourceEvents.description))),
+      )
+    ).map((r): [string, string | null] => [r.id, r.description]),
+  );
+
   // Decide what each event should have (pure: no reads or writes in here).
   const plans = buildable.map((event) => {
     const fallback =
@@ -313,7 +333,11 @@ async function buildEventTasks(
       {
         summary: event.summary,
         location: event.location,
-        description: event.description,
+        // A human event's own description, else the feed event's source text.
+        description:
+          event.description ??
+          (event.sourceEventId ? sourceDescriptions.get(event.sourceEventId) : null) ??
+          null,
         allDay: event.allDay,
         dtstart: event.dtstart,
         dtend: event.dtend,

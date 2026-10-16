@@ -63,7 +63,18 @@ export type EventProvenance = z.infer<typeof EventProvenance>;
  * Both share the matcher shape below.
  */
 
-/** Field a matcher inspects. `any_text` = summary/location/description. */
+/**
+ * Field a matcher inspects. `any_text` = summary + location + description.
+ *
+ * `description` is the SOURCE event's free-text body — the ICS `DESCRIPTION` or
+ * Google `description`, unescaped and truncated to 2000 characters
+ * (`MAX_DESCRIPTION_CHARS` in `@igt/ical`) at ingest — so a phrase buried
+ * deeper than that never matches. It is matched but never shown or mirrored: a
+ * feed event's description is not copied onto the member's calendar. An event
+ * whose source gave no description (a baseline day, a busy block, a feed that
+ * omits it) has an empty one, which only a rule that matches the empty string
+ * can hit.
+ */
 export const OverrideMatchField = z.enum([
   'summary',
   'location',

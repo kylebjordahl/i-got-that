@@ -218,6 +218,13 @@
       "when": 1792140370004,
       "tag": "0030_melted_wolfpack",
       "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "6",
+      "when": 1792157016161,
+      "tag": "0031_nebulous_shotgun",
+      "breakpoints": true
     }
   ]
 }

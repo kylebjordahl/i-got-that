@@ -104,7 +104,12 @@ async function claimPayload(db: Db, task: TaskRow, preload?: ClaimPreload) {
       ),
     location: source?.location ?? task.location,
     locationGeo: source?.locationGeo ?? task.locationGeo,
-    description: source?.description ?? null,
+    // A human event's description is held for rule matching (read-back stores
+    // it), not for re-sending: it was written on someone's own calendar, and a
+    // claim would carry it onto another caretaker's calendar and into their
+    // email invites. Nothing else gives a calendar event a description today, so
+    // this changes nothing for synthesized events.
+    description: source && source.provenance !== 'human' ? source.description : null,
   };
 }
 
