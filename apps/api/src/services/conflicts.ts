@@ -250,13 +250,17 @@ export async function reconcileMemberConflicts(
 
   for (const p of detected) {
     if (!existingByPair.has(pairId(p.loserKey, p.winnerKey))) {
-      await db.insert(conflicts).values({
-        familyId: member.familyId,
-        familyMemberId,
-        loserKey: p.loserKey,
-        winnerKey: p.winnerKey,
-        status: 'pending',
-      });
+      // No-op if a concurrent reconcile detected the same pair first.
+      await db
+        .insert(conflicts)
+        .values({
+          familyId: member.familyId,
+          familyMemberId,
+          loserKey: p.loserKey,
+          winnerKey: p.winnerKey,
+          status: 'pending',
+        })
+        .onConflictDoNothing();
     }
   }
   // Drop rows whose overlap no longer exists (auto-clear).
@@ -453,8 +457,28 @@ export async function reconcileMemberConflicts(
     const prior = existingCfByKey.get(synthKey);
     let id: string;
     if (!prior) {
+      // Upsert so a concurrent reconcile that already materialised this
+      // segment converges on its row (and we still get the id back).
       id = (
-        await db.insert(calendarEvents).values(row).returning({ id: calendarEvents.id })
+        await db
+          .insert(calendarEvents)
+          .values(row)
+          .onConflictDoUpdate({
+            target: [calendarEvents.familyMemberId, calendarEvents.synthKey],
+            set: {
+              dtstart: row.dtstart,
+              dtend: row.dtend,
+              allDay: row.allDay,
+              summary: row.summary,
+              location: row.location,
+              locationGeo: row.locationGeo,
+              description: row.description,
+              linkId: row.linkId,
+              sourceEventId: row.sourceEventId,
+              contentHash: row.contentHash,
+            },
+          })
+          .returning({ id: calendarEvents.id })
       )[0]!.id;
     } else {
       id = prior.id;
@@ -606,6 +630,7 @@ async function reassignClaimedTasks(
   // way; a leftover of any other kind (manual, or a claim that isn't leaving)
   // blocks the move and the task is released instead.
   const movingIds = new Set(moving.keys());
+  const toMove: { task: (typeof held)[number]; to: Span }[] = [];
   for (const { task: t, to } of moving.values()) {
     await db
       .delete(tasks)
@@ -624,7 +649,7 @@ async function reassignClaimedTasks(
         .where(and(eq(tasks.calendarEventId, to.id), eq(tasks.type, t.type)))
     ).filter((o) => !movingIds.has(o.id));
     if (others.length === 0) {
-      await db.update(tasks).set({ calendarEventId: to.id }).where(eq(tasks.id, t.id));
+      toMove.push({ task: t, to });
       continue;
     }
     const owners = (await ownerRowsFor(db, [t.id])).get(t.id) ?? [];
@@ -635,6 +660,43 @@ async function reassignClaimedTasks(
       await db.update(tasks).set({ manualOwnerOverride: false }).where(eq(tasks.id, t.id));
       result.releasedOwnerIds.push(...owners.map((o) => o.familyMemberId));
     }
+  }
+
+  // Apply the moves together, in one atomic batch. They can't go one row at a
+  // time: `tasks_generated_event_type_uq` allows one generated task per
+  // (event, type), so two claims swapping slots (or a chain shifting along)
+  // would each land on a row that hasn't moved out yet. Park every mover off
+  // its event first (a NULL event is outside the partial index), clear any
+  // unclaimed twin a concurrent task-gen built on a target since the check
+  // above, then land each mover on its target. A batch is one D1 transaction,
+  // so no other writer sees the parked state.
+  if (toMove.length > 0) {
+    await db.batch([
+      db
+        .update(tasks)
+        .set({ calendarEventId: null })
+        .where(
+          inArray(
+            tasks.id,
+            toMove.map((m) => m.task.id),
+          ),
+        ),
+      ...toMove.map(({ task: t, to }) =>
+        db
+          .delete(tasks)
+          .where(
+            and(
+              eq(tasks.calendarEventId, to.id),
+              eq(tasks.type, t.type),
+              eq(tasks.status, 'unowned'),
+              eq(tasks.createdVia, 'generated'),
+            ),
+          ),
+      ),
+      ...toMove.map(({ task: t, to }) =>
+        db.update(tasks).set({ calendarEventId: to.id }).where(eq(tasks.id, t.id)),
+      ),
+    ]);
   }
 }
 

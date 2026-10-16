@@ -177,8 +177,21 @@ paths in particular).
   stage that throws is logged and the later ones still run; the message is
   acked, not retried (the next tick is the retry) — only a tick that couldn't
   start is `retry()`d. With no queue bound (local dev / tests) the cron runs
-  each family inline under `waitUntil`, as it always did. Until the per-family
-  lease (#264) lands, overlapping ticks or a redelivery can run a family twice.
+  each family inline under `waitUntil`, as it always did. `runFamilyTick` runs
+  under the family's lease (below), so an overlapping tick or a queue
+  redelivery skips instead of running the family twice.
+- **A family's cron tick runs under a lease; every pipeline insert is
+  idempotent.** Pipeline stages are snapshot-read → diff → write and overlap
+  freely (cron, the route handlers' inline resynthesize → conflicts → task-gen,
+  the queue consumer), so the *writes* must converge: `calendar_events` inserts
+  upsert on `(familyMemberId, synthKey)`, `conflicts`/`task_owners`/
+  `pending_decisions` inserts are `onConflictDoNothing`, and generated tasks are
+  one-per-`(calendarEventId, type)` via the partial unique index
+  `tasks_generated_event_type_uq` — give any new pipeline insert the same
+  treatment. Only `runFamilyTick` takes the lease (`services/family-lease.ts`,
+  ~14 min TTL, released only by the tick that took it) to skip a doubled-up
+  tick; request paths stay unleased so a user's edit never waits on a
+  background tick.
 - **Owned tasks are never deleted by reconciliation** (`services/task-gen.ts`):
   only unowned tasks are removed/swept, and user-converted (`createdVia:
   'manual'`) tasks are healed, never reclassified.

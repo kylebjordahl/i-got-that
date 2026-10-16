@@ -8,6 +8,7 @@ import { reconcileClaimEvents } from './claim.js';
 import { reconcileFamilyConflicts, reconcileMemberConflicts } from './conflicts.js';
 import { syncFamilyEmailOutputs } from './email-outputs.js';
 import { ingestFeed, isFeedDue } from './ingest.js';
+import { acquireFamilyLease, CRON_TICK_LEASE_MS, releaseFamilyLease } from './family-lease.js';
 import { enqueueReconcile, getProductionRegistry, syncFamilyMirror } from './mirror.js';
 import { readBackFamily } from './readback.js';
 import { synthesizeFeed } from './synthesis.js';
@@ -113,16 +114,43 @@ export type FamilyPipelineJob = { kind: 'family-pipeline'; familyId: string };
  *
  * Only a failure to get started at all (a misconfigured KEK) throws.
  *
- * NOTE: nothing stops two runs of one family overlapping — a slow tick still
- * going when the next cron fires, or a queue redelivery of a message whose
- * consumer died after doing the work. Every stage tolerates a re-run (the
- * contentHash / payloadHash skips), but until the per-family lease in #264
- * lands the overlap costs duplicated work and can race on remote writes.
+ * The tick runs under the family's lease (`services/family-lease.ts`): a slow
+ * tick still going when the next cron fires, or a queue redelivery of a message
+ * whose consumer died, finds the lease held and skips the family rather than
+ * duplicating its work and racing on remote writes. The lease expires on its
+ * own (just under the cron period) if a tick dies without releasing it. Request
+ * paths do not take it — they run these same stages inline, which is safe
+ * because every pipeline insert is idempotent (upserts / `onConflictDoNothing`,
+ * `tasks_generated_event_type_uq`).
  */
 export async function runFamilyTick(
   env: Bindings,
   familyId: string,
   now = new Date(),
+): Promise<{ failedStages: string[]; skipped?: true }> {
+  const db = getDb(env.DB);
+  const lease = await acquireFamilyLease(db, familyId, CRON_TICK_LEASE_MS, now);
+  if (!lease) {
+    console.log(`family ${familyId} tick skipped: a previous tick still holds the lease`);
+    return { failedStages: [], skipped: true };
+  }
+  try {
+    return await runFamilyStages(env, familyId, now);
+  } finally {
+    // Releases only the lease this tick took: if it outlived the TTL and a
+    // newer tick holds the family now, that one is left alone. A failed release
+    // is logged, not thrown, so it can't mask the tick's own error — the TTL
+    // reclaims the lease regardless.
+    await releaseFamilyLease(db, familyId, lease).catch((err) =>
+      console.error(`releasing pipeline lease for family ${familyId} failed`, err),
+    );
+  }
+}
+
+async function runFamilyStages(
+  env: Bindings,
+  familyId: string,
+  now: Date,
 ): Promise<{ failedStages: string[] }> {
   const db = getDb(env.DB);
   const registry = getProductionRegistry(env);
