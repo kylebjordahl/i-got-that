@@ -26,7 +26,7 @@ import { resolveAccountCredential } from '../lib/account-credentials.js';
 import { runChunked } from '../lib/d1.js';
 import { GoogleTokenRefreshError } from '../lib/google-oauth.js';
 import type { KekKeySet } from '../lib/secrets.js';
-import { overlapsWindow } from './synthesis.js';
+import { overlapsWindow, SYNTHESIS_WINDOW_MS } from './synthesis.js';
 
 export interface IngestOptions {
   fetchImpl?: typeof fetch;
@@ -72,6 +72,28 @@ interface ReaderOutcome {
 
 /** Default fetch/reconcile window when the caller doesn't pin one — mirrors `@igt/ical`'s own default. */
 const DEFAULT_WINDOW_MS = 90 * 24 * 60 * 60 * 1000;
+
+/**
+ * How much expansion an ICS feed must have left, beyond what synthesis reads,
+ * before its ETag may be trusted again. Re-expansion happens once the stored
+ * horizon (`feeds.expanded_through`) is closer than
+ * `SYNTHESIS_WINDOW_MS + EXPANSION_MARGIN_MS` — 45 days — from now.
+ *
+ * Why the ETag can't be trusted forever: `source_events` only holds the
+ * recurrence instances expanded inside the window of the feed's last *full*
+ * parse, and a 304 never parses. A publisher with a stable ETag (a static file,
+ * a rarely-edited booking export) answers 304 indefinitely while synthesis's
+ * 30-day window keeps moving, so the last occurrences of every series run out
+ * from under it — silently, with the feed still reading 'active'.
+ *
+ * 15 days of margin on top of the 30 means the unconditional GET goes out about
+ * every 45 days (the default window is 90) and lands with the synthesis window
+ * still comfortably inside the old expansion, so a poll that is late, retried
+ * after an error, or skipped for a paused feed doesn't open a gap. It costs one
+ * parse per feed per ~45 days — nothing next to what a feed whose ETag does
+ * change pays on every edit.
+ */
+const EXPANSION_MARGIN_MS = 15 * 24 * 60 * 60 * 1000;
 
 /**
  * Busy feeds read 35 days ahead: synthesis consumes only 30, and a short
@@ -226,7 +248,14 @@ async function upsertOccurrences(
 
 /**
  * Fetch an ICS feed (conditional GET via ETag), expand occurrences, and upsert
- * `source_events`. Skips the network on a 304.
+ * `source_events`. Skips the parse on a 304 — but only while the expansion the
+ * last full parse left behind still covers the synthesis window with headroom
+ * (`EXPANSION_MARGIN_MS`); past that the GET goes out unconditionally, so a
+ * feed that never changes still gets its recurring series expanded further out.
+ *
+ * Only ICS feeds have this problem: account feeds (CalDAV/Google) fetch the
+ * whole window from the server on every poll, and busy feeds re-ask free/busy
+ * for theirs, so neither ever relies on a stored expansion.
  */
 async function ingestIcsFeed(
   db: Db,
@@ -236,9 +265,18 @@ async function ingestIcsFeed(
   const fetchImpl = opts.fetchImpl ?? fetch;
   if (!feed.url) throw new Error(`feed ${feed.id}: ics feed has no url`);
 
+  const windowStart = opts.windowStart ?? new Date();
+  const windowEnd = opts.windowEnd ?? new Date(windowStart.getTime() + DEFAULT_WINDOW_MS);
+
+  // Is what a 304 would leave in `source_events` still enough? Null is a feed
+  // that has never recorded its expansion (one from before the column existed).
+  const expansionLasts =
+    feed.expandedThrough != null &&
+    feed.expandedThrough.getTime() >= windowStart.getTime() + SYNTHESIS_WINDOW_MS + EXPANSION_MARGIN_MS;
+
   const headers: Record<string, string> = {};
   if (opts.force) headers['cache-control'] = 'no-cache';
-  else if (feed.etag) headers['If-None-Match'] = feed.etag;
+  else if (feed.etag && expansionLasts) headers['If-None-Match'] = feed.etag;
 
   const res = await fetchImpl(feed.url, { headers });
 
@@ -254,8 +292,6 @@ async function ingestIcsFeed(
   // not the request, is where an oversized "ICS" gets caught.
   const text = await res.text();
   const etag = res.headers.get('etag');
-  const windowStart = opts.windowStart ?? new Date();
-  const windowEnd = opts.windowEnd ?? new Date(windowStart.getTime() + DEFAULT_WINDOW_MS);
   // Parse once: the parse is the most CPU-heavy step of an ingest, and the
   // timezone / calendar-name lookups only need the root it produces.
   const root = parseCalendar(text);
@@ -281,6 +317,8 @@ async function ingestIcsFeed(
     feedPatch: {
       lastSyncedAt: new Date(),
       etag: etag ?? feed.etag,
+      // What this parse expanded through; a later 304 leaves it alone.
+      expandedThrough: windowEnd,
       timezone,
       // Backfill the display title from the feed's own X-WR-CALNAME when the
       // user didn't supply one on creation.
