@@ -10,6 +10,7 @@ import {
   getDb,
   inArray,
   isNull,
+  lte,
   memberCalendars,
   or,
   tasks,
@@ -34,7 +35,7 @@ import { buildKekKeySet, type KekKeySet } from '../lib/secrets.js';
 import { syncFamilyEmailOutputs, syncMemberEmailOutputs } from './email-outputs.js';
 import { deliverDigest, type PushDigestJob } from './notifications.js';
 import { type FamilyPipelineJob, runFamilyTick } from './pipeline.js';
-import { activeHorizon, overlapsWindow } from './synthesis.js';
+import { activeHorizon, endsAtOrAfter } from './synthesis.js';
 
 type CalendarEventRow = typeof calendarEvents.$inferSelect;
 type MemberCalendarRow = typeof memberCalendars.$inferSelect;
@@ -325,16 +326,18 @@ export interface TravelContext {
 const TRAVEL_LOOKBACK_MS = 24 * 60 * 60_000;
 
 /**
- * Load what `eventTravelMinutes` needs for trips STARTING in `trips`
- * (default: the active horizon, which is every event the mirror sends): the
- * member's unmasked timed events overlapping that range, plus a day of lead-in.
- * Sorted once by end time so each trip's predecessor is a binary search, not a
- * pass over the whole calendar.
+ * Load what `eventTravelMinutes` needs for trips STARTING from `trips.start`
+ * (default: the active horizon's start, which is every event the mirror sends —
+ * it reconciles from there forward, so there is no upper bound unless a caller
+ * with a closed range, like email invites, passes `end`): the member's unmasked
+ * timed events that end after that point, less a day of lead-in. Sorted once by
+ * end time so each trip's predecessor is a binary search, not a pass over the
+ * whole calendar.
  */
 export async function travelContext(
   db: Db,
   memberId: string,
-  trips: { start: Date; end: Date } = activeHorizon(),
+  trips: { start: Date; end?: Date } = { start: activeHorizon().start },
 ): Promise<TravelContext> {
   const ownCalendar = (
     await db
@@ -345,10 +348,12 @@ export async function travelContext(
           eq(calendarEvents.familyMemberId, memberId),
           isNull(calendarEvents.maskedAt),
           eq(calendarEvents.allDay, false),
-          overlapsWindow(calendarEvents.dtstart, calendarEvents.dtend, {
-            start: new Date(trips.start.getTime() - TRAVEL_LOOKBACK_MS),
-            end: trips.end,
-          }),
+          endsAtOrAfter(
+            calendarEvents.dtstart,
+            calendarEvents.dtend,
+            new Date(trips.start.getTime() - TRAVEL_LOOKBACK_MS),
+          ),
+          ...(trips.end ? [lte(calendarEvents.dtstart, trips.end)] : []),
         ),
       )
   ).sort((a, b) => endMs(a) - endMs(b));
@@ -526,10 +531,13 @@ export async function syncMemberMirror(
   if (!target) return result; // account gone / no KEK — leave remote state alone
   const provider = registry.get(cal.targetMethod);
 
-  // Desired = the member's synthesized + claimed events on the active horizon
-  // (none when paused). Older events were mirrored when they were current and
-  // are left exactly as they are: re-hashing a family's whole history on every
-  // tick is the cost, and the remote copy of a finished event needs no upkeep.
+  // Desired = the member's synthesized + claimed events from the active
+  // horizon's start forward (none when paused). Events that finished before it
+  // were mirrored when they were current and are left exactly as they are:
+  // re-hashing a family's whole history on every tick is the cost, and the
+  // remote copy of a finished event needs no upkeep. Only the past is cut — a
+  // claim for something far ahead is mirrored at once, and an event moved far
+  // ahead is updated in place, not left stale at its old time.
   const horizon = activeHorizon();
   const desired = cal.active
     ? await db
@@ -542,7 +550,7 @@ export async function syncMemberMirror(
             // A conflict-masked event is mirrored as its cf: split segments, not
             // as its own full span.
             isNull(calendarEvents.maskedAt),
-            overlapsWindow(calendarEvents.dtstart, calendarEvents.dtend, horizon),
+            endsAtOrAfter(calendarEvents.dtstart, calendarEvents.dtend, horizon.start),
           ),
         )
     : [];
@@ -553,16 +561,16 @@ export async function syncMemberMirror(
     desired.flatMap((e) => (e.taskId ? [e.taskId] : [])),
   );
 
-  const travel = await travelContext(db, memberId, horizon);
+  const travel = await travelContext(db, memberId, { start: horizon.start });
 
   // The mirror rows worth reconsidering: those whose event has left this
   // member's calendar (deleted, or moved to another caretaker), and those whose
-  // event is still on the horizon — desired ones to compare, the rest (masked,
-  // calendar paused, no longer synthesized/claimed) to cancel. A row whose event
-  // lies outside the horizon is skipped by the query and never touched, so a
-  // finished event isn't cancelled just because it fell out of `desired`. That
-  // includes a paused calendar: pausing cancels what's current, and what's
-  // already behind us stays where it was.
+  // event hasn't finished before the horizon's start — desired ones to compare,
+  // the rest (masked, calendar paused, no longer synthesized/claimed) to cancel.
+  // A row whose event finished before the horizon is skipped by the query and
+  // never touched, so a finished event isn't cancelled just because it fell out
+  // of `desired`. That includes a paused calendar: pausing cancels what's
+  // current and upcoming, and what's already behind us stays where it was.
   const existing = (
     await db
       .select()
@@ -579,7 +587,7 @@ export async function syncMemberMirror(
           eq(eventMirrors.familyMemberId, memberId),
           or(
             isNull(calendarEvents.id),
-            overlapsWindow(calendarEvents.dtstart, calendarEvents.dtend, horizon),
+            endsAtOrAfter(calendarEvents.dtstart, calendarEvents.dtend, horizon.start),
           ),
         ),
       )

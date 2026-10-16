@@ -183,13 +183,16 @@ paths in particular).
   Nothing prunes finished rows (`calendar_events`, `tasks`, `event_mirrors`,
   `source_events` only grow), yet the mirror, the travel-origin lookup, the
   claim true-up, task rebuilds and read-back's feed dedupe run on every family
-  tick *and* every reconcile job — so each is bounded by `activeHorizon()`
-  (`services/synthesis.ts`: the synthesis window plus 30 days behind it; read-back
-  uses its own window) via `overlapsWindow` / `endsAtOrAfter`. A finished event's
-  remote copy and claim are simply left as they were; only an event that no
-  longer exists (or moved to another caretaker) is cancelled, whatever its age.
-  A new recurring pass that reads "all of a member's events/tasks" is a cost
-  that grows every day, so bound it the same way. There is deliberately no
+  tick *and* every reconcile job — so each cuts off the PAST at
+  `activeHorizon().start` (`services/synthesis.ts`: the synthesis window's start
+  less 30 days; read-back uses its own window) via `endsAtOrAfter` /
+  `overlapsWindow`. Only the past: everything from there forward is reconciled,
+  however far ahead (a claim 45 days out mirrors at once; an event moved far
+  ahead is updated, not left stale). A finished event's remote copy and claim
+  are simply left as they were; only an event that no longer exists (or moved
+  to another caretaker) is cancelled, whatever its age. A new recurring pass
+  that reads "all of a member's events/tasks" is a cost that grows every day,
+  so bound it the same way. There is deliberately no
   retention sweep yet. Specs whose fixtures use literal dates pin "now" with
   `pinClockTo` (`test/helpers.ts`) so they stay on the horizon.
 - **Owned tasks are never deleted by reconciliation** (`services/task-gen.ts`):

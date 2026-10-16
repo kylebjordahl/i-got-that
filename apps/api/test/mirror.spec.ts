@@ -316,6 +316,50 @@ describe('mirror reconcile (syncMemberMirror)', () => {
     expect(fake.upserts).toHaveLength(0);
   });
 
+  it('mirrors what is far ahead, and follows an event that moves far ahead', async () => {
+    const fam = await setupFamily('mirror-future@example.com');
+    const db = getDb(env.DB);
+    await connectTarget(db, fam, fam.adminMemberId);
+    const fake = new FakeProvider('caldav');
+    const registry = new DeliveryProviderRegistry().register(fake);
+
+    // 45 days past the pinned clock — beyond the synthesis window's end. Only
+    // the past is cut off, so a claim this far out is mirrored on first sight.
+    const farClaim = await insertEvent(db, fam.familyId, fam.adminMemberId, {
+      synthKey: 'task:far',
+      provenance: 'claimed_task',
+      summary: 'Pickup — child',
+      dtstart: new Date('2026-08-20T21:45:00Z'),
+      dtend: null,
+    });
+    const r1 = await syncMemberMirror(db, registry, testKeys(), fam.adminMemberId);
+    expect(r1.created).toBe(1);
+    expect(fake.upserts.map((u) => u.event.uid)).toEqual([`igt-${farClaim.id}`]);
+
+    // Mirrored at +10 days, then re-timed to +45: the remote copy is updated,
+    // not left at the old time until the event comes back within the window.
+    const near = await insertEvent(db, fam.familyId, fam.adminMemberId, {
+      synthKey: 'task:moves',
+      provenance: 'claimed_task',
+      summary: 'Pickup — child',
+      dtstart: new Date('2026-07-16T21:45:00Z'),
+      dtend: null,
+    });
+    expect((await syncMemberMirror(db, registry, testKeys(), fam.adminMemberId)).created).toBe(1);
+    const moved = new Date('2026-08-20T20:00:00Z');
+    await db
+      .update(calendarEvents)
+      .set({ dtstart: moved })
+      .where(eq(calendarEvents.id, near.id));
+
+    const r3 = await syncMemberMirror(db, registry, testKeys(), fam.adminMemberId);
+    expect(r3).toMatchObject({ created: 0, updated: 1, removed: 0 });
+    const resent = fake.upserts[fake.upserts.length - 1]!.event;
+    expect(resent).toMatchObject({ uid: `igt-${near.id}`, sequence: 1 });
+    expect(resent.start).toEqual(moved);
+    expect(fake.cancels).toHaveLength(0);
+  });
+
   it('cancels a conflict-masked event and mirrors its cf: segments instead', async () => {
     const fam = await setupFamily('mirror-masked@example.com');
     const db = getDb(env.DB);

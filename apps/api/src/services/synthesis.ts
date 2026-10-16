@@ -92,7 +92,8 @@ export const ACTIVE_LOOKBACK_MS = 30 * DAY_MS;
  * 30 days behind it, so the recent past is still healed and cleaned up. Nothing
  * prunes finished rows, so those passes must be bounded by this rather than by
  * "everything the family ever had", or their cost grows with every day of
- * history on every cron tick and queue job.
+ * history on every cron tick and queue job. Passes that must also follow what
+ * lies ahead (the mirror, claims) cut off only the past, at `start`.
  */
 export function activeHorizon(opts: SynthesisWindowOptions = {}): { start: Date; end: Date } {
   const window = synthesisWindow(opts);
