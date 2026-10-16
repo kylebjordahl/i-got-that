@@ -416,8 +416,13 @@ export const sourceEvents = sqliteTable(
     locationGeo: text('location_geo', { mode: 'json' }).$type<GeoLocation>(),
     raw: text('raw'),
     contentHash: text('content_hash').notNull(),
-    // The content_hash synthesis last consumed. Needs (re)processing iff
-    // synthesizedHash != contentHash.
+    // DEPRECATED — nothing writes or reads this any more (#265). It used to
+    // hold the content_hash synthesis last consumed, stamped with one UPDATE per
+    // changed occurrence on every run, but no query ever filtered on it:
+    // synthesis re-derives the whole desired set each run and skips unchanged
+    // calendar_events by their own content_hash. The column stays only so
+    // dropping it doesn't cost a migration (and a table rebuild) of its own;
+    // remove it with the next schema change that touches source_events.
     synthesizedHash: text('synthesized_hash'),
     // Manually marked unneeded (e.g. a bad feed event): excluded from
     // synthesis and the exception resolver. Null ⇒ active.

@@ -322,6 +322,24 @@ paths in particular).
   size of a *family* (its members, a member's feeds, a task's owners) are fine
   unchunked. `test/d1-limits.spec.ts` puts the real cap back in front of the
   local database, which is the only way a regression here is catchable.
+- **Pipeline stages send their writes as `db.batch()`, never as a loop of
+  `await`ed single statements — and never rewrite a row that didn't change.**
+  Every D1 call is a round trip *and* a subrequest (10,000 per queue-consumer
+  invocation, shared by everything the tick does), and D1 bills rows written,
+  so a per-row loop over a month of events costs that on every tick. Drizzle
+  builders are lazy: build the statements without `await`, collect them, and
+  send them with `batchChunked(db, statements)` (`lib/d1.ts`, 50 per batch;
+  a batch is one call and one implicit transaction, all-or-nothing per chunk,
+  and results come back in statement order — a `.returning()` in the list is
+  read from them). Skip unchanged rows before writing (`contentHash` compare,
+  as synthesis and read-back do) or in SQL (ingest's upsert is
+  `ON CONFLICT … DO UPDATE … WHERE content_hash <> excluded.content_hash`).
+  Reads that fan out over events are loaded once per chunk and looked up in a
+  Map (task-gen's tasks and owners), not selected per event. `test/d1-counter.ts`
+  wraps a D1 binding to count round trips / statements / rows written (and to
+  enforce the 100-parameter cap); `test/batched-pipeline.spec.ts` pins the
+  budget on a 2-feeds x 30-days family. `source_events.synthesized_hash` is
+  deprecated and unwritten — don't build on it.
 - **The app-icon badge can only ever go *up* unless something takes it down.**
   APNs sets it from the payload and nothing expires it, so a digest's badge
   outlives the work it counted: claim the pickup and iOS still shows the 3.

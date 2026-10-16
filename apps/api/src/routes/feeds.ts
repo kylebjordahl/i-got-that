@@ -289,10 +289,6 @@ feedRoutes.patch('/:feedId', requireAdmin, async (c) => {
     timezoneChanged ||
     nameChanged
   ) {
-    await db
-      .update(sourceEvents)
-      .set({ synthesizedHash: null })
-      .where(eq(sourceEvents.feedId, feed.id));
     await resynthesizeFeed(c, db, updated);
   }
   return c.json({ feed: updated });
@@ -1041,7 +1037,7 @@ feedRoutes.post('/:feedId/events/:eventId/restore', requireAdmin, async (c) => {
 
   await db
     .update(sourceEvents)
-    .set({ dismissedAt: null, synthesizedHash: null })
+    .set({ dismissedAt: null })
     .where(eq(sourceEvents.id, eventId));
 
   const feed = (await db.select().from(feeds).where(eq(feeds.id, feedId)).limit(1))[0];

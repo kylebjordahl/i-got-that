@@ -38,6 +38,7 @@ import {
   type GeoLocation,
   type PendingDecisionKind,
 } from '@igt/domain';
+import { batchChunked, type BatchStatement, chunkForD1 } from '../lib/d1.js';
 
 type FeedRow = typeof feeds.$inferSelect;
 type LinkRow = typeof familyMemberFeeds.$inferSelect;
@@ -187,9 +188,14 @@ function toRuleLike(r: typeof linkRules.$inferSelect): OverrideRuleLike {
 }
 
 /**
- * Upsert one desired event by (member, synthKey), skipping no-op rewrites via
- * contentHash. A changed payload leaves `tasksBuiltHash` stale so task-gen
- * reprocesses the event.
+ * The write that puts one desired event on the calendar, keyed by
+ * (member, synthKey), or null when the stored row already matches — a no-op
+ * rewrite is skipped via contentHash. A changed payload leaves `tasksBuiltHash`
+ * stale so task-gen reprocesses the event.
+ *
+ * Returned unawaited: a Drizzle builder is lazy (`await` is what runs it), and
+ * the caller sends the whole link's worth as `db.batch()` calls instead of one
+ * round trip per event.
  *
  * The provenance links (`sourceEventId`, `matchedRuleId`) are not part of the
  * hash, but they are compared too: a row whose payload is unchanged still gets
@@ -199,13 +205,13 @@ function toRuleLike(r: typeof linkRules.$inferSelect): OverrideRuleLike {
  * deleted (and its tasks orphaned) when the exception left the feed. Rewriting
  * them doesn't touch `contentHash`, so task-gen and the mirror see no change.
  */
-async function upsertIntent(
+function intentStatement(
   db: Db,
   feed: FeedRow,
   link: LinkRow,
   intent: EventIntent,
   existingByKey: Map<string, CalendarEventRow>,
-): Promise<boolean> {
+): BatchStatement | null {
   const contentHash = hashCalendarEvent(intent);
   const prior = existingByKey.get(intent.synthKey);
   if (
@@ -214,7 +220,7 @@ async function upsertIntent(
     prior.sourceEventId === intent.sourceEventId &&
     prior.matchedRuleId === intent.matchedRuleId
   ) {
-    return false;
+    return null;
   }
 
   const payload = {
@@ -230,28 +236,26 @@ async function upsertIntent(
     contentHash,
   };
   if (prior) {
-    await db.update(calendarEvents).set(payload).where(eq(calendarEvents.id, prior.id));
-  } else {
-    // An upsert, not a bare insert: a concurrent synthesis (cron tick vs. a
-    // route handler's inline resynthesize) may have created this
-    // (member, synthKey) since our snapshot read, and the loser of that race
-    // must converge on the same row rather than throw on the unique index.
-    await db
-      .insert(calendarEvents)
-      .values({
-        familyId: feed.familyId,
-        familyMemberId: link.familyMemberId,
-        provenance: 'synthesized',
-        synthKey: intent.synthKey,
-        linkId: link.id,
-        ...payload,
-      })
-      .onConflictDoUpdate({
-        target: [calendarEvents.familyMemberId, calendarEvents.synthKey],
-        set: payload,
-      });
+    return db.update(calendarEvents).set(payload).where(eq(calendarEvents.id, prior.id));
   }
-  return true;
+  // An upsert, not a bare insert: a concurrent synthesis (cron tick vs. a
+  // route handler's inline resynthesize) may have created this
+  // (member, synthKey) since our snapshot read, and the loser of that race
+  // must converge on the same row rather than throw on the unique index.
+  return db
+    .insert(calendarEvents)
+    .values({
+      familyId: feed.familyId,
+      familyMemberId: link.familyMemberId,
+      provenance: 'synthesized',
+      synthKey: intent.synthKey,
+      linkId: link.id,
+      ...payload,
+    })
+    .onConflictDoUpdate({
+      target: [calendarEvents.familyMemberId, calendarEvents.synthKey],
+      set: payload,
+    });
 }
 
 /**
@@ -260,6 +264,11 @@ async function upsertIntent(
  * the source event's content changed — then the decision reopens and any event
  * created by the stale resolution is removed. Pending rows whose occurrence is
  * now handled by a rule are cleaned up.
+ *
+ * Every write is collected, in the order it has to apply, and sent as
+ * `db.batch()` calls at the end — the reads (one SELECT) come first and nothing
+ * below depends on a write having landed, so a link with nothing to change
+ * sends nothing and one with changes pays a round trip per 50, not per row.
  */
 async function reconcilePending(
   db: Db,
@@ -274,17 +283,29 @@ async function reconcilePending(
     .where(eq(pendingDecisions.linkId, link.id));
   const reportedSourceIds = new Set(engineResult.pending.map((p) => p.sourceEventId));
 
+  const writes: BatchStatement[] = [];
+  const deleteDecisions = (ids: string[]) =>
+    chunkForD1(ids).map((chunk) =>
+      db.delete(pendingDecisions).where(inArray(pendingDecisions.id, chunk)),
+    );
+
   // A feed that changed shape (exception ⇄ routed) leaves rows asking a
   // question that no longer exists. Drop this link's rows of the other kind
   // when they'd either sit in the queue forever (still pending) or collide with
   // a row we're about to raise for the same occurrence — the (link, source)
-  // unique index means the old row would block the new one outright.
-  for (const prior of all) {
-    if (prior.kind === kind) continue;
-    if (prior.status === 'pending' || reportedSourceIds.has(prior.sourceEventId)) {
-      await db.delete(pendingDecisions).where(eq(pendingDecisions.id, prior.id));
-    }
-  }
+  // unique index means the old row would block the new one outright. (It goes
+  // first in the batch for exactly that reason.)
+  writes.push(
+    ...deleteDecisions(
+      all
+        .filter(
+          (prior) =>
+            prior.kind !== kind &&
+            (prior.status === 'pending' || reportedSourceIds.has(prior.sourceEventId)),
+        )
+        .map((prior) => prior.id),
+    ),
+  );
 
   const existing = all.filter((p) => p.kind === kind);
   const existingBySource = new Map(existing.map((p) => [p.sourceEventId, p]));
@@ -295,49 +316,53 @@ async function reconcilePending(
     if (!prior) {
       // No-op if a concurrent synthesis raised the same (link, sourceEvent)
       // decision since our read: either way exactly one pending row exists.
-      await db
-        .insert(pendingDecisions)
-        .values({
-          familyId: feed.familyId,
-          feedId: feed.id,
-          kind,
-          linkId: link.id,
-          familyMemberId: link.familyMemberId,
-          sourceEventId: intent.sourceEventId,
-          status: 'pending',
-          sourceContentHash: intent.contentHash,
-        })
-        .onConflictDoNothing();
+      writes.push(
+        db
+          .insert(pendingDecisions)
+          .values({
+            familyId: feed.familyId,
+            feedId: feed.id,
+            kind,
+            linkId: link.id,
+            familyMemberId: link.familyMemberId,
+            sourceEventId: intent.sourceEventId,
+            status: 'pending',
+            sourceContentHash: intent.contentHash,
+          })
+          .onConflictDoNothing(),
+      );
       open++;
       continue;
     }
     if (prior.status === 'pending') {
       open++;
       if (prior.sourceContentHash !== intent.contentHash) {
-        await db
-          .update(pendingDecisions)
-          .set({ sourceContentHash: intent.contentHash })
-          .where(eq(pendingDecisions.id, prior.id));
+        writes.push(
+          db
+            .update(pendingDecisions)
+            .set({ sourceContentHash: intent.contentHash })
+            .where(eq(pendingDecisions.id, prior.id)),
+        );
       }
       continue;
     }
     // Resolved/dismissed: stay closed while the content is unchanged; reopen
     // (and drop the stale resolution event) when the feed event changed.
     if (prior.sourceContentHash !== intent.contentHash) {
-      await db
-        .update(pendingDecisions)
-        .set({
-          status: 'pending',
-          sourceContentHash: intent.contentHash,
-          resolvedTypes: null,
-          resolvedByMemberId: null,
-          resolvedAt: null,
-          dismissedAt: null,
-        })
-        .where(eq(pendingDecisions.id, prior.id));
-      await db
-        .delete(calendarEvents)
-        .where(eq(calendarEvents.pendingDecisionId, prior.id));
+      writes.push(
+        db
+          .update(pendingDecisions)
+          .set({
+            status: 'pending',
+            sourceContentHash: intent.contentHash,
+            resolvedTypes: null,
+            resolvedByMemberId: null,
+            resolvedAt: null,
+            dismissedAt: null,
+          })
+          .where(eq(pendingDecisions.id, prior.id)),
+        db.delete(calendarEvents).where(eq(calendarEvents.pendingDecisionId, prior.id)),
+      );
       open++;
     }
   }
@@ -345,11 +370,16 @@ async function reconcilePending(
   // A pending row whose occurrence the engine no longer reports is now handled
   // (a rule matched after a config change — for routing, someone's rules now
   // claim the event) or its source vanished (cascade).
-  for (const prior of existing) {
-    if (prior.status === 'pending' && !reportedSourceIds.has(prior.sourceEventId)) {
-      await db.delete(pendingDecisions).where(eq(pendingDecisions.id, prior.id));
-    }
-  }
+  writes.push(
+    ...deleteDecisions(
+      existing
+        .filter(
+          (prior) => prior.status === 'pending' && !reportedSourceIds.has(prior.sourceEventId),
+        )
+        .map((prior) => prior.id),
+    ),
+  );
+  await batchChunked(db, writes);
   return open;
 }
 
@@ -566,12 +596,16 @@ export async function synthesizeFeed(
         .map((e) => e.sourceEventId!),
     );
 
-    for (const stale of linkOwnedExisting) {
-      if (!desiredKeys.has(stale.synthKey)) {
-        await db.delete(calendarEvents).where(eq(calendarEvents.id, stale.id));
-        result.eventsRemoved++;
-      }
-    }
+    // The link's writes, stale rows first and then the desired set (an upsert
+    // never collides with a row this just removed). Sent as batches: this used
+    // to be one awaited statement per event — a round trip and a subrequest each.
+    const staleIds = linkOwnedExisting
+      .filter((stale) => !desiredKeys.has(stale.synthKey))
+      .map((stale) => stale.id);
+    const writes: BatchStatement[] = chunkForD1(staleIds).map((chunk) =>
+      db.delete(calendarEvents).where(inArray(calendarEvents.id, chunk)),
+    );
+    result.eventsRemoved += staleIds.length;
     for (const intent of engineResult.events) {
       if (
         intent.synthKey.startsWith('ev:') &&
@@ -580,10 +614,13 @@ export async function synthesizeFeed(
       ) {
         continue;
       }
-      if (await upsertIntent(db, feed, link, intent, existingByKey)) {
+      const write = intentStatement(db, feed, link, intent, existingByKey);
+      if (write) {
+        writes.push(write);
         result.eventsUpserted++;
       }
     }
+    await batchChunked(db, writes);
 
     result.pendingOpen += await reconcilePending(
       db,
@@ -594,16 +631,11 @@ export async function synthesizeFeed(
     );
   }
 
-  // Stamp every processed occurrence so "needs synthesis" queries stay cheap.
-  for (const e of occurrenceRows) {
-    if (e.synthesizedHash !== e.contentHash) {
-      await db
-        .update(sourceEvents)
-        .set({ synthesizedHash: e.contentHash })
-        .where(eq(sourceEvents.id, e.id));
-    }
-  }
-
+  // There is deliberately no "stamp the occurrences we consumed" step:
+  // `source_events.synthesized_hash` used to be written here (one UPDATE per
+  // changed occurrence) but nothing ever read it — synthesis re-derives the
+  // whole desired set every run and skips unchanged rows by comparing against
+  // `calendar_events.content_hash`, so the stamp was pure write cost.
   return result;
 }
 
