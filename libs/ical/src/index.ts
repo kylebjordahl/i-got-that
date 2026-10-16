@@ -204,6 +204,23 @@ function occurrenceInWindow(
   return end != null && end > windowStart;
 }
 
+/**
+ * Parse an ICS document into its root VCALENDAR component. `ICAL.parse` is the
+ * most CPU-heavy step of an ingest, so parse once here and hand the component to
+ * `parseAndExpand` / `extractTimezone` / `extractCalendarName`. Throws on a
+ * document ical.js can't parse (the extractors below swallow that; this doesn't).
+ */
+export function parseCalendar(icsText: string): ICAL.Component {
+  return new ICAL.Component(ICAL.parse(icsText));
+}
+
+/** An ICS document: raw text, or the root component `parseCalendar` returned for it. */
+export type IcsSource = string | ICAL.Component;
+
+function asRoot(source: IcsSource): ICAL.Component {
+  return typeof source === 'string' ? parseCalendar(source) : source;
+}
+
 export interface ExpandOptions {
   /** Inclusive lower bound (default: now). */
   windowStart?: Date;
@@ -213,9 +230,10 @@ export interface ExpandOptions {
   maxPerEvent?: number;
   /**
    * IANA zone to interpret "floating" timed values in (no TZID, no trailing
-   * `Z` — RFC 5545 leaves these ambiguous). Typically the feed's own
-   * previously-detected `extractTimezone` result; without it, floating times
-   * fall back to the host runtime's timezone (see `icalTimeToDate`).
+   * `Z` — RFC 5545 leaves these ambiguous). Typically the document's own
+   * `extractTimezone` result, else the feed's previously-stored one; without
+   * it, floating times fall back to the host runtime's timezone (see
+   * `icalTimeToDate`).
    */
   defaultTimezone?: string;
 }
@@ -235,16 +253,20 @@ const DAY = 24 * 60 * 60 * 1000;
  * override) and, since every override falls through to `recurrenceId: null`,
  * collapse two or more overrides of the same series onto the same
  * (uid, recurrenceId) key.
+ *
+ * Takes the document as text, or as the root already parsed by `parseCalendar`
+ * so a caller that also needs `extractTimezone`/`extractCalendarName` parses
+ * once instead of once per helper.
  */
 export function parseAndExpand(
-  icsText: string,
+  source: IcsSource,
   opts: ExpandOptions = {},
 ): Occurrence[] {
   const windowStart = opts.windowStart ?? new Date();
   const windowEnd = opts.windowEnd ?? new Date(Date.now() + 90 * DAY);
   const maxPerEvent = opts.maxPerEvent ?? 750;
 
-  const root = new ICAL.Component(ICAL.parse(icsText));
+  const root = asRoot(source);
   const vevents = root.getAllSubcomponents('vevent');
   const out: Occurrence[] = [];
 
@@ -360,9 +382,9 @@ export function parseAndExpand(
  * return per-object VCALENDARs that carry one instead). Used to interpret
  * configured baseline wall-times for exception feeds. Null if absent/unparseable.
  */
-export function extractTimezone(icsText: string): string | null {
+export function extractTimezone(source: IcsSource): string | null {
   try {
-    const root = new ICAL.Component(ICAL.parse(icsText));
+    const root = asRoot(source);
     const tz = root.getFirstPropertyValue('x-wr-timezone');
     if (typeof tz === 'string' && tz.length > 0) return tz;
     const vtimezone = root.getFirstSubcomponent('vtimezone');
@@ -378,9 +400,9 @@ export function extractTimezone(icsText: string): string | null {
  * it). Used to backfill an ICS feed's title when the user didn't supply one.
  * Null if absent/unparseable.
  */
-export function extractCalendarName(icsText: string): string | null {
+export function extractCalendarName(source: IcsSource): string | null {
   try {
-    const root = new ICAL.Component(ICAL.parse(icsText));
+    const root = asRoot(source);
     const name = root.getFirstPropertyValue('x-wr-calname');
     return typeof name === 'string' && name.trim().length > 0 ? name.trim() : null;
   } catch {
