@@ -415,7 +415,14 @@ export async function buildMemberTasks(
           );
           await reconcileTaskOwner(db, prior, cand, assignCtx);
         } else {
-          const inserted = (
+          // Idempotent against a concurrent run: another task-gen (cron tick,
+          // or a route handler's inline pipeline) may have inserted this same
+          // (event, type) since our snapshot read above. The partial unique
+          // index `tasks_generated_event_type_uq` turns the loser's insert
+          // into a no-op instead of a permanent duplicate. No conflict target
+          // on purpose: SQLite requires a partial index's WHERE to be repeated
+          // in the target, and a bare DO NOTHING covers it without that.
+          let row = (
             await db
               .insert(tasks)
               .values({
@@ -431,10 +438,30 @@ export async function buildMemberTasks(
                 status: 'unowned',
                 createdVia: 'generated',
               })
+              .onConflictDoNothing()
               .returning()
           )[0];
-          result.tasksCreated++;
-          if (inserted) await reconcileTaskOwner(db, inserted, cand, assignCtx);
+          if (row) {
+            result.tasksCreated++;
+          } else {
+            // Lost the race: the winner's row is the task. Still reconcile its
+            // owner below — the winner may have been mid-flight (inserted but
+            // not yet auto-assigned) when it read.
+            row = (
+              await db
+                .select()
+                .from(tasks)
+                .where(
+                  and(
+                    eq(tasks.calendarEventId, event.id),
+                    eq(tasks.type, intent.type),
+                    eq(tasks.createdVia, 'generated'),
+                  ),
+                )
+                .limit(1)
+            )[0];
+          }
+          if (row) await reconcileTaskOwner(db, row, cand, assignCtx);
         }
       }
     }

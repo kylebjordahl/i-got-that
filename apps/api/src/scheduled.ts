@@ -83,8 +83,8 @@ export async function scheduled(
   if (queue) {
     // A chunk that fails to enqueue costs those families this tick only: the
     // next one enqueues them again, and the other chunks still go out.
-    // Overlapping ticks (or a redelivered message) can run a family twice
-    // until the per-family lease in #264 lands — see `runFamilyTick`.
+    // Overlapping ticks (or a redelivered message) are harmless: `runFamilyTick`
+    // takes the family's lease and skips if a previous tick still holds it.
     for (let i = 0; i < familyIds.length; i += SEND_BATCH_MAX) {
       const chunk = familyIds.slice(i, i + SEND_BATCH_MAX);
       try {
