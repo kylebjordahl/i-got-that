@@ -174,6 +174,47 @@ describe('feed health: recording why a feed is stuck', () => {
     expect(cleared.consecutiveFailures).toBe(0);
     expect(cleared.lastErrorMessage).toBeNull();
   });
+
+  it('shows a held-back sweep on the feeds list while the feed stays active, and an admin reset starts the count over', async () => {
+    // An empty calendar served over a populated one is not a failed read — the
+    // feed stays 'active' and on its normal poll interval — but the reason its
+    // events haven't gone away has to be visible somewhere.
+    const { admin, familyId, feed, db } = await setupFeed('feed-health-held@example.com');
+    let body = ics(['a', 'b', 'c']);
+    const fetchImpl = (async () => ({
+      ok: true,
+      status: 200,
+      headers: { get: () => null },
+      text: async () => body,
+    })) as unknown as typeof fetch;
+    await ingestFeed(db, feed, { fetchImpl });
+    body = ics([]);
+    await ingestFeed(db, await reload(db, feed.id), { fetchImpl });
+
+    const listRes = await call(`/families/${familyId}/feeds`, {
+      headers: { Authorization: `Bearer ${admin.token}` },
+    });
+    const { feeds: rows } = (await listRes.json()) as {
+      feeds: { id: string; status: string; lastErrorMessage: string | null }[];
+    };
+    const listed = rows.find((r) => r.id === feed.id)!;
+    expect(listed.status).toBe('active');
+    expect(listed.lastErrorMessage).toBe(
+      'suspicious fetch: 3 of 3 in-window events missing — holding them (1/3)',
+    );
+    expect((await reload(db, feed.id)).suspiciousSweepCount).toBe(1);
+    expect(await db.select().from(sourceEvents).where(eq(sourceEvents.feedId, feed.id))).toHaveLength(3);
+
+    const res = await call(`/families/${familyId}/feeds/${feed.id}`, {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${admin.token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ status: 'active' }),
+    });
+    expect(res.status).toBe(200);
+    const cleared = await reload(db, feed.id);
+    expect(cleared.suspiciousSweepCount).toBe(0);
+    expect(cleared.lastErrorMessage).toBeNull();
+  });
 });
 
 describe('feed health: a forced refresh is unconditional', () => {

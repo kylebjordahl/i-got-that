@@ -257,6 +257,7 @@ feedRoutes.patch('/:feedId', requireAdmin, async (c) => {
     if (d.status !== 'error') {
       set.consecutiveFailures = 0;
       set.lastErrorMessage = null;
+      set.suspiciousSweepCount = 0;
     }
   }
   if (d.timezone !== undefined) set.timezone = d.timezone;

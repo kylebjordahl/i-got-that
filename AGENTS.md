@@ -247,7 +247,14 @@ paths in particular).
   feed forever; and one feed's failure is caught per-feed in `runFamilyTick`
   (`services/pipeline.ts`) so it can't cost the family the
   read-back/task-gen/mirror passes that don't depend on it. Only `paused` (a
-  user's decision) is ever skipped outright.
+  user's decision) is ever skipped outright. The mirror image is a read
+  that *succeeds* but is incomplete (an empty VCALENDAR from a publisher outage,
+  a CalDAV 207 with no objects): `deleteStaleSourceEvents` holds any sweep that
+  would remove all of a feed's in-window rows (of ≥3) or over half (of ≥10) until
+  the third consecutive such fetch, recording `suspicious fetch: …` in
+  `lastErrorMessage` and counting `feeds.suspicious_sweep_count` — via the
+  reader's `feedPatch`, since `ingestFeed`'s success `UPDATE` would clear a
+  separate write — and never sweeps rows of CalDAV objects that failed to parse.
 - **Nothing on the outbound path may be served from cache.** A Worker's
   `fetch()` is not a bare socket — a cacheable GET comes from Cloudflare's
   cache, honouring the origin's `Cache-Control`, and that entry answers our

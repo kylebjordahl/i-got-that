@@ -765,6 +765,62 @@ ${responses}
       );
       expect(occurrences[0]?.start.toISOString()).toBe('2026-07-22T11:00:00.000Z');
     });
+
+    // An object the parser rejects (here: a VEVENT that never closes) is
+    // skipped, not fatal — but its events are missing because we couldn't read
+    // them, not because the server deleted them, so the caller is told whose.
+    const unclosed = (uidLines: string) => ({
+      href: '/calendars/user/home/broken.ics',
+      etag: 'bad',
+      data: `BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\n${uidLines}DTSTART:20260723T110000\r\nSUMMARY:Broken\r\n`,
+    });
+    const range = {
+      windowStart: new Date('2026-07-01T00:00:00Z'),
+      windowEnd: new Date('2026-08-01T00:00:00Z'),
+    };
+    const config = {
+      collectionUrl: 'https://caldav.example.com/calendars/user/home/',
+      username: 'u',
+      password: 'p',
+    };
+
+    it('reports the UID of an object that fails to parse, and keeps reading the rest', async () => {
+      const res = await fetchCalDavOccurrences(
+        config,
+        range,
+        caldavFetch([unclosed('UID:broken-1\r\n'), floatingObject]),
+      );
+      expect(res.occurrences.map((o) => o.uid)).toEqual(['appt-1']);
+      expect(res.failedUids).toEqual(['broken-1']);
+      expect(res.unidentifiedFailures).toBe(0);
+    });
+
+    it("finds a failed object's UID through parameters and line folding", async () => {
+      const res = await fetchCalDavOccurrences(
+        config,
+        range,
+        caldavFetch([unclosed('UID;X-VENDOR=1:folded-\r\n uid-2\r\n')]),
+      );
+      expect(res.failedUids).toEqual(['folded-uid-2']);
+      expect(res.unidentifiedFailures).toBe(0);
+    });
+
+    it('counts a failed object it cannot identify, so the caller knows no row is safe', async () => {
+      const res = await fetchCalDavOccurrences(
+        config,
+        range,
+        caldavFetch([unclosed(''), floatingObject]),
+      );
+      expect(res.occurrences.map((o) => o.uid)).toEqual(['appt-1']);
+      expect(res.failedUids).toEqual([]);
+      expect(res.unidentifiedFailures).toBe(1);
+    });
+
+    it('reports nothing failed for a clean fetch', async () => {
+      const res = await fetchCalDavOccurrences(config, range, caldavFetch([floatingObject]));
+      expect(res.failedUids).toEqual([]);
+      expect(res.unidentifiedFailures).toBe(0);
+    });
   });
 
   it('instantiates a CalDAV client (tsdav importable in workerd)', () => {
