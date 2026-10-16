@@ -174,6 +174,51 @@ describe('synthesizeStandard', () => {
 
 // --- Stage A: busy feeds ------------------------------------------------------
 
+describe('source description', () => {
+  const body = 'Early release at noon - pickup at 12:15';
+
+  it('is matched by description / any_text rules', () => {
+    const o = occ({ summary: 'Staff day', location: 'Lincoln', description: body });
+    expect(ruleMatches(o, override({ matchField: 'description', matchValue: 'early release' }))).toBe(true);
+    expect(ruleMatches(o, override({ matchField: 'description', matchValue: 'staff day' }))).toBe(false);
+    expect(ruleMatches(o, override({ matchField: 'any_text', matchValue: 'pickup at 12' }))).toBe(true);
+    expect(ruleMatches(occ({ summary: 'Staff day' }), override({ matchField: 'description', matchValue: 'early' }))).toBe(false);
+  });
+
+  it('shapes the schedule on an exception feed (a modify_day rule keyed on the description)', () => {
+    const rule = override({
+      position: 0,
+      matchField: 'description',
+      matchValue: 'early release',
+      outcome: 'modify_day',
+      params: { dayEnd: '12:00' },
+    });
+    const day = occ({
+      summary: 'Staff day',
+      description: body,
+      allDay: true,
+      dtstart: new Date('2026-07-08T00:00:00Z'),
+      dtend: new Date('2026-07-09T00:00:00Z'),
+    });
+    const { events, pending } = synthesizeException(schoolLink, [day], [rule], week, 'UTC');
+    expect(pending).toEqual([]);
+    const wed = events.find((e) => e.synthKey === 'bl:link-1:2026-07-08');
+    expect(wed?.dtend?.toISOString()).toBe('2026-07-08T12:00:00.000Z');
+    expect(wed?.matchedRuleId).toBe(rule.id);
+  });
+
+  it('is for matching only: it never lands on the events the engine makes', () => {
+    const o = occ({ summary: 'Concert', description: body });
+    expect(synthesizeStandard(schoolLink, [o]).events[0]!.description).toBeNull();
+    const addRule = override({ matchField: 'description', matchValue: 'early release', outcome: 'add_event' });
+    const added = synthesizeException(schoolLink, [o], [addRule], week, 'UTC').events.find(
+      (e) => e.synthKey === `ev:link-1:${o.id}`,
+    );
+    expect(added).toBeDefined();
+    expect(added!.description).toBeNull();
+  });
+});
+
 describe('synthesizeBusy', () => {
   // A busy link says nothing about place unless the family fills one in.
   const busyLink = { ...schoolLink, location: null, baselineSummary: 'Busy (work)' };
@@ -695,6 +740,20 @@ describe('taskRulesForCalendar + resolveTaskResult', () => {
 
     const normal = resolveTaskResult(occ({ summary: 'Regular day' }), rules, 'link-1', dfault);
     expect(normal).toEqual(dfault);
+  });
+
+  it('a task rule can match the description the caller hands it', () => {
+    const byBody = taskRule({
+      id: 'bb',
+      position: 0,
+      matchField: 'description',
+      matchOp: 'contains',
+      matchValue: 'parents welcome',
+      resultType: 'attendance',
+    });
+    const event = { summary: 'Assembly', location: null, allDay: false, dtstart: new Date('2026-07-06T10:00:00Z'), dtend: null };
+    expect(resolveTaskResult({ ...event, description: 'Parents welcome!' }, [byBody], null, dfault).resultType).toBe('attendance');
+    expect(resolveTaskResult({ ...event, description: null }, [byBody], null, dfault)).toEqual(dfault);
   });
 });
 

@@ -42,6 +42,28 @@ function resolveIcalLocation(
  *  - tsdav            → CalDAV client (iCloud + generic)
  */
 
+/**
+ * Longest description kept per occurrence. Feeds routinely carry whole
+ * newsletters in DESCRIPTION, and the text is stored once per expanded
+ * occurrence; a rule only needs to find a phrase, and the phrases that matter
+ * ("early release", "no school") sit near the top. A longer body is cut here,
+ * at ingest, so everything downstream (the row, the hash, the matcher) sees the
+ * same text.
+ */
+export const MAX_DESCRIPTION_CHARS = 2000;
+
+/**
+ * Normalize a source's free-text body for storage: blank means none, and a long
+ * body is cut to `MAX_DESCRIPTION_CHARS`. (ical.js has already unescaped
+ * `\n`, `\,` and friends by the time an ICS value gets here.)
+ */
+export function normalizeDescription(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  const text = raw.trim();
+  if (text.length === 0) return null;
+  return text.length > MAX_DESCRIPTION_CHARS ? text.slice(0, MAX_DESCRIPTION_CHARS) : text;
+}
+
 export interface Occurrence {
   /** Stable iCalendar UID of the source VEVENT. */
   uid: string;
@@ -67,6 +89,15 @@ export interface Occurrence {
    * the tasks they generate) drive travel time on the way back out.
    */
   locationGeo: GeoLocation | null;
+  /**
+   * The source event's free-text body (VEVENT `DESCRIPTION`, Google
+   * `description`), unescaped and truncated to `MAX_DESCRIPTION_CHARS`. It is
+   * carried for RULE MATCHING only (a `description` / `any_text` link or task
+   * rule): it is stored on `source_events` but deliberately does not flow onto
+   * the synthesized calendar events, so it never reaches a member's mirror
+   * calendar or an email invite. Null when the source gave none.
+   */
+  description: string | null;
   /**
    * True for `VALUE=DATE` (all-day) events, which carry no time. Their `start`/
    * `end` are anchored to UTC midnight of the calendar date (see
@@ -301,6 +332,7 @@ export function parseAndExpand(
       summary: event.summary ?? null,
       location: event.location ?? null,
       locationGeo: occurrenceGeo(ve),
+      description: normalizeDescription(event.description),
       allDay: event.startDate.isDate,
     });
   }
@@ -343,6 +375,7 @@ export function parseAndExpand(
         // `details.item` is the master, or the RECURRENCE-ID override when one
         // covers this date — either way, that occurrence's own VEVENT.
         locationGeo: occurrenceGeo(details.item.component),
+        description: normalizeDescription(details.item.description),
         allDay: details.startDate.isDate,
       });
     }
@@ -367,6 +400,7 @@ export function parseAndExpand(
         summary: event.summary ?? null,
         location: event.location ?? null,
         locationGeo: occurrenceGeo(ve),
+        description: normalizeDescription(event.description),
         allDay: event.startDate.isDate,
       });
     }
@@ -427,6 +461,10 @@ export function hashOccurrence(o: Occurrence): string {
     // as a change, or synthesis never carries the geocode down to the events.
     geoKey(o.locationGeo),
     o.allDay ? 'AD' : '',
+    // A description-only edit has to count as a change: rules match on it, so
+    // synthesis must re-run (and the ingest upsert's `content_hash <>` guard
+    // must let the new text through).
+    o.description ?? '',
   ].join(' ');
   let h = 5381;
   for (let i = 0; i < parts.length; i++) {
@@ -781,6 +819,7 @@ interface GoogleApiEvent {
   status?: string;
   summary?: string;
   location?: string;
+  description?: string;
   start?: GoogleApiTime;
   end?: GoogleApiTime;
   recurringEventId?: string;
@@ -824,6 +863,7 @@ function googleEventToOccurrence(ev: GoogleApiEvent): Occurrence | null {
     location: ev.location ?? null,
     // events.list gives `location` as free text only — no coordinates.
     locationGeo: null,
+    description: normalizeDescription(ev.description),
     allDay: start.allDay,
   };
 }
@@ -972,6 +1012,7 @@ export async function fetchGoogleFreeBusy(
       locationGeo: null,
       summary: null,
       location: null,
+      description: null,
       allDay: false,
     });
   }

@@ -383,6 +383,7 @@ async function upsertOccurrences(
         summary: occ.summary,
         location: occ.location,
         locationGeo: occ.locationGeo,
+        description: occ.description,
         raw: null,
         contentHash,
       })
@@ -399,6 +400,7 @@ async function upsertOccurrences(
           summary: occ.summary,
           location: occ.location,
           locationGeo: occ.locationGeo,
+          description: occ.description,
           contentHash,
         },
         setWhere: sql`${sourceEvents.contentHash} <> excluded.content_hash`,
