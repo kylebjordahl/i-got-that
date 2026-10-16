@@ -123,10 +123,17 @@ export async function readBackMember(
   ).map((r) => r.feedId);
   const feedSourceKeys = new Set<string>();
   if (linkedFeedIds.length > 0) {
+    // Only the feed's events in this window: the keys dedupe occurrences
+    // fetched for it, and a feed's whole history is none of read-back's business.
     const rows = await db
       .select({ icalUid: sourceEvents.icalUid, recurrenceId: sourceEvents.recurrenceId })
       .from(sourceEvents)
-      .where(inArray(sourceEvents.feedId, linkedFeedIds));
+      .where(
+        and(
+          inArray(sourceEvents.feedId, linkedFeedIds),
+          overlapsWindow(sourceEvents.dtstart, sourceEvents.dtend, window),
+        ),
+      );
     for (const r of rows) feedSourceKeys.add(`${r.icalUid}:${r.recurrenceId ?? ''}`);
   }
 
