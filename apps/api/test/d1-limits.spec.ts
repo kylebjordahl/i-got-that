@@ -1,7 +1,9 @@
 import { env } from 'cloudflare:test';
-import { getDb, tasks, taskOwners } from '@igt/db';
+import { calendarEvents, getDb, inArray, tasks, taskOwners } from '@igt/db';
 import { describe, expect, it } from 'vitest';
 import { chunkForD1, D1_MAX_BOUND_PARAMS, runChunked, selectChunked } from '../src/lib/d1.js';
+import { reconcileClaimEvents } from '../src/services/claim.js';
+import { claimedTaskMeta } from '../src/services/mirror.js';
 import { withOwners } from '../src/services/task-owners.js';
 import { bearer, call, setupFamily } from './helpers.js';
 
@@ -131,5 +133,146 @@ describe('D1 bound-parameter chunking', () => {
     };
     expect(listed.length).toBeGreaterThanOrEqual(count);
     expect(listed.find((t) => t.id === last.id)!.ownerMemberIds).toEqual([adminMemberId]);
+  });
+
+  it('looks up the task metadata of more claimed events than D1 will bind at once', async () => {
+    const { familyId, childId } = await setupFamily('d1-task-meta@example.com');
+    const db = getDb(env.DB);
+    const inserted: (typeof tasks.$inferSelect)[] = [];
+    for (let i = 0; i < D1_MAX_BOUND_PARAMS + 30; i += 10) {
+      inserted.push(
+        ...(await db
+          .insert(tasks)
+          .values(
+            Array.from({ length: 10 }, (_, j) => ({
+              familyId,
+              familyMemberId: childId,
+              type: (j % 2 === 0 ? 'pickup' : 'dropoff') as 'pickup' | 'dropoff',
+              dtstart: new Date(Date.now() + (i + j) * 60_000),
+              status: 'owned' as const,
+              createdVia: 'generated' as const,
+            })),
+          )
+          .returning()),
+      );
+    }
+
+    const meta = await claimedTaskMeta(
+      getDb(cappedDb(env.DB)),
+      // Repeats are one lookup, not a chunk's worth of parameters.
+      [...inserted, ...inserted].map((t) => t.id),
+    );
+    expect(meta.size).toBe(inserted.length);
+    expect(meta.get(inserted[0]!.id)).toMatchObject({ type: 'pickup' });
+    expect(meta.get(inserted[inserted.length - 1]!.id)).toMatchObject({ type: 'dropoff' });
+  });
+
+  it('trues up claimed events for more tasks than D1 will bind at once', async () => {
+    const { familyId, childId, adminMemberId } = await setupFamily('d1-claim-trueup@example.com');
+    const db = getDb(env.DB);
+    const day = 24 * 60 * 60_000;
+    const soon = Date.now() + day;
+    const longAgo = Date.now() - 180 * day;
+    // Past each statement's budget, so every batched lookup takes more than one chunk.
+    const count = D1_MAX_BOUND_PARAMS + 5;
+
+    async function insertTasks(
+      n: number,
+      status: 'owned' | 'unowned',
+      at: number,
+      values: (i: number) => Partial<typeof tasks.$inferInsert> = () => ({}),
+    ) {
+      const out: (typeof tasks.$inferSelect)[] = [];
+      for (let i = 0; i < n; i += 5) {
+        out.push(
+          ...(await db
+            .insert(tasks)
+            .values(
+              Array.from({ length: Math.min(5, n - i) }, (_, j) => ({
+                familyId,
+                familyMemberId: childId,
+                type: 'attendance' as const,
+                dtstart: new Date(at + (i + j) * 60_000),
+                dtend: new Date(at + (i + j) * 60_000 + 30 * 60_000),
+                status,
+                createdVia: 'generated' as const,
+                ...values(i + j),
+              })),
+            )
+            .returning()),
+        );
+      }
+      return out;
+    }
+    async function insertOwners(rows: (typeof tasks.$inferSelect)[]) {
+      for (let i = 0; i < rows.length; i += 10) {
+        await db
+          .insert(taskOwners)
+          .values(rows.slice(i, i + 10).map((t) => ({ taskId: t.id, familyMemberId: adminMemberId })));
+      }
+    }
+    async function insertClaims(rows: (typeof tasks.$inferSelect)[], at: number) {
+      for (let i = 0; i < rows.length; i += 5) {
+        await db.insert(calendarEvents).values(
+          rows.slice(i, i + 5).map((t, j) => ({
+            familyId,
+            familyMemberId: adminMemberId,
+            provenance: 'claimed_task' as const,
+            synthKey: `task:${t.id}`,
+            taskId: t.id,
+            contentHash: 'stale',
+            dtstart: new Date(at + (i + j) * 60_000),
+          })),
+        );
+      }
+    }
+    const claimsOf = (ids: string[]) =>
+      selectChunked(ids, (chunk) =>
+        db.select().from(calendarEvents).where(inArray(calendarEvents.taskId, chunk)),
+      );
+
+    // Attendance tasks about real events, so the source lookup is batched too.
+    const sources: (typeof calendarEvents.$inferSelect)[] = [];
+    for (let i = 0; i < count; i += 5) {
+      sources.push(
+        ...(await db
+          .insert(calendarEvents)
+          .values(
+            Array.from({ length: Math.min(5, count - i) }, (_, j) => ({
+              familyId,
+              familyMemberId: childId,
+              provenance: 'synthesized' as const,
+              synthKey: `ev:src:${i + j}`,
+              contentHash: 'h',
+              summary: `Practice ${i + j}`,
+              dtstart: new Date(soon + (i + j) * 60_000),
+            })),
+          )
+          .returning()),
+      );
+    }
+    const current = await insertTasks(count, 'owned', soon, (i) => ({
+      calendarEventId: sources[i]!.id,
+    }));
+    await insertOwners(current);
+    // Finished long ago, but its claim has drifted onto the horizon: not a stray.
+    const drifted = await insertTasks(count, 'owned', longAgo);
+    await insertOwners(drifted);
+    await insertClaims(drifted, soon);
+    // No longer owned, claim left behind: strays to sweep.
+    const strays = await insertTasks(count, 'unowned', soon);
+    await insertClaims(strays, soon);
+
+    await reconcileClaimEvents(getDb(cappedDb(env.DB)), familyId);
+
+    const made = await claimsOf(current.map((t) => t.id));
+    expect(made).toHaveLength(count);
+    expect(made.map((e) => e.summary).sort()).toEqual(
+      sources.map((s) => s.summary).sort(), // the batched source events reached each claim
+    );
+    const kept = await claimsOf(drifted.map((t) => t.id));
+    expect(kept).toHaveLength(count);
+    expect(kept.every((e) => e.dtstart.getTime() < Date.now() - 100 * day)).toBe(true);
+    expect(await claimsOf(strays.map((t) => t.id))).toHaveLength(0);
   });
 });

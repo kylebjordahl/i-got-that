@@ -16,6 +16,8 @@ import {
   gt,
   pendingDecisions,
   sourceEvents,
+  sql,
+  tasks,
 } from '@igt/db';
 import {
   DAY_MS,
@@ -47,13 +49,16 @@ export interface SynthesisWindowOptions {
   windowEnd?: Date;
 }
 
+/** How far ahead synthesis (and read-back) look: 30 days from the start of the UTC day. */
+export const SYNTHESIS_WINDOW_MS = 30 * DAY_MS;
+
 /** The shared 30-day forward window synthesis (and read-back) operate over. */
 export function synthesisWindow(opts: SynthesisWindowOptions = {}): {
   start: Date;
   end: Date;
 } {
   const start = startOfUtcDay(opts.windowStart ?? new Date());
-  const end = opts.windowEnd ?? new Date(start.getTime() + 30 * DAY_MS);
+  const end = opts.windowEnd ?? new Date(start.getTime() + SYNTHESIS_WINDOW_MS);
   return { start, end };
 }
 
@@ -79,6 +84,35 @@ export function overlapsWindow(
     lt(dtstart, window.end),
     or(gte(dtstart, window.start), gt(dtend, window.start)),
   );
+}
+
+/** How far behind the synthesis window the "still active" horizon reaches. */
+export const ACTIVE_LOOKBACK_MS = 30 * DAY_MS;
+
+/**
+ * The range of a family's calendar the recurring passes (mirror, travel origin,
+ * claim true-up, task rebuilds) still work over: the synthesis window plus the
+ * 30 days behind it, so the recent past is still healed and cleaned up. Nothing
+ * prunes finished rows, so those passes must be bounded by this rather than by
+ * "everything the family ever had", or their cost grows with every day of
+ * history on every cron tick and queue job. Passes that must also follow what
+ * lies ahead (the mirror, claims) cut off only the past, at `start`.
+ */
+export function activeHorizon(opts: SynthesisWindowOptions = {}): { start: Date; end: Date } {
+  const window = synthesisWindow(opts);
+  return { start: new Date(window.start.getTime() - ACTIVE_LOOKBACK_MS), end: window.end };
+}
+
+/**
+ * A calendar event or task that has not finished before `from`: it ends at or
+ * after it, however far ahead. A null `dtend` is an instant at `dtstart`.
+ */
+export function endsAtOrAfter(
+  dtstart: typeof calendarEvents.dtstart | typeof tasks.dtstart,
+  dtend: typeof calendarEvents.dtend | typeof tasks.dtend,
+  from: Date,
+) {
+  return sql`coalesce(${dtend}, ${dtstart}) >= ${from.getTime()}`;
 }
 
 export interface SynthesizeResult {

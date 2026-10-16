@@ -1,0 +1,1 @@
+ALTER TABLE `feeds` ADD `expanded_through` integer;

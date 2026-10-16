@@ -34,6 +34,7 @@ import {
   mirroredSummary,
   type SyncResult,
 } from './mirror.js';
+import { endsAtOrAfter } from './synthesis.js';
 
 type CalendarEventRow = typeof calendarEvents.$inferSelect;
 type EmailOutputRow = typeof emailOutputs.$inferSelect;
@@ -248,17 +249,21 @@ export async function syncMemberEmailOutputs(
           inArray(calendarEvents.provenance, ['synthesized', 'claimed_task']),
           isNull(calendarEvents.maskedAt),
           lte(calendarEvents.dtstart, horizon),
+          // Only what hasn't ended: a finished event is forgotten, so there's no
+          // reason to load a member's whole history just to drop it.
+          endsAtOrAfter(calendarEvents.dtstart, calendarEvents.dtend, now),
         ),
       )
-  )
-    .filter((e) => eventEnd(e).getTime() >= now.getTime())
-    .sort((a, b) => a.dtstart.getTime() - b.dtstart.getTime());
+  ).sort((a, b) => a.dtstart.getTime() - b.dtstart.getTime());
   const familyId = verified[0]!.familyId;
   const timezones = await linkTimezones(db, familyId);
-  const claimedTasks = await claimedTaskMeta(db, familyId);
+  const claimedTasks = await claimedTaskMeta(
+    db,
+    candidates.flatMap((e) => (e.taskId ? [e.taskId] : [])),
+  );
   const provider = new EmailImipProvider(outbox.send, outbox.from);
-  // Only loaded when some output pads for travel: it reads the member's whole
-  // calendar to place them before each trip.
+  // Only loaded when some output pads for travel: it reads the stretch of the
+  // member's calendar that can precede the trips being invited.
   let travel: TravelContext | null = null;
 
   for (const output of verified) {
@@ -315,7 +320,9 @@ export async function syncMemberEmailOutputs(
     }
 
     const alertMinutes = output.alertMinutes ?? [];
-    if (output.padTravelTime && !travel) travel = await travelContext(db, memberId);
+    if (output.padTravelTime && !travel) {
+      travel = await travelContext(db, memberId, { start: now, end: horizon });
+    }
     for (const event of desired) {
       const task = event.taskId ? claimedTasks.get(event.taskId) : undefined;
       const timezone = event.linkId ? timezones.get(event.linkId) : task?.timezone;
