@@ -28,9 +28,15 @@ import {
   type TaskRuleLike,
 } from '@igt/classification';
 import { geoKey, type GeoLocation } from '@igt/domain';
-import { runChunked } from '../lib/d1.js';
+import {
+  batchChunked,
+  type BatchStatement,
+  chunkForD1,
+  runChunked,
+  selectChunked,
+} from '../lib/d1.js';
 import { activeHorizon, endsAtOrAfter } from './synthesis.js';
-import { isRuleOwned, ownerRowsFor, setTaskOwners } from './task-owners.js';
+import { isRuleOwned, type OwnerRow, ownerRowsFor, setTaskOwners } from './task-owners.js';
 
 type CalendarEventRow = typeof calendarEvents.$inferSelect;
 type TaskRow = typeof tasks.$inferSelect;
@@ -134,12 +140,17 @@ interface AssignmentContext {
  * including the extra caretakers a human adds to an attendance claim, which is
  * why a rule only ever owns a task on its own.
  * Returns true when ownership changed (so the caller can reconcile mirrors).
+ *
+ * `preloaded` is the task's owner rows when the caller already has them (task-gen
+ * reads a whole chunk of events' owners in one go; a task it just inserted has
+ * none), which saves the per-task read. Left out, they are read here.
  */
 async function reconcileTaskOwner(
   db: Db,
   task: TaskRow,
   cand: AssignmentCandidate,
   ctx: AssignmentContext,
+  preloaded?: OwnerRow[],
 ): Promise<boolean> {
   if (
     task.manualOwnerOverride ||
@@ -148,7 +159,7 @@ async function reconcileTaskOwner(
   ) {
     return false;
   }
-  const owners = (await ownerRowsFor(db, [task.id])).get(task.id) ?? [];
+  const owners = preloaded ?? (await ownerRowsFor(db, [task.id])).get(task.id) ?? [];
   const ruleOwned = isRuleOwned(owners);
   if (task.status === 'owned' && !ruleOwned) return false;
 
@@ -187,24 +198,27 @@ async function reconcileTaskOwner(
  * whose window is user-set) or a freshly recomputed one to keep it in step
  * with the anchor (generated tasks) — otherwise a healed dtstart would drift
  * out of sync with a stale dtend still anchored to the event's old time.
+ *
+ * Returns the write (unawaited — the caller batches them) or null when the
+ * task already matches.
  */
-async function healTask(
+function healStatement(
   db: Db,
   task: TaskRow,
   dtstart: Date,
   dtend: Date | null,
   location: string | null,
   locationGeo: GeoLocation | null,
-): Promise<void> {
+): BatchStatement | null {
   if (
     task.dtstart.getTime() === dtstart.getTime() &&
     (task.dtend?.getTime() ?? null) === (dtend?.getTime() ?? null) &&
     (task.location ?? null) === (location ?? null) &&
     geoKey(task.locationGeo) === geoKey(locationGeo)
   ) {
-    return;
+    return null;
   }
-  await db
+  return db
     .update(tasks)
     .set({ dtstart, dtend, location, locationGeo })
     .where(eq(tasks.id, task.id));
@@ -213,6 +227,269 @@ async function healTask(
 /** The start anchor a given task type takes on an event (for manual healing). */
 function anchorStart(event: CalendarEventRow, type: string): Date {
   return type === 'pickup' ? (event.dtend ?? event.dtstart) : event.dtstart;
+}
+
+/**
+ * How many dirty events `buildMemberTasks` reads, writes and stamps together.
+ * Each chunk costs a handful of round trips whatever its size (one read of its
+ * events' tasks, one of their owners, the batched writes, the batched stamps),
+ * so a bigger chunk saves little past this point — while a chunk is also the
+ * most work an exception can send back to square one, since its stamps are the
+ * last thing it writes.
+ */
+const TASKGEN_EVENT_CHUNK = 50;
+
+/** What `buildMemberTasks` loaded once and hands to every chunk. */
+interface BuildPass {
+  rules: TaskRuleLike[];
+  linkDefault: Map<string, TaskDefault>;
+  unifiedDefault: TaskDefault;
+  assignCtx: AssignmentContext;
+  zones: MemberZones;
+}
+
+/**
+ * What is left to do for one task once the chunk's task writes have landed:
+ * reconcile its owner against the assignment rules. Done after the writes, not
+ * before, because a rule match goes through `setTaskOwners` and from there to
+ * `syncClaimEvents`, which reads the task back from the database — it has to see
+ * the healed anchor/location, not the pre-heal one.
+ */
+type OwnerStep =
+  | { kind: 'existing'; task: TaskRow; cand: AssignmentCandidate }
+  | {
+      kind: 'inserted';
+      event: CalendarEventRow;
+      intent: TaskIntent;
+      cand: AssignmentCandidate;
+      /** Index of this task's INSERT in the chunk's write list. */
+      at: number;
+    };
+
+/**
+ * Reconcile the tasks of a chunk of dirty events (never `claimed_task`, never
+ * masked): what each should have, against what it has.
+ *
+ * It used to be one pass per event, each with its own SELECT of the event's
+ * tasks, an UPDATE/DELETE/INSERT per task and a stamp — 245 D1 round trips to
+ * build ~50 events' tasks. Now the reads are shared across the chunk (its tasks,
+ * then the owners of the ones that could be reconciled), the decisions are made
+ * in memory, and the writes go out as `db.batch()` calls: first every undesired
+ * unowned task's delete, then the heals and inserts in event order, then — after
+ * ownership has been reconciled — every event's `tasksBuiltHash` stamp.
+ *
+ * Only an assignment-rule match writes per task from here (`setTaskOwners`
+ * moves ownership, claimed events and mirrors, and has to read its own state);
+ * most tasks never match one.
+ */
+async function buildEventTasks(
+  db: Db,
+  events: CalendarEventRow[],
+  pass: BuildPass,
+  result: TaskGenResult,
+): Promise<void> {
+  // Busy blocks (`fb:` — free/busy firewall intervals) are opaque availability,
+  // never family logistics: they must not spawn claimable tasks even for
+  // members whose events otherwise generate them. They only need their stamp,
+  // so the row doesn't stay dirty forever.
+  const buildable = events.filter((e) => !e.synthKey.startsWith('fb:'));
+
+  const taskRows = await selectChunked(
+    buildable.map((e) => e.id),
+    (chunk) => db.select().from(tasks).where(inArray(tasks.calendarEventId, chunk)),
+  );
+  const tasksByEvent = new Map<string, TaskRow[]>();
+  for (const t of taskRows) {
+    const list = tasksByEvent.get(t.calendarEventId!) ?? [];
+    list.push(t);
+    tasksByEvent.set(t.calendarEventId!, list);
+  }
+
+  // Decide what each event should have (pure: no reads or writes in here).
+  const plans = buildable.map((event) => {
+    const fallback =
+      (event.linkId && pass.linkDefault.get(event.linkId)) || pass.unifiedDefault;
+    const resolution = resolveTaskResult(
+      {
+        summary: event.summary,
+        location: event.location,
+        description: event.description,
+        allDay: event.allDay,
+        dtstart: event.dtstart,
+        dtend: event.dtend,
+      },
+      pass.rules,
+      event.linkId ?? null,
+      fallback,
+    );
+    return {
+      event,
+      intents: generateTaskIntents(event, resolution),
+      existing: tasksByEvent.get(event.id) ?? [],
+    };
+  });
+
+  // The owner rows `reconcileTaskOwner` is going to ask for: tasks of an event
+  // with no user-converted task (those only heal), whose type the event still
+  // wants, and that the rule engine is allowed to touch at all.
+  const needOwners: string[] = [];
+  for (const { intents, existing } of plans) {
+    if (existing.some((t) => t.createdVia === 'manual')) continue;
+    const wanted = new Set(intents.map((i) => i.type));
+    for (const t of existing) {
+      if (wanted.has(t.type) && !t.manualOwnerOverride && t.status !== 'dismissed') {
+        needOwners.push(t.id);
+      }
+    }
+  }
+  const ownersByTask = await ownerRowsFor(db, needOwners);
+
+  const deletedIds: string[] = [];
+  const writes: BatchStatement[] = [];
+  const steps: OwnerStep[] = [];
+  for (const { event, intents, existing } of plans) {
+    // User-converted tasks freeze the type set; only heal their anchors. A
+    // transition task with a user-set duration override re-derives both ends
+    // from the (moved) anchor so its signed window is preserved; others keep
+    // their own dtend and just re-anchor dtstart.
+    const manual = existing.filter((t) => t.createdVia === 'manual');
+    if (manual.length > 0) {
+      for (const t of manual) {
+        const anchor = anchorStart(event, t.type);
+        let heal: BatchStatement | null;
+        if (t.durationOverrideMin != null && t.type !== 'attendance') {
+          const w = transitionWindow(anchor, t.durationOverrideMin);
+          heal = healStatement(db, t, w.dtstart, w.dtend, event.location, event.locationGeo);
+        } else {
+          heal = healStatement(db, t, anchor, t.dtend, event.location, event.locationGeo);
+        }
+        if (heal) writes.push(heal);
+      }
+      continue;
+    }
+
+    const desiredByType = new Map(intents.map((i) => [i.type, i]));
+    for (const t of existing) {
+      if (!desiredByType.has(t.type) && t.status === 'unowned') {
+        deletedIds.push(t.id);
+        result.tasksRemoved++;
+      }
+    }
+    const existingByType = new Map(existing.map((t) => [t.type, t]));
+    for (const intent of intents) {
+      // Auto-assignment reads the day/feed/child the EVENT falls on (task type
+      // aside), so weekday + every-other-week patterns key off the event's
+      // LOCAL date — read in the event's own zone, not UTC, or an evening
+      // event is tested as the next weekday.
+      const cand: AssignmentCandidate = {
+        aboutMemberId: event.familyMemberId,
+        linkId: event.linkId ?? null,
+        type: intent.type,
+        dtstart: event.dtstart,
+        allDay: event.allDay,
+        tz: zoneFor(pass.zones, event.linkId ?? null),
+      };
+      const prior = existingByType.get(intent.type);
+      if (prior) {
+        const heal = healStatement(
+          db,
+          prior,
+          intent.dtstart,
+          intent.dtend,
+          intent.location,
+          intent.locationGeo,
+        );
+        if (heal) writes.push(heal);
+        steps.push({ kind: 'existing', task: prior, cand });
+      } else {
+        // Idempotent against a concurrent run: another task-gen (cron tick,
+        // or a route handler's inline pipeline) may have inserted this same
+        // (event, type) since our snapshot read above. The partial unique
+        // index `tasks_generated_event_type_uq` turns the loser's insert
+        // into a no-op instead of a permanent duplicate. No conflict target
+        // on purpose: SQLite requires a partial index's WHERE to be repeated
+        // in the target, and a bare DO NOTHING covers it without that.
+        steps.push({ kind: 'inserted', event, intent, cand, at: writes.length });
+        writes.push(
+          db
+            .insert(tasks)
+            .values({
+              familyId: event.familyId,
+              calendarEventId: event.id,
+              familyMemberId: event.familyMemberId,
+              type: intent.type,
+              attendanceRequirement: intent.attendanceRequirement,
+              dtstart: intent.dtstart,
+              dtend: intent.dtend,
+              location: intent.location,
+              locationGeo: intent.locationGeo,
+              status: 'unowned',
+              createdVia: 'generated',
+            })
+            .onConflictDoNothing()
+            .returning(),
+        );
+      }
+    }
+  }
+
+  // Deletes ahead of everything else, so `at` (an index into `writes`) shifts by
+  // however many delete statements there are.
+  const deletes = chunkForD1(deletedIds).map((chunk) =>
+    db.delete(tasks).where(inArray(tasks.id, chunk)),
+  );
+  const results = await batchChunked(db, [...deletes, ...writes]);
+
+  for (const step of steps) {
+    if (step.kind === 'existing') {
+      await reconcileTaskOwner(
+        db,
+        step.task,
+        step.cand,
+        pass.assignCtx,
+        ownersByTask.get(step.task.id) ?? [],
+      );
+      continue;
+    }
+    let row = (results[deletes.length + step.at] as TaskRow[] | undefined)?.[0];
+    // A task this chunk just inserted has no owners yet. One that lost the race
+    // (the insert came back empty) is the winner's row, and *is* the task: it
+    // may have been mid-flight (inserted but not yet auto-assigned) when it
+    // read, so its owners are read fresh by `reconcileTaskOwner`.
+    let owners: OwnerRow[] | undefined = [];
+    if (row) {
+      result.tasksCreated++;
+    } else {
+      owners = undefined;
+      row = (
+        await db
+          .select()
+          .from(tasks)
+          .where(
+            and(
+              eq(tasks.calendarEventId, step.event.id),
+              eq(tasks.type, step.intent.type),
+              eq(tasks.createdVia, 'generated'),
+            ),
+          )
+          .limit(1)
+      )[0];
+    }
+    if (row) await reconcileTaskOwner(db, row, step.cand, pass.assignCtx, owners);
+  }
+
+  // Stamp last: an event is only "built" once everything above landed. The
+  // stamp is the hash this pass read, not the row's current one, so an event
+  // that changed underneath us stays dirty for the next pass.
+  await batchChunked(
+    db,
+    events.map((e) =>
+      db
+        .update(calendarEvents)
+        .set({ tasksBuiltHash: e.contentHash })
+        .where(eq(calendarEvents.id, e.id)),
+    ),
+  );
 }
 
 /**
@@ -333,144 +610,14 @@ export async function buildMemberTasks(
       ),
     );
 
-  for (const event of dirty) {
-    // Busy blocks (`fb:` — free/busy firewall intervals) are opaque
-    // availability, never family logistics: they must not spawn claimable
-    // tasks even for members whose events otherwise generate them. Stamp the
-    // hash so the row doesn't stay dirty forever.
-    if (event.synthKey.startsWith('fb:')) {
-      await db
-        .update(calendarEvents)
-        .set({ tasksBuiltHash: event.contentHash })
-        .where(eq(calendarEvents.id, event.id));
-      continue;
-    }
-    const fallback =
-      (event.linkId && linkDefault.get(event.linkId)) || unifiedDefault;
-    const resolution = resolveTaskResult(
-      {
-        summary: event.summary,
-        location: event.location,
-        description: event.description,
-        allDay: event.allDay,
-        dtstart: event.dtstart,
-        dtend: event.dtend,
-      },
-      rules,
-      event.linkId ?? null,
-      fallback,
-    );
-    const intents = generateTaskIntents(event, resolution);
-
-    const existing = await db
-      .select()
-      .from(tasks)
-      .where(eq(tasks.calendarEventId, event.id));
-
-    // User-converted tasks freeze the type set; only heal their anchors. A
-    // transition task with a user-set duration override re-derives both ends
-    // from the (moved) anchor so its signed window is preserved; others keep
-    // their own dtend and just re-anchor dtstart.
-    const manual = existing.filter((t) => t.createdVia === 'manual');
-    if (manual.length > 0) {
-      for (const t of manual) {
-        const anchor = anchorStart(event, t.type);
-        if (t.durationOverrideMin != null && t.type !== 'attendance') {
-          const w = transitionWindow(anchor, t.durationOverrideMin);
-          await healTask(db, t, w.dtstart, w.dtend, event.location, event.locationGeo);
-        } else {
-          await healTask(db, t, anchor, t.dtend, event.location, event.locationGeo);
-        }
-      }
-    } else {
-      const desiredByType = new Map(intents.map((i) => [i.type, i]));
-      for (const t of existing) {
-        if (!desiredByType.has(t.type) && t.status === 'unowned') {
-          await db.delete(tasks).where(eq(tasks.id, t.id));
-          result.tasksRemoved++;
-        }
-      }
-      const existingByType = new Map(existing.map((t) => [t.type, t]));
-      for (const intent of intents) {
-        // Auto-assignment reads the day/feed/child the EVENT falls on (task type
-        // aside), so weekday + every-other-week patterns key off the event's
-        // LOCAL date — read in the event's own zone, not UTC, or an evening
-        // event is tested as the next weekday.
-        const cand: AssignmentCandidate = {
-          aboutMemberId: event.familyMemberId,
-          linkId: event.linkId ?? null,
-          type: intent.type,
-          dtstart: event.dtstart,
-          allDay: event.allDay,
-          tz: zoneFor(zones, event.linkId ?? null),
-        };
-        const prior = existingByType.get(intent.type);
-        if (prior) {
-          await healTask(
-            db,
-            prior,
-            intent.dtstart,
-            intent.dtend,
-            intent.location,
-            intent.locationGeo,
-          );
-          await reconcileTaskOwner(db, prior, cand, assignCtx);
-        } else {
-          // Idempotent against a concurrent run: another task-gen (cron tick,
-          // or a route handler's inline pipeline) may have inserted this same
-          // (event, type) since our snapshot read above. The partial unique
-          // index `tasks_generated_event_type_uq` turns the loser's insert
-          // into a no-op instead of a permanent duplicate. No conflict target
-          // on purpose: SQLite requires a partial index's WHERE to be repeated
-          // in the target, and a bare DO NOTHING covers it without that.
-          let row = (
-            await db
-              .insert(tasks)
-              .values({
-                familyId: event.familyId,
-                calendarEventId: event.id,
-                familyMemberId: event.familyMemberId,
-                type: intent.type,
-                attendanceRequirement: intent.attendanceRequirement,
-                dtstart: intent.dtstart,
-                dtend: intent.dtend,
-                location: intent.location,
-                locationGeo: intent.locationGeo,
-                status: 'unowned',
-                createdVia: 'generated',
-              })
-              .onConflictDoNothing()
-              .returning()
-          )[0];
-          if (row) {
-            result.tasksCreated++;
-          } else {
-            // Lost the race: the winner's row is the task. Still reconcile its
-            // owner below — the winner may have been mid-flight (inserted but
-            // not yet auto-assigned) when it read.
-            row = (
-              await db
-                .select()
-                .from(tasks)
-                .where(
-                  and(
-                    eq(tasks.calendarEventId, event.id),
-                    eq(tasks.type, intent.type),
-                    eq(tasks.createdVia, 'generated'),
-                  ),
-                )
-                .limit(1)
-            )[0];
-          }
-          if (row) await reconcileTaskOwner(db, row, cand, assignCtx);
-        }
-      }
-    }
-
-    await db
-      .update(calendarEvents)
-      .set({ tasksBuiltHash: event.contentHash })
-      .where(eq(calendarEvents.id, event.id));
+  // Reconcile the dirty events a chunk at a time: each chunk reads its events'
+  // tasks (and their owners) in a couple of queries, sends its task writes as
+  // batches, and stamps its events together. A chunk is also the unit that is
+  // redone if something in it throws — the stamps come last, so an event whose
+  // tasks didn't all land stays dirty for the next pass.
+  const pass: BuildPass = { rules, linkDefault, unifiedDefault, assignCtx, zones };
+  for (let i = 0; i < dirty.length; i += TASKGEN_EVENT_CHUNK) {
+    await buildEventTasks(db, dirty.slice(i, i + TASKGEN_EVENT_CHUNK), pass, result);
   }
 
   // Orphan sweep: unowned event-derived tasks (generated OR converted) whose

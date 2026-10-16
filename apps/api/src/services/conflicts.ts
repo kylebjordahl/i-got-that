@@ -9,7 +9,13 @@ import {
   inArray,
   tasks,
 } from '@igt/db';
-import { selectChunked } from '../lib/d1.js';
+import {
+  batchChunked,
+  type BatchStatement,
+  chunkForD1,
+  runChunked,
+  selectChunked,
+} from '../lib/d1.js';
 import {
   detectConflicts,
   subtractIntervals,
@@ -248,27 +254,35 @@ export async function reconcileMemberConflicts(
   const existingByPair = new Map(existing.map((c) => [pairId(c.loserKey, c.winnerKey), c]));
   const detectedSet = new Set(detected.map((p) => pairId(p.loserKey, p.winnerKey)));
 
+  // The table's writes are collected and sent as batches below — it's one per
+  // overlap, so a school year of practices colliding with school days used to be
+  // a round trip each.
+  const conflictWrites: BatchStatement[] = [];
   for (const p of detected) {
     if (!existingByPair.has(pairId(p.loserKey, p.winnerKey))) {
       // No-op if a concurrent reconcile detected the same pair first.
-      await db
-        .insert(conflicts)
-        .values({
-          familyId: member.familyId,
-          familyMemberId,
-          loserKey: p.loserKey,
-          winnerKey: p.winnerKey,
-          status: 'pending',
-        })
-        .onConflictDoNothing();
+      conflictWrites.push(
+        db
+          .insert(conflicts)
+          .values({
+            familyId: member.familyId,
+            familyMemberId,
+            loserKey: p.loserKey,
+            winnerKey: p.winnerKey,
+            status: 'pending',
+          })
+          .onConflictDoNothing(),
+      );
     }
   }
   // Drop rows whose overlap no longer exists (auto-clear).
-  for (const c of existing) {
-    if (!detectedSet.has(pairId(c.loserKey, c.winnerKey))) {
-      await db.delete(conflicts).where(eq(conflicts.id, c.id));
-    }
-  }
+  conflictWrites.push(
+    ...chunkForD1(
+      existing
+        .filter((c) => !detectedSet.has(pairId(c.loserKey, c.winnerKey)))
+        .map((c) => c.id),
+    ).map((chunk) => db.delete(conflicts).where(inArray(conflicts.id, chunk))),
+  );
 
   // Reopen decided (resolved/dismissed) conflicts where one of the two events
   // has since MOVED — a decision made against an event that has been
@@ -292,26 +306,30 @@ export async function reconcileMemberConflicts(
       // Decided before this snapshot existed, or against an older stamp format
       // — establish a baseline now rather than reopening on a value that was
       // never a comparable schedule stamp.
-      await db.update(conflicts).set(stamps).where(eq(conflicts.id, c.id));
+      conflictWrites.push(db.update(conflicts).set(stamps).where(eq(conflicts.id, c.id)));
       continue;
     }
     if (
       stamps.loserScheduleStamp !== c.loserScheduleStamp ||
       stamps.winnerScheduleStamp !== c.winnerScheduleStamp
     ) {
-      await db
-        .update(conflicts)
-        .set({
-          status: 'pending',
-          resolvedByMemberId: null,
-          resolvedAt: null,
-          dismissedAt: null,
-          loserScheduleStamp: null,
-          winnerScheduleStamp: null,
-        })
-        .where(eq(conflicts.id, c.id));
+      conflictWrites.push(
+        db
+          .update(conflicts)
+          .set({
+            status: 'pending',
+            resolvedByMemberId: null,
+            resolvedAt: null,
+            dismissedAt: null,
+            loserScheduleStamp: null,
+            winnerScheduleStamp: null,
+          })
+          .where(eq(conflicts.id, c.id)),
+      );
     }
   }
+  // Everything below reads the table back, so it has to have landed.
+  await batchChunked(db, conflictWrites);
 
   // --- Materialise the splits for resolved conflicts. ------------------------
   const surviving = await db
@@ -425,42 +443,50 @@ export async function reconcileMemberConflicts(
   // Flag/unflag the maskable losers. The masked row survives (so detection stays
   // stable and synthesis keeps owning it) but is skipped by task-gen, the
   // mirror, and the calendar views — the cf: segments stand in for it.
+  // Sent together with the segment writes below, as batches.
+  const calendarWrites: BatchStatement[] = [];
+  const maskIds: string[] = [];
+  const unmaskIds: string[] = [];
   for (const e of events) {
     const maskable = e.synthKey.startsWith('bl:') || e.synthKey.startsWith('ev:');
     if (!maskable) continue;
     const shouldMask = maskedLoserKeys.has(e.synthKey);
-    if (shouldMask && e.maskedAt == null) {
-      await db
-        .update(calendarEvents)
-        .set({ maskedAt: new Date() })
-        .where(eq(calendarEvents.id, e.id));
-    } else if (!shouldMask && e.maskedAt != null) {
-      // Un-masking has to clear the build stamp too. Task-gen swept this
-      // event's unowned tasks while it was masked (its cf: segments carried
-      // them), and its content hasn't changed since — so with the stamp still
-      // matching, task-gen's dirty query would skip it forever and the event
-      // would sit back on the calendar with nothing to claim, permanently.
-      await db
+    if (shouldMask && e.maskedAt == null) maskIds.push(e.id);
+    else if (!shouldMask && e.maskedAt != null) unmaskIds.push(e.id);
+  }
+  const maskedAt = new Date();
+  calendarWrites.push(
+    // (`reserved`: the SET values bind parameters too — one here, two below.)
+    ...chunkForD1(maskIds, 1).map((chunk) =>
+      db.update(calendarEvents).set({ maskedAt }).where(inArray(calendarEvents.id, chunk)),
+    ),
+    // Un-masking has to clear the build stamp too. Task-gen swept this
+    // event's unowned tasks while it was masked (its cf: segments carried
+    // them), and its content hasn't changed since — so with the stamp still
+    // matching, task-gen's dirty query would skip it forever and the event
+    // would sit back on the calendar with nothing to claim, permanently.
+    ...chunkForD1(unmaskIds, 2).map((chunk) =>
+      db
         .update(calendarEvents)
         .set({ maskedAt: null, tasksBuiltHash: null })
-        .where(eq(calendarEvents.id, e.id));
-    }
-  }
+        .where(inArray(calendarEvents.id, chunk)),
+    ),
+  );
 
   // Reconcile the cf: split segments: upsert desired (hash skip), move or
   // release claimed tasks across the old and new segment sets, then delete
   // stale segments (their tasks have left by then).
   const existingCf = events.filter((e) => e.synthKey.startsWith('cf:'));
   const existingCfByKey = new Map(existingCf.map((e) => [e.synthKey, e]));
-  const desiredSpans = new Map<string, Span>();
+  const insertedAt = new Map<string, number>(); // synthKey -> index in calendarWrites
   for (const [synthKey, row] of desiredCf) {
     const prior = existingCfByKey.get(synthKey);
-    let id: string;
     if (!prior) {
       // Upsert so a concurrent reconcile that already materialised this
       // segment converges on its row (and we still get the id back).
-      id = (
-        await db
+      insertedAt.set(synthKey, calendarWrites.length);
+      calendarWrites.push(
+        db
           .insert(calendarEvents)
           .values(row)
           .onConflictDoUpdate({
@@ -478,19 +504,20 @@ export async function reconcileMemberConflicts(
               contentHash: row.contentHash,
             },
           })
-          .returning({ id: calendarEvents.id })
-      )[0]!.id;
-    } else {
-      id = prior.id;
-      // `sourceEventId` is compared too: it isn't in the hash, but a segment
-      // of a `bl:` day inherits that day's (now null) one, and a segment cut
-      // before baseline days stopped carrying their exception event's id would
-      // otherwise keep an ON DELETE CASCADE link to it forever.
-      if (
-        prior.contentHash !== row.contentHash ||
-        prior.sourceEventId !== row.sourceEventId
-      ) {
-        await db
+          .returning({ id: calendarEvents.id }),
+      );
+      continue;
+    }
+    // `sourceEventId` is compared too: it isn't in the hash, but a segment
+    // of a `bl:` day inherits that day's (now null) one, and a segment cut
+    // before baseline days stopped carrying their exception event's id would
+    // otherwise keep an ON DELETE CASCADE link to it forever.
+    if (
+      prior.contentHash !== row.contentHash ||
+      prior.sourceEventId !== row.sourceEventId
+    ) {
+      calendarWrites.push(
+        db
           .update(calendarEvents)
           .set({
             dtstart: row.dtstart,
@@ -504,9 +531,19 @@ export async function reconcileMemberConflicts(
             sourceEventId: row.sourceEventId,
             contentHash: row.contentHash,
           })
-          .where(eq(calendarEvents.id, prior.id));
-      }
+          .where(eq(calendarEvents.id, prior.id)),
+      );
     }
+  }
+  const written = await batchChunked(db, calendarWrites);
+  // A new segment's id is whatever the upsert returned; the rest keep their row's.
+  const desiredSpans = new Map<string, Span>();
+  for (const [synthKey, row] of desiredCf) {
+    const at = insertedAt.get(synthKey);
+    const id =
+      at != null
+        ? (written[at] as { id: string }[])[0]!.id
+        : existingCfByKey.get(synthKey)!.id;
     desiredSpans.set(synthKey, { id, dtstart: row.dtstart as Date, dtend: row.dtend ?? null });
   }
 
@@ -530,11 +567,10 @@ export async function reconcileMemberConflicts(
     await reassignClaimedTasks(db, sources, targets, result);
   }
 
-  for (const cf of existingCf) {
-    if (!desiredCf.has(cf.synthKey)) {
-      await db.delete(calendarEvents).where(eq(calendarEvents.id, cf.id));
-    }
-  }
+  await runChunked(
+    existingCf.filter((cf) => !desiredCf.has(cf.synthKey)).map((cf) => cf.id),
+    (chunk) => db.delete(calendarEvents).where(inArray(calendarEvents.id, chunk)),
+  );
 
   return result;
 }

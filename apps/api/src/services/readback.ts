@@ -14,6 +14,7 @@ import {
   type Occurrence,
 } from '@igt/ical';
 import { resolveAccountCredential } from '../lib/account-credentials.js';
+import { batchChunked, type BatchStatement, chunkForD1 } from '../lib/d1.js';
 import type { KekKeySet } from '../lib/secrets.js';
 import { hashCalendarEvent, overlapsWindow, synthesisWindow } from './synthesis.js';
 
@@ -163,6 +164,9 @@ export async function readBackMember(
   const existingByKey = new Map(existing.map((e) => [e.synthKey, e]));
   const desiredKeys = new Set<string>();
 
+  // Collected, then sent as batches — one awaited statement per event used to
+  // be a round trip each.
+  const writes: BatchStatement[] = [];
   for (const occ of human) {
     const synthKey = humanSynthKey(occ);
     desiredKeys.add(synthKey);
@@ -181,10 +185,12 @@ export async function readBackMember(
     const prior = existingByKey.get(synthKey);
     if (prior) {
       if (prior.contentHash !== contentHash) {
-        await db
-          .update(calendarEvents)
-          .set({ ...payload, contentHash })
-          .where(eq(calendarEvents.id, prior.id));
+        writes.push(
+          db
+            .update(calendarEvents)
+            .set({ ...payload, contentHash })
+            .where(eq(calendarEvents.id, prior.id)),
+        );
         result.upserted++;
       }
       continue;
@@ -192,33 +198,39 @@ export async function readBackMember(
     // Upsert on (familyMemberId, synthKey) rather than a bare insert: should
     // `existing` ever disagree with what the reader reports, that degrades to
     // an update of the same row instead of a unique-index crash.
-    await db
-      .insert(calendarEvents)
-      .values({
-        familyId: cal.familyId,
-        familyMemberId: cal.familyMemberId,
-        provenance: 'human',
-        synthKey,
-        externalUid: occ.uid,
-        externalRecurrenceId: occ.recurrenceId ?? '',
-        contentHash,
-        ...payload,
-      })
-      .onConflictDoUpdate({
-        target: [calendarEvents.familyMemberId, calendarEvents.synthKey],
-        set: { ...payload, contentHash },
-      });
+    writes.push(
+      db
+        .insert(calendarEvents)
+        .values({
+          familyId: cal.familyId,
+          familyMemberId: cal.familyMemberId,
+          provenance: 'human',
+          synthKey,
+          externalUid: occ.uid,
+          externalRecurrenceId: occ.recurrenceId ?? '',
+          contentHash,
+          ...payload,
+        })
+        .onConflictDoUpdate({
+          target: [calendarEvents.familyMemberId, calendarEvents.synthKey],
+          set: { ...payload, contentHash },
+        }),
+    );
     result.upserted++;
   }
 
   // Human events that vanished remotely disappear here too (their unowned
   // tasks are swept by the next task-gen pass).
-  for (const prior of existing) {
-    if (!desiredKeys.has(prior.synthKey)) {
-      await db.delete(calendarEvents).where(eq(calendarEvents.id, prior.id));
-      result.removed++;
-    }
-  }
+  const vanishedIds = existing
+    .filter((prior) => !desiredKeys.has(prior.synthKey))
+    .map((prior) => prior.id);
+  writes.push(
+    ...chunkForD1(vanishedIds).map((chunk) =>
+      db.delete(calendarEvents).where(inArray(calendarEvents.id, chunk)),
+    ),
+  );
+  result.removed += vanishedIds.length;
+  await batchChunked(db, writes);
 
   await db
     .update(memberCalendars)
