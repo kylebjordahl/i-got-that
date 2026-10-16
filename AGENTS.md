@@ -171,8 +171,8 @@ paths in particular).
   it the whole invocation dies mid-pipeline. So `scheduled()` does only the
   global sweeps (orphaned secrets, reauth alerts, digests) and `sendBatch`es a
   `family-pipeline` job per family (≤100 per call) onto `DELIVERY_QUEUE`; the
-  consumer runs `runFamilyTick` (`services/pipeline.ts`: ingest → read-back →
-  conflicts → task-gen → claims → mirror → email) in an invocation with its own
+  consumer runs `runFamilyTick` (`services/pipeline.ts`: ingest → synthesis →
+  read-back → conflicts → task-gen → claims → mirror → email) in an invocation with its own
   budget (`limits.cpu_ms` is raised in `wrangler.jsonc` for exactly this). A
   stage that throws is logged and the later ones still run; the message is
   acked, not retried (the next tick is the retry) — only a tick that couldn't
@@ -254,7 +254,7 @@ paths in particular).
   `source_events` keeps working off the rows already there, so a feed that has
   stopped ingesting looks *healthy* — the calendar is full, it just silently
   stops growing, and what you notice missing is whatever you added most
-  recently. Three things keep that from happening, and all three are
+  recently. Four things keep that from happening, and all four are
   load-bearing: `ingestFeed` records every attempt on the row
   (`lastAttemptedAt`, `consecutiveFailures`, `lastErrorMessage`) so a stuck
   feed can say why; the cron polls **every** feed that `isFeedDue` says is due
@@ -262,8 +262,16 @@ paths in particular).
   `lastSyncedAt` doesn't move on a failure — so a transient blip can't park a
   feed forever; and one feed's failure is caught per-feed in `runFamilyTick`
   (`services/pipeline.ts`) so it can't cost the family the
-  read-back/task-gen/mirror passes that don't depend on it. Only `paused` (a
-  user's decision) is ever skipped outright.
+  read-back/task-gen/mirror passes that don't depend on it; and **synthesis does
+  not wait on ingest** — it is what turns time into calendar days (the 30-day
+  window, an exception feed's `bl:` baseline days, dated baseline-hour
+  changes), so the tick's `synthesis` stage runs `synthesizeFeed` for every
+  non-paused feed every tick, due or not, whether or not its ingest worked
+  (an unchanged synthesis is reads only), and `POST .../feeds/:feedId/refresh`
+  reports a failed ingest in its 200 response (`ingest.error`) instead of
+  throwing past synthesis and task-gen. Without that a feed broken for days
+  loses a day of horizon per day. Only `paused` (a user's decision) is ever
+  skipped outright.
 - **Nothing on the outbound path may be served from cache.** A Worker's
   `fetch()` is not a bare socket — a cacheable GET comes from Cloudflare's
   cache, honouring the origin's `Cache-Control`, and that entry answers our

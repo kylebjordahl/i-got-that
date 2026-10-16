@@ -61,7 +61,7 @@ import {
   reconcileFamilyConflicts,
   reconcileMemberConflicts,
 } from '../services/conflicts.js';
-import { ingestFamilyFeeds, ingestFeed } from '../services/ingest.js';
+import { ingestFamilyFeeds, ingestFeed, type IngestResult } from '../services/ingest.js';
 import { enqueueReconcile } from '../services/mirror.js';
 import { ingestSecrets, resynthesizeFeed } from '../services/pipeline.js';
 import { readBackFamily } from '../services/readback.js';
@@ -1083,6 +1083,14 @@ function refreshCooldownRemainingSeconds(
  * Force-refresh a single feed now: ingest → synthesize → read-back (family,
  * so human edits on member target calendars aren't left stale between cron
  * ticks) → task-gen → claim true-up → mirror.
+ *
+ * An ingest that fails is reported, not thrown: the response is a 200 whose
+ * `ingest` carries the `error` (the shape `/refresh-all` returns per feed;
+ * `ingestFeed` has already recorded why on the row). Everything after ingest
+ * works off the rows already in `source_events`, and synthesis in particular
+ * is what rolls the 30-day window — a person pressing Refresh on a feed that
+ * can't be read must still get that, and the read-back / task-gen for the
+ * rest of what they were refreshing, rather than a 500 that skips it all.
  */
 feedRoutes.post('/:feedId/refresh', async (c) => {
   const db = getDb(c.env.DB);
@@ -1110,7 +1118,18 @@ feedRoutes.post('/:feedId/refresh', async (c) => {
     .set({ lastRefreshRequestedAt: now })
     .where(eq(feeds.id, feed.id));
 
-  const ingest = await ingestFeed(db, feed, { ...ingestSecrets(c.env), force: true });
+  let ingest: IngestResult;
+  try {
+    ingest = await ingestFeed(db, feed, { ...ingestSecrets(c.env), force: true });
+  } catch (err) {
+    // Same shape `ingestFamilyFeeds` gives `/refresh-all` per feed.
+    ingest = {
+      feedId: feed.id,
+      fetched: false,
+      processed: 0,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
   const synthesis = await synthesizeFeed(db, feed);
   await readBackFamily(db, familyId, ingestSecrets(c.env));
   const links = await db
