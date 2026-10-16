@@ -6,6 +6,7 @@ import type {
   DeliveryTarget,
   OwnedRemoteEvent,
 } from './index.js';
+import { DeliveryHttpError } from './errors.js';
 
 /** Private extended property naming the deployment that wrote an event. */
 const ORIGIN_PROPERTY = 'igtOrigin';
@@ -66,7 +67,7 @@ export class GoogleCalendarProvider implements DeliveryProvider {
     const res = await this.fetchImpl(url, {
       headers: { Authorization: `Bearer ${accessToken}` },
     });
-    if (!res.ok) throw new Error(`google calendar lookup failed: ${res.status}`);
+    if (!res.ok) throw new DeliveryHttpError(`google calendar lookup failed: ${res.status}`, res.status);
     const json = (await res.json()) as { items?: { id?: string; status?: string }[] };
     const items = (json.items ?? []).filter((i) => i.id);
     const live = items.find((i) => i.status !== 'cancelled') ?? items[0];
@@ -128,16 +129,16 @@ export class GoogleCalendarProvider implements DeliveryProvider {
       const res = await send('PUT', event.externalRef);
       if (res.ok) return result(res, event.externalRef);
       if (res.status !== 404 && res.status !== 410) {
-        throw new Error(`google calendar update failed: ${res.status}`);
+        throw new DeliveryHttpError(`google calendar update failed: ${res.status}`, res.status);
       }
     }
     const res = await send('POST');
     if (res.ok) return result(res);
-    if (res.status !== 409) throw new Error(`google calendar insert failed: ${res.status}`);
+    if (res.status !== 409) throw new DeliveryHttpError(`google calendar insert failed: ${res.status}`, res.status);
     const existingId = await this.findEventId(event.uid, target, accessToken);
     if (!existingId) throw new Error('google calendar insert failed: 409 with no event for its UID');
     const updated = await send('PUT', existingId);
-    if (!updated.ok) throw new Error(`google calendar update failed: ${updated.status}`);
+    if (!updated.ok) throw new DeliveryHttpError(`google calendar update failed: ${updated.status}`, updated.status);
     return result(updated, existingId);
   }
 
@@ -157,7 +158,7 @@ export class GoogleCalendarProvider implements DeliveryProvider {
       headers: { Authorization: `Bearer ${accessToken}` },
     });
     if (!res.ok && res.status !== 404 && res.status !== 410) {
-      throw new Error(`google calendar delete failed: ${res.status}`);
+      throw new DeliveryHttpError(`google calendar delete failed: ${res.status}`, res.status);
     }
   }
 
@@ -179,7 +180,7 @@ export class GoogleCalendarProvider implements DeliveryProvider {
       const res = await this.fetchImpl(`${this.eventsUrl(target)}?${params}`, {
         headers: { Authorization: `Bearer ${accessToken}` },
       });
-      if (!res.ok) throw new Error(`google calendar list failed: ${res.status}`);
+      if (!res.ok) throw new DeliveryHttpError(`google calendar list failed: ${res.status}`, res.status);
       const json = (await res.json()) as {
         items?: {
           id?: string;

@@ -1,6 +1,7 @@
 import type { DeliveryMethod, GeoLocation, RsvpStatus } from '@igt/domain';
 
 export { CalDavProvider } from './caldav.js';
+export { DeliveryHttpError } from './errors.js';
 export { EmailImipProvider, type EmailSender, unsubscribeHeaders } from './email.js';
 export { GoogleCalendarProvider } from './google.js';
 export { formatEventStart, formatEventTime, formatEventWhen } from './when.js';

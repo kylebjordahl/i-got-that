@@ -3,10 +3,8 @@ import {
   and,
   type Db,
   eq,
-  externalAccounts,
   feeds,
   inArray,
-  isNotNull,
   sourceEvents,
   sql,
 } from '@igt/db';
@@ -16,15 +14,18 @@ import {
   fetchCalDavOccurrences,
   fetchGoogleFreeBusy,
   fetchGoogleOccurrences,
-  GoogleApiError,
   hashOccurrence,
   type Occurrence,
   parseAndExpand,
   parseCalendar,
 } from '@igt/ical';
 import { resolveAccountCredential } from '../lib/account-credentials.js';
+import {
+  clearAccountAuthFailure,
+  recordAccountAuthFailure,
+  truncateError,
+} from '../lib/account-health.js';
 import { batchChunked, runChunked } from '../lib/d1.js';
-import { GoogleTokenRefreshError } from '../lib/google-oauth.js';
 import type { KekKeySet } from '../lib/secrets.js';
 import { overlapsWindow, SYNTHESIS_WINDOW_MS } from './synthesis.js';
 
@@ -588,21 +589,6 @@ async function ingestAccountFeed(
 }
 
 /**
- * A failure only the account's owner can fix, by reconnecting it: Google
- * refused the refresh token, or the grant can't do the read. Anything else
- * (network, a quota, a calendar that was unshared) retries on its own or needs
- * a different fix, so it doesn't ask anyone to sign in again.
- */
-function needsReauth(err: unknown): boolean {
-  return (
-    (err instanceof GoogleTokenRefreshError || err instanceof GoogleApiError) && err.needsReauth
-  );
-}
-
-/** Cap on a stored failure message — enough to diagnose, not enough to bloat the row. */
-const MAX_ERROR_MESSAGE_LENGTH = 500;
-
-/**
  * How long the cron waits before retrying a feed whose last ingest failed:
  * 15 min (the next tick), then 30, 60, 120, 240, and 6 h thereafter.
  *
@@ -680,29 +666,12 @@ export async function ingestFeed(
         lastErrorMessage: feedPatch.lastErrorMessage ?? null,
       })
       .where(eq(feeds.id, feed.id));
-    if (feed.externalAccountId) {
-      // The account reads fine again: drop its reconnect prompt.
-      await db
-        .update(externalAccounts)
-        .set({ authFailedAt: null, authFailureMessage: null, reauthNotifiedAt: null })
-        .where(
-          and(eq(externalAccounts.id, feed.externalAccountId), isNotNull(externalAccounts.authFailedAt)),
-        );
-    }
+    // The account reads fine again: drop its reconnect prompt.
+    await clearAccountAuthFailure(db, feed.externalAccountId);
     return result;
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    if (feed.externalAccountId && needsReauth(err)) {
-      // Keep the *first* failure time: the reauth alert waits on how long the
-      // account has been broken, not on how recently it last failed.
-      await db
-        .update(externalAccounts)
-        .set({
-          authFailedAt: sql`coalesce(${externalAccounts.authFailedAt}, ${attemptedAt.getTime()})`,
-          authFailureMessage: message.slice(0, MAX_ERROR_MESSAGE_LENGTH),
-        })
-        .where(eq(externalAccounts.id, feed.externalAccountId));
-    }
+    await recordAccountAuthFailure(db, feed.externalAccountId, err, attemptedAt);
     await db
       .update(feeds)
       .set({
@@ -712,7 +681,7 @@ export async function ingestFeed(
         // same feed (cron + a user's refresh) both read the old count, and
         // writing `old + 1` back would lose one of the two increments.
         consecutiveFailures: sql`${feeds.consecutiveFailures} + 1`,
-        lastErrorMessage: message.slice(0, MAX_ERROR_MESSAGE_LENGTH),
+        lastErrorMessage: truncateError(message),
       })
       .where(eq(feeds.id, feed.id));
     throw err;
