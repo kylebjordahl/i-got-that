@@ -6,11 +6,7 @@ import {
   eq,
   familyMemberFeeds,
   familyMembers,
-  gt,
-  gte,
   inArray,
-  lt,
-  or,
   tasks,
 } from '@igt/db';
 import { selectChunked } from '../lib/d1.js';
@@ -21,6 +17,7 @@ import {
 } from '@igt/classification';
 import {
   hashCalendarEvent,
+  overlapsWindow,
   synthesisWindow,
   type SynthesisWindowOptions,
 } from './synthesis.js';
@@ -224,11 +221,7 @@ export async function reconcileMemberConflicts(
     .where(
       and(
         eq(calendarEvents.familyMemberId, familyMemberId),
-        lt(calendarEvents.dtstart, window.end),
-        or(
-          gte(calendarEvents.dtstart, window.start),
-          gt(calendarEvents.dtend, window.start),
-        ),
+        overlapsWindow(calendarEvents.dtstart, calendarEvents.dtend, window),
       ),
     );
   const byKey = new Map(events.map((e) => [e.synthKey, e]));

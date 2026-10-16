@@ -4,9 +4,7 @@ import {
   type Db,
   eq,
   familyMemberFeeds,
-  gte,
   inArray,
-  lt,
   memberCalendars,
   sourceEvents,
 } from '@igt/db';
@@ -17,7 +15,7 @@ import {
 } from '@igt/ical';
 import { resolveAccountCredential } from '../lib/account-credentials.js';
 import type { KekKeySet } from '../lib/secrets.js';
-import { hashCalendarEvent, synthesisWindow } from './synthesis.js';
+import { hashCalendarEvent, overlapsWindow, synthesisWindow } from './synthesis.js';
 
 type MemberCalendarRow = typeof memberCalendars.$inferSelect;
 
@@ -138,6 +136,13 @@ export async function readBackMember(
       !feedSourceKeys.has(`${o.uid}:${o.recurrenceId ?? ''}`),
   );
 
+  // Overlap, not `dtstart >= window.start`: the readers return every span that
+  // overlaps the window, including one that began before `window.start` and is
+  // still running. Once such an event's start falls behind the window (a
+  // multi-day all-day event, or a timed one crossing 00:00 UTC), a start-only
+  // query drops its row from `existingByKey`, so the loop below would INSERT it
+  // again and hit the (familyMemberId, synthKey) unique index, aborting this
+  // member's whole read-back every tick. Same predicate synthesis uses.
   const existing = await db
     .select()
     .from(calendarEvents)
@@ -145,8 +150,7 @@ export async function readBackMember(
       and(
         eq(calendarEvents.familyMemberId, cal.familyMemberId),
         eq(calendarEvents.provenance, 'human'),
-        gte(calendarEvents.dtstart, window.start),
-        lt(calendarEvents.dtstart, window.end),
+        overlapsWindow(calendarEvents.dtstart, calendarEvents.dtend, window),
       ),
     );
   const existingByKey = new Map(existing.map((e) => [e.synthKey, e]));
@@ -178,16 +182,25 @@ export async function readBackMember(
       }
       continue;
     }
-    await db.insert(calendarEvents).values({
-      familyId: cal.familyId,
-      familyMemberId: cal.familyMemberId,
-      provenance: 'human',
-      synthKey,
-      externalUid: occ.uid,
-      externalRecurrenceId: occ.recurrenceId ?? '',
-      contentHash,
-      ...payload,
-    });
+    // Upsert on (familyMemberId, synthKey) rather than a bare insert: should
+    // `existing` ever disagree with what the reader reports, that degrades to
+    // an update of the same row instead of a unique-index crash.
+    await db
+      .insert(calendarEvents)
+      .values({
+        familyId: cal.familyId,
+        familyMemberId: cal.familyMemberId,
+        provenance: 'human',
+        synthKey,
+        externalUid: occ.uid,
+        externalRecurrenceId: occ.recurrenceId ?? '',
+        contentHash,
+        ...payload,
+      })
+      .onConflictDoUpdate({
+        target: [calendarEvents.familyMemberId, calendarEvents.synthKey],
+        set: { ...payload, contentHash },
+      });
     result.upserted++;
   }
 
