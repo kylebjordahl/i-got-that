@@ -676,6 +676,37 @@ export interface AccountOccurrences {
   timezone: string | null;
 }
 
+export interface CalDavOccurrences extends AccountOccurrences {
+  /**
+   * UIDs found in objects the server returned but we couldn't parse. An event
+   * we failed to *read* is not an event that was *deleted*, so the caller's
+   * stale sweep must leave rows with these UIDs alone.
+   */
+  failedUids: string[];
+  /**
+   * How many unparseable objects had no UID we could pull out of their raw
+   * text. We can't tell what those objects held, so when this is non-zero the
+   * caller must skip the stale sweep for this fetch entirely.
+   */
+  unidentifiedFailures: number;
+}
+
+/**
+ * Best-effort UID extraction from an iCalendar body that failed to parse: every
+ * `UID` line (parameters allowed), after undoing line folding so a UID wrapped
+ * across lines isn't truncated into one that matches nothing. Deliberately a
+ * regex, not a parser — it only runs on text the parser has just rejected.
+ */
+function extractRawUids(data: string): string[] {
+  const unfolded = data.replace(/\r?\n[ \t]/g, '');
+  const uids = new Set<string>();
+  for (const m of unfolded.matchAll(/^UID(?:;[^:\r\n]*)?:(.+)$/gim)) {
+    const uid = m[1]?.trim();
+    if (uid) uids.add(uid);
+  }
+  return [...uids];
+}
+
 /**
  * Read occurrences from a CalDAV collection via a single time-ranged REPORT
  * (tsdav's standalone `fetchCalendarObjects`, no account discovery — we already
@@ -685,12 +716,18 @@ export interface AccountOccurrences {
  * timezone (needed for exception-feed baselines) is read off whichever fetched
  * object's VCALENDAR carries it first — a time-range REPORT returns per-object
  * VCALENDARs, not one calendar-wide document.
+ *
+ * An object that fails to parse is skipped rather than failing the feed, but
+ * it is *reported* (`failedUids` / `unidentifiedFailures`): its events are
+ * missing from `occurrences` because we couldn't read them, not because the
+ * server dropped them, and a caller that treats absence as deletion has to be
+ * told the difference.
  */
 export async function fetchCalDavOccurrences(
   config: CalDavSourceConfig,
   opts: ExpandOptions = {},
   fetchImpl: typeof fetch = fetch.bind(globalThis),
-): Promise<AccountOccurrences> {
+): Promise<CalDavOccurrences> {
   const windowStart = opts.windowStart ?? new Date();
   const windowEnd = opts.windowEnd ?? new Date(Date.now() + 90 * DAY);
   const authorization = `Basic ${btoa(`${config.username}:${config.password}`)}`;
@@ -701,6 +738,8 @@ export async function fetchCalDavOccurrences(
     fetch: fetchImpl,
   });
   const out: Occurrence[] = [];
+  const failedUids = new Set<string>();
+  let unidentifiedFailures = 0;
   let timezone: string | null = null;
   for (const obj of objects) {
     const data = typeof obj.data === 'string' ? obj.data : '';
@@ -721,10 +760,15 @@ export async function fetchCalDavOccurrences(
         }),
       );
     } catch {
-      // Skip an individual unparseable object rather than failing the feed.
+      // Skip an individual unparseable object rather than failing the feed —
+      // but remember whose it was, so its existing events aren't swept as if
+      // the server had deleted them.
+      const uids = extractRawUids(data);
+      if (uids.length === 0) unidentifiedFailures += 1;
+      for (const uid of uids) failedUids.add(uid);
     }
   }
-  return { occurrences: out, timezone };
+  return { occurrences: out, timezone, failedUids: [...failedUids], unidentifiedFailures };
 }
 
 interface GoogleApiTime {

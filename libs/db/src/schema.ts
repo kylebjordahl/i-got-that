@@ -267,6 +267,16 @@ export const feeds = sqliteTable(
     // Why the last attempt failed, so a stuck feed is visible instead of just
     // silently serving whatever it had ingested before. Null when healthy.
     lastErrorMessage: text('last_error_message'),
+    // Consecutive fetches whose stale-event sweep looked like a bad read rather
+    // than a real removal (an empty or near-empty calendar over a populated
+    // one) and was held back — see `deleteStaleSourceEvents`. The sweep only
+    // goes through once this reaches its limit and the hold is old enough
+    // (`suspiciousSince`); any ordinary sweep resets both.
+    suspiciousSweepCount: integer('suspicious_sweep_count').notNull().default(0),
+    // When the first of those held sweeps happened (null when the count is 0).
+    // The count alone is paced by however often the feed happens to be fetched;
+    // releasing the held deletion also requires this to be old enough.
+    suspiciousSince: integer('suspicious_since', { mode: 'timestamp_ms' }),
     status: text('status', { enum: FeedStatus.options })
       .notNull()
       .default('active'),
