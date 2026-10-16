@@ -57,6 +57,30 @@ export function synthesisWindow(opts: SynthesisWindowOptions = {}): {
   return { start, end };
 }
 
+/**
+ * "Overlaps the window" as a SQL condition on a row's `[dtstart, dtend)` span:
+ * `dtstart < end AND (dtstart >= start OR dtend > start)`. A span that began
+ * before the window but is still running at `window.start` counts, because
+ * every reader (`occurrenceInWindow` in @igt/ical, and so ingest, read-back
+ * and the synthesis engine) reports those spans too. Any query that has to
+ * agree with what a reader/engine returns must use THIS predicate, not
+ * `dtstart >= window.start` — a mismatch makes the row fall out of the
+ * "existing" set while the reader still reports it, so the next pass INSERTs
+ * a duplicate and trips the `(familyMemberId, synthKey)` unique index. One
+ * shared helper so the copies can't drift. A null `dtend` (a point) only
+ * overlaps by its start.
+ */
+export function overlapsWindow(
+  dtstart: typeof calendarEvents.dtstart | typeof sourceEvents.dtstart,
+  dtend: typeof calendarEvents.dtend | typeof sourceEvents.dtend,
+  window: { start: Date; end: Date },
+) {
+  return and(
+    lt(dtstart, window.end),
+    or(gte(dtstart, window.start), gt(dtend, window.start)),
+  );
+}
+
 export interface SynthesizeResult {
   feedId: string;
   eventsUpserted: number;
@@ -377,11 +401,7 @@ export async function synthesizeFeed(
       and(
         eq(sourceEvents.feedId, feed.id),
         isNull(sourceEvents.dismissedAt),
-        lt(sourceEvents.dtstart, window.end),
-        or(
-          gte(sourceEvents.dtstart, window.start),
-          gt(sourceEvents.dtend, window.start),
-        ),
+        overlapsWindow(sourceEvents.dtstart, sourceEvents.dtend, window),
       ),
     );
   const occurrences = occurrenceRows.map(toOccurrence);
@@ -454,14 +474,15 @@ export async function synthesizeFeed(
 
     // Existing synthesized rows this link owns within the window (pd: rows are
     // keyed to the decision, not the link, and are never touched here). The
-    // overlap check must mirror the source-occurrence query above exactly: an
-    // event that started before the window but is still ongoing at
-    // window.start (e.g. an evening event in a negative-UTC-offset zone that
-    // straddles the UTC day boundary the window is computed from) is still
-    // reported by the engine every run. Without the same `dtend > window.start`
-    // clause here, its existing row would fall out of `existingByKey`, so
-    // `upsertIntent` would try to INSERT a duplicate of an unchanged event and
-    // crash the whole synthesis on the (familyMemberId, synthKey) unique index.
+    // overlap check must mirror the source-occurrence query above exactly (the
+    // shared `overlapsWindow` predicate): an event that started before the
+    // window but is still ongoing at window.start (e.g. an evening event in a
+    // negative-UTC-offset zone that straddles the UTC day boundary the window
+    // is computed from) is still reported by the engine every run. Without the
+    // same `dtend > window.start` clause here, its existing row would fall out
+    // of `existingByKey`, so `upsertIntent` would try to INSERT a duplicate of
+    // an unchanged event and crash the whole synthesis on the
+    // (familyMemberId, synthKey) unique index.
     const existing = await db
       .select()
       .from(calendarEvents)
@@ -469,11 +490,7 @@ export async function synthesizeFeed(
         and(
           eq(calendarEvents.linkId, link.id),
           eq(calendarEvents.provenance, 'synthesized'),
-          lt(calendarEvents.dtstart, window.end),
-          or(
-            gte(calendarEvents.dtstart, window.start),
-            gt(calendarEvents.dtend, window.start),
-          ),
+          overlapsWindow(calendarEvents.dtstart, calendarEvents.dtend, window),
         ),
       );
     const linkOwnedExisting = existing.filter(
