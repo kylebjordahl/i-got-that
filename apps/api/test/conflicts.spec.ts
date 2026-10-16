@@ -7,6 +7,8 @@ import {
   familyMemberFeeds,
   feeds,
   getDb,
+  linkRules,
+  sourceEvents,
   tasks,
 } from '@igt/db';
 import { estimateTravelMinutes } from '@igt/classification';
@@ -1157,5 +1159,147 @@ describe('conflict detection & masking', () => {
     ).toBe(0);
     keys = await eventKeys(f.db, f.childId);
     expect(keys).toEqual([blKey, docKey]);
+  });
+});
+
+// `calendar_events.source_event_id` cascades, so a baseline day (and the conflict
+// segments cut from it) must not carry the id of the exception event that merely
+// *touched* it: when the school dropped that event, SQLite deleted the day, its
+// segments and every claim on their drop-offs and pickups, and the next
+// synthesis re-created the day as a stranger.
+describe('a split baseline day outlives the exception event that shaped it', () => {
+  /**
+   * A real exception feed whose "Spirit Day" event (rule: ignore) covers a day,
+   * a doctor's appointment in the middle of it, the conflict resolved so the day
+   * is split into cf:0 (before) and cf:1 (after), and the pickup that closes
+   * the morning half claimed by the admin.
+   */
+  async function splitSpiritDay(email: string) {
+    const f = await fixture(email);
+    await f.db.insert(linkRules).values({
+      familyId: f.familyId,
+      linkId: f.linkId,
+      position: 0,
+      matchField: 'summary',
+      matchOp: 'contains',
+      matchValue: 'Spirit',
+      outcome: 'ignore',
+    });
+    const spirit = (
+      await f.db
+        .insert(sourceEvents)
+        .values({
+          feedId: f.feed.id,
+          familyId: f.familyId,
+          icalUid: 'spirit',
+          recurrenceId: '',
+          summary: 'Spirit Day',
+          allDay: true,
+          dtstart: futureAt(3, 0),
+          dtend: futureAt(4, 0),
+          contentHash: 'spirit-hash',
+        })
+        .returning()
+    )[0]!;
+    await synthesizeFeed(f.db, f.feed);
+
+    const blKey = `bl:${f.linkId}:${futureAt(3, 0).toISOString().slice(0, 10)}`;
+    await f.db.insert(calendarEvents).values({
+      familyId: f.familyId,
+      familyMemberId: f.childId,
+      provenance: 'human',
+      synthKey: 'ext:doctor:',
+      externalUid: 'doctor',
+      dtstart: futureAt(3, 10, 0),
+      dtend: futureAt(3, 11, 0),
+      summary: 'Doctor appointment',
+      contentHash: 'doc-hash',
+    });
+    await reconcileMemberConflicts(f.db, f.childId);
+    const conflict = (
+      await f.db.select().from(conflicts).where(eq(conflicts.familyMemberId, f.childId))
+    )[0]!;
+    await f.db
+      .update(conflicts)
+      .set({ status: 'resolved', resolvedAt: new Date() })
+      .where(eq(conflicts.id, conflict.id));
+    await reconcileMemberConflicts(f.db, f.childId);
+    await buildMemberTasks(f.db, f.childId);
+
+    const rowAt = async (synthKey: string) =>
+      (await f.db.select().from(calendarEvents).where(eq(calendarEvents.synthKey, synthKey)))[0];
+    const pickup = (await f.db.select().from(tasks).where(eq(tasks.familyMemberId, f.childId))).find(
+      (t) => t.type === 'pickup' && t.dtstart.toISOString() === futureAt(3, 10, 0).toISOString(),
+    )!;
+    expect(pickup, 'pickup at the split start').toBeTruthy();
+    await setTaskOwners(f.db, pickup, [f.adminMemberId], { manual: true });
+    return { f, spirit, blKey, conflict, pickup, rowAt };
+  }
+
+  it('keeps the day, its segments and a claimed pickup on them when the exception event leaves the feed', async () => {
+    const { f, spirit, blKey, conflict, pickup, rowAt } = await splitSpiritDay(
+      'conflict-outlives@example.com',
+    );
+    const day = (await rowAt(blKey))!;
+    const seg0 = (await rowAt(`cf:${blKey}:0`))!;
+    const seg1 = (await rowAt(`cf:${blKey}:1`))!;
+    expect(day.maskedAt).not.toBeNull();
+    // None of them is tied to the exception event.
+    expect([day.sourceEventId, seg0.sourceEventId, seg1.sourceEventId]).toEqual([null, null, null]);
+
+    // The school drops the event; ingest deletes the source row.
+    await f.db.delete(sourceEvents).where(eq(sourceEvents.id, spirit.id));
+    expect((await rowAt(blKey))?.id).toBe(day.id);
+    expect((await rowAt(`cf:${blKey}:0`))?.id).toBe(seg0.id);
+    expect((await rowAt(`cf:${blKey}:1`))?.id).toBe(seg1.id);
+
+    // Resynthesize, re-reconcile, re-run task-gen: the whole chain is stable.
+    await synthesizeFeed(f.db, f.feed);
+    await reconcileMemberConflicts(f.db, f.childId);
+    await buildMemberTasks(f.db, f.childId);
+
+    expect((await rowAt(blKey))?.id).toBe(day.id);
+    expect((await rowAt(blKey))!.maskedAt).not.toBeNull();
+    expect((await rowAt(`cf:${blKey}:0`))?.id).toBe(seg0.id);
+    expect((await rowAt(`cf:${blKey}:1`))?.id).toBe(seg1.id);
+    const stillResolved = (await f.db.select().from(conflicts).where(eq(conflicts.id, conflict.id)))[0]!;
+    expect(stillResolved.status).toBe('resolved');
+
+    const pickups = (
+      await f.db.select().from(tasks).where(eq(tasks.familyMemberId, f.childId))
+    ).filter((t) => t.type === 'pickup' && t.dtstart.toISOString() === futureAt(3, 10, 0).toISOString());
+    expect(pickups).toHaveLength(1);
+    expect(pickups[0]!.id).toBe(pickup.id);
+    expect(pickups[0]!.status).toBe('owned');
+    expect(pickups[0]!.calendarEventId).toBe(seg0.id);
+  });
+
+  it('clears the source event id from segments cut before baseline days stopped carrying one', async () => {
+    const { f, spirit, blKey, rowAt } = await splitSpiritDay('conflict-legacy-segments@example.com');
+    const day = (await rowAt(blKey))!;
+    const seg0 = (await rowAt(`cf:${blKey}:0`))!;
+    const seg1 = (await rowAt(`cf:${blKey}:1`))!;
+
+    // The old shape: the day, and the segments inheriting from it, all tied to
+    // the exception event (so all of them would cascade away with it).
+    for (const key of [blKey, `cf:${blKey}:0`, `cf:${blKey}:1`]) {
+      await f.db
+        .update(calendarEvents)
+        .set({ sourceEventId: spirit.id })
+        .where(eq(calendarEvents.synthKey, key));
+    }
+
+    // Synthesis heals the day; the reconcile after it heals the segments, even
+    // though neither one's schedule (hence neither hash) moved.
+    await synthesizeFeed(f.db, f.feed);
+    expect((await rowAt(blKey))!.sourceEventId).toBeNull();
+    await reconcileMemberConflicts(f.db, f.childId);
+    expect((await rowAt(`cf:${blKey}:0`))!.sourceEventId).toBeNull();
+    expect((await rowAt(`cf:${blKey}:1`))!.sourceEventId).toBeNull();
+
+    await f.db.delete(sourceEvents).where(eq(sourceEvents.id, spirit.id));
+    expect((await rowAt(blKey))?.id).toBe(day.id);
+    expect((await rowAt(`cf:${blKey}:0`))?.id).toBe(seg0.id);
+    expect((await rowAt(`cf:${blKey}:1`))?.id).toBe(seg1.id);
   });
 });
