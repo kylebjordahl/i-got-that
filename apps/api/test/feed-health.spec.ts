@@ -11,11 +11,12 @@ import {
   feeds,
   getDb,
   sourceEvents,
+  tasks,
 } from '@igt/db';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { scheduled } from '../src/scheduled.js';
 import { ingestFeed, isFeedDue } from '../src/services/ingest.js';
-import { authed, call, createFamily, login } from './helpers.js';
+import { authed, call, createFamily, login, setupFamily } from './helpers.js';
 
 const MINUTE = 60_000;
 const FEED_ORIGIN = 'https://feed.example.com';
@@ -186,6 +187,70 @@ describe('feed health: a forced refresh is unconditional', () => {
     await ingestFeed(db, await reload(db, feed.id), { fetchImpl, force: true });
     expect(seen[2]).not.toHaveProperty('If-None-Match');
     expect(seen[2]!['cache-control']).toBe('no-cache');
+  });
+});
+
+describe('feed health: refreshing a feed that cannot be read', () => {
+  it('reports the ingest failure in a 200 and still synthesizes, reads back and generates tasks', async () => {
+    // The source is down, but everything after ingest works off the rows already
+    // there. Synthesis in particular is what rolls the 30-day window and
+    // generates an exception feed's baseline days from the link's config alone,
+    // so a person pressing Refresh on a broken feed used to get a 500 and none
+    // of it.
+    const fam = await setupFamily('feed-health-refresh-down@example.com');
+    const db = getDb(env.DB);
+    const feed = (
+      await db
+        .insert(feeds)
+        .values({
+          familyId: fam.familyId,
+          kind: 'ics',
+          url: `${FEED_ORIGIN}/refresh-down.ics`,
+          mode: 'exception',
+          sourceCalendarName: 'Lincoln Elementary',
+        })
+        .returning()
+    )[0]!;
+    await db.insert(familyMemberFeeds).values({
+      familyId: fam.familyId,
+      feedId: feed.id,
+      familyMemberId: fam.childId,
+      weekdayMask: 127,
+      dayStart: '08:30',
+      dayEnd: '14:45',
+    });
+    fetchMock
+      .get(FEED_ORIGIN)
+      .intercept({ path: '/refresh-down.ics', method: 'GET' })
+      .reply(503, 'down');
+
+    const res = await call(
+      `/families/${fam.familyId}/feeds/${feed.id}/refresh`,
+      authed(fam.admin.token),
+    );
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      ingest: { feedId: string; fetched: boolean; processed: number; error?: string };
+      synthesis: { eventsUpserted: number };
+    };
+    // The same per-feed shape `/refresh-all` reports.
+    expect(body.ingest).toMatchObject({ feedId: feed.id, fetched: false, processed: 0 });
+    expect(body.ingest.error).toContain('503');
+    // ingestFeed still recorded the failure on the row.
+    const failed = await reload(db, feed.id);
+    expect(failed.status).toBe('error');
+    expect(failed.lastErrorMessage).toContain('503');
+    // Synthesis ran: baseline days exist...
+    expect(body.synthesis.eventsUpserted).toBeGreaterThan(0);
+    const days = await db
+      .select()
+      .from(calendarEvents)
+      .where(eq(calendarEvents.familyMemberId, fam.childId));
+    expect(days.length).toBeGreaterThanOrEqual(30);
+    // ...and so did task-gen, off them.
+    const generated = await db.select().from(tasks).where(eq(tasks.familyMemberId, fam.childId));
+    expect(generated.map((t) => t.type)).toEqual(expect.arrayContaining(['dropoff', 'pickup']));
   });
 });
 

@@ -49,10 +49,11 @@ export async function resynthesizeFeed(
   // until the next cron tick or a manual "Refresh feeds" tap. Ingest once,
   // synchronously, before the first synthesis. Best-effort: a failed ingest
   // here shouldn't block the mutation that already committed (the rule/link/
-  // etc. row); it also isn't retried on every subsequent edit, since a failed
-  // ingest marks the feed 'error' and cron only re-ingests 'active' feeds — an
-  // 'error' feed already requires a manual "Refresh feeds" tap to recover, so
-  // there's nothing this call could usefully retry once that's happened.
+  // etc. row), and `ingestFeed` has already recorded why on the row. A feed
+  // already in 'error' is skipped: the cron retries it on its own backoff
+  // (`isFeedDue`) and a person can force it with Refresh, so an edit shouldn't
+  // add one more fetch of a source that's known to be failing. Either way the
+  // synthesis below still runs, off whatever `source_events` already holds.
   if (!feed.lastSyncedAt && feed.status !== 'error') {
     try {
       await ingestFeed(db, feed, ingestSecrets(c.env));
@@ -83,17 +84,19 @@ export type FamilyPipelineJob = { kind: 'family-pipeline'; familyId: string };
 /**
  * One cron tick for one family — the full pipeline in dependency order:
  *
- *   1. ingest + synthesize any feed that's due — its refresh interval elapsed,
- *      or, for a feed left in 'error', its retry backoff did
- *      (feeds → source_events → calendar_events + pending_decisions)
- *   2. read back each configured target calendar (human events land as
+ *   1. ingest any feed that's due — its refresh interval elapsed, or, for a
+ *      feed left in 'error', its retry backoff did (feeds → source_events)
+ *   2. synthesize every feed that isn't paused — due or not, and whether or
+ *      not its ingest worked, so the 30-day window keeps rolling
+ *      (source_events → calendar_events + pending_decisions)
+ *   3. read back each configured target calendar (human events land as
  *      first-class unified-calendar events) — before task-gen so they get
  *      their convertible attendance tasks this tick
- *   3. resolve agenda overlaps: detect conflicts and apply resolved splits
+ *   4. resolve agenda overlaps: detect conflicts and apply resolved splits
  *      (a member can't be in two places at once) — before task-gen so the
  *      split segments spawn their own drop-off/pickup tasks
- *   4. task generation for every member (calendar_events → tasks)
- *   5. claimed-event true-up + mirror reconcile (unified calendar → target),
+ *   5. task generation for every member (calendar_events → tasks)
+ *   6. claimed-event true-up + mirror reconcile (unified calendar → target),
  *      then email invite outputs (where outbound mail is enabled)
  *
  * The mirror true-up is cheap when nothing drifted (payloadHash skips
@@ -145,7 +148,6 @@ export async function runFamilyTick(
       if (!isFeedDue(feed, now)) continue;
       try {
         await ingestFeed(db, feed, secrets);
-        await synthesizeFeed(db, feed);
       } catch (err) {
         // One unreachable feed must not cost the family its whole tick: the
         // read-back, conflict, task-gen and mirror passes below don't depend on
@@ -155,6 +157,33 @@ export async function runFamilyTick(
         console.error(`feed ${feed.id} ingest failed`, err);
       }
     }
+  });
+  // Synthesis is what turns time into calendar days — the 30-day window rolls
+  // forward, an exception feed's `bl:` baseline days are generated from the
+  // link's config alone, and dated baseline-hour changes get folded in — so it
+  // can't wait on a feed being readable or due. It works off the
+  // `source_events` already stored, and an unchanged synthesis is reads only
+  // (the contentHash skips), so running it for every feed every tick is cheap
+  // and keeps the horizon growing a day per day even when a feed is stuck in
+  // 'error' on a retry backoff that has grown to hours, or only polls daily.
+  // Only `paused`, a user's decision, is skipped. The feed list is re-read so
+  // synthesis sees what ingest just stamped on the rows (a newly discovered
+  // timezone, say).
+  await stage('synthesis', async () => {
+    const familyFeeds = await db.select().from(feeds).where(eq(feeds.familyId, familyId));
+    let failed = 0;
+    for (const feed of familyFeeds) {
+      if (feed.status === 'paused') continue;
+      try {
+        await synthesizeFeed(db, feed, { windowStart: now });
+      } catch (err) {
+        // As with ingest, one feed's failure must not starve the others of
+        // their window roll. The stage still reports it, below.
+        failed++;
+        console.error(`feed ${feed.id} synthesis failed`, err);
+      }
+    }
+    if (failed > 0) throw new Error(`${failed} feed(s) failed to synthesize`);
   });
   await stage('read-back', () => readBackFamily(db, familyId, secrets));
   // Resolve agenda overlaps (split/trim by priority) before task-gen so the
