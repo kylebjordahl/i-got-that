@@ -30,9 +30,6 @@ import { authed, call, patched, setupFamily } from './helpers.js';
  * mirror, and that one failing stage / member / feed costs the others nothing.
  */
 
-/** The claim true-up's first read: the family's owned tasks. */
-const CLAIMS_TRUE_UP = /from "tasks" where \("tasks"\."family_id" = \? and "tasks"\."status" = \?\)/;
-
 const DAY_MS = 24 * 60 * 60 * 1000;
 const FEED_ORIGIN = 'https://feed.example.com';
 
@@ -533,6 +530,7 @@ describe('runPipeline: one failure costs the others nothing', () => {
         .returning()
     )[0]!;
     const childIds = [fam.childId, second.member.id];
+    const eventIds = new Map<string, string>();
     for (const childId of childIds) {
       const link = (
         await db
@@ -557,21 +555,69 @@ describe('runPipeline: one failure costs the others nothing', () => {
         locationGeo: null,
         description: null,
       };
-      await db.insert(calendarEvents).values({
-        familyId: fam.familyId,
-        familyMemberId: childId,
-        provenance: 'synthesized',
-        synthKey: `bl:${link.id}:d2`,
-        linkId: link.id,
-        contentHash: hashCalendarEvent(payload),
-        ...payload,
-      });
+      const event = (
+        await db
+          .insert(calendarEvents)
+          .values({
+            familyId: fam.familyId,
+            familyMemberId: childId,
+            provenance: 'synthesized',
+            synthKey: `bl:${link.id}:d2`,
+            linkId: link.id,
+            contentHash: hashCalendarEvent(payload),
+            ...payload,
+          })
+          .returning()
+      )[0]!;
+      eventIds.set(childId, event.id);
     }
     const taskTypes = async (memberId: string) =>
       (await db.select().from(tasks).where(eq(tasks.familyMemberId, memberId)))
         .map((t) => t.type)
         .sort();
-    return { ...fam, db, childIds: childIds as [string, string], taskTypes };
+    /**
+     * Give `childId` a claimed pickup, then move the end of their school day
+     * without running anything: the pipeline under test has to heal the task
+     * and carry the claim along, which is how a test can see that task-gen and
+     * the claim true-up both ran.
+     */
+    const claimAndShift = async (childId: string) => {
+      await buildMemberTasks(db, childId);
+      const pickup = (
+        await db
+          .select()
+          .from(tasks)
+          .where(and(eq(tasks.familyMemberId, childId), eq(tasks.type, 'pickup')))
+      )[0]!;
+      const claim = await call(
+        `/families/${fam.familyId}/tasks/${pickup.id}/assign`,
+        authed(fam.admin.token, {}),
+      );
+      expect(claim.status).toBe(200);
+      const eventId = eventIds.get(childId)!;
+      const event = (await db.select().from(calendarEvents).where(eq(calendarEvents.id, eventId)))[0]!;
+      const dtend = futureAt(2, 16, 0);
+      await db
+        .update(calendarEvents)
+        .set({ dtend, contentHash: hashCalendarEvent({ ...event, dtend }) })
+        .where(eq(calendarEvents.id, eventId));
+      return async () => {
+        const task = (await db.select().from(tasks).where(eq(tasks.id, pickup.id)))[0]!;
+        const claimed = (
+          await db
+            .select()
+            .from(calendarEvents)
+            .where(
+              and(
+                eq(calendarEvents.taskId, pickup.id),
+                eq(calendarEvents.provenance, 'claimed_task'),
+              ),
+            )
+        )[0]!;
+        return { taskStart: task.dtstart.getTime(), claimedStart: claimed.dtstart.getTime() };
+      };
+    };
+    return { ...fam, db, childIds: childIds as [string, string], taskTypes, claimAndShift };
   }
 
   async function runScoped(f: Awaited<ReturnType<typeof twoChildren>>, failOn: RegExp) {
@@ -585,15 +631,17 @@ describe('runPipeline: one failure costs the others nothing', () => {
       { ingest: 'none', synthesize: false, readBack: false, mirror: 'enqueue' },
     );
     await waitOnExecutionContext(ctx);
-    return { result, sent, seen: flaky.seen };
+    return { result, sent };
   }
 
   it("one member's conflicts reconcile throwing leaves task-gen for both members and the mirror enqueue intact", async () => {
     const f = await twoChildren('isolate-conflicts@example.com');
     const [first, second] = f.childIds;
+    const secondClaim = await f.claimAndShift(second);
+    const before = await secondClaim();
 
     // The first member's reconcile dies reading its conflicts table.
-    const { result, sent, seen } = await runScoped(f, /from "conflicts"/);
+    const { result, sent } = await runScoped(f, /from "conflicts"/);
 
     expect(result.failedStages).toEqual(['conflicts']);
     expect(result.errors).toEqual([
@@ -606,8 +654,10 @@ describe('runPipeline: one failure costs the others nothing', () => {
     expect(result.taskGen.map((r) => r.familyMemberId)).toEqual([first, second]);
     expect(await f.taskTypes(first)).toEqual(['dropoff', 'pickup']);
     expect(await f.taskTypes(second)).toEqual(['dropoff', 'pickup']);
-    // ...the claim true-up still ran after it...
-    expect(seen.some((sql) => CLAIMS_TRUE_UP.test(sql))).toBe(true);
+    // ...the claim true-up still ran after it (the healed pickup's claim followed)...
+    const after = await secondClaim();
+    expect(after.taskStart).not.toBe(before.taskStart);
+    expect(after.claimedStart).toBe(after.taskStart);
     // ...and so did the mirror.
     expect(sent).toEqual([{ kind: 'family', familyId: f.familyId }]);
   });
@@ -615,6 +665,8 @@ describe('runPipeline: one failure costs the others nothing', () => {
   it("one member's task-gen throwing leaves the other member's tasks, the claims and the mirror enqueue intact", async () => {
     const f = await twoChildren('isolate-taskgen@example.com');
     const [first, second] = f.childIds;
+    const secondClaim = await f.claimAndShift(second);
+    const before = await secondClaim();
 
     // Task-gen's first read of a member's task rules dies — the first member's.
     const { result, sent } = await runScoped(f, /from "task_rules"/);
@@ -627,6 +679,9 @@ describe('runPipeline: one failure costs the others nothing', () => {
     expect(result.taskGen.map((r) => r.familyMemberId)).toEqual([second]);
     expect(await f.taskTypes(first)).toEqual([]);
     expect(await f.taskTypes(second)).toEqual(['dropoff', 'pickup']);
+    const after = await secondClaim();
+    expect(after.taskStart).not.toBe(before.taskStart);
+    expect(after.claimedStart).toBe(after.taskStart);
     expect(sent).toEqual([{ kind: 'family', familyId: f.familyId }]);
   });
 
