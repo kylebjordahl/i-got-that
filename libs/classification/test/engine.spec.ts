@@ -267,6 +267,39 @@ describe('synthesizeException', () => {
     expect(thu?.dtend?.toISOString()).toBe('2026-07-09T14:45:00.000Z');
   });
 
+  it('a baseline day is never tied to the exception event that shaped it (the DB cascades on that link)', () => {
+    // The matched rule is recorded — that FK is SET NULL — but not the event:
+    // `calendar_events.source_event_id` is ON DELETE CASCADE, so naming the
+    // exception event would delete the day when the feed dropped the event.
+    const early = occ({
+      summary: 'Early Dismissal - Conferences',
+      allDay: true,
+      dtstart: new Date('2026-07-08T00:00:00Z'),
+      dtend: new Date('2026-07-09T00:00:00Z'),
+    });
+    const spirit = occ({
+      summary: 'Spirit Day',
+      allDay: true,
+      dtstart: new Date('2026-07-09T00:00:00Z'),
+      dtend: new Date('2026-07-10T00:00:00Z'),
+    });
+    const ignoreRule = override({ position: 2, matchValue: 'Spirit Day', outcome: 'ignore' });
+    const { events } = synthesizeException(
+      schoolLink,
+      [early, spirit],
+      [noSchool, earlyRelease, ignoreRule],
+      week,
+      'UTC',
+    );
+    const baselineDays = events.filter((e) => e.synthKey.startsWith('bl:'));
+    expect(baselineDays).toHaveLength(5);
+    expect(baselineDays.map((e) => e.sourceEventId)).toEqual([null, null, null, null, null]);
+    const byKey = new Map(baselineDays.map((e) => [e.synthKey, e]));
+    expect(byKey.get('bl:link-1:2026-07-08')?.matchedRuleId).toBe(earlyRelease.id);
+    expect(byKey.get('bl:link-1:2026-07-09')?.matchedRuleId).toBe(ignoreRule.id);
+    expect(byKey.get('bl:link-1:2026-07-07')?.matchedRuleId).toBeNull();
+  });
+
   it('ignore keeps the baseline; the lowest-position ruling wins', () => {
     const ignoreRule = override({ position: 0, matchValue: 'Spirit Day', outcome: 'ignore' });
     const spirit = occ({ summary: 'Spirit Day', allDay: true, dtstart: new Date('2026-07-07T00:00:00Z'), dtend: new Date('2026-07-08T00:00:00Z') });

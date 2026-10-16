@@ -287,7 +287,14 @@ export function baselineHoursOn(
 /** A desired event on the member's unified calendar. */
 export interface EventIntent {
   synthKey: string;
+  /**
+   * The source event this intent *is* (an `ev:`/`fb:` event), which the DB ties
+   * to its lifetime: `calendar_events.source_event_id` is ON DELETE CASCADE, so
+   * the event goes when its source does. Null on a `bl:` baseline day, which
+   * outlives any one feed event — see `synthesizeException`.
+   */
   sourceEventId: string | null;
+  /** The rule that shaped the event (a `bl:` day's `modify_day`, an `add_event`'s match). */
   matchedRuleId: string | null;
   dtstart: Date;
   dtend: Date | null;
@@ -480,6 +487,16 @@ export function synthesizeBusy(
  * occurrence matching NO rule becomes a pending decision — the baseline still
  * stands until a human resolves it.
  *
+ * A baseline day never carries the winning occurrence's id as its
+ * `sourceEventId`, only the winning rule's id as `matchedRuleId`. The day is the
+ * link's own schedule, not a copy of the exception event: it exists whether or
+ * not the exception does, and `calendar_events.source_event_id` cascades on
+ * delete, so tying the day to the exception would delete it (and orphan the
+ * drop-off/pickup tasks anyone had claimed on it) the moment the feed dropped
+ * that event, only for the next synthesis to re-create it under a new id.
+ * `matchedRuleId` has no such problem — its FK is SET NULL, and the next
+ * synthesis re-stamps it.
+ *
  * `add_event` is the one outcome that isn't about the baseline day: the
  * occurrence lands on the calendar as its own event (an `ev:` key, exactly as a
  * standard feed's events do), *in addition to* whatever the day's baseline
@@ -503,7 +520,6 @@ export function synthesizeException(
 
   interface DayRuling {
     rule: OverrideRuleLike;
-    occ: SourceOccurrence;
   }
   const dayRulings = new Map<number, DayRuling[]>();
   for (const occ of occurrences) {
@@ -517,7 +533,7 @@ export function synthesizeException(
       continue;
     }
     for (const day of coveredLocalDays(occ, tz)) {
-      (dayRulings.get(day) ?? dayRulings.set(day, []).get(day)!).push({ rule, occ });
+      (dayRulings.get(day) ?? dayRulings.set(day, []).get(day)!).push({ rule });
     }
   }
 
@@ -547,7 +563,7 @@ export function synthesizeException(
 
       events.push({
         synthKey: `bl:${link.id}:${dayKey}`,
-        sourceEventId: winner?.occ.id ?? null,
+        sourceEventId: null,
         matchedRuleId: winner?.rule.id ?? null,
         dtstart,
         dtend,
