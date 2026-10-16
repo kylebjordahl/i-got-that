@@ -371,7 +371,13 @@ function occurrenceEvent(
     summary: occ.summary,
     location: occ.location,
     locationGeo: occurrenceGeo(link, occ),
-    description: occ.description ?? null,
+    // The source's DESCRIPTION is for RULE MATCHING (`occ.description` is what
+    // `ruleMatches` read above us) and stops here: `calendar_events.description`
+    // is what the mirror writes to a member's calendar and what an email invite
+    // carries, and a feed's body (often a newsletter) shouldn't land there
+    // without its own decision. Task rules get the source text separately
+    // (task-gen looks it up off `sourceEventId`).
+    description: null,
   };
 }
 

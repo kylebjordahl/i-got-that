@@ -264,7 +264,12 @@ async function readBackTarget(
       // A human event pinned to a real place on the target calendar keeps its
       // coordinates, so the tasks it generates can drive travel time too.
       locationGeo: occ.locationGeo,
-      description: null,
+      // Kept so a task rule on `description` / `any_text` can match a human
+      // event too (the ingest cap, `MAX_DESCRIPTION_CHARS`, has already cut it).
+      // It is not re-sent anywhere: the mirror only writes `synthesized` +
+      // `claimed_task` events, and an attendance claim leaves a human event's
+      // description behind (`claimPayload`).
+      description: occ.description,
     };
     const contentHash = hashCalendarEvent(payload);
     const prior = existingByKey.get(synthKey);

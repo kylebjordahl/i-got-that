@@ -563,7 +563,10 @@ taskRoutes.post('/pending-decisions/:decisionId/resolve', async (c) => {
       const occurrence = {
         summary: source.summary,
         location: source.location,
-        description: null,
+        // What synthesis will match the new rule against (the source's own
+        // DESCRIPTION), so a `keep` rule on description can be made from the
+        // event it came from.
+        description: source.description,
         allDay: source.allDay,
         dtstart: source.dtstart,
         dtend: source.dtend,

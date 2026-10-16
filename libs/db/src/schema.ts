@@ -414,6 +414,14 @@ export const sourceEvents = sqliteTable(
     // makes, so a feed whose events are geocoded upstream keeps travel time
     // all the way out to a claimed drop-off/pickup. Null ⇒ free text only.
     locationGeo: text('location_geo', { mode: 'json' }).$type<GeoLocation>(),
+    // The event's free-text body (VEVENT DESCRIPTION / Google `description`),
+    // cut to `MAX_DESCRIPTION_CHARS` at ingest. It exists for RULE MATCHING
+    // only: a `description` / `any_text` link rule reads it through synthesis,
+    // and task-gen looks it up here for the feed events it types. It is
+    // deliberately NOT copied onto `calendar_events.description` for a feed
+    // event — that column feeds the mirror and email invites, and a feed body
+    // (often a newsletter) shouldn't land on a member's calendar unasked.
+    description: text('description'),
     raw: text('raw'),
     contentHash: text('content_hash').notNull(),
     // DEPRECATED — nothing writes or reads this any more (#265). It used to

@@ -365,6 +365,24 @@ paths in particular).
   enforce the 100-parameter cap); `test/batched-pipeline.spec.ts` pins the
   budget on a 2-feeds x 30-days family. `source_events.synthesized_hash` is
   deprecated and unwritten — don't build on it.
+- **A feed event's DESCRIPTION is for matching, never for showing.** Rules can
+  match on `description` / `any_text`, so ingest reads the VEVENT `DESCRIPTION`
+  (Google `description`) into `source_events.description`, cut to
+  `MAX_DESCRIPTION_CHARS` (2000, `@igt/ical`), and `hashOccurrence` covers it.
+  It deliberately goes no further: `calendar_events.description` stays null for
+  a feed event (`occurrenceEvent` in `libs/classification`), because that column
+  feeds the mirror, claimed attendance events and email invites, and a feed body
+  (often a newsletter) shouldn't land on a calendar or in an inbox without its
+  own decision. Link rules see it through `toOccurrence`; task-gen looks it up
+  by `sourceEventId` (one chunked read per event chunk) and hands it to the
+  matcher only. Because `contentHash` is also task-gen's dirty stamp,
+  `intentStatement` folds the source text into the hash (`hashCalendarEvent`'s
+  `matchText`) so a description-only edit re-types the event's tasks even though
+  nothing on the row changed. Read-back is the one place the column *is* filled
+  (a human event's own description, so task rules can match it), and
+  `claimPayload` therefore refuses to copy a `human` event's description onto
+  an attendance claim. Don't add a new reader of `calendar_events.description`
+  that sends it anywhere without deciding that on purpose.
 - **The app-icon badge can only ever go *up* unless something takes it down.**
   APNs sets it from the payload and nothing expires it, so a digest's badge
   outlives the work it counted: claim the pickup and iOS still shows the 3.

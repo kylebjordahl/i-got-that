@@ -123,16 +123,22 @@ export interface SynthesizeResult {
   pendingOpen: number;
 }
 
-/** djb2 over the payload (schedule) fields of a unified-calendar event. */
-export function hashCalendarEvent(e: {
-  dtstart: Date;
-  dtend: Date | null;
-  allDay: boolean;
-  summary: string | null;
-  location: string | null;
-  locationGeo?: GeoLocation | null;
-  description: string | null;
-}): string {
+/**
+ * djb2 over the payload (schedule) fields of a unified-calendar event.
+ * `matchText` is text a rule reads that the row doesn't carry (see below).
+ */
+export function hashCalendarEvent(
+  e: {
+    dtstart: Date;
+    dtend: Date | null;
+    allDay: boolean;
+    summary: string | null;
+    location: string | null;
+    locationGeo?: GeoLocation | null;
+    description: string | null;
+  },
+  matchText?: string | null,
+): string {
   const parts = [
     e.dtstart.toISOString(),
     e.dtend ? e.dtend.toISOString() : '',
@@ -143,6 +149,11 @@ export function hashCalendarEvent(e: {
     // (but keeps the same text) still resynthesizes and re-mirrors.
     geoKey(e.locationGeo),
     e.description ?? '',
+    // Text a rule reads that the row doesn't carry: a feed event's source
+    // DESCRIPTION. `contentHash` is also task-gen's dirty stamp, so an edit to
+    // that text has to move it or the event's tasks would be typed from the old
+    // text forever. Empty adds nothing, so events without one keep their hash.
+    ...(matchText ? [`m:${matchText}`] : []),
   ].join('|');
   let h = 5381;
   for (let i = 0; i < parts.length; i++) h = ((h << 5) + h) ^ parts.charCodeAt(i);
@@ -168,7 +179,9 @@ function toOccurrence(e: EventRow): SourceOccurrence {
     summary: e.summary,
     location: e.location,
     locationGeo: e.locationGeo,
-    description: null,
+    // For rule matching only: the engine never copies it onto the events it
+    // makes (see `occurrenceEvent`), so it doesn't reach the mirror or invites.
+    description: e.description,
     allDay: e.allDay,
     dtstart: e.dtstart,
     dtend: e.dtend,
@@ -211,8 +224,12 @@ function intentStatement(
   link: LinkRow,
   intent: EventIntent,
   existingByKey: Map<string, CalendarEventRow>,
+  sourceDescriptions: Map<string, string>,
 ): BatchStatement | null {
-  const contentHash = hashCalendarEvent(intent);
+  const contentHash = hashCalendarEvent(
+    intent,
+    intent.sourceEventId ? sourceDescriptions.get(intent.sourceEventId) : undefined,
+  );
   const prior = existingByKey.get(intent.synthKey);
   if (
     prior &&
@@ -484,6 +501,14 @@ export async function synthesizeFeed(
       ),
     );
   const occurrences = occurrenceRows.map(toOccurrence);
+  // The source text the rules matched on, by source event: it isn't copied onto
+  // the calendar events, so it's folded into their hash instead (see
+  // `hashCalendarEvent`) — a description-only edit re-types the event's tasks.
+  const sourceDescriptions = new Map(
+    occurrenceRows.flatMap((r): [string, string][] =>
+      r.description ? [[r.id, r.description]] : [],
+    ),
+  );
 
   const allRules = await db
     .select()
@@ -614,7 +639,7 @@ export async function synthesizeFeed(
       ) {
         continue;
       }
-      const write = intentStatement(db, feed, link, intent, existingByKey);
+      const write = intentStatement(db, feed, link, intent, existingByKey, sourceDescriptions);
       if (write) {
         writes.push(write);
         result.eventsUpserted++;
