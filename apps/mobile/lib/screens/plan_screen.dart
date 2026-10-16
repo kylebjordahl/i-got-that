@@ -1230,26 +1230,30 @@ class _PlanScreenState extends ConsumerState<PlanScreen> {
               ...blocks,
               // Double-booked collision seams sit above the overlapping blocks.
               ...seams,
-              // Now-line.
+              // Now-line. Pure decoration drawn above the blocks, so it must
+              // never take a hit: its filled boxes would otherwise absorb the
+              // tap wherever it crosses an event.
               if (showNow)
                 Positioned(
                   top: nowY,
                   left: _labelWidth - 2,
                   right: 0,
-                  child: Row(
-                    children: [
-                      Container(
-                        width: 8,
-                        height: 8,
-                        decoration: const BoxDecoration(
-                          color: AppColors.nowLine,
-                          shape: BoxShape.circle,
+                  child: IgnorePointer(
+                    child: Row(
+                      children: [
+                        Container(
+                          width: 8,
+                          height: 8,
+                          decoration: const BoxDecoration(
+                            color: AppColors.nowLine,
+                            shape: BoxShape.circle,
+                          ),
                         ),
-                      ),
-                      Expanded(
-                        child: Container(height: 2, color: AppColors.nowLine),
-                      ),
-                    ],
+                        Expanded(
+                          child: Container(height: 2, color: AppColors.nowLine),
+                        ),
+                      ],
+                    ),
                   ),
                 ),
               // Transition tabs float above their blocks.
