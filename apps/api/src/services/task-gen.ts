@@ -6,8 +6,10 @@ import {
   eq,
   familyMemberFeeds,
   familyMembers,
+  feeds,
   inArray,
   isNull,
+  memberCalendars,
   ne,
   or,
   sql,
@@ -67,6 +69,54 @@ function toAssignmentRuleLike(
     cadenceWeeks: r.cadenceWeeks,
     anchorDate: r.anchorDate,
   };
+}
+
+/**
+ * The IANA zones a member's events are read in, loaded once per task-gen pass:
+ * each of the member's links resolves to its feed's zone (the same zone
+ * synthesis reads that feed's baseline in), and everything else — a link whose
+ * feed has no zone, a human read-back event, the member's own direct calendar —
+ * falls back to the member's target calendar's zone, then UTC. Assignment rules
+ * judge an event's weekday by the local date it starts on, so they need to know
+ * where "local" is.
+ */
+interface MemberZones {
+  byLink: Map<string, string>;
+  member: string | null;
+}
+
+async function loadMemberZones(
+  db: Db,
+  familyId: string,
+  familyMemberId: string,
+): Promise<MemberZones> {
+  const rows = await db
+    .select({ linkId: familyMemberFeeds.id, timezone: feeds.timezone })
+    .from(familyMemberFeeds)
+    .innerJoin(feeds, eq(feeds.id, familyMemberFeeds.feedId))
+    .where(
+      and(
+        eq(familyMemberFeeds.familyMemberId, familyMemberId),
+        eq(feeds.familyId, familyId),
+      ),
+    );
+  const calendar = (
+    await db
+      .select({ timezone: memberCalendars.timezone })
+      .from(memberCalendars)
+      .where(eq(memberCalendars.familyMemberId, familyMemberId))
+      .limit(1)
+  )[0];
+  return {
+    byLink: new Map(
+      rows.flatMap((r): [string, string][] => (r.timezone ? [[r.linkId, r.timezone]] : [])),
+    ),
+    member: calendar?.timezone ?? null,
+  };
+}
+
+function zoneFor(zones: MemberZones, linkId: string | null): string {
+  return (linkId ? zones.byLink.get(linkId) : undefined) ?? zones.member ?? 'UTC';
 }
 
 /** Everything task-gen needs to auto-assign a member's tasks, loaded once. */
@@ -262,6 +312,8 @@ export async function buildMemberTasks(
     ),
   };
 
+  const zones = await loadMemberZones(db, member.familyId, familyMemberId);
+
   const dirty = await db
     .select()
     .from(calendarEvents)
@@ -340,12 +392,16 @@ export async function buildMemberTasks(
       const existingByType = new Map(existing.map((t) => [t.type, t]));
       for (const intent of intents) {
         // Auto-assignment reads the day/feed/child the EVENT falls on (task type
-        // aside), so weekday + every-other-week patterns key off the event date.
+        // aside), so weekday + every-other-week patterns key off the event's
+        // LOCAL date — read in the event's own zone, not UTC, or an evening
+        // event is tested as the next weekday.
         const cand: AssignmentCandidate = {
           aboutMemberId: event.familyMemberId,
           linkId: event.linkId ?? null,
           type: intent.type,
           dtstart: event.dtstart,
+          allDay: event.allDay,
+          tz: zoneFor(zones, event.linkId ?? null),
         };
         const prior = existingByType.get(intent.type);
         if (prior) {
