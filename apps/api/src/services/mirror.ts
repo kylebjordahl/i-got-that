@@ -10,7 +10,9 @@ import {
   getDb,
   inArray,
   isNull,
+  lte,
   memberCalendars,
+  or,
   tasks,
 } from '@igt/db';
 import {
@@ -33,7 +35,7 @@ import { buildKekKeySet, type KekKeySet } from '../lib/secrets.js';
 import { syncFamilyEmailOutputs, syncMemberEmailOutputs } from './email-outputs.js';
 import { deliverDigest, type PushDigestJob } from './notifications.js';
 import { type FamilyPipelineJob, runFamilyTick } from './pipeline.js';
-import { synthesisWindow } from './synthesis.js';
+import { activeHorizon, endsAtOrAfter } from './synthesis.js';
 
 type CalendarEventRow = typeof calendarEvents.$inferSelect;
 type MemberCalendarRow = typeof memberCalendars.$inferSelect;
@@ -205,16 +207,24 @@ const DEFAULT_TRAVEL_MIN = 15;
 /** Ceiling on the window-derived fallback, so an odd window can't reserve a whole day. */
 const MAX_WINDOW_TRAVEL_MIN = 120;
 
+/** When an event ends, as a timestamp — an event with no end is an instant. */
+function endMs(e: CalendarEventRow): number {
+  return (e.dtend ?? e.dtstart).getTime();
+}
+
 /**
  * Where the caretaker is coming *from* for a trip starting at `tripStart`: the
  * last place they're accounted for beforehand, else home.
  *
- * `events` is the member's own calendar, ascending by start. The candidate is
- * the latest event that has already ended when the trip starts — the meeting
- * they're driving from. All-day events are skipped: they say what the day is
- * about, not where the person physically is at 3pm. A candidate close enough in
- * time but with no coordinates means we genuinely don't know where they'll be,
- * and guessing "home" would be worse than not estimating at all.
+ * `events` is the member's own timed calendar, ascending by END time (see
+ * `travelContext`), so the candidate is found by binary search rather than a
+ * scan per trip. The candidate is the latest event that has already ended when
+ * the trip starts — the meeting they're driving from — never the trip itself.
+ * (Of several ending together, the earliest in `events` order wins.) All-day
+ * events never get this far: they say what the day is about, not where the
+ * person physically is at 3pm. A candidate close enough in time but with no
+ * coordinates means we genuinely don't know where they'll be, and guessing
+ * "home" would be worse than not estimating at all.
  */
 function tripOrigin(
   events: CalendarEventRow[],
@@ -222,16 +232,23 @@ function tripOrigin(
   home: GeoLocation | null,
 ): GeoLocation | null {
   const tripStart = trip.dtstart.getTime();
+  // First index of an event still running when the trip starts; everything
+  // before it has ended by then.
+  let lo = 0;
+  let hi = events.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (endMs(events[mid]!) <= tripStart) lo = mid + 1;
+    else hi = mid;
+  }
   let preceding: CalendarEventRow | null = null;
-  for (const e of events) {
-    if (e.id === trip.id || e.allDay) continue;
-    const end = (e.dtend ?? e.dtstart).getTime();
-    if (end > tripStart) continue;
-    if (!preceding || end > (preceding.dtend ?? preceding.dtstart).getTime()) preceding = e;
+  for (let i = lo - 1; i >= 0; i--) {
+    const e = events[i]!;
+    if (preceding && endMs(e) < endMs(preceding)) break;
+    if (e.id !== trip.id) preceding = e;
   }
   if (preceding) {
-    const gapMin =
-      (tripStart - (preceding.dtend ?? preceding.dtstart).getTime()) / 60_000;
+    const gapMin = (tripStart - endMs(preceding)) / 60_000;
     if (gapMin < HOME_GAP_MIN) return preceding.locationGeo ?? null;
   }
   return home;
@@ -291,21 +308,55 @@ function travelTimeMinutes(
 /** What a travel estimate needs to know about the member making the trips. */
 export interface TravelContext {
   /**
-   * Everything on this member's own calendar — human read-back events
-   * included, since a meeting they added by hand is exactly the kind of thing
-   * a school run leaves from. Only used to place the caretaker before a trip.
+   * The member's own timed events, ascending by end time — human read-back
+   * events included, since a meeting they added by hand is exactly the kind of
+   * thing a school run leaves from. Only used to place the caretaker before a
+   * trip, and only the stretch that can precede one (see `travelContext`).
    */
   ownCalendar: CalendarEventRow[];
   home: GeoLocation | null;
 }
 
-export async function travelContext(db: Db, memberId: string): Promise<TravelContext> {
-  const ownCalendar = await db
-    .select()
-    .from(calendarEvents)
-    .where(
-      and(eq(calendarEvents.familyMemberId, memberId), isNull(calendarEvents.maskedAt)),
-    );
+/**
+ * How far before the first trip we look for what precedes it. Only an event
+ * ending less than `HOME_GAP_MIN` before a trip can be its origin, so this is
+ * generous; it exists so the lookup is bounded by the trips being estimated
+ * rather than by the member's whole history.
+ */
+const TRAVEL_LOOKBACK_MS = 24 * 60 * 60_000;
+
+/**
+ * Load what `eventTravelMinutes` needs for trips STARTING from `trips.start`
+ * (default: the active horizon's start, which is every event the mirror sends —
+ * it reconciles from there forward, so there is no upper bound unless a caller
+ * with a closed range, like email invites, passes `end`): the member's unmasked
+ * timed events that end after that point, less a day of lead-in. Sorted once by
+ * end time so each trip's predecessor is a binary search, not a pass over the
+ * whole calendar.
+ */
+export async function travelContext(
+  db: Db,
+  memberId: string,
+  trips: { start: Date; end?: Date } = { start: activeHorizon().start },
+): Promise<TravelContext> {
+  const ownCalendar = (
+    await db
+      .select()
+      .from(calendarEvents)
+      .where(
+        and(
+          eq(calendarEvents.familyMemberId, memberId),
+          isNull(calendarEvents.maskedAt),
+          eq(calendarEvents.allDay, false),
+          endsAtOrAfter(
+            calendarEvents.dtstart,
+            calendarEvents.dtend,
+            new Date(trips.start.getTime() - TRAVEL_LOOKBACK_MS),
+          ),
+          ...(trips.end ? [lte(calendarEvents.dtstart, trips.end)] : []),
+        ),
+      )
+  ).sort((a, b) => endMs(a) - endMs(b));
   const home =
     (
       await db
@@ -417,23 +468,30 @@ export interface ClaimedTaskMeta {
   sourceLinkId: string | null;
 }
 
-/** Task type, source timezone + source link per task id, for the family's claimed events. */
+/**
+ * Task type, source timezone + source link for the given tasks — the ones the
+ * caller's claimed events actually reference. Not the family's whole task list:
+ * that grows with every day of history and is three joins wide.
+ */
 export async function claimedTaskMeta(
   db: Db,
-  familyId: string,
+  taskIds: readonly string[],
 ): Promise<Map<string, ClaimedTaskMeta>> {
-  const rows = await db
-    .select({
-      taskId: tasks.id,
-      type: tasks.type,
-      timezone: feeds.timezone,
-      sourceLinkId: calendarEvents.linkId,
-    })
-    .from(tasks)
-    .leftJoin(calendarEvents, eq(calendarEvents.id, tasks.calendarEventId))
-    .leftJoin(familyMemberFeeds, eq(familyMemberFeeds.id, calendarEvents.linkId))
-    .leftJoin(feeds, eq(feeds.id, familyMemberFeeds.feedId))
-    .where(eq(tasks.familyId, familyId));
+  // Chunked: the ids come from a calendar's worth of claimed events.
+  const rows = await selectChunked([...new Set(taskIds)], (chunk) =>
+    db
+      .select({
+        taskId: tasks.id,
+        type: tasks.type,
+        timezone: feeds.timezone,
+        sourceLinkId: calendarEvents.linkId,
+      })
+      .from(tasks)
+      .leftJoin(calendarEvents, eq(calendarEvents.id, tasks.calendarEventId))
+      .leftJoin(familyMemberFeeds, eq(familyMemberFeeds.id, calendarEvents.linkId))
+      .leftJoin(feeds, eq(feeds.id, familyMemberFeeds.feedId))
+      .where(inArray(tasks.id, chunk)),
+  );
   const map = new Map<string, ClaimedTaskMeta>();
   for (const r of rows) {
     map.set(r.taskId, {
@@ -473,7 +531,14 @@ export async function syncMemberMirror(
   if (!target) return result; // account gone / no KEK — leave remote state alone
   const provider = registry.get(cal.targetMethod);
 
-  // Desired = the member's synthesized + claimed events (none when paused).
+  // Desired = the member's synthesized + claimed events from the active
+  // horizon's start forward (none when paused). Events that finished before it
+  // were mirrored when they were current and are left exactly as they are:
+  // re-hashing a family's whole history on every tick is the cost, and the
+  // remote copy of a finished event needs no upkeep. Only the past is cut — a
+  // claim for something far ahead is mirrored at once, and an event moved far
+  // ahead is updated in place, not left stale at its old time.
+  const horizon = activeHorizon();
   const desired = cal.active
     ? await db
         .select()
@@ -485,19 +550,48 @@ export async function syncMemberMirror(
             // A conflict-masked event is mirrored as its cf: split segments, not
             // as its own full span.
             isNull(calendarEvents.maskedAt),
+            endsAtOrAfter(calendarEvents.dtstart, calendarEvents.dtend, horizon.start),
           ),
         )
     : [];
   const desiredById = new Map(desired.map((e) => [e.id, e]));
   const timezones = await linkTimezones(db, cal.familyId);
-  const claimedTasks = await claimedTaskMeta(db, cal.familyId);
+  const claimedTasks = await claimedTaskMeta(
+    db,
+    desired.flatMap((e) => (e.taskId ? [e.taskId] : [])),
+  );
 
-  const travel = await travelContext(db, memberId);
+  const travel = await travelContext(db, memberId, { start: horizon.start });
 
-  const existing = await db
-    .select()
-    .from(eventMirrors)
-    .where(eq(eventMirrors.familyMemberId, memberId));
+  // The mirror rows worth reconsidering: those whose event has left this
+  // member's calendar (deleted, or moved to another caretaker), and those whose
+  // event hasn't finished before the horizon's start — desired ones to compare,
+  // the rest (masked, calendar paused, no longer synthesized/claimed) to cancel.
+  // A row whose event finished before the horizon is skipped by the query and
+  // never touched, so a finished event isn't cancelled just because it fell out
+  // of `desired`. That includes a paused calendar: pausing cancels what's
+  // current and upcoming, and what's already behind us stays where it was.
+  const existing = (
+    await db
+      .select()
+      .from(eventMirrors)
+      .leftJoin(
+        calendarEvents,
+        and(
+          eq(calendarEvents.id, eventMirrors.calendarEventId),
+          eq(calendarEvents.familyMemberId, eventMirrors.familyMemberId),
+        ),
+      )
+      .where(
+        and(
+          eq(eventMirrors.familyMemberId, memberId),
+          or(
+            isNull(calendarEvents.id),
+            endsAtOrAfter(calendarEvents.dtstart, calendarEvents.dtend, horizon.start),
+          ),
+        ),
+      )
+  ).map((r) => r.event_mirrors);
   const existingByEvent = new Map(existing.map((m) => [m.calendarEventId, m]));
 
   // Cancel remote copies of vanished events, then drop their rows. A failed
@@ -618,9 +712,6 @@ const ORPHAN_GRACE_MS = 15 * 60_000;
  */
 const MIRROR_UID_PATTERN = /^igt-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-/** How far behind the synthesis window the orphan sweep reaches. */
-const SWEEP_LOOKBACK_MS = 30 * 24 * 60 * 60_000;
-
 /**
  * Delete our own (`igt-`) events on a target that no `event_mirrors` row
  * accounts for. The row is the mirror's only memory of a remote copy; until
@@ -632,19 +723,20 @@ const SWEEP_LOOKBACK_MS = 30 * 24 * 60 * 60_000;
  * Checked against every member's rows, not just this one's: two members can
  * share one target calendar, and `igt-<calendarEventId>` UIDs are globally
  * unique, so an event some other row owns is never touched. Bounded to the
- * synthesis window plus the 30 days behind it, so the recent past is cleaned
- * too without listing a calendar's whole history every pass.
+ * active horizon (the synthesis window plus the 30 days behind it), so the
+ * recent past is cleaned too without listing a calendar's whole history every
+ * pass.
  */
 async function sweepOrphanedRemoteEvents(
   db: Db,
   provider: DeliveryProvider,
   target: DeliveryTarget,
 ): Promise<number> {
-  const window = synthesisWindow();
+  const horizon = activeHorizon();
   const remote = await provider.listOwned!(target, {
     uidPrefix: MIRROR_UID_PREFIX,
-    start: new Date(window.start.getTime() - SWEEP_LOOKBACK_MS),
-    end: window.end,
+    start: horizon.start,
+    end: horizon.end,
   });
   const cutoff = Date.now() - ORPHAN_GRACE_MS;
   const candidates = remote.filter(

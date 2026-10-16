@@ -10,8 +10,16 @@ import {
 } from '@igt/db';
 import { describe, expect, it } from 'vitest';
 import { hashCalendarEvent } from '../src/services/synthesis.js';
-import { buildMemberTasks, rebuildMemberTasks } from '../src/services/task-gen.js';
-import { authed, call, setupFamily } from './helpers.js';
+import {
+  buildMemberTasks,
+  rebuildFamilyTasks,
+  rebuildMemberTasks,
+} from '../src/services/task-gen.js';
+import { authed, call, pinClockTo, setupFamily } from './helpers.js';
+
+// The fixtures are the week of 2026-07-06; a rebuild only reconsiders events on
+// the active horizon around "now".
+pinClockTo('2026-07-06T12:00:00Z');
 
 type Db = ReturnType<typeof getDb>;
 
@@ -190,6 +198,60 @@ describe('task generation (Module B)', () => {
     await rebuildMemberTasks(db, fam.childId);
     const after = await db.select().from(tasks).where(eq(tasks.calendarEventId, event.id));
     expect(after.map((t) => t.type)).toEqual(['attendance']);
+  });
+
+  it.each([
+    ['rebuildMemberTasks', (db: Db, f: { familyId: string; childId: string }) =>
+      rebuildMemberTasks(db, f.childId)],
+    ['rebuildFamilyTasks', (db: Db, f: { familyId: string; childId: string }) =>
+      rebuildFamilyTasks(db, f.familyId)],
+  ])('%s leaves events from before the active horizon as they were', async (name, rebuild) => {
+    const fam = await setupFamily(`gen-rebuild-horizon-${name}@example.com`);
+    const db = getDb(env.DB);
+    const { link } = await linkedFeed(db, fam.familyId, fam.childId, 'transition');
+    const recent = await insertEvent(db, fam.familyId, fam.childId, {
+      synthKey: 'ev:l1:recent',
+      linkId: link.id,
+      summary: 'Robotics club',
+    });
+    // Six months before the pinned clock.
+    const old = await insertEvent(db, fam.familyId, fam.childId, {
+      synthKey: 'ev:l1:old',
+      linkId: link.id,
+      summary: 'Robotics club',
+      dtstart: new Date('2026-01-06T15:30:00Z'),
+      dtend: new Date('2026-01-06T21:45:00Z'),
+    });
+    await buildMemberTasks(db, fam.childId);
+    const typesFor = async (eventId: string) =>
+      (await db.select().from(tasks).where(eq(tasks.calendarEventId, eventId)))
+        .map((t) => t.type)
+        .sort();
+    expect(await typesFor(old.id)).toEqual(['dropoff', 'pickup']);
+
+    await db.insert(taskRules).values({
+      familyId: fam.familyId,
+      familyMemberId: fam.childId,
+      linkId: link.id,
+      scope: 'this_calendar',
+      position: 0,
+      matchField: 'summary',
+      matchOp: 'contains',
+      matchValue: 'Robotics',
+      resultType: 'attendance',
+    });
+    await rebuild(db, fam);
+
+    // The current event is re-typed by the new rule ...
+    expect(await typesFor(recent.id)).toEqual(['attendance']);
+    // ... the finished one is not reconsidered: its stamp was never cleared,
+    // so task-gen skipped it and its tasks are as they were.
+    expect(await typesFor(old.id)).toEqual(['dropoff', 'pickup']);
+    const [stamp] = await db
+      .select({ built: calendarEvents.tasksBuiltHash, hash: calendarEvents.contentHash })
+      .from(calendarEvents)
+      .where(eq(calendarEvents.id, old.id));
+    expect(stamp!.built).toBe(stamp!.hash);
   });
 
   it('healing a moved event carries its dtend along, not just dtstart', async () => {

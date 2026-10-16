@@ -1,10 +1,14 @@
 import { env } from 'cloudflare:test';
-import { and, calendarEvents, eq, getDb, tasks } from '@igt/db';
+import { and, calendarEvents, eq, familyMembers, getDb, taskOwners, tasks } from '@igt/db';
 import type { GeoLocation } from '@igt/domain';
 import { describe, expect, it } from 'vitest';
-import { reconcileClaimEvents } from '../src/services/claim.js';
+import { reconcileClaimEvents, syncClaimEvents } from '../src/services/claim.js';
 import { hashCalendarEvent } from '../src/services/synthesis.js';
-import { authed, bearer, call, setupFamily } from './helpers.js';
+import { authed, bearer, call, pinClockTo, setupFamily } from './helpers.js';
+
+// The fixtures are the week of 2026-07-06; the claim true-up only works over
+// the active horizon around "now".
+pinClockTo('2026-07-06T12:00:00Z');
 
 type Db = ReturnType<typeof getDb>;
 
@@ -438,5 +442,125 @@ describe('multiple caretakers on one attendance task', () => {
     const body = (await res.json()) as { tasks: { id: string; ownerMemberIds: string[] }[] };
     const row = body.tasks.find((t) => t.id === task.id)!;
     expect([...row.ownerMemberIds].sort()).toEqual([fam.adminMemberId, partnerId].sort());
+  });
+});
+
+describe('claim true-up (reconcileClaimEvents)', () => {
+  // The clock is pinned to 2026-07-06, so the active horizon starts 2026-06-06.
+  const YESTERDAY = new Date('2026-07-05T21:45:00Z');
+  const SIX_MONTHS_AGO = new Date('2026-01-06T21:45:00Z');
+
+  /** An owned pickup with its claimed event on the admin's calendar. */
+  async function insertOwnedTask(
+    db: Db,
+    fam: { familyId: string; childId: string; adminMemberId: string },
+    dtstart: Date,
+  ) {
+    const task = (
+      await db
+        .insert(tasks)
+        .values({
+          familyId: fam.familyId,
+          familyMemberId: fam.childId,
+          type: 'pickup',
+          dtstart,
+          dtend: null,
+          location: 'Lincoln Elementary',
+          status: 'owned',
+          createdVia: 'generated',
+        })
+        .returning()
+    )[0]!;
+    await db.insert(taskOwners).values({ taskId: task.id, familyMemberId: fam.adminMemberId });
+    await syncClaimEvents(db, task, [fam.adminMemberId]);
+    return task;
+  }
+
+  const corrupt = (db: Db, taskId: string) =>
+    db
+      .update(calendarEvents)
+      .set({ summary: 'corrupted', contentHash: 'corrupt' })
+      .where(eq(calendarEvents.taskId, taskId));
+
+  it('heals the claim of a task from yesterday and leaves one from six months ago alone', async () => {
+    const fam = await setupFamily('claim-trueup-horizon@example.com');
+    const db = getDb(env.DB);
+    const recent = await insertOwnedTask(db, fam, YESTERDAY);
+    const old = await insertOwnedTask(db, fam, SIX_MONTHS_AGO);
+    await corrupt(db, recent.id);
+    await corrupt(db, old.id);
+
+    await reconcileClaimEvents(db, fam.familyId);
+
+    const [healed] = await claimEventsFor(db, recent.id);
+    expect(healed).toMatchObject({ summary: 'Pickup — child', dtstart: YESTERDAY });
+    expect(healed!.contentHash).not.toBe('corrupt');
+    // Finished before the horizon: nothing is looked at, so nothing changes.
+    const [untouched] = await claimEventsFor(db, old.id);
+    expect(untouched).toMatchObject({ summary: 'corrupted', contentHash: 'corrupt' });
+    // ... and it is still owned, not put back in the queue by the pass.
+    expect((await db.select().from(tasks).where(eq(tasks.id, old.id)))[0]!.status).toBe('owned');
+  });
+
+  it('uses the names and source events it loaded for the whole family', async () => {
+    const fam = await setupFamily('claim-trueup-preload@example.com');
+    const db = getDb(env.DB);
+    await db
+      .update(familyMembers)
+      .set({ relationName: 'Maya' })
+      .where(eq(familyMembers.id, fam.childId));
+    const pickup = await insertOwnedTask(db, fam, YESTERDAY);
+    const { task: attendance } = await insertAttendanceTaskWithEvent(db, fam.familyId, fam.childId);
+    await db.update(tasks).set({ status: 'owned' }).where(eq(tasks.id, attendance.id));
+    await db
+      .insert(taskOwners)
+      .values({ taskId: attendance.id, familyMemberId: fam.adminMemberId });
+    await syncClaimEvents(db, { ...attendance, status: 'owned' }, [fam.adminMemberId]);
+    await corrupt(db, pickup.id);
+    await corrupt(db, attendance.id);
+
+    await reconcileClaimEvents(db, fam.familyId);
+
+    expect((await claimEventsFor(db, pickup.id))[0]!.summary).toBe('Pickup — Maya');
+    expect((await claimEventsFor(db, attendance.id))[0]).toMatchObject({
+      summary: 'Soccer practice',
+      location: 'Elm Park Fields',
+      description: 'Bring cleats and shin guards',
+    });
+  });
+
+  it('removes a stray claim on the horizon, but not one from before it', async () => {
+    const fam = await setupFamily('claim-trueup-strays@example.com');
+    const db = getDb(env.DB);
+    const recent = await insertOwnedTask(db, fam, YESTERDAY);
+    const old = await insertOwnedTask(db, fam, SIX_MONTHS_AGO);
+    // Unowned behind the claim's back (no cleanup), the way the safety net exists for.
+    for (const task of [recent, old]) {
+      await db.update(tasks).set({ status: 'unowned' }).where(eq(tasks.id, task.id));
+      await db.delete(taskOwners).where(eq(taskOwners.taskId, task.id));
+    }
+
+    await reconcileClaimEvents(db, fam.familyId);
+
+    expect(await claimEventsFor(db, recent.id)).toHaveLength(0);
+    // There is no retention sweep: history is simply not revisited.
+    expect(await claimEventsFor(db, old.id)).toHaveLength(1);
+  });
+
+  it("does not mistake an old owned task's claim on the horizon for a stray", async () => {
+    const fam = await setupFamily('claim-trueup-moved@example.com');
+    const db = getDb(env.DB);
+    const old = await insertOwnedTask(db, fam, SIX_MONTHS_AGO);
+    // The claim has drifted onto the horizon while its task stayed behind.
+    await db
+      .update(calendarEvents)
+      .set({ dtstart: YESTERDAY, contentHash: 'corrupt' })
+      .where(eq(calendarEvents.taskId, old.id));
+
+    await reconcileClaimEvents(db, fam.familyId);
+
+    const claims = await claimEventsFor(db, old.id);
+    expect(claims).toHaveLength(1);
+    expect(claims[0]!.dtstart).toEqual(SIX_MONTHS_AGO);
   });
 });

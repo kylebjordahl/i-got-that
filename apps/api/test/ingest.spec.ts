@@ -19,7 +19,7 @@ import { ingestFamilyFeeds, ingestFeed } from '../src/services/ingest.js';
 import { synthesizeFeed } from '../src/services/synthesis.js';
 import { setTaskOwners } from '../src/services/task-owners.js';
 import { buildMemberTasks } from '../src/services/task-gen.js';
-import { createFamily, login, setupFamily, testKeys } from './helpers.js';
+import { createFamily, login, pinClockTo, setupFamily, testKeys } from './helpers.js';
 
 describe('ingest: account-backed input feeds', () => {
   it('reads a Google calendar feed into source_events (credential from the account)', async () => {
@@ -501,7 +501,9 @@ describe('ingest: an ICS feed is read in its own timezone, parsed once', () => {
 });
 
 describe('ingest: a rescheduled recurring instance keeps its identity', () => {
-  // Fixed window so the assertions don't depend on today's date.
+  // Fixed window so the assertions don't depend on today's date — including the
+  // claim true-up, which only works over the active horizon around "now".
+  pinClockTo('2026-08-05T12:00:00Z');
   const window = {
     windowStart: new Date('2026-08-01T00:00:00Z'),
     windowEnd: new Date('2026-09-01T00:00:00Z'),
