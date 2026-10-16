@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   CalDavProvider,
+  DeliveryHttpError,
   EmailImipProvider,
   GoogleCalendarProvider,
   type DeliveryEvent,
@@ -476,5 +477,44 @@ describe('CalDavProvider (against a fake CalDAV server)', () => {
     await expect(
       provider.upsert(alarmEvent, { method: 'caldav', addressOrUrl: collection }),
     ).rejects.toThrow();
+  });
+});
+
+describe('DeliveryHttpError (telling an event the target refuses from a target that is unwell)', () => {
+  const statusOf = (status: number) => new DeliveryHttpError('x', status).rejectedPayload;
+  const caldavTarget: DeliveryTarget = {
+    method: 'caldav',
+    addressOrUrl: 'https://p01-caldav.icloud.com/123/calendars/home/',
+    credential: { kind: 'basic', username: 'me@icloud.com', password: 'app-pw-1234' },
+  };
+  const googleTarget: DeliveryTarget = {
+    method: 'google',
+    addressOrUrl: '',
+    externalCalendarId: 'fam@group.calendar.google.com',
+    credential: { kind: 'oauth', accessToken: 'tok-123' },
+  };
+
+  it('treats a 4xx about the payload as a rejection, and everything else as the target being unwell', () => {
+    for (const rejected of [400, 413, 415, 422]) expect(statusOf(rejected)).toBe(true);
+    // Credentials / permission, a missing or moved resource, timing and load,
+    // and the server's own trouble all heal without the event changing.
+    for (const unwell of [401, 403, 404, 408, 409, 410, 423, 425, 429, 500, 502, 503]) {
+      expect(statusOf(unwell)).toBe(false);
+    }
+  });
+
+  it('is what both providers throw for a refused write, status intact', async () => {
+    const caldav = new CalDavProvider(async () => new Response('bad ical', { status: 400 }));
+    const err = await caldav.upsert(event, caldavTarget).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(DeliveryHttpError);
+    expect((err as DeliveryHttpError).status).toBe(400);
+    expect((err as DeliveryHttpError).rejectedPayload).toBe(true);
+    expect((err as Error).message).toMatch(/caldav PUT 400/);
+
+    const google = new GoogleCalendarProvider(async () => new Response('', { status: 400 }));
+    const gErr = await google.upsert(event, googleTarget).catch((e: unknown) => e);
+    expect(gErr).toBeInstanceOf(DeliveryHttpError);
+    expect((gErr as DeliveryHttpError).status).toBe(400);
+    expect((gErr as Error).message).toBe('google calendar insert failed: 400');
   });
 });

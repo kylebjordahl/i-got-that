@@ -4,6 +4,7 @@ import {
   fetchMock,
   waitOnExecutionContext,
 } from 'cloudflare:test';
+import { getDb, memberCalendars } from '@igt/db';
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import app from '../src/index.js';
 import { call, login, setupFamily } from './helpers.js';
@@ -67,6 +68,32 @@ describe('ops dashboard data', () => {
     expect(after.families).toBe(before.families + 1);
     // setupFamily creates an admin caretaker + one dependent child.
     expect(after.members).toBe(before.members + 2);
+  });
+
+  it('summary counts target calendars failing in either direction', async () => {
+    type Targets = { total: number; readBackFailing: number; mirrorFailing: number };
+    const targets = async () =>
+      ((await (await call('/ops/summary', opsAuth(env.OPS_DASHBOARD_PASSWORD!))).json()) as {
+        targets: Targets;
+      }).targets;
+    const before = await targets();
+
+    const fam = await setupFamily('ops-targets@test.dev');
+    const db = getDb(env.DB);
+    await db.insert(memberCalendars).values({
+      familyId: fam.familyId,
+      familyMemberId: fam.childId,
+      targetMethod: 'caldav',
+      targetCalendarId: 'https://caldav.example.com/cal/',
+      readBackFailures: 2,
+      lastReadBackError: 'boom',
+    });
+
+    expect(await targets()).toEqual({
+      total: before.total + 1,
+      readBackFailing: before.readBackFailing + 1,
+      mirrorFailing: before.mirrorFailing,
+    });
   });
 
   it('timeseries buckets by day and respects the days param', async () => {
