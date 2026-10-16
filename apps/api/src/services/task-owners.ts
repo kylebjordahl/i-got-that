@@ -115,11 +115,16 @@ export async function setTaskOwners(
       );
   }
   for (const familyMemberId of added) {
-    await db.insert(taskOwners).values({
-      taskId: task.id,
-      familyMemberId,
-      autoAssignedRuleId: opts.ruleId ?? null,
-    });
+    // No-op if an overlapping run (two task-gens auto-assigning the same task)
+    // already added this owner since our read: (task, member) is unique.
+    await db
+      .insert(taskOwners)
+      .values({
+        taskId: task.id,
+        familyMemberId,
+        autoAssignedRuleId: opts.ruleId ?? null,
+      })
+      .onConflictDoNothing();
   }
   // Keep the surviving rows' rule stamps in step. A human action always wins
   // over the rule engine, so every stamp in the set goes and task-gen stops

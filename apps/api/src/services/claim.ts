@@ -160,18 +160,26 @@ export async function syncClaimEvents(
         .where(eq(calendarEvents.id, prior.id));
       continue;
     }
-    await db.insert(calendarEvents).values({
-      familyId: task.familyId,
-      familyMemberId: memberId,
-      provenance: 'claimed_task',
-      synthKey: `task:${task.id}`,
-      taskId: task.id,
-      contentHash,
-      // Claimed events never generate tasks; stamp them pre-built so task-gen's
-      // dirty query skips them without special-casing.
-      tasksBuiltHash: contentHash,
-      ...payload,
-    });
+    // Upsert: two overlapping syncs (a claim request and the cron true-up) can
+    // both see this owner as missing, and the second must converge, not throw.
+    await db
+      .insert(calendarEvents)
+      .values({
+        familyId: task.familyId,
+        familyMemberId: memberId,
+        provenance: 'claimed_task',
+        synthKey: `task:${task.id}`,
+        taskId: task.id,
+        contentHash,
+        // Claimed events never generate tasks; stamp them pre-built so task-gen's
+        // dirty query skips them without special-casing.
+        tasksBuiltHash: contentHash,
+        ...payload,
+      })
+      .onConflictDoUpdate({
+        target: [calendarEvents.familyMemberId, calendarEvents.synthKey],
+        set: { ...payload, contentHash },
+      });
   }
 }
 
