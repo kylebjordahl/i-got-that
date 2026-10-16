@@ -6,6 +6,7 @@ import {
   familyMemberFeeds,
   feeds,
   getDb,
+  memberCalendars,
   tasks,
 } from '@igt/db';
 import { describe, expect, it } from 'vitest';
@@ -18,11 +19,17 @@ type Db = ReturnType<typeof getDb>;
 // 2026-07-06 is a Monday (weekdayBit 0 → mask bit 1).
 const MONDAY = new Date('2026-07-06T15:30:00Z');
 
-async function linkedFeed(db: Db, familyId: string, childId: string) {
+async function linkedFeed(db: Db, familyId: string, childId: string, timezone: string | null = null) {
   const feed = (
     await db
       .insert(feeds)
-      .values({ familyId, mode: 'standard', url: 'https://f/c.ics', sourceCalendarName: 'Soccer' })
+      .values({
+        familyId,
+        mode: 'standard',
+        url: 'https://f/c.ics',
+        sourceCalendarName: 'Soccer',
+        timezone,
+      })
       .returning()
   )[0]!;
   const link = (
@@ -34,7 +41,14 @@ async function linkedFeed(db: Db, familyId: string, childId: string) {
   return { feed, link };
 }
 
-async function insertEvent(db: Db, familyId: string, memberId: string, linkId: string, when: Date, synthKey: string) {
+async function insertEvent(
+  db: Db,
+  familyId: string,
+  memberId: string,
+  linkId: string | null,
+  when: Date,
+  synthKey: string,
+) {
   const payload = {
     dtstart: when,
     dtend: new Date(when.getTime() + 90 * 60_000),
@@ -124,6 +138,82 @@ describe('assignment-rule pipeline (issue #24)', () => {
     const rows = await childTasks(db, event.id);
     expect(rows.length).toBe(2);
     for (const t of rows) expect(t.status).toBe('unowned');
+  });
+
+  // A rule's weekday is the day the family lives the event on, which is the
+  // local date in the feed's zone — not the UTC date of the stored instant.
+  describe('weekday is read in local time, not UTC (issue #261)', () => {
+    // Mon 2026-07-06 18:00 PDT, stored as Tue 2026-07-07 01:00Z.
+    const MONDAY_EVENING_PT = new Date('2026-07-07T01:00:00Z');
+
+    it('a Monday rule claims the pickup of a Monday 6pm PDT event from a Pacific feed', async () => {
+      const fam = await setupFamily('ar-tz-mon@example.com');
+      const db = getDb(env.DB);
+      const { link } = await linkedFeed(db, fam.familyId, fam.childId, 'America/Los_Angeles');
+      const event = await insertEvent(db, fam.familyId, fam.childId, link.id, MONDAY_EVENING_PT, 'ev:l:tz-mon');
+
+      const create = await call(
+        `/families/${fam.familyId}/assignment-rules`,
+        authed(fam.admin.token, {
+          ownerMemberId: fam.adminMemberId,
+          aboutMemberId: fam.childId,
+          taskType: 'pickup',
+          weekdayMask: 1, // Monday
+        }),
+      );
+      expect(create.status).toBe(201);
+
+      const pickup = (await childTasks(db, event.id)).find((t) => t.type === 'pickup')!;
+      expect(pickup.status).toBe('owned');
+      expect(pickup.ownerMemberIds).toEqual([fam.adminMemberId]);
+      expect(pickup.autoAssignedRuleId).toBeTruthy();
+    });
+
+    it('a Tuesday rule (the UTC weekday of the stored instant) does not claim it', async () => {
+      const fam = await setupFamily('ar-tz-tue@example.com');
+      const db = getDb(env.DB);
+      const { link } = await linkedFeed(db, fam.familyId, fam.childId, 'America/Los_Angeles');
+      const event = await insertEvent(db, fam.familyId, fam.childId, link.id, MONDAY_EVENING_PT, 'ev:l:tz-tue');
+
+      await call(
+        `/families/${fam.familyId}/assignment-rules`,
+        authed(fam.admin.token, { ownerMemberId: fam.adminMemberId, weekdayMask: 2 }), // Tuesday
+      );
+
+      const rows = await childTasks(db, event.id);
+      expect(rows.length).toBe(2);
+      for (const t of rows) expect(t.status).toBe('unowned');
+    });
+
+    it('a feed with no zone falls back to the member calendar zone for its events', async () => {
+      const fam = await setupFamily('ar-tz-member@example.com');
+      const db = getDb(env.DB);
+      await db.insert(memberCalendars).values({
+        familyId: fam.familyId,
+        familyMemberId: fam.childId,
+        targetMethod: 'google',
+        targetCalendarId: 'kid-calendar-id',
+        timezone: 'America/Los_Angeles',
+      });
+      // The member's own direct-calendar event (no source link) and one from a
+      // zoneless feed both read in the member calendar's zone.
+      const { link } = await linkedFeed(db, fam.familyId, fam.childId);
+      const direct = await insertEvent(db, fam.familyId, fam.childId, null, MONDAY_EVENING_PT, 'ext:tz-direct');
+      const viaFeed = await insertEvent(db, fam.familyId, fam.childId, link.id, MONDAY_EVENING_PT, 'ev:l:tz-zoneless');
+
+      await call(
+        `/families/${fam.familyId}/assignment-rules`,
+        authed(fam.admin.token, { ownerMemberId: fam.adminMemberId, weekdayMask: 1 }), // Monday
+      );
+
+      // (A direct-calendar event defaults to one attendance task, a feed event to
+      // a drop-off + pickup pair.)
+      for (const event of [direct, viaFeed]) {
+        const rows = await childTasks(db, event.id);
+        expect(rows.length).toBeGreaterThan(0);
+        for (const t of rows) expect(t.status).toBe('owned');
+      }
+    });
   });
 
   it('a manual unassign wins and survives a later rebuild', async () => {
