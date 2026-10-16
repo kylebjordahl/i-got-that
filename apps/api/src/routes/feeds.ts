@@ -56,17 +56,15 @@ import {
   UnsafeOutboundUrlError,
 } from '../lib/outbound-url.js';
 import { requireAdmin, requireFamilyMember } from '../middleware/auth.js';
-import { reconcileClaimEvents } from '../services/claim.js';
-import {
-  reconcileFamilyConflicts,
-  reconcileMemberConflicts,
-} from '../services/conflicts.js';
-import { ingestFamilyFeeds, ingestFeed, type IngestResult } from '../services/ingest.js';
+import { ingestFeed } from '../services/ingest.js';
 import { enqueueReconcile } from '../services/mirror.js';
-import { ingestSecrets, resynthesizeFeed } from '../services/pipeline.js';
-import { readBackFamily } from '../services/readback.js';
-import { isRouted, synthesizeFeed } from '../services/synthesis.js';
-import { buildFamilyTasks, buildMemberTasks } from '../services/task-gen.js';
+import {
+  ingestSecrets,
+  type PipelineResult,
+  resynthesizeFeed,
+  runPipeline,
+} from '../services/pipeline.js';
+import { isRouted } from '../services/synthesis.js';
 
 /**
  * Creation-time probe for busy feeds: verify the target calendar actually
@@ -1078,9 +1076,19 @@ function refreshCooldownRemainingSeconds(
 }
 
 /**
- * Force-refresh a single feed now: ingest → synthesize → read-back (family,
- * so human edits on member target calendars aren't left stale between cron
- * ticks) → task-gen → claim true-up → mirror.
+ * What a refresh response adds to its `{ ingest, synthesis }` when a stage other
+ * than a feed's own ingest threw: the stages' names, so a half-done refresh
+ * doesn't read as a clean one. Absent on a clean run, so the shape is unchanged.
+ */
+function refreshDegradation(result: PipelineResult): { failedStages?: string[] } {
+  return result.failedStages.length > 0 ? { failedStages: result.failedStages } : {};
+}
+
+/**
+ * Force-refresh a single feed now: `runPipeline` scoped to the feed, ingesting
+ * it unconditionally and reading back the family's target calendars (so human
+ * edits on them aren't left stale between cron ticks) — the full stage order is
+ * in its docblock.
  *
  * An ingest that fails is reported, not thrown: the response is a 200 whose
  * `ingest` carries the `error` (the shape `/refresh-all` returns per feed;
@@ -1088,7 +1096,8 @@ function refreshCooldownRemainingSeconds(
  * works off the rows already in `source_events`, and synthesis in particular
  * is what rolls the 30-day window — a person pressing Refresh on a feed that
  * can't be read must still get that, and the read-back / task-gen for the
- * rest of what they were refreshing, rather than a 500 that skips it all.
+ * rest of what they were refreshing, rather than a 500 that skips it all. A
+ * later stage that throws is isolated the same way and named in `failedStages`.
  */
 feedRoutes.post('/:feedId/refresh', async (c) => {
   const db = getDb(c.env.DB);
@@ -1116,37 +1125,24 @@ feedRoutes.post('/:feedId/refresh', async (c) => {
     .set({ lastRefreshRequestedAt: now })
     .where(eq(feeds.id, feed.id));
 
-  let ingest: IngestResult;
-  try {
-    ingest = await ingestFeed(db, feed, { ...ingestSecrets(c.env), force: true });
-  } catch (err) {
-    // Same shape `ingestFamilyFeeds` gives `/refresh-all` per feed.
-    ingest = {
-      feedId: feed.id,
-      fetched: false,
-      processed: 0,
-      error: err instanceof Error ? err.message : String(err),
-    };
-  }
-  const synthesis = await synthesizeFeed(db, feed);
-  await readBackFamily(db, familyId, ingestSecrets(c.env));
-  const links = await db
-    .select({ familyMemberId: familyMemberFeeds.familyMemberId })
-    .from(familyMemberFeeds)
-    .where(eq(familyMemberFeeds.feedId, feed.id));
-  for (const familyMemberId of new Set(links.map((l) => l.familyMemberId))) {
-    await reconcileMemberConflicts(db, familyMemberId);
-    await buildMemberTasks(db, familyMemberId);
-  }
-  await reconcileClaimEvents(db, familyId);
-  enqueueReconcile(c, { kind: 'family', familyId });
-  return c.json({ ingest, synthesis });
+  const result = await runPipeline(
+    c,
+    db,
+    { familyId, feedIds: [feed.id] },
+    { ingest: 'force', readBack: true, mirror: 'enqueue' },
+  );
+  return c.json({
+    ingest: result.ingest[0],
+    synthesis: result.synthesis[0],
+    ...refreshDegradation(result),
+  });
 });
 
 /**
- * Force-refresh all of a family's feeds now — mirrors the cron tick's
- * pipeline order: ingest+synthesize → read-back → task-gen → claim
- * true-up → mirror. Without the read-back step, human edits made directly
+ * Force-refresh all of a family's feeds now — `runPipeline` over the whole
+ * family, so it runs the cron tick's stage order. A paused feed is left alone
+ * (neither read nor synthesized): reading it would flip it back to 'active' and
+ * silently undo the pause. Without the read-back step, human edits made directly
  * on a member's target calendar wouldn't show up until the next cron tick.
  */
 feedRoutes.post('/refresh-all', async (c) => {
@@ -1178,20 +1174,15 @@ feedRoutes.post('/refresh-all', async (c) => {
       .where(eq(feeds.familyId, familyId));
   }
 
-  const ingest = await ingestFamilyFeeds(db, familyId, {
-    ...ingestSecrets(c.env),
-    force: true,
+  const result = await runPipeline(
+    c,
+    db,
+    { familyId },
+    { ingest: 'force', readBack: true, mirror: 'enqueue' },
+  );
+  return c.json({
+    ingest: result.ingest,
+    synthesis: result.synthesis,
+    ...refreshDegradation(result),
   });
-
-  const familyFeeds = await db.select().from(feeds).where(eq(feeds.familyId, familyId));
-  const synthesis = [];
-  for (const feed of familyFeeds) {
-    synthesis.push(await synthesizeFeed(db, feed));
-  }
-  await readBackFamily(db, familyId, ingestSecrets(c.env));
-  await reconcileFamilyConflicts(db, familyId);
-  await buildFamilyTasks(db, familyId);
-  await reconcileClaimEvents(db, familyId);
-  enqueueReconcile(c, { kind: 'family', familyId });
-  return c.json({ ingest, synthesis });
 });
