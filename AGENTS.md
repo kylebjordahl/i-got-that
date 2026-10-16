@@ -192,6 +192,12 @@ paths in particular).
   ~14 min TTL, released only by the tick that took it) to skip a doubled-up
   tick; request paths stay unleased so a user's edit never waits on a
   background tick.
+- **Every path that runs the pipeline is a thin call to `runPipeline`**
+  (`services/pipeline.ts`): the cron tick, `resynthesizeFeed`, both refresh
+  routes and the conflict / routing-decision routes. Its docblock holds the one
+  canonical stage order and the "entry point → scope/options" table — add a stage
+  there (isolated per feed / member, like the rest), never as another hand-rolled
+  copy in a caller.
 - **Owned tasks are never deleted by reconciliation** (`services/task-gen.ts`):
   only unowned tasks are removed/swept, and user-converted (`createdVia:
   'manual'`) tasks are healed, never reclassified.
@@ -244,7 +250,7 @@ paths in particular).
   feed can say why; the cron polls **every** feed that `isFeedDue` says is due
   — an `error` feed on a growing backoff off `lastAttemptedAt`, since
   `lastSyncedAt` doesn't move on a failure — so a transient blip can't park a
-  feed forever; and one feed's failure is caught per-feed in `runFamilyTick`
+  feed forever; and one feed's failure is caught per-feed in `runPipeline`
   (`services/pipeline.ts`) so it can't cost the family the
   read-back/task-gen/mirror passes that don't depend on it; and **synthesis does
   not wait on ingest** — it is what turns time into calendar days (the 30-day
