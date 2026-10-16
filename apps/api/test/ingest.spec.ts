@@ -1,9 +1,24 @@
 import { env } from 'cloudflare:test';
-import { eq, externalAccounts, feeds, getDb, sourceEvents } from '@igt/db';
+import {
+  and,
+  calendarEvents,
+  eq,
+  externalAccounts,
+  familyMemberFeeds,
+  feeds,
+  getDb,
+  sourceEvents,
+  taskOwners,
+  tasks,
+} from '@igt/db';
 import { describe, expect, it } from 'vitest';
 import { storeSecret } from '../src/lib/secrets.js';
+import { reconcileClaimEvents } from '../src/services/claim.js';
 import { ingestFamilyFeeds, ingestFeed } from '../src/services/ingest.js';
-import { createFamily, login, testKeys } from './helpers.js';
+import { synthesizeFeed } from '../src/services/synthesis.js';
+import { setTaskOwners } from '../src/services/task-owners.js';
+import { buildMemberTasks } from '../src/services/task-gen.js';
+import { createFamily, login, setupFamily, testKeys } from './helpers.js';
 
 describe('ingest: account-backed input feeds', () => {
   it('reads a Google calendar feed into source_events (credential from the account)', async () => {
@@ -356,5 +371,151 @@ describe('ingest: account-backed input feeds', () => {
     await expect(ingestFeed(db, feed, { fetchImpl })).rejects.toThrow();
     const after = (await db.select().from(feeds).where(eq(feeds.id, feed.id)).limit(1))[0]!;
     expect(after.status).toBe('error');
+  });
+});
+
+describe('ingest: a rescheduled recurring instance keeps its identity', () => {
+  // Fixed window so the assertions don't depend on today's date.
+  const window = {
+    windowStart: new Date('2026-08-01T00:00:00Z'),
+    windowEnd: new Date('2026-09-01T00:00:00Z'),
+  };
+
+  /** One Google recurring instance. `originalStartTime` is the series slot it
+   *  occupies (RECURRENCE-ID); `start`/`end` are where it happens right now. */
+  const practice = (start: string, end: string) => ({
+    iCalUID: 'practice@g',
+    recurringEventId: 'practice',
+    status: 'confirmed',
+    summary: 'Swim practice',
+    location: 'Aquatic Center',
+    start: { dateTime: start },
+    end: { dateTime: end },
+    originalStartTime: { dateTime: '2026-08-05T17:00:00Z' },
+  });
+  const listFetch = (item: unknown) =>
+    (async () => ({ ok: true, status: 200, json: async () => ({ items: [item] }) })) as unknown as typeof fetch;
+
+  it('moving one instance updates source_events + calendar_events in place and heals an owned task', async () => {
+    const fam = await setupFamily('ingest-moved-instance@example.com', 'Moved Fam');
+    const db = getDb(env.DB);
+    const credRef = await storeSecret(
+      db,
+      testKeys(),
+      null,
+      JSON.stringify({ kind: 'oauth', accessToken: 'at-moved' }),
+    );
+    const account = (
+      await db
+        .insert(externalAccounts)
+        .values({ userId: fam.admin.userId, kind: 'google', name: 'G', credentialsRef: credRef })
+        .returning()
+    )[0]!;
+    const feed = (
+      await db
+        .insert(feeds)
+        .values({
+          familyId: fam.familyId,
+          kind: 'google',
+          externalAccountId: account.id,
+          sourceCalendarId: 'primary',
+          mode: 'standard',
+        })
+        .returning()
+    )[0]!;
+    const link = (
+      await db
+        .insert(familyMemberFeeds)
+        .values({
+          familyId: fam.familyId,
+          feedId: feed.id,
+          familyMemberId: fam.childId,
+          defaultTaskType: 'transition', // drop-off + pickup
+        })
+        .returning()
+    )[0]!;
+
+    const run = async (item: unknown) => {
+      await ingestFeed(db, feed, { fetchImpl: listFetch(item), kek: testKeys(), ...window });
+      await synthesizeFeed(db, feed, window);
+      await buildMemberTasks(db, fam.childId);
+      await reconcileClaimEvents(db, fam.familyId);
+    };
+    const sourceRows = () =>
+      db.select().from(sourceEvents).where(eq(sourceEvents.feedId, feed.id));
+    const scheduleEvents = () =>
+      db
+        .select()
+        .from(calendarEvents)
+        .where(
+          and(eq(calendarEvents.linkId, link.id), eq(calendarEvents.provenance, 'synthesized')),
+        );
+    const childTasks = () =>
+      db.select().from(tasks).where(eq(tasks.familyMemberId, fam.childId));
+    const claimEvents = () =>
+      db
+        .select()
+        .from(calendarEvents)
+        .where(eq(calendarEvents.provenance, 'claimed_task'));
+
+    // 17:00Z-18:30Z on the original slot.
+    await run(practice('2026-08-05T17:00:00Z', '2026-08-05T18:30:00Z'));
+    const [srcBefore] = await sourceRows();
+    const [evBefore] = await scheduleEvents();
+    expect(srcBefore!.recurrenceId).toBe('2026-08-05T17:00:00.000Z');
+    expect(evBefore!.dtstart.toISOString()).toBe('2026-08-05T17:00:00.000Z');
+    const tasksBefore = await childTasks();
+    expect(tasksBefore.map((t) => t.type).sort()).toEqual(['dropoff', 'pickup']);
+    const pickupBefore = tasksBefore.find((t) => t.type === 'pickup')!;
+    expect(pickupBefore.dtstart.toISOString()).toBe('2026-08-05T18:30:00.000Z');
+
+    // A caretaker takes the pickup, and sets a travel-time override on their claim.
+    await setTaskOwners(db, pickupBefore, [fam.adminMemberId], { manual: true });
+    const [claimBefore] = await claimEvents();
+    expect(claimBefore!.taskId).toBe(pickupBefore.id);
+    await db
+      .update(calendarEvents)
+      .set({ travelTimeOverrideMin: 25 })
+      .where(eq(calendarEvents.id, claimBefore!.id));
+
+    // The coach moves this one practice an hour later; the series slot
+    // (originalStartTime) is unchanged.
+    await run(practice('2026-08-05T18:00:00Z', '2026-08-05T19:30:00Z'));
+
+    // Same source row, same calendar event — updated, not deleted + re-added.
+    const srcAfter = await sourceRows();
+    expect(srcAfter).toHaveLength(1);
+    expect(srcAfter[0]!.id).toBe(srcBefore!.id);
+    expect(srcAfter[0]!.recurrenceId).toBe('2026-08-05T17:00:00.000Z');
+    expect(srcAfter[0]!.dtstart.toISOString()).toBe('2026-08-05T18:00:00.000Z');
+    const evAfter = await scheduleEvents();
+    expect(evAfter).toHaveLength(1);
+    expect(evAfter[0]!.id).toBe(evBefore!.id);
+    expect(evAfter[0]!.dtstart.toISOString()).toBe('2026-08-05T18:00:00.000Z');
+    expect(evAfter[0]!.dtend?.toISOString()).toBe('2026-08-05T19:30:00.000Z');
+
+    // The owned pickup is healed to the new time — still the same task, still
+    // owned, no stale orphan at the old time and no unclaimed twin beside it.
+    const tasksAfter = await childTasks();
+    expect(tasksAfter).toHaveLength(2);
+    expect(tasksAfter.map((t) => t.id).sort()).toEqual(tasksBefore.map((t) => t.id).sort());
+    const pickupAfter = tasksAfter.find((t) => t.type === 'pickup')!;
+    expect(pickupAfter.id).toBe(pickupBefore.id);
+    expect(pickupAfter.calendarEventId).toBe(evBefore!.id);
+    expect(pickupAfter.status).toBe('owned');
+    expect(pickupAfter.dtstart.toISOString()).toBe('2026-08-05T19:30:00.000Z');
+    const owners = await db
+      .select()
+      .from(taskOwners)
+      .where(eq(taskOwners.taskId, pickupBefore.id));
+    expect(owners.map((o) => o.familyMemberId)).toEqual([fam.adminMemberId]);
+
+    // The claim moved with it rather than being cancelled and re-created, so the
+    // caretaker's travel-time override survives.
+    const claimsAfter = await claimEvents();
+    expect(claimsAfter).toHaveLength(1);
+    expect(claimsAfter[0]!.id).toBe(claimBefore!.id);
+    expect(claimsAfter[0]!.dtstart.toISOString()).toBe('2026-08-05T19:30:00.000Z');
+    expect(claimsAfter[0]!.travelTimeOverrideMin).toBe(25);
   });
 });

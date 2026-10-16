@@ -844,6 +844,12 @@ export const calendarEvents = sqliteTable(
     linkId: text('link_id').references(() => familyMemberFeeds.id, {
       onDelete: 'cascade',
     }),
+    // `sourceEventId` is a lifetime tie: only stamp it on a row that should die
+    // with its source event (`ev:`, `fb:`, `pd:`, and `cf:` segments of those).
+    // A `bl:` baseline day (and the `cf:` segments cut from it) is the link's own
+    // schedule, so it carries null — tying it to the exception event that merely
+    // modified it deleted it, and orphaned the tasks claimed on it, whenever the
+    // feed dropped that event. (`matchedRuleId` is SET NULL, so it's safe.)
     sourceEventId: text('source_event_id').references(() => sourceEvents.id, {
       onDelete: 'cascade',
     }),
