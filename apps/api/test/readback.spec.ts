@@ -228,6 +228,107 @@ describe('read-back (human events from the target calendar)', () => {
     expect(humans[0]!.summary).toBe('Dentist');
   });
 
+  it('re-reads a multi-day event that began before the window without re-inserting it', async () => {
+    // The reader returns every span OVERLAPPING the window, so an all-day event
+    // that started before windowStart but is still running comes back each
+    // pass. The `existing` query has to see its row too, or the loop INSERTs it
+    // again and the (familyMemberId, synthKey) unique index aborts the member's
+    // whole read-back.
+    const f = await googleTargetFixture('readback-ongoing-allday@example.com');
+    const trip = {
+      iCalUID: 'trip@google.com',
+      status: 'confirmed',
+      summary: 'Camping trip',
+      start: { date: '2026-07-06' },
+      end: { date: '2026-07-11' },
+    };
+    const humans = () =>
+      f.db
+        .select()
+        .from(calendarEvents)
+        .where(
+          and(
+            eq(calendarEvents.familyMemberId, f.childId),
+            eq(calendarEvents.provenance, 'human'),
+          ),
+        );
+
+    // Pass 1: the event starts inside the window.
+    const r1 = await readBackMember(f.db, f.cal, {
+      ...opts,
+      fetchImpl: googleFetch([trip]),
+    });
+    expect(r1.upserted).toBe(1);
+    const [row] = await humans();
+    expect(row).toMatchObject({ summary: 'Camping trip', allDay: true });
+
+    // Pass 2: two days later the window's start has moved past the event's
+    // start, but the event is still ongoing — no throw, still one row.
+    const later = {
+      ...opts,
+      windowStart: new Date('2026-07-08T00:00:00Z'),
+      windowEnd: new Date('2026-08-07T00:00:00Z'),
+    };
+    const r2 = await readBackMember(f.db, f.cal, {
+      ...later,
+      fetchImpl: googleFetch([trip]),
+    });
+    expect(r2.upserted).toBe(0);
+    expect(r2.removed).toBe(0);
+    expect(await humans()).toHaveLength(1);
+
+    // A retitle while it is ongoing updates the SAME row.
+    const r3 = await readBackMember(f.db, f.cal, {
+      ...later,
+      fetchImpl: googleFetch([{ ...trip, summary: 'Camping trip (rained out)' }]),
+    });
+    expect(r3.upserted).toBe(1);
+    const after = await humans();
+    expect(after).toHaveLength(1);
+    expect(after[0]!.id).toBe(row!.id);
+    expect(after[0]!.summary).toBe('Camping trip (rained out)');
+
+    // And when it disappears remotely, the ongoing row is pruned too.
+    const r4 = await readBackMember(f.db, f.cal, { ...later, fetchImpl: googleFetch([]) });
+    expect(r4.removed).toBe(1);
+    expect(await humans()).toHaveLength(0);
+  });
+
+  it('re-reads a timed event crossing 00:00 UTC without re-inserting it', async () => {
+    const f = await googleTargetFixture('readback-ongoing-timed@example.com');
+    const lateNight = {
+      iCalUID: 'sleepover@google.com',
+      status: 'confirmed',
+      summary: 'Sleepover',
+      start: { dateTime: '2026-07-07T23:00:00Z' },
+      end: { dateTime: '2026-07-08T02:00:00Z' },
+    };
+    // The window opens at 00:00 UTC on the 8th: the event started the evening
+    // before and is still running at windowStart.
+    const crossing = {
+      ...opts,
+      windowStart: new Date('2026-07-08T00:00:00Z'),
+      windowEnd: new Date('2026-08-07T00:00:00Z'),
+      fetchImpl: googleFetch([lateNight]),
+    };
+
+    const r1 = await readBackMember(f.db, f.cal, crossing);
+    expect(r1.upserted).toBe(1);
+    const r2 = await readBackMember(f.db, f.cal, crossing);
+    expect(r2.upserted).toBe(0);
+    expect(r2.removed).toBe(0);
+    const humans = await f.db
+      .select()
+      .from(calendarEvents)
+      .where(
+        and(
+          eq(calendarEvents.familyMemberId, f.childId),
+          eq(calendarEvents.provenance, 'human'),
+        ),
+      );
+    expect(humans).toHaveLength(1);
+  });
+
   it('skips an inactive target and one without a resolvable credential', async () => {
     const f = await googleTargetFixture('readback-skip@example.com');
     const db = f.db;

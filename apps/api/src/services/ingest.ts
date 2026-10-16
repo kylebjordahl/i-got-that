@@ -5,12 +5,8 @@ import {
   eq,
   externalAccounts,
   feeds,
-  gt,
-  gte,
   inArray,
   isNotNull,
-  lt,
-  or,
   sourceEvents,
   sql,
 } from '@igt/db';
@@ -29,6 +25,7 @@ import { resolveAccountCredential } from '../lib/account-credentials.js';
 import { runChunked } from '../lib/d1.js';
 import { GoogleTokenRefreshError } from '../lib/google-oauth.js';
 import type { KekKeySet } from '../lib/secrets.js';
+import { overlapsWindow } from './synthesis.js';
 
 export interface IngestOptions {
   fetchImpl?: typeof fetch;
@@ -129,8 +126,9 @@ function busyIngestWindow(opts: IngestOptions): {
  * before the window but are still running at its start (`occurrenceInWindow` in
  * @igt/ical), so those rows are in the fresh set and have to be sweepable too —
  * otherwise an ongoing span that changed key or vanished upstream survives
- * forever, re-synthesized on every run. Same predicate the synthesis query uses
- * (`dtstart < end AND (dtstart >= start OR dtend > start)`). It is load-bearing
+ * forever, re-synthesized on every run. The shared `overlapsWindow` predicate
+ * (`dtstart < end AND (dtstart >= start OR dtend > start)`) — the same one
+ * synthesis and read-back use. It is load-bearing
  * for busy feeds in particular: an ongoing interval is clipped to the window
  * start (see `busyIngestWindow`), so at each UTC-day rollover the block's key
  * moves forward a day and yesterday's row — which starts *before* the new
@@ -150,11 +148,10 @@ async function deleteStaleSourceEvents(
     .where(
       and(
         eq(sourceEvents.feedId, feed.id),
-        lt(sourceEvents.dtstart, window.windowEnd),
-        or(
-          gte(sourceEvents.dtstart, window.windowStart),
-          gt(sourceEvents.dtend, window.windowStart),
-        ),
+        overlapsWindow(sourceEvents.dtstart, sourceEvents.dtend, {
+          start: window.windowStart,
+          end: window.windowEnd,
+        }),
       ),
     );
   const staleIds = rows
