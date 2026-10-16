@@ -176,7 +176,7 @@ describe('feed health: recording why a feed is stuck', () => {
     expect(cleared.lastErrorMessage).toBeNull();
   });
 
-  it('shows a held-back sweep on the feeds list while the feed stays active, and an admin reset starts the count over', async () => {
+  it('shows a held-back sweep on the feeds list while the feed stays active, and an admin reset starts the count and clock over', async () => {
     // An empty calendar served over a populated one is not a failed read — the
     // feed stays 'active' and on its normal poll interval — but the reason its
     // events haven't gone away has to be visible somewhere.
@@ -203,7 +203,9 @@ describe('feed health: recording why a feed is stuck', () => {
     expect(listed.lastErrorMessage).toBe(
       'suspicious fetch: 3 of 3 in-window events missing — holding them (1/3)',
     );
-    expect((await reload(db, feed.id)).suspiciousSweepCount).toBe(1);
+    const held = await reload(db, feed.id);
+    expect(held.suspiciousSweepCount).toBe(1);
+    expect(held.suspiciousSince).not.toBeNull();
     expect(await db.select().from(sourceEvents).where(eq(sourceEvents.feedId, feed.id))).toHaveLength(3);
 
     const res = await call(`/families/${familyId}/feeds/${feed.id}`, {
@@ -214,6 +216,7 @@ describe('feed health: recording why a feed is stuck', () => {
     expect(res.status).toBe(200);
     const cleared = await reload(db, feed.id);
     expect(cleared.suspiciousSweepCount).toBe(0);
+    expect(cleared.suspiciousSince).toBeNull();
     expect(cleared.lastErrorMessage).toBeNull();
   });
 });

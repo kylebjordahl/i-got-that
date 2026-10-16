@@ -275,10 +275,12 @@ paths in particular).
   incomplete (an empty VCALENDAR from a publisher outage, a CalDAV 207 with no
   objects): `deleteStaleSourceEvents` holds any sweep that would remove all of a
   feed's in-window rows (of ≥3) or over half (of ≥10) until the third
-  consecutive such fetch, recording `suspicious fetch: …` in `lastErrorMessage`
-  and counting `feeds.suspicious_sweep_count` — via the reader's `feedPatch`,
-  since `ingestFeed`'s success `UPDATE` would clear a separate write — and never
-  sweeps rows of CalDAV objects that failed to parse.
+  consecutive such fetch *and* six hours after the first (a Refresh-button
+  cooldown is 60 s, so the count alone is no evidence of an outage), recording
+  `suspicious fetch: …` in `lastErrorMessage` and counting
+  `feeds.suspicious_sweep_count` / `suspicious_since` — via the reader's
+  `feedPatch`, since `ingestFeed`'s success `UPDATE` would clear a separate
+  write — and never sweeps rows of CalDAV objects that failed to parse.
 - **Nothing on the outbound path may be served from cache.** A Worker's
   `fetch()` is not a bare socket — a cacheable GET comes from Cloudflare's
   cache, honouring the origin's `Cache-Control`, and that entry answers our

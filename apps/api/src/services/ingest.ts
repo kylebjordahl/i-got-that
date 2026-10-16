@@ -150,10 +150,20 @@ function busyIngestWindow(opts: IngestOptions): {
  * there are at least `SWEEP_GUARD_ALL_MIN_ROWS` of them), or MORE THAN
  * `SWEEP_GUARD_MAJORITY_SHARE` of them (once there are at least
  * `SWEEP_GUARD_MAJORITY_MIN_ROWS`), is held back until `SUSPICIOUS_SWEEP_LIMIT`
- * consecutive fetches have all asked for it.
+ * consecutive fetches have all asked for it AND `SUSPICIOUS_HOLD_MIN_MS` has
+ * passed since the first of them.
+ *
+ * The time floor is what makes the count mean anything. Fetches are cheap and
+ * close together — "Refresh feeds" has only a 60 s cooldown, and a person
+ * mashes it exactly when the feed looks broken, so three refreshes release the
+ * wipe in about two minutes; a feed polled every 15 minutes gets there in 45.
+ * Real outages (a CMS republish, an auth/ACL blip, a publisher's bad deploy)
+ * last hours, so the hold has to outlast that, not just count attempts. Six
+ * hours is the default poll interval (`refreshMinutes`), i.e. "still the same
+ * picture a full normal cycle later".
  *
  * The trade-off: the guard costs a genuine mass removal (a school wiping a term
- * and starting over) a couple of extra polls — hours — before it lands, and a
+ * and starting over) up to six hours-plus-a-poll before it lands, and a
  * small feed (fewer than the minimums) isn't protected at all, because losing
  * both of two events is indistinguishable from an outage. Being wrong the other
  * way is far worse: the deletes cascade into `calendar_events`, orphan claims,
@@ -165,6 +175,7 @@ const SWEEP_GUARD_ALL_MIN_ROWS = 3;
 const SWEEP_GUARD_MAJORITY_MIN_ROWS = 10;
 const SWEEP_GUARD_MAJORITY_SHARE = 0.5;
 const SUSPICIOUS_SWEEP_LIMIT = 3;
+const SUSPICIOUS_HOLD_MIN_MS = 6 * 60 * 60 * 1000;
 
 /** Would deleting `stale` of a feed's `total` in-window rows look like a bad read, not a real removal? */
 function isSuspiciousSweep(stale: number, total: number): boolean {
@@ -198,16 +209,22 @@ interface SweepOutcome {
   lastErrorMessage: string | null;
   /** Consecutive held sweeps. Omitted (left alone) when the sweep didn't run at all. */
   suspiciousSweepCount?: number;
+  /** When the current run of held sweeps began (null once it ends); omitted alongside the count. */
+  suspiciousSince?: Date | null;
   /** The deletion was held back, so the fetched document must not be recorded as accepted (see the ETag in `ingestIcsFeed`). */
   held: boolean;
 }
 
 /** The part of a sweep's outcome that lands on the feed row. */
-function sweepPatch({ lastErrorMessage, suspiciousSweepCount }: SweepOutcome): Pick<
+function sweepPatch({
+  lastErrorMessage,
+  suspiciousSweepCount,
+  suspiciousSince,
+}: SweepOutcome): Pick<
   Partial<typeof feeds.$inferInsert>,
-  'lastErrorMessage' | 'suspiciousSweepCount'
+  'lastErrorMessage' | 'suspiciousSweepCount' | 'suspiciousSince'
 > {
-  return { lastErrorMessage, suspiciousSweepCount };
+  return { lastErrorMessage, suspiciousSweepCount, suspiciousSince };
 }
 
 /**
@@ -242,8 +259,9 @@ function sweepPatch({ lastErrorMessage, suspiciousSweepCount }: SweepOutcome): P
  * whose CalDAV object we failed to parse are left alone (and if a failed object
  * couldn't even be identified, the sweep is skipped outright), and a sweep that
  * would take out all or most of the feed is held for `SUSPICIOUS_SWEEP_LIMIT`
- * consecutive fetches before it goes through. The returned outcome carries the
- * warning and the held-sweep count for the caller to write onto the feed row.
+ * consecutive fetches and `SUSPICIOUS_HOLD_MIN_MS` before it goes through. The
+ * returned outcome carries the warning and the held-sweep state for the caller
+ * to write onto the feed row.
  */
 async function deleteStaleSourceEvents(
   db: Db,
@@ -288,29 +306,45 @@ async function deleteStaleSourceEvents(
   if (isSuspiciousSweep(staleIds.length, sweepable.length)) {
     // Read the count back rather than trust the row the caller loaded: it may
     // be a whole tick old, and the decision to delete rides on it.
-    const stored = await db
-      .select({ count: feeds.suspiciousSweepCount })
-      .from(feeds)
-      .where(eq(feeds.id, feed.id))
-      .limit(1);
-    const seen = (stored[0]?.count ?? 0) + 1;
-    if (seen < SUSPICIOUS_SWEEP_LIMIT) {
-      // The fresh rows were already upserted; only the deletion waits.
-      const holding = `suspicious fetch: ${staleIds.length} of ${sweepable.length} in-window events missing — holding them (${seen}/${SUSPICIOUS_SWEEP_LIMIT})`;
+    const stored = (
+      await db
+        .select({ count: feeds.suspiciousSweepCount, since: feeds.suspiciousSince })
+        .from(feeds)
+        .where(eq(feeds.id, feed.id))
+        .limit(1)
+    )[0];
+    const now = Date.now();
+    const seen = (stored?.count ?? 0) + 1;
+    // The clock starts at the first held sweep (count 0 -> 1); a run with no
+    // recorded start (count and start are always written together, so only a
+    // hand-edited row) starts now rather than releasing early.
+    const since = seen > 1 && stored?.since ? stored.since : new Date(now);
+    const releaseAt = since.getTime() + SUSPICIOUS_HOLD_MIN_MS;
+    if (seen < SUSPICIOUS_SWEEP_LIMIT || now < releaseAt) {
+      // The fresh rows were already upserted; only the deletion waits. Past the
+      // count but short of the time floor the count keeps rising and we say
+      // when the hold ends instead.
+      const progress =
+        seen < SUSPICIOUS_SWEEP_LIMIT
+          ? `(${seen}/${SUSPICIOUS_SWEEP_LIMIT})`
+          : `until ${new Date(releaseAt).toISOString().slice(0, 16)}Z`;
+      const holding = `suspicious fetch: ${staleIds.length} of ${sweepable.length} in-window events missing — holding them ${progress}`;
       return {
         lastErrorMessage: keptNote ? `${holding}; ${keptNote}` : holding,
         suspiciousSweepCount: seen,
+        suspiciousSince: since,
         held: true,
       };
     }
-    // The same picture on the last of N consecutive fetches: believe it.
+    // The same picture on N consecutive fetches over at least the hold time:
+    // believe it.
   }
 
   // Chunked to stay under D1's bound-parameter limit.
   await runChunked(staleIds, (chunk) =>
     db.delete(sourceEvents).where(inArray(sourceEvents.id, chunk)),
   );
-  return { lastErrorMessage: keptNote, suspiciousSweepCount: 0, held: false };
+  return { lastErrorMessage: keptNote, suspiciousSweepCount: 0, suspiciousSince: null, held: false };
 }
 
 /**
@@ -402,7 +436,12 @@ async function ingestIcsFeed(
       // "Unchanged since the document we last accepted" (a held-back document
       // never has its ETag stored — see below), so any warning about a
       // suspicious sweep is moot.
-      feedPatch: { lastSyncedAt: new Date(), status: 'active', suspiciousSweepCount: 0 },
+      feedPatch: {
+        lastSyncedAt: new Date(),
+        status: 'active',
+        suspiciousSweepCount: 0,
+        suspiciousSince: null,
+      },
     };
   }
   if (!res.ok) throw new Error(`feed ${feed.id} fetch failed: ${res.status}`);

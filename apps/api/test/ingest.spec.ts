@@ -864,10 +864,18 @@ describe('ingest: the stale sweep does not trust a fetch that looks like a bad r
       (await db.select().from(sourceEvents).where(eq(sourceEvents.feedId, feed.id)))
         .map((r) => r.icalUid)
         .sort();
-    return { db, feed, upstream, requests, fetchImpl, reload, sync, storedUids };
+    /** Pretend the hold began `hours` earlier than it did (the sweep reads the real clock). */
+    const ageHold = async (hours: number) => {
+      const since = (await reload()).suspiciousSince!;
+      await db
+        .update(feeds)
+        .set({ suspiciousSince: new Date(since.getTime() - hours * 60 * 60 * 1000) })
+        .where(eq(feeds.id, feed.id));
+    };
+    return { db, feed, upstream, requests, fetchImpl, reload, sync, storedUids, ageHold };
   }
 
-  it('keeps every row and warns when a populated feed comes back empty, then deletes on the third in a row', async () => {
+  it('keeps every row and warns when a populated feed comes back empty, and only deletes once the hold has also lasted six hours', async () => {
     const f = await icsFeedFixture('sweep-guard-empty@example.com');
     const all = uidsOf(5);
     f.upstream.body = icsOf(all);
@@ -885,6 +893,8 @@ describe('ingest: the stale sweep does not trust a fetch that looks like a bad r
     expect(held1.lastErrorMessage).toBe(
       'suspicious fetch: 5 of 5 in-window events missing — holding them (1/3)',
     );
+    const since = held1.suspiciousSince!;
+    expect(since).toBeInstanceOf(Date);
     // Not a failed read: the feed stays active and unpaced by the error backoff.
     expect(held1.status).toBe('active');
     expect(held1.consecutiveFailures).toBe(0);
@@ -894,12 +904,37 @@ describe('ingest: the stale sweep does not trust a fetch that looks like a bad r
     const held2 = await f.reload();
     expect(held2.suspiciousSweepCount).toBe(2);
     expect(held2.lastErrorMessage).toContain('(2/3)');
+    // The clock started at the first held sweep and is not restarted.
+    expect(held2.suspiciousSince).toEqual(since);
 
-    // The third consecutive time, believe it.
+    // The count has now been reached, but three quick fetches (a person
+    // mashing Refresh, or a 15-minute poll) prove nothing about an outage: it
+    // keeps holding, and says until when.
+    await f.sync();
+    expect(await f.storedUids()).toEqual(all);
+    const held3 = await f.reload();
+    expect(held3.suspiciousSweepCount).toBe(3);
+    expect(held3.suspiciousSince).toEqual(since);
+    const until = new Date(since.getTime() + 6 * 60 * 60 * 1000).toISOString().slice(0, 16);
+    expect(held3.lastErrorMessage).toBe(
+      `suspicious fetch: 5 of 5 in-window events missing — holding them until ${until}Z`,
+    );
+    await f.sync();
+    expect(await f.storedUids()).toEqual(all);
+    expect((await f.reload()).suspiciousSweepCount).toBe(4);
+
+    // Just short of six hours: still held.
+    await f.ageHold(5.9);
+    await f.sync();
+    expect(await f.storedUids()).toEqual(all);
+
+    // Past the floor, the next suspicious fetch is believed.
+    await f.ageHold(0.2);
     await f.sync();
     expect(await f.storedUids()).toEqual([]);
     const done = await f.reload();
     expect(done.suspiciousSweepCount).toBe(0);
+    expect(done.suspiciousSince).toBeNull();
     expect(done.lastErrorMessage).toBeNull();
     expect(done.status).toBe('active');
   });
@@ -914,7 +949,10 @@ describe('ingest: the stale sweep does not trust a fetch that looks like a bad r
     // `f.feed` still says suspiciousSweepCount: 0 on every call.
     await ingestFeed(f.db, f.feed, { fetchImpl: f.fetchImpl, ...window });
     await ingestFeed(f.db, f.feed, { fetchImpl: f.fetchImpl, ...window });
+    await ingestFeed(f.db, f.feed, { fetchImpl: f.fetchImpl, ...window });
     expect(await f.storedUids()).toEqual(all);
+    expect((await f.reload()).suspiciousSweepCount).toBe(3);
+    await f.ageHold(7);
     await ingestFeed(f.db, f.feed, { fetchImpl: f.fetchImpl, ...window });
     expect(await f.storedUids()).toEqual([]);
   });
@@ -929,21 +967,30 @@ describe('ingest: the stale sweep does not trust a fetch that looks like a bad r
     await f.sync();
     await f.sync();
     expect((await f.reload()).suspiciousSweepCount).toBe(2);
+    // Long-running hold: the time floor is already met, so only the count and
+    // the reset below are what's under test.
+    await f.ageHold(7);
 
     // The publisher recovers.
     f.upstream.body = icsOf(all);
     await f.sync();
     const recovered = await f.reload();
     expect(recovered.suspiciousSweepCount).toBe(0);
+    expect(recovered.suspiciousSince).toBeNull();
     expect(recovered.lastErrorMessage).toBeNull();
     expect(await f.storedUids()).toEqual(all);
 
-    // Two more empty fetches start from scratch, so they still delete nothing.
+    // Empty fetches start from scratch — count AND clock — so even two of them
+    // (the old hold was long past six hours) still delete nothing, and a third
+    // is held too, because the new hold is minutes old.
     f.upstream.body = icsOf([]);
     await f.sync();
     await f.sync();
     expect(await f.storedUids()).toEqual(all);
     expect((await f.reload()).suspiciousSweepCount).toBe(2);
+    await f.sync();
+    expect(await f.storedUids()).toEqual(all);
+    expect((await f.reload()).suspiciousSweepCount).toBe(3);
   });
 
   it('still deletes a small genuine removal (1 of 10) immediately, with no warning', async () => {
@@ -1003,6 +1050,7 @@ describe('ingest: the stale sweep does not trust a fetch that looks like a bad r
     await f.sync();
     const row = await f.reload();
     expect(row.suspiciousSweepCount).toBe(0);
+    expect(row.suspiciousSince).toBeNull();
     expect(row.lastErrorMessage).toBeNull();
     expect(await f.storedUids()).toEqual(all);
   });
