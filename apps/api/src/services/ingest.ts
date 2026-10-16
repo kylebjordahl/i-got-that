@@ -23,7 +23,7 @@ import {
   parseCalendar,
 } from '@igt/ical';
 import { resolveAccountCredential } from '../lib/account-credentials.js';
-import { runChunked } from '../lib/d1.js';
+import { batchChunked, runChunked } from '../lib/d1.js';
 import { GoogleTokenRefreshError } from '../lib/google-oauth.js';
 import type { KekKeySet } from '../lib/secrets.js';
 import { overlapsWindow } from './synthesis.js';
@@ -181,15 +181,24 @@ async function deleteStaleSourceEvents(
  * `contentHash` (and thus its `tasksBuiltHash`), while a changed event gets a new
  * `contentHash` so Phase 3 reprocesses it. Single (non-recurring) events use
  * recurrenceId='' so SQLite's unique index dedupes them.
+ *
+ * The upserts go out as `db.batch()` calls rather than one awaited statement per
+ * occurrence — a 90-day account feed is hundreds of rows, and each used to be
+ * its own round trip and its own subrequest. And an unchanged row is not
+ * rewritten: the `DO UPDATE` is guarded by `setWhere`, so when the incoming
+ * `content_hash` equals the stored one SQLite skips the update (0 rows changed,
+ * 0 rows written — D1 bills on rows written, and a feed with no ETag is
+ * re-read in full on every poll). The hash covers every column the update sets
+ * (`hashOccurrence`), so equal hashes mean there's nothing to write.
  */
 async function upsertOccurrences(
   db: Db,
   feed: FeedRow,
   occurrences: Occurrence[],
 ): Promise<void> {
-  for (const occ of occurrences) {
+  const upserts = occurrences.map((occ) => {
     const contentHash = hashOccurrence(occ);
-    await db
+    return db
       .insert(sourceEvents)
       .values({
         feedId: feed.id,
@@ -220,8 +229,10 @@ async function upsertOccurrences(
           locationGeo: occ.locationGeo,
           contentHash,
         },
+        setWhere: sql`${sourceEvents.contentHash} <> excluded.content_hash`,
       });
-  }
+  });
+  await batchChunked(db, upserts);
 }
 
 /**

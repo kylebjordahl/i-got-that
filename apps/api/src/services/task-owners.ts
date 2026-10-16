@@ -18,7 +18,7 @@ export interface TaskWithOwners extends TaskRow {
   autoAssignedRuleId: string | null;
 }
 
-type OwnerRow = { familyMemberId: string; autoAssignedRuleId: string | null };
+export type OwnerRow = { familyMemberId: string; autoAssignedRuleId: string | null };
 
 /** Owner rows for a batch of tasks, oldest claim first, keyed by task id. */
 export async function ownerRowsFor(

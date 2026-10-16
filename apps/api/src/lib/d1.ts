@@ -1,3 +1,5 @@
+import type { Db } from '@igt/db';
+
 /**
  * D1 caps a single statement at **100 bound parameters** — the 101st comes back
  * as `too many SQL variables at offset N: SQLITE_ERROR`, which surfaces as a
@@ -47,4 +49,49 @@ export async function runChunked<T>(
   reserved = 0,
 ): Promise<void> {
   for (const chunk of chunkForD1(items, reserved)) await run(chunk);
+}
+
+/** One write a `db.batch()` can carry (any Drizzle insert/update/delete/select). */
+export type BatchStatement = Parameters<Db['batch']>[0][number];
+
+/**
+ * How many statements one `batch()` carries. A batch is a single D1 call and a
+ * single implicit transaction — all of it lands or none of it does — so the cap
+ * trades two things: a bigger batch is fewer round trips, but one bad row in it
+ * rolls back (and fails) every statement beside it. 50 keeps a feed's worth of
+ * upserts to a couple of round trips while a poison row can only hold up its own
+ * 49 neighbours, and each statement still binds its own (<=100) parameters, so
+ * the per-statement cap above is untouched.
+ */
+export const D1_BATCH_SIZE = 50;
+
+/**
+ * Send `statements` to D1 as `db.batch()` calls of at most `size`, in order, and
+ * return every statement's result in the same order — what a `.returning()` in
+ * the list yielded, or the run metadata for a plain write.
+ *
+ * Use it instead of `await`ing a loop of single writes: each of those is its
+ * own round trip *and* its own subrequest against the invocation's 10,000
+ * (every D1 call counts), where a batch is one of each. Order is preserved across
+ * chunks, so a list that must run "deletes, then upserts" still does. Chunks
+ * commit one at a time, not as a whole: a failure in chunk N leaves chunks
+ * before it applied and throws, exactly as a failure in a loop of single writes
+ * would have — callers must stay idempotent (they already have to be, see
+ * AGENTS.md "every pipeline insert is idempotent").
+ *
+ * Build the statements *without* awaiting them (`db.insert(...).values(...)`
+ * is a lazy builder; `await` is what runs it). An empty list makes no call.
+ */
+export async function batchChunked(
+  db: Db,
+  statements: readonly BatchStatement[],
+  size = D1_BATCH_SIZE,
+): Promise<unknown[]> {
+  const results: unknown[] = [];
+  const step = Math.max(1, size);
+  for (let i = 0; i < statements.length; i += step) {
+    const chunk = statements.slice(i, i + step) as [BatchStatement, ...BatchStatement[]];
+    results.push(...(await db.batch(chunk)));
+  }
+  return results;
 }
