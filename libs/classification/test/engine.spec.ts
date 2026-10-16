@@ -1,12 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
-  coveredUtcDays,
+  coveredLocalDays,
   detectConflicts,
   estimateTravelMinutes,
   firstMatch,
   haversineKm,
   generateTaskIntents,
   intervalsOverlap,
+  localDay,
   resolveTaskResult,
   ruleMatches,
   subtractIntervals,
@@ -491,10 +492,180 @@ describe('synthesizeException — dated baseline changes', () => {
 describe('day coverage + wall-clock conversion', () => {
   it('all-day dtend is exclusive; wall times anchor via Intl', () => {
     expect(
-      coveredUtcDays({ dtstart: new Date('2026-07-06T00:00:00Z'), dtend: new Date('2026-07-08T00:00:00Z'), allDay: true }),
+      coveredLocalDays(
+        { dtstart: new Date('2026-07-06T00:00:00Z'), dtend: new Date('2026-07-08T00:00:00Z'), allDay: true },
+        'UTC',
+      ),
     ).toHaveLength(2);
     const day = new Date('2026-01-05T00:00:00Z'); // PST (UTC-8)
     expect(wallTimeToUtc(day, '08:30', 8, 'America/Los_Angeles').toISOString()).toBe('2026-01-05T16:30:00.000Z');
+  });
+});
+
+// A local date is represented as that date's UTC midnight (baseline days, all-day
+// events); a timed instant has to be read in its zone before it can be compared
+// with one. These are the cases where local time and UTC straddle midnight.
+describe('localDay', () => {
+  const PT = 'America/Los_Angeles';
+  const ymd = (d: Date) => d.toISOString().slice(0, 10);
+
+  it('is the UTC date in UTC (and for an unknown zone)', () => {
+    expect(ymd(localDay(new Date('2026-07-07T02:00:00Z'), 'UTC'))).toBe('2026-07-07');
+    expect(ymd(localDay(new Date('2026-07-07T02:00:00Z'), 'Not/AZone'))).toBe('2026-07-07');
+  });
+
+  it('west of UTC, an evening instant is still that day (Mon 7pm PDT is Tuesday in UTC)', () => {
+    const d = localDay(new Date('2026-07-07T02:00:00Z'), PT);
+    expect(d.toISOString()).toBe('2026-07-06T00:00:00.000Z');
+  });
+
+  it('east of UTC, a morning instant is already that day (Tue 7am AEST is Monday in UTC)', () => {
+    const d = localDay(new Date('2026-07-06T21:00:00Z'), 'Australia/Sydney');
+    expect(d.toISOString()).toBe('2026-07-07T00:00:00.000Z');
+  });
+
+  it('flips exactly at local midnight, either side of a DST change', () => {
+    // US spring-forward 2026-03-08: PST (UTC-8) until 02:00, PDT (UTC-7) after.
+    expect(ymd(localDay(new Date('2026-03-08T07:59:00Z'), PT))).toBe('2026-03-07'); // 23:59 PST
+    expect(ymd(localDay(new Date('2026-03-08T08:00:00Z'), PT))).toBe('2026-03-08'); // 00:00 PST
+    expect(ymd(localDay(new Date('2026-03-09T06:59:00Z'), PT))).toBe('2026-03-08'); // 23:59 PDT
+    expect(ymd(localDay(new Date('2026-03-09T07:00:00Z'), PT))).toBe('2026-03-09'); // 00:00 PDT
+    // Fall-back 2026-11-01: the 25-hour day.
+    expect(ymd(localDay(new Date('2026-11-01T06:59:00Z'), PT))).toBe('2026-10-31'); // 23:59 PDT
+    expect(ymd(localDay(new Date('2026-11-01T07:00:00Z'), PT))).toBe('2026-11-01'); // 00:00 PDT
+    expect(ymd(localDay(new Date('2026-11-02T07:59:00Z'), PT))).toBe('2026-11-01'); // 23:59 PST
+    expect(ymd(localDay(new Date('2026-11-02T08:00:00Z'), PT))).toBe('2026-11-02'); // 00:00 PST
+  });
+});
+
+describe('coveredLocalDays', () => {
+  const PT = 'America/Los_Angeles';
+  const ymds = (days: number[]) => days.map((d) => new Date(d).toISOString().slice(0, 10));
+
+  it('a timed event covers the local day it starts on, not its UTC day', () => {
+    // Mon 2026-07-06 18:30–19:30 PDT = Tue 01:30–02:30Z.
+    const evening = { dtstart: new Date('2026-07-07T01:30:00Z'), dtend: new Date('2026-07-07T02:30:00Z'), allDay: false };
+    expect(ymds(coveredLocalDays(evening, PT))).toEqual(['2026-07-06']);
+    expect(ymds(coveredLocalDays(evening, 'UTC'))).toEqual(['2026-07-07']);
+  });
+
+  it('a timed span covers every local day through the one its last instant is in', () => {
+    // Mon 20:00 PDT → Wed 06:00 PDT.
+    const span = { dtstart: new Date('2026-07-07T03:00:00Z'), dtend: new Date('2026-07-08T13:00:00Z'), allDay: false };
+    expect(ymds(coveredLocalDays(span, PT))).toEqual(['2026-07-06', '2026-07-07', '2026-07-08']);
+  });
+
+  it('an end exactly at local midnight does not spill into the next day', () => {
+    // Mon 20:00 PDT → Tue 00:00 PDT.
+    const span = { dtstart: new Date('2026-07-07T03:00:00Z'), dtend: new Date('2026-07-07T07:00:00Z'), allDay: false };
+    expect(ymds(coveredLocalDays(span, PT))).toEqual(['2026-07-06']);
+  });
+
+  it('a missing or non-positive end covers only the start day', () => {
+    const at = new Date('2026-07-07T02:00:00Z');
+    expect(ymds(coveredLocalDays({ dtstart: at, dtend: null, allDay: false }, PT))).toEqual(['2026-07-06']);
+    expect(ymds(coveredLocalDays({ dtstart: at, dtend: at, allDay: false }, PT))).toEqual(['2026-07-06']);
+  });
+
+  it('the 23-hour spring-forward day is one day, not two', () => {
+    // 2026-03-08 00:00 PST → 2026-03-09 00:00 PDT.
+    const dstDay = { dtstart: new Date('2026-03-08T08:00:00Z'), dtend: new Date('2026-03-09T07:00:00Z'), allDay: false };
+    expect(ymds(coveredLocalDays(dstDay, PT))).toEqual(['2026-03-08']);
+  });
+
+  it('the 25-hour fall-back day is one day, not two', () => {
+    // 2026-11-01 00:00 PDT → 2026-11-02 00:00 PST.
+    const dstDay = { dtstart: new Date('2026-11-01T07:00:00Z'), dtend: new Date('2026-11-02T08:00:00Z'), allDay: false };
+    expect(ymds(coveredLocalDays(dstDay, PT))).toEqual(['2026-11-01']);
+  });
+
+  it('all-day spans are dates already: unchanged by the zone', () => {
+    const allDay = { dtstart: new Date('2026-07-06T00:00:00Z'), dtend: new Date('2026-07-08T00:00:00Z'), allDay: true };
+    for (const tz of ['UTC', PT, 'Australia/Sydney']) {
+      expect(ymds(coveredLocalDays(allDay, tz))).toEqual(['2026-07-06', '2026-07-07']);
+    }
+  });
+});
+
+describe('synthesizeException — timed events rule the local day', () => {
+  const keys = (events: { synthKey: string }[]) => events.map((e) => e.synthKey.slice(-10));
+
+  it('Pacific: a Monday-evening cancel cancels Monday, not Tuesday', () => {
+    // "No School Night" Mon 2026-07-06 18:30–19:30 PDT = Tue 01:30–02:30Z.
+    const evening = occ({
+      summary: 'No School Night',
+      dtstart: new Date('2026-07-07T01:30:00Z'),
+      dtend: new Date('2026-07-07T02:30:00Z'),
+    });
+    const { events, pending } = synthesizeException(schoolLink, [evening], [noSchool], week, 'America/Los_Angeles');
+    expect(pending).toEqual([]);
+    expect(keys(events)).toEqual(['2026-07-07', '2026-07-08', '2026-07-09', '2026-07-10']);
+    // Read in UTC the same instant is Tuesday — the zone is what moves the ruling.
+    const inUtc = synthesizeException(schoolLink, [evening], [noSchool], week, 'UTC');
+    expect(keys(inUtc.events)).toEqual(['2026-07-06', '2026-07-08', '2026-07-09', '2026-07-10']);
+  });
+
+  it('Sydney: a Tuesday-morning cancel cancels Tuesday, not Monday', () => {
+    // Tue 2026-07-07 07:00–09:00 AEST = Mon 21:00–23:00Z.
+    const morning = occ({
+      summary: 'No School - staff training',
+      dtstart: new Date('2026-07-06T21:00:00Z'),
+      dtend: new Date('2026-07-06T23:00:00Z'),
+    });
+    const { events } = synthesizeException(schoolLink, [morning], [noSchool], week, 'Australia/Sydney');
+    expect(keys(events)).toEqual(['2026-07-06', '2026-07-08', '2026-07-09', '2026-07-10']);
+  });
+
+  it('a modify_day from a timed Pacific event patches the right baseline day', () => {
+    // Tue 2026-07-07 18:00–18:30 PDT = Wed 01:00–01:30Z, which must still be Tuesday.
+    const evening = occ({
+      summary: 'Early Dismissal reminder',
+      dtstart: new Date('2026-07-08T01:00:00Z'),
+      dtend: new Date('2026-07-08T01:30:00Z'),
+    });
+    const { events } = synthesizeException(schoolLink, [evening], [earlyRelease], week, 'America/Los_Angeles');
+    const tue = events.find((e) => e.synthKey === 'bl:link-1:2026-07-07');
+    const wed = events.find((e) => e.synthKey === 'bl:link-1:2026-07-08');
+    expect(tue?.matchedRuleId).toBe(earlyRelease.id);
+    expect(tue?.dtend?.toISOString()).toBe('2026-07-07T19:00:00.000Z'); // 12:00 PDT
+    expect(wed?.matchedRuleId).toBeNull();
+  });
+
+  it('a multi-day timed closure cancels each local day it touches', () => {
+    // Mon 20:00 PDT → Wed 06:00 PDT.
+    const closure = occ({
+      summary: 'Closed - water main',
+      dtstart: new Date('2026-07-07T03:00:00Z'),
+      dtend: new Date('2026-07-08T13:00:00Z'),
+    });
+    const { events } = synthesizeException(schoolLink, [closure], [noSchool], week, 'America/Los_Angeles');
+    expect(keys(events)).toEqual(['2026-07-09', '2026-07-10']);
+  });
+
+  it('a DST-transition day is ruled as one day', () => {
+    // All of Sun 2026-03-08 (the 23-hour spring-forward day), as a timed closure.
+    const everyDay = { ...schoolLink, weekdayMask: 0b1111111 };
+    const marWindow = { start: new Date('2026-03-07T00:00:00Z'), end: new Date('2026-03-10T00:00:00Z') };
+    const closed = occ({
+      summary: 'Closed',
+      dtstart: new Date('2026-03-08T08:00:00Z'),
+      dtend: new Date('2026-03-09T07:00:00Z'),
+    });
+    const { events } = synthesizeException(everyDay, [closed], [noSchool], marWindow, 'America/Los_Angeles');
+    expect(keys(events)).toEqual(['2026-03-07', '2026-03-09']);
+  });
+
+  it('all-day events rule the date they name, in any zone', () => {
+    const tuesday = occ({
+      summary: 'No School',
+      allDay: true,
+      dtstart: new Date('2026-07-07T00:00:00Z'),
+      dtend: new Date('2026-07-08T00:00:00Z'),
+    });
+    for (const tz of ['UTC', 'America/Los_Angeles', 'Australia/Sydney']) {
+      const { events } = synthesizeException(schoolLink, [tuesday], [noSchool], week, tz);
+      expect(keys(events)).toEqual(['2026-07-06', '2026-07-08', '2026-07-09', '2026-07-10']);
+    }
   });
 });
 

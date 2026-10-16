@@ -28,8 +28,8 @@ import {
 } from '@igt/domain';
 import {
   estimateTravelMinutes,
+  eventLocalDay,
   ruleMatches,
-  startOfUtcDay,
   transitionWindow,
   wallTimeToUtc,
 } from '@igt/classification';
@@ -410,13 +410,15 @@ function resolvedPayload(
   let dtstart = source.dtstart;
   let dtend = source.dtend;
   let allDay = source.allDay;
+  // The wall-clock time lands on the event's LOCAL date — a timed event's UTC
+  // date is the next day for an evening start west of UTC.
   if (d.startTime) {
-    dtstart = wallTimeToUtc(startOfUtcDay(source.dtstart), d.startTime, 8, tz);
+    dtstart = wallTimeToUtc(eventLocalDay({ dtstart, allDay }, tz), d.startTime, 8, tz);
     allDay = false;
     dtend = dtend && dtend.getTime() > dtstart.getTime() ? dtend : null;
   }
   if (d.endTime) {
-    dtend = wallTimeToUtc(startOfUtcDay(dtstart), d.endTime, 15, tz);
+    dtend = wallTimeToUtc(eventLocalDay({ dtstart, allDay }, tz), d.endTime, 15, tz);
     allDay = false;
   }
   return {
