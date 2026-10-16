@@ -415,6 +415,9 @@ export async function reconcileMemberConflicts(
         provenance: 'synthesized',
         synthKey,
         linkId: loser.linkId,
+        // A segment lives and dies with its loser: an `ev:` loser's carries the
+        // source event (so the segment goes when the source does), a `bl:`
+        // loser's is null (the baseline day outlives any one feed event).
         sourceEventId: loser.sourceEventId,
         contentHash: hashCalendarEvent(payload),
         ...payload,
@@ -462,7 +465,14 @@ export async function reconcileMemberConflicts(
       )[0]!.id;
     } else {
       id = prior.id;
-      if (prior.contentHash !== row.contentHash) {
+      // `sourceEventId` is compared too: it isn't in the hash, but a segment
+      // of a `bl:` day inherits that day's (now null) one, and a segment cut
+      // before baseline days stopped carrying their exception event's id would
+      // otherwise keep an ON DELETE CASCADE link to it forever.
+      if (
+        prior.contentHash !== row.contentHash ||
+        prior.sourceEventId !== row.sourceEventId
+      ) {
         await db
           .update(calendarEvents)
           .set({

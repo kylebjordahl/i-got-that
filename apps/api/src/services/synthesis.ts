@@ -132,6 +132,14 @@ function toRuleLike(r: typeof linkRules.$inferSelect): OverrideRuleLike {
  * Upsert one desired event by (member, synthKey), skipping no-op rewrites via
  * contentHash. A changed payload leaves `tasksBuiltHash` stale so task-gen
  * reprocesses the event.
+ *
+ * The provenance links (`sourceEventId`, `matchedRuleId`) are not part of the
+ * hash, but they are compared too: a row whose payload is unchanged still gets
+ * them rewritten when they differ. That is what heals a `bl:` baseline day
+ * written before it stopped carrying its exception event's id — that id is an
+ * ON DELETE CASCADE FK, so every baseline day still holding one would be
+ * deleted (and its tasks orphaned) when the exception left the feed. Rewriting
+ * them doesn't touch `contentHash`, so task-gen and the mirror see no change.
  */
 async function upsertIntent(
   db: Db,
@@ -142,7 +150,14 @@ async function upsertIntent(
 ): Promise<boolean> {
   const contentHash = hashCalendarEvent(intent);
   const prior = existingByKey.get(intent.synthKey);
-  if (prior && prior.contentHash === contentHash) return false;
+  if (
+    prior &&
+    prior.contentHash === contentHash &&
+    prior.sourceEventId === intent.sourceEventId &&
+    prior.matchedRuleId === intent.matchedRuleId
+  ) {
+    return false;
+  }
 
   const payload = {
     dtstart: intent.dtstart,
@@ -476,8 +491,9 @@ export async function synthesizeFeed(
     // dinner someone resolved by hand last week, or a `keep` rule for the swim
     // practice someone routed here one-off — the human's event stands and the
     // engine's `ev:` copy is skipped, so the day doesn't show it twice. Only
-    // `ev:` intents are skipped: a `bl:` baseline day carries the matched
-    // occurrence's id too, and the day itself must still be synthesized.
+    // `ev:` intents are skipped: a `bl:` baseline day isn't a copy of any
+    // occurrence (it carries no `sourceEventId`), and the day itself must still
+    // be synthesized.
     const humanAccepted = new Set(
       existing
         .filter((e) => e.synthKey.startsWith('pd:') && e.sourceEventId)
