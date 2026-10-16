@@ -100,6 +100,11 @@ export const families = sqliteTable('families', {
   threadingThresholdMinutes: integer('threading_threshold_minutes')
     .notNull()
     .default(30),
+  // Cron-tick lease (see `services/family-lease.ts`): while this is in the
+  // future a scheduled tick for the family is already running, so the next
+  // one skips it. Expires on its own if a tick dies without releasing it.
+  // Null ⇒ no tick holds the family. Request paths do NOT take it.
+  pipelineLeaseUntil: integer('pipeline_lease_until', { mode: 'timestamp_ms' }),
   createdAt: createdAt(),
 });
 
@@ -751,6 +756,15 @@ export const tasks = sqliteTable(
     // tasks ("what's outstanding tomorrow"), which the status index above can't
     // serve — it has nothing on `dtstart`.
     familyStartIdx: index('tasks_family_start_idx').on(t.familyId, t.dtstart),
+    // One generated task per (event, type). Task-gen is snapshot-read → diff →
+    // write with no lock, so two overlapping runs (cron tick + a route handler
+    // that resynthesizes inline) both decide to insert the same drop-off; this
+    // makes the loser's insert a no-op (`onConflictDoNothing`) instead of a
+    // permanent extra unclaimed task. Partial: manual / converted tasks and
+    // free-standing tasks (null event) are not constrained.
+    generatedEventTypeUq: uniqueIndex('tasks_generated_event_type_uq')
+      .on(t.calendarEventId, t.type)
+      .where(sql`${t.createdVia} = 'generated' AND ${t.calendarEventId} IS NOT NULL`),
   }),
 );
 

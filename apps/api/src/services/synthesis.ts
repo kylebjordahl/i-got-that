@@ -229,14 +229,24 @@ async function upsertIntent(
   if (prior) {
     await db.update(calendarEvents).set(payload).where(eq(calendarEvents.id, prior.id));
   } else {
-    await db.insert(calendarEvents).values({
-      familyId: feed.familyId,
-      familyMemberId: link.familyMemberId,
-      provenance: 'synthesized',
-      synthKey: intent.synthKey,
-      linkId: link.id,
-      ...payload,
-    });
+    // An upsert, not a bare insert: a concurrent synthesis (cron tick vs. a
+    // route handler's inline resynthesize) may have created this
+    // (member, synthKey) since our snapshot read, and the loser of that race
+    // must converge on the same row rather than throw on the unique index.
+    await db
+      .insert(calendarEvents)
+      .values({
+        familyId: feed.familyId,
+        familyMemberId: link.familyMemberId,
+        provenance: 'synthesized',
+        synthKey: intent.synthKey,
+        linkId: link.id,
+        ...payload,
+      })
+      .onConflictDoUpdate({
+        target: [calendarEvents.familyMemberId, calendarEvents.synthKey],
+        set: payload,
+      });
   }
   return true;
 }
@@ -280,16 +290,21 @@ async function reconcilePending(
   for (const intent of engineResult.pending) {
     const prior = existingBySource.get(intent.sourceEventId);
     if (!prior) {
-      await db.insert(pendingDecisions).values({
-        familyId: feed.familyId,
-        feedId: feed.id,
-        kind,
-        linkId: link.id,
-        familyMemberId: link.familyMemberId,
-        sourceEventId: intent.sourceEventId,
-        status: 'pending',
-        sourceContentHash: intent.contentHash,
-      });
+      // No-op if a concurrent synthesis raised the same (link, sourceEvent)
+      // decision since our read: either way exactly one pending row exists.
+      await db
+        .insert(pendingDecisions)
+        .values({
+          familyId: feed.familyId,
+          feedId: feed.id,
+          kind,
+          linkId: link.id,
+          familyMemberId: link.familyMemberId,
+          sourceEventId: intent.sourceEventId,
+          status: 'pending',
+          sourceContentHash: intent.contentHash,
+        })
+        .onConflictDoNothing();
       open++;
       continue;
     }
