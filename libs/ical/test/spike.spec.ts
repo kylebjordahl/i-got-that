@@ -98,6 +98,106 @@ END:VCALENDAR`;
     expect(unmodified).toHaveLength(3); // 5 total, 2 overridden
   });
 
+  describe('recurrenceId is the instance’s ORIGINAL start (RFC 5545 RECURRENCE-ID)', () => {
+    // A DAILY series at 17:00Z whose 2026-07-07 instance was moved to 19:00Z.
+    // The override's RECURRENCE-ID names the slot it replaces (17:00Z); its
+    // DTSTART is where it actually happens now.
+    const MASTER = `BEGIN:VEVENT
+UID:practice-1
+DTSTART:20260706T170000Z
+DTEND:20260706T180000Z
+RRULE:FREQ=DAILY;COUNT=4
+SUMMARY:Practice
+END:VEVENT`;
+    const OVERRIDE = `BEGIN:VEVENT
+UID:practice-1
+RECURRENCE-ID:20260707T170000Z
+DTSTART:20260707T190000Z
+DTEND:20260707T200000Z
+SUMMARY:Practice (moved)
+END:VEVENT`;
+    const wrap = (...events: string[]) =>
+      ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//test//test//EN', ...events, 'END:VCALENDAR'].join(
+        '\n',
+      );
+    const window = {
+      windowStart: new Date('2026-07-01T00:00:00Z'),
+      windowEnd: new Date('2026-08-01T00:00:00Z'),
+    };
+
+    it('keys a moved override by its original RECURRENCE-ID when the master is in the document', () => {
+      const occ = parseAndExpand(wrap(MASTER, OVERRIDE), window);
+      expect(occ).toHaveLength(4);
+      const moved = occ.find((o) => o.summary === 'Practice (moved)')!;
+      expect(moved.recurrenceId).toBe('2026-07-07T17:00:00.000Z');
+      // ...while start/end are still where the instance actually happens.
+      expect(moved.start.toISOString()).toBe('2026-07-07T19:00:00.000Z');
+      expect(moved.end?.toISOString()).toBe('2026-07-07T20:00:00.000Z');
+    });
+
+    it('keys the same override identically with and without its master', () => {
+      const withMaster = parseAndExpand(wrap(MASTER, OVERRIDE), window).find(
+        (o) => o.summary === 'Practice (moved)',
+      )!;
+      const orphan = parseAndExpand(wrap(OVERRIDE), window);
+      expect(orphan).toHaveLength(1);
+      expect(orphan[0]!.recurrenceId).toBe('2026-07-07T17:00:00.000Z');
+      expect(orphan[0]!.recurrenceId).toBe(withMaster.recurrenceId);
+      expect(orphan[0]!.start.toISOString()).toBe(withMaster.start.toISOString());
+    });
+
+    it('keeps an un-overridden instance keyed by its own start', () => {
+      const occ = parseAndExpand(wrap(MASTER, OVERRIDE), window);
+      const plain = occ.filter((o) => o.summary === 'Practice');
+      expect(plain).toHaveLength(3);
+      for (const o of plain) expect(o.recurrenceId).toBe(o.start.toISOString());
+      expect(plain[0]!.recurrenceId).toBe('2026-07-06T17:00:00.000Z');
+    });
+
+    it('does not re-key an instance when its override is added or moved again', () => {
+      const keyFor = (override: string) =>
+        parseAndExpand(wrap(MASTER, override), window)
+          .map((o) => o.recurrenceId)
+          .sort();
+      const movedLater = OVERRIDE.replace('20260707T190000Z', '20260707T210000Z').replace(
+        '20260707T200000Z',
+        '20260707T220000Z',
+      );
+      // Same four keys whether the instance is on its original time, moved to
+      // 19:00Z, or moved again to 21:00Z.
+      expect(keyFor(OVERRIDE)).toEqual(keyFor(movedLater));
+      expect(parseAndExpand(wrap(MASTER), window).map((o) => o.recurrenceId).sort()).toEqual(
+        keyFor(OVERRIDE),
+      );
+    });
+
+    it('keys a moved override by its original floating RECURRENCE-ID under a defaultTimezone hint', () => {
+      const floatingMaster = `BEGIN:VEVENT
+UID:floating-practice
+DTSTART:20260706T100000
+DTEND:20260706T110000
+RRULE:FREQ=DAILY;COUNT=3
+SUMMARY:Practice
+END:VEVENT`;
+      const floatingOverride = `BEGIN:VEVENT
+UID:floating-practice
+RECURRENCE-ID:20260707T100000
+DTSTART:20260707T120000
+DTEND:20260707T130000
+SUMMARY:Practice (moved)
+END:VEVENT`;
+      const opts = { ...window, defaultTimezone: 'America/Los_Angeles' };
+      const withMaster = parseAndExpand(wrap(floatingMaster, floatingOverride), opts).find(
+        (o) => o.summary === 'Practice (moved)',
+      )!;
+      const orphan = parseAndExpand(wrap(floatingOverride), opts)[0]!;
+      // 10:00 PDT == 17:00Z (original slot); 12:00 PDT == 19:00Z (where it is now).
+      expect(withMaster.recurrenceId).toBe('2026-07-07T17:00:00.000Z');
+      expect(withMaster.start.toISOString()).toBe('2026-07-07T19:00:00.000Z');
+      expect(orphan.recurrenceId).toBe(withMaster.recurrenceId);
+    });
+  });
+
   it('anchors all-day (VALUE=DATE) events to UTC midnight, tz-independently', () => {
     const ics = `BEGIN:VCALENDAR
 VERSION:2.0
@@ -732,5 +832,85 @@ ${responses}
     expect(timed.recurrenceId).toBeNull();
     // A recurrence instance carries a recurrenceId so (uid, recurrenceId) stays unique.
     expect(occ.find((o) => o.uid === 'series@g')!.recurrenceId).toBe('2026-08-05T09:00:00.000Z');
+  });
+
+  describe('Google recurring instances key on originalStartTime, not the current start', () => {
+    const googleInstances = async (items: unknown[]) => {
+      const fetchImpl = (async () => ({
+        ok: true,
+        status: 200,
+        json: async () => ({ items }),
+      })) as unknown as typeof fetch;
+      const { occurrences } = await fetchGoogleOccurrences(
+        'access-token',
+        'primary',
+        {
+          windowStart: new Date('2026-08-01T00:00:00Z'),
+          windowEnd: new Date('2026-09-01T00:00:00Z'),
+        },
+        fetchImpl,
+      );
+      return occurrences;
+    };
+    const instance = (start: string, end: string) => ({
+      iCalUID: 'practice@g',
+      recurringEventId: 'practice',
+      status: 'confirmed',
+      summary: 'Practice',
+      start: { dateTime: start },
+      end: { dateTime: end },
+      originalStartTime: { dateTime: '2026-08-05T17:00:00Z' },
+    });
+
+    it('keeps the original key when an instance is rescheduled', async () => {
+      const [before] = await googleInstances([
+        instance('2026-08-05T17:00:00Z', '2026-08-05T18:00:00Z'),
+      ]);
+      const [after] = await googleInstances([
+        instance('2026-08-05T18:00:00Z', '2026-08-05T19:00:00Z'),
+      ]);
+      expect(before!.recurrenceId).toBe('2026-08-05T17:00:00.000Z');
+      // Moved an hour later, same slot -> same identity; start/end follow the move.
+      expect(after!.recurrenceId).toBe(before!.recurrenceId);
+      expect(after!.start.toISOString()).toBe('2026-08-05T18:00:00.000Z');
+      expect(after!.end?.toISOString()).toBe('2026-08-05T19:00:00.000Z');
+    });
+
+    it('keys an all-day instance by its original date', async () => {
+      const [occ] = await googleInstances([
+        {
+          iCalUID: 'closure@g',
+          recurringEventId: 'closure',
+          status: 'confirmed',
+          start: { date: '2026-08-12' },
+          end: { date: '2026-08-13' },
+          originalStartTime: { date: '2026-08-11' },
+        },
+      ]);
+      expect(occ!.recurrenceId).toBe('2026-08-11T00:00:00.000Z');
+      expect(occ!.start.toISOString()).toBe('2026-08-12T00:00:00.000Z');
+    });
+
+    it('falls back to the current start if originalStartTime is missing, and leaves non-recurring events null', async () => {
+      const occ = await googleInstances([
+        {
+          iCalUID: 'odd@g',
+          recurringEventId: 'odd',
+          status: 'confirmed',
+          start: { dateTime: '2026-08-06T09:00:00Z' },
+          end: { dateTime: '2026-08-06T10:00:00Z' },
+        },
+        {
+          iCalUID: 'one-off@g',
+          status: 'confirmed',
+          start: { dateTime: '2026-08-07T09:00:00Z' },
+          end: { dateTime: '2026-08-07T10:00:00Z' },
+          // A stray originalStartTime on a non-instance must not invent a key.
+          originalStartTime: { dateTime: '2026-08-07T08:00:00Z' },
+        },
+      ]);
+      expect(occ.find((o) => o.uid === 'odd@g')!.recurrenceId).toBe('2026-08-06T09:00:00.000Z');
+      expect(occ.find((o) => o.uid === 'one-off@g')!.recurrenceId).toBeNull();
+    });
   });
 });

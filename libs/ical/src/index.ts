@@ -45,7 +45,15 @@ function resolveIcalLocation(
 export interface Occurrence {
   /** Stable iCalendar UID of the source VEVENT. */
   uid: string;
-  /** ISO string of the occurrence start for recurring events, else null. */
+  /**
+   * ISO string of the instance's ORIGINAL start (RFC 5545 RECURRENCE-ID) for
+   * recurring events, else null. It names which slot of the series this is, so
+   * it must NOT follow the instance when it's rescheduled: `start` moves with
+   * the reschedule, `recurrenceId` doesn't. Everything downstream hangs off
+   * `(feed, uid, recurrenceId)` — the `ev:` calendar event, its tasks, claims
+   * and mirror — so a key that tracked the moved start would turn "move one
+   * practice" into delete + add.
+   */
   recurrenceId: string | null;
   start: Date;
   end: Date | null;
@@ -299,7 +307,13 @@ export function parseAndExpand(
 
       out.push({
         uid: event.uid,
-        recurrenceId: start.toISOString(),
+        // Key on the series slot (`next`, surfaced as `details.recurrenceId`),
+        // not `start`: when a RECURRENCE-ID override moved this instance,
+        // `start` is the new time but the slot is still the original — and it's
+        // the same key the orphan-override path below derives from the
+        // override's own RECURRENCE-ID, so a document with or without its
+        // master agrees.
+        recurrenceId: icalTimeToDate(details.recurrenceId, opts.defaultTimezone).toISOString(),
         start,
         end,
         summary: details.item.summary ?? null,
@@ -314,7 +328,8 @@ export function parseAndExpand(
 
   // Overrides whose master didn't appear in this document (e.g. a CalDAV
   // time-range REPORT that returned the exception object but not the master)
-  // still get a stable key from their own RECURRENCE-ID.
+  // still get a stable key from their own RECURRENCE-ID — the same original
+  // start the master path above keys the overridden instance by.
   for (const exVeList of overridesByUid.values()) {
     for (const ve of exVeList) {
       const event = new ICAL.Event(ve);
@@ -726,8 +741,14 @@ function googleEventToOccurrence(ev: GoogleApiEvent): Occurrence | null {
   if (!start) return null;
   const end = googleTimeToDate(ev.end);
   // Recurrence instances (singleEvents=true) share iCalUID; distinguish them by
-  // their original start so (feedId, icalUid, recurrenceId) stays unique.
-  const recurrenceId = ev.recurringEventId ? start.date.toISOString() : null;
+  // their ORIGINAL start (`originalStartTime`, Google's RECURRENCE-ID) so
+  // (feedId, icalUid, recurrenceId) stays unique AND stable when an instance is
+  // rescheduled — `start` is the current time and moves with it. Google sets
+  // `originalStartTime` on every instance; fall back to `start` only if a
+  // response omits it.
+  const recurrenceId = ev.recurringEventId
+    ? (googleTimeToDate(ev.originalStartTime) ?? start).date.toISOString()
+    : null;
   return {
     uid: ev.iCalUID ?? ev.id ?? crypto.randomUUID(),
     recurrenceId,
