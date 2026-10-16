@@ -500,6 +500,165 @@ describe('ingest: an ICS feed is read in its own timezone, parsed once', () => {
   });
 });
 
+describe('ingest: a 304 only holds while the stored expansion still covers the synthesis window', () => {
+  // `source_events` holds only what the last FULL parse expanded, and a 304
+  // never parses. A publisher with a stable ETag answers 304 forever, so unless
+  // ingest stops asking once the horizon gets close, the occurrences of every
+  // RRULE series run out under the (moving) synthesis window.
+  const DAY = 24 * 60 * 60 * 1000;
+  const T0 = new Date('2026-07-01T00:00:00Z');
+  const at = (days: number) => new Date(T0.getTime() + days * DAY);
+  // The default ICS window is 90 days from `windowStart`.
+  const T0_HORIZON = at(90);
+
+  /** A static file: an open-ended weekly series (Mondays) that never changes. */
+  const weeklyIcs = [
+    'BEGIN:VCALENDAR',
+    'VERSION:2.0',
+    'PRODID:-//test//test//EN',
+    'BEGIN:VEVENT',
+    'UID:weekly@example.com',
+    'DTSTART:20260706T090000Z',
+    'DTEND:20260706T100000Z',
+    'RRULE:FREQ=WEEKLY',
+    'SUMMARY:Weekly',
+    'END:VEVENT',
+    'END:VCALENDAR',
+  ].join('\r\n');
+
+  /** Serves the file with a fixed ETag, and answers 304 whenever it's sent back. */
+  function staticPublisher(etag = '"v1"') {
+    const requests: Record<string, string>[] = [];
+    const fetchImpl = (async (_url: string, init?: { headers?: Record<string, string> }) => {
+      const headers = { ...(init?.headers ?? {}) };
+      requests.push(headers);
+      if (headers['If-None-Match'] === etag) {
+        return { ok: false, status: 304, headers: { get: () => null }, text: async () => '' };
+      }
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: (h: string) => (h.toLowerCase() === 'etag' ? etag : null) },
+        text: async () => weeklyIcs,
+      };
+    }) as unknown as typeof fetch;
+    return { requests, fetchImpl };
+  }
+
+  async function setup(email: string, extra: Partial<typeof feeds.$inferInsert> = {}) {
+    const user = await login(email);
+    const familyId = await createFamily(user.token, 'Ingest Horizon');
+    const db = getDb(env.DB);
+    const feed = (
+      await db
+        .insert(feeds)
+        .values({ familyId, kind: 'ics', url: 'https://example.invalid/static.ics', mode: 'standard', ...extra })
+        .returning()
+    )[0]!;
+    const reload = async () =>
+      (await db.select().from(feeds).where(eq(feeds.id, feed.id)).limit(1))[0]!;
+    const starts = async () =>
+      (await db.select().from(sourceEvents).where(eq(sourceEvents.feedId, feed.id)))
+        .map((r) => r.dtstart.getTime())
+        .sort((a, b) => a - b);
+    return { db, feed, reload, starts };
+  }
+
+  it('stops sending If-None-Match once fewer than 45 days of expansion remain, and expands further out', async () => {
+    const { db, feed, reload, starts } = await setup('ingest-horizon-reexpand@example.com');
+    const { requests, fetchImpl } = staticPublisher();
+
+    // First sync: unconditional (no ETag yet), and it records how far it expanded.
+    await ingestFeed(db, feed, { fetchImpl, windowStart: T0 });
+    const first = await reload();
+    expect(first.etag).toBe('"v1"');
+    expect(first.expandedThrough?.getTime()).toBe(T0_HORIZON.getTime());
+    expect(requests[0]).not.toHaveProperty('If-None-Match');
+    const firstStarts = await starts();
+    // Mondays from 2026-07-06, up to (not including) the horizon.
+    expect(firstStarts[0]).toBe(new Date('2026-07-06T09:00:00Z').getTime());
+    expect(firstStarts.at(-1)).toBe(new Date('2026-09-28T09:00:00Z').getTime());
+
+    // Day 45: exactly 45 days of expansion left — still trusted, still a 304.
+    await ingestFeed(db, first, { fetchImpl, windowStart: at(45) });
+    expect(requests[1]!['If-None-Match']).toBe('"v1"');
+    expect((await reload()).expandedThrough?.getTime()).toBe(T0_HORIZON.getTime());
+    expect(await starts()).toEqual(firstStarts);
+
+    // Day 46: 44 days left, short of the 30-day synthesis window + 15 days of
+    // margin. The ETag is not sent, so the publisher can't answer 304 — the
+    // feed is re-parsed and the series extends. It is not a *user* refresh, so
+    // nothing asks intermediaries to revalidate.
+    await ingestFeed(db, await reload(), { fetchImpl, windowStart: at(46) });
+    expect(requests[2]).toEqual({});
+    const second = await reload();
+    expect(second.expandedThrough?.getTime()).toBe(at(46 + 90).getTime());
+    const secondStarts = await starts();
+    expect(secondStarts.length).toBeGreaterThan(firstStarts.length);
+    expect(secondStarts.at(-1)).toBe(new Date('2026-11-09T09:00:00Z').getTime());
+    // Nothing was lost on the way, and nothing is duplicated.
+    expect(secondStarts.slice(0, firstStarts.length)).toEqual(firstStarts);
+    expect(new Set(secondStarts).size).toBe(secondStarts.length);
+
+    // With a fresh horizon the ETag is trusted again.
+    await ingestFeed(db, second, { fetchImpl, windowStart: at(47) });
+    expect(requests[3]!['If-None-Match']).toBe('"v1"');
+    expect((await reload()).expandedThrough?.getTime()).toBe(at(46 + 90).getTime());
+  });
+
+  it('keeps skipping the parse on a 304 while headroom remains, and leaves expandedThrough alone', async () => {
+    const { db, feed, reload, starts } = await setup('ingest-horizon-304@example.com');
+    const { requests, fetchImpl } = staticPublisher();
+    await ingestFeed(db, feed, { fetchImpl, windowStart: T0 });
+    const synced = await reload();
+    const before = await starts();
+
+    const parse = vi.spyOn(ICAL, 'parse');
+    try {
+      const res = await ingestFeed(db, synced, { fetchImpl, windowStart: at(20) });
+      expect(res.fetched).toBe(false);
+      expect(parse).not.toHaveBeenCalled();
+    } finally {
+      parse.mockRestore();
+    }
+    expect(requests[1]!['If-None-Match']).toBe('"v1"');
+    const after = await reload();
+    expect(after.expandedThrough?.getTime()).toBe(T0_HORIZON.getTime());
+    expect(after.status).toBe('active');
+    expect(await starts()).toEqual(before);
+  });
+
+  it('re-expands a legacy feed (ETag stored, expandedThrough null) on its next poll', async () => {
+    // Rows from before the column existed: they have an ETag and no recorded
+    // horizon, so there is no telling how far their `source_events` reach.
+    const { db, feed, reload, starts } = await setup('ingest-horizon-legacy@example.com', {
+      etag: '"v1"',
+    });
+    expect(feed.expandedThrough).toBeNull();
+    const { requests, fetchImpl } = staticPublisher();
+
+    const res = await ingestFeed(db, feed, { fetchImpl, windowStart: T0 });
+    expect(res.fetched).toBe(true);
+    expect(requests[0]).not.toHaveProperty('If-None-Match');
+    const synced = await reload();
+    expect(synced.expandedThrough?.getTime()).toBe(T0_HORIZON.getTime());
+    expect((await starts()).length).toBeGreaterThan(0);
+
+    // And from then on it behaves like any other feed.
+    const again = await ingestFeed(db, synced, { fetchImpl, windowStart: at(1) });
+    expect(again.fetched).toBe(false);
+    expect(requests[1]!['If-None-Match']).toBe('"v1"');
+  });
+
+  it('records the horizon on a forced refresh too (which is unconditional anyway)', async () => {
+    const { db, feed, reload } = await setup('ingest-horizon-force@example.com', { etag: '"v1"' });
+    const { requests, fetchImpl } = staticPublisher();
+    await ingestFeed(db, feed, { fetchImpl, windowStart: T0, force: true });
+    expect(requests[0]).toEqual({ 'cache-control': 'no-cache' });
+    expect((await reload()).expandedThrough?.getTime()).toBe(T0_HORIZON.getTime());
+  });
+});
+
 describe('ingest: a rescheduled recurring instance keeps its identity', () => {
   // Fixed window so the assertions don't depend on today's date — including the
   // claim true-up, which only works over the active horizon around "now".

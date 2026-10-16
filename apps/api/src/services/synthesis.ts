@@ -49,13 +49,16 @@ export interface SynthesisWindowOptions {
   windowEnd?: Date;
 }
 
+/** How far ahead synthesis (and read-back) look: 30 days from the start of the UTC day. */
+export const SYNTHESIS_WINDOW_MS = 30 * DAY_MS;
+
 /** The shared 30-day forward window synthesis (and read-back) operate over. */
 export function synthesisWindow(opts: SynthesisWindowOptions = {}): {
   start: Date;
   end: Date;
 } {
   const start = startOfUtcDay(opts.windowStart ?? new Date());
-  const end = opts.windowEnd ?? new Date(start.getTime() + 30 * DAY_MS);
+  const end = opts.windowEnd ?? new Date(start.getTime() + SYNTHESIS_WINDOW_MS);
   return { start, end };
 }
 

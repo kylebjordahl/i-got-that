@@ -243,6 +243,16 @@ export const feeds = sqliteTable(
     timezone: text('timezone'),
     refreshMinutes: integer('refresh_minutes').notNull().default(360),
     etag: text('etag'),
+    // How far ahead the last *full parse* of an ICS feed expanded its
+    // recurrence rules (that parse's `windowEnd`). `source_events` only holds
+    // occurrences inside the window of the last full parse, and a 304 never
+    // parses — so with a stable ETag this stays put while the synthesis window
+    // keeps moving forward. Ingest reads it to stop sending `If-None-Match`
+    // once the stored expansion no longer comfortably covers the window. Null ⇒
+    // never expanded (a feed from before the column existed re-expands on its
+    // next poll). ICS feeds only; account/busy feeds fetch the window afresh
+    // every time.
+    expandedThrough: integer('expanded_through', { mode: 'timestamp_ms' }),
     lastSyncedAt: integer('last_synced_at', { mode: 'timestamp_ms' }),
     lastRefreshRequestedAt: integer('last_refresh_requested_at', {
       mode: 'timestamp_ms',
