@@ -10,12 +10,15 @@ import {
   linkRules,
   pendingDecisions,
   sourceEvents,
+  taskOwners,
   taskRules,
   tasks,
 } from '@igt/db';
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { ingestFeed } from '../src/services/ingest.js';
 import { synthesizeFeed } from '../src/services/synthesis.js';
 import { buildMemberTasks } from '../src/services/task-gen.js';
+import { setTaskOwners } from '../src/services/task-owners.js';
 import { authed, bearer, call, patched, setupFamily } from './helpers.js';
 
 const EMPTY_ICS = 'BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//test//test//EN\r\nEND:VCALENDAR';
@@ -402,6 +405,201 @@ describe('synthesis: exception feeds (schedule only)', () => {
     )[0]!;
     expect(reopened.status).toBe('pending');
     expect(reopened.sourceContentHash).toBe('v2');
+  });
+});
+
+/** A one-day all-day VEVENT on a calendar feed (`day` is `YYYYMMDD`, `next` the day after). */
+function allDayVevent(uid: string, summary: string, day: string, next: string): string {
+  return [
+    'BEGIN:VEVENT',
+    `UID:${uid}`,
+    `DTSTART;VALUE=DATE:${day}`,
+    `DTEND;VALUE=DATE:${next}`,
+    `SUMMARY:${summary}`,
+    'END:VEVENT',
+  ].join('\r\n');
+}
+
+function icsOf(...vevents: string[]): string {
+  return ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//test//test//EN', ...vevents, 'END:VCALENDAR'].join(
+    '\r\n',
+  );
+}
+
+describe('synthesis: a baseline day outlives the exception event that shaped it', () => {
+  // `calendar_events.source_event_id` is ON DELETE CASCADE, so a baseline day
+  // that carried its exception event's id was deleted the moment the feed
+  // dropped that event — and, being a fresh row when synthesis re-created it,
+  // took every claim on its drop-off/pickup with it.
+  const bl = (f: { linkId: string }, day: string) => `bl:${f.linkId}:${day}`;
+  const rowByKey = async (f: { db: Db }, synthKey: string) =>
+    (await f.db.select().from(calendarEvents).where(eq(calendarEvents.synthKey, synthKey)))[0];
+
+  it('keeps the same baseline row, restores its hours, and heals an owned pickup when the exception event leaves the feed', async () => {
+    const f = await exceptionFixture('synth-exc-outlives@example.com');
+    const earlyRelease = await insertRule(f.db, f, {
+      matchField: 'summary',
+      matchOp: 'contains',
+      matchValue: 'Early release',
+      outcome: 'modify_day',
+      params: { dayEnd: '12:00' },
+    });
+
+    // The feed is a real ICS the whole way: ingest, synthesize, task-gen, then
+    // re-ingest after the event is gone, exactly as the cron would.
+    let body = icsOf(allDayVevent('early@school', 'Early release', '20260708', '20260709'));
+    const fetchImpl = (async () => ({
+      ok: true,
+      status: 200,
+      headers: { get: () => null },
+      text: async () => body,
+    })) as unknown as typeof fetch;
+
+    await ingestFeed(f.db, f.feed, { fetchImpl, ...WINDOW });
+    await synthesizeFeed(f.db, f.feed, WINDOW);
+    await buildMemberTasks(f.db, f.childId);
+
+    const early = (await rowByKey(f, bl(f, '2026-07-08')))!;
+    expect(early.dtend!.toISOString()).toBe('2026-07-08T12:00:00.000Z');
+    expect(early.matchedRuleId).toBe(earlyRelease.id);
+    // The day is the link's schedule, not a copy of the exception event.
+    expect(early.sourceEventId).toBeNull();
+
+    const pickupOn = async (eventId: string) =>
+      (
+        await f.db
+          .select()
+          .from(tasks)
+          .where(and(eq(tasks.calendarEventId, eventId), eq(tasks.type, 'pickup')))
+      )[0]!;
+    const pickup = await pickupOn(early.id);
+    expect(pickup.dtstart.toISOString()).toBe('2026-07-08T12:00:00.000Z');
+    await setTaskOwners(f.db, pickup, [f.adminMemberId], { manual: true });
+
+    // The school drops the event from its calendar.
+    body = icsOf();
+    await ingestFeed(f.db, f.feed, { fetchImpl, ...WINDOW });
+    expect(await f.db.select().from(sourceEvents).where(eq(sourceEvents.feedId, f.feed.id))).toHaveLength(0);
+
+    // Right after ingest — before any resynthesis — the day is still there.
+    const afterIngest = await rowByKey(f, bl(f, '2026-07-08'));
+    expect(afterIngest?.id).toBe(early.id);
+
+    await synthesizeFeed(f.db, f.feed, WINDOW);
+    await buildMemberTasks(f.db, f.childId);
+
+    // Same row, normal hours back, rule stamp cleared along with the exception.
+    const restored = (await rowByKey(f, bl(f, '2026-07-08')))!;
+    expect(restored.id).toBe(early.id);
+    expect(restored.dtend!.toISOString()).toBe('2026-07-08T14:45:00.000Z');
+    expect(restored.matchedRuleId).toBeNull();
+    expect(restored.sourceEventId).toBeNull();
+
+    // The caretaker's claim followed the day: the same task, still owned, now at
+    // the normal end time — with no unclaimed twin left at either time.
+    const pickups = (
+      await f.db.select().from(tasks).where(eq(tasks.calendarEventId, early.id))
+    ).filter((t) => t.type === 'pickup');
+    expect(pickups).toHaveLength(1);
+    expect(pickups[0]!.id).toBe(pickup.id);
+    expect(pickups[0]!.status).toBe('owned');
+    expect(pickups[0]!.dtstart.toISOString()).toBe('2026-07-08T14:45:00.000Z');
+    const owners = await f.db.select().from(taskOwners).where(eq(taskOwners.taskId, pickup.id));
+    expect(owners.map((o) => o.familyMemberId)).toEqual([f.adminMemberId]);
+
+    const claims = await f.db
+      .select()
+      .from(calendarEvents)
+      .where(
+        and(
+          eq(calendarEvents.familyMemberId, f.adminMemberId),
+          eq(calendarEvents.provenance, 'claimed_task'),
+        ),
+      );
+    expect(claims).toHaveLength(1);
+    expect(claims[0]!.taskId).toBe(pickup.id);
+  });
+
+  it('clears the source event id from a baseline day written before it stopped carrying one', async () => {
+    const f = await exceptionFixture('synth-exc-legacy@example.com');
+    await insertRule(f.db, f, {
+      matchField: 'summary',
+      matchOp: 'contains',
+      matchValue: 'Spirit',
+      outcome: 'ignore',
+    });
+    const spirit = await insertSource(f.db, f.feed, {
+      icalUid: 'spirit',
+      summary: 'Spirit Day',
+      dtstart: new Date('2026-07-09T00:00:00Z'),
+      dtend: new Date('2026-07-10T00:00:00Z'),
+    });
+    await synthesizeFeed(f.db, f.feed, WINDOW);
+    await buildMemberTasks(f.db, f.childId);
+
+    // What every such row looked like before: tied to the exception event.
+    await f.db
+      .update(calendarEvents)
+      .set({ sourceEventId: spirit.id })
+      .where(eq(calendarEvents.synthKey, bl(f, '2026-07-09')));
+    const legacy = (await rowByKey(f, bl(f, '2026-07-09')))!;
+    expect(legacy.sourceEventId).toBe(spirit.id);
+    expect(legacy.tasksBuiltHash).toBe(legacy.contentHash);
+
+    const healed = await synthesizeFeed(f.db, f.feed, WINDOW);
+    expect(healed.eventsUpserted).toBe(1); // only the legacy row; the other days are untouched
+    expect(healed.eventsRemoved).toBe(0);
+    const row = (await rowByKey(f, bl(f, '2026-07-09')))!;
+    expect(row.id).toBe(legacy.id);
+    expect(row.sourceEventId).toBeNull();
+    // Same schedule, so nothing downstream is asked to rebuild or re-mirror it.
+    expect(row.contentHash).toBe(legacy.contentHash);
+    expect(row.tasksBuiltHash).toBe(row.contentHash);
+
+    // Once healed it no longer cascades away with the event. The next synthesis
+    // only drops the now-stale rule stamp (the `ignore` has nothing to match),
+    // and the one after that is a no-op.
+    await f.db.delete(sourceEvents).where(eq(sourceEvents.id, spirit.id));
+    expect((await rowByKey(f, bl(f, '2026-07-09')))?.id).toBe(legacy.id);
+    await synthesizeFeed(f.db, f.feed, WINDOW);
+    expect((await rowByKey(f, bl(f, '2026-07-09')))?.matchedRuleId).toBeNull();
+    const rerun = await synthesizeFeed(f.db, f.feed, WINDOW);
+    expect(rerun.eventsUpserted).toBe(0);
+    expect(rerun.eventsRemoved).toBe(0);
+  });
+
+  it('re-stamps the matched rule when another rule now produces the same day', async () => {
+    const f = await exceptionFixture('synth-exc-restamp@example.com');
+    const first = await insertRule(f.db, f, {
+      matchField: 'summary',
+      matchOp: 'contains',
+      matchValue: 'Spirit',
+      outcome: 'ignore',
+    });
+    await insertSource(f.db, f.feed, {
+      icalUid: 'spirit',
+      summary: 'Spirit Day',
+      dtstart: new Date('2026-07-09T00:00:00Z'),
+      dtend: new Date('2026-07-10T00:00:00Z'),
+    });
+    await synthesizeFeed(f.db, f.feed, WINDOW);
+    const before = (await rowByKey(f, bl(f, '2026-07-09')))!;
+    expect(before.matchedRuleId).toBe(first.id);
+
+    // A higher-priority rule takes over with an identical outcome: the day's
+    // hours (and so its content hash) don't change, but who decided it did.
+    const takeover = await insertRule(f.db, f, {
+      matchField: 'summary',
+      matchOp: 'contains',
+      matchValue: 'Spirit Day',
+      outcome: 'ignore',
+      position: -1,
+    });
+    await synthesizeFeed(f.db, f.feed, WINDOW);
+    const after = (await rowByKey(f, bl(f, '2026-07-09')))!;
+    expect(after.id).toBe(before.id);
+    expect(after.contentHash).toBe(before.contentHash);
+    expect(after.matchedRuleId).toBe(takeover.id);
   });
 });
 
