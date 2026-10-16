@@ -158,6 +158,33 @@ describe('pending decisions', () => {
     expect(event.dtend!.toISOString()).toBe('2026-07-07T16:15:00.000Z');
   });
 
+  it('resolve adjustments land on the source event\'s local date, not its UTC date', async () => {
+    const f = await fixtureWithPending('pd-adjust-tz@example.com');
+    // Tue 2026-07-07 18:00–19:00 PDT is Wed 01:00–02:00Z; "19:00–19:30" means
+    // Tuesday evening, not Wednesday's.
+    await f.db.update(feeds).set({ timezone: 'America/Los_Angeles' }).where(eq(feeds.id, f.feed.id));
+    await f.db
+      .update(sourceEvents)
+      .set({
+        dtstart: new Date('2026-07-08T01:00:00Z'),
+        dtend: new Date('2026-07-08T02:00:00Z'),
+      })
+      .where(eq(sourceEvents.id, f.source.id));
+    const res = await call(
+      `/families/${f.familyId}/pending-decisions/${f.decision.id}/resolve`,
+      authed(f.admin.token, { startTime: '19:00', endTime: '19:30' }),
+    );
+    expect(res.status).toBe(200);
+    const event = (
+      await f.db
+        .select()
+        .from(calendarEvents)
+        .where(eq(calendarEvents.pendingDecisionId, f.decision.id))
+    )[0]!;
+    expect(event.dtstart.toISOString()).toBe('2026-07-08T02:00:00.000Z');
+    expect(event.dtend!.toISOString()).toBe('2026-07-08T02:30:00.000Z');
+  });
+
   it('a reopened decision (source content changed) drops the stale resolution event', async () => {
     const f = await fixtureWithPending('pd-reopen@example.com');
     await call(

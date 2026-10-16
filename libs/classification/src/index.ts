@@ -80,28 +80,55 @@ export function wallTimeToUtc(
   return new Date(guess - tzOffsetMs(tz, guess));
 }
 
+/**
+ * The calendar date `instant` falls on in `tz`, as this engine's representation
+ * of a local date: that date's UTC midnight. Baseline days, all-day events and
+ * `bl:` keys are all dates in that form, so a TIMED instant has to go through
+ * here before it is compared with one — reading its UTC date (`startOfUtcDay`,
+ * `weekdayBit`) lands on the neighbouring day whenever local time and UTC
+ * straddle midnight (a 6:30pm Pacific event is already tomorrow in UTC). Uses
+ * the offset at `instant` itself, so DST days need no special-casing.
+ */
+export function localDay(instant: Date, tz: string): Date {
+  return startOfUtcDay(new Date(instant.getTime() + tzOffsetMs(tz, instant.getTime())));
+}
+
+/**
+ * The calendar date an event starts on, in the same UTC-midnight form as
+ * `localDay`. An all-day event's `dtstart` already IS its date (UTC midnight),
+ * so it is taken as-is; a timed one is read in `tz`.
+ */
+export function eventLocalDay(e: { dtstart: Date; allDay: boolean }, tz: string): Date {
+  return e.allDay ? startOfUtcDay(e.dtstart) : localDay(e.dtstart, tz);
+}
+
 /** `YYYY-MM-DD` for a UTC-day key (used in `bl:` synthKeys). */
 export function utcDayString(dayMs: number): string {
   return new Date(dayMs).toISOString().slice(0, 10);
 }
 
 /**
- * Every UTC-day key (midnight ms) an occurrence covers, so a multi-day span
- * (e.g. a week-long closure) affects the baseline on *all* its days, not just
- * the first. All-day `dtend` is exclusive (the midnight after the last covered
- * day); a timed event covers through the day its end instant falls in. A
- * missing or non-positive-length end covers only the start day.
+ * Every local-day key (UTC-midnight ms of the date, see `localDay`) an
+ * occurrence covers in `tz`, so a multi-day span (e.g. a week-long closure)
+ * affects the baseline on *all* its days, not just the first. All-day `dtend`
+ * is exclusive (the midnight after the last covered day) and needs no zone; a
+ * timed event covers every local day from the one it starts on through the one
+ * its last instant falls on. A missing or non-positive-length end covers only
+ * the start day.
  */
-export function coveredUtcDays(e: {
-  dtstart: Date;
-  dtend: Date | null;
-  allDay: boolean;
-}): number[] {
-  const first = startOfUtcDay(e.dtstart).getTime();
+export function coveredLocalDays(
+  e: {
+    dtstart: Date;
+    dtend: Date | null;
+    allDay: boolean;
+  },
+  tz: string,
+): number[] {
+  const first = eventLocalDay(e, tz).getTime();
   if (!e.dtend || e.dtend.getTime() <= e.dtstart.getTime()) return [first];
   const endExclusive = e.allDay
     ? startOfUtcDay(e.dtend).getTime()
-    : startOfUtcDay(new Date(e.dtend.getTime() - 1)).getTime() + DAY_MS;
+    : localDay(new Date(e.dtend.getTime() - 1), tz).getTime() + DAY_MS;
   const days: number[] = [];
   for (let d = first; d < endExclusive; d += DAY_MS) days.push(d);
   return days.length > 0 ? days : [first];
@@ -505,7 +532,7 @@ export function synthesizeException(
       events.push(occurrenceEvent(link, occ, rule.id));
       continue;
     }
-    for (const day of coveredUtcDays(occ)) {
+    for (const day of coveredLocalDays(occ, tz)) {
       (dayRulings.get(day) ?? dayRulings.set(day, []).get(day)!).push({ rule });
     }
   }
@@ -627,7 +654,7 @@ export function resolveTaskResult(
 
 // --- Stage C: assignment (auto-claim a task's owner) -----------------------
 
-/** Start of the Monday-anchored UTC week containing `d`. */
+/** Start of the Monday-anchored week containing the calendar day `d` (UTC-midnight form). */
 export function startOfUtcWeek(d: Date): Date {
   const day = startOfUtcDay(d);
   return new Date(day.getTime() - weekdayBit(day) * DAY_MS);
@@ -636,9 +663,11 @@ export function startOfUtcWeek(d: Date): Date {
 /**
  * Whether `occ` falls on an "on" week of a cadence anchored to `anchorDate`'s
  * week. cadence 1 ⇒ always; cadence 2 ⇒ every other week starting the anchor's
- * week; etc. Weeks are Monday-anchored in UTC, consistent with `weekdayBit` —
- * so the whole assignment engine reads calendar days the same way synthesis's
- * baseline `weekdayMask` does.
+ * week; etc. Weeks are Monday-anchored, consistent with `weekdayBit`. Both
+ * dates are read as CALENDAR DAYS (their UTC date, the engine's local-date
+ * representation, as synthesis's baseline `weekdayMask` does) — an instant must
+ * go through `localDay` first, as `assignmentRuleMatches` does, or an evening
+ * event near a week boundary lands in the neighbouring week.
  */
 export function weekParityMatches(
   anchorDate: Date | null,
@@ -673,6 +702,14 @@ export interface AssignmentCandidate {
   linkId: string | null;
   type: TaskType;
   dtstart: Date;
+  /** The event is all-day: `dtstart` is already its date (UTC midnight), not an instant. */
+  allDay?: boolean;
+  /**
+   * IANA zone the event's wall clock is in (its feed's, else the member's
+   * calendar's). The weekday mask and cadence week are judged on the local date
+   * `dtstart` falls on in this zone, not its UTC date. Default `'UTC'`.
+   */
+  tz?: string;
 }
 
 /** A rule matches when every present filter matches and the cadence is "on". */
@@ -683,13 +720,16 @@ export function assignmentRuleMatches(
   if (rule.aboutMemberId && rule.aboutMemberId !== cand.aboutMemberId) return false;
   if (rule.linkId && rule.linkId !== cand.linkId) return false;
   if (rule.taskType && rule.taskType !== cand.type) return false;
-  if (
-    rule.weekdayMask &&
-    (rule.weekdayMask & (1 << weekdayBit(cand.dtstart))) === 0
-  ) {
+  // Weekday and cadence week are about the day the family lives the event on, so
+  // read the event's start in its own zone (see `localDay`).
+  const day = eventLocalDay(
+    { dtstart: cand.dtstart, allDay: cand.allDay ?? false },
+    cand.tz ?? 'UTC',
+  );
+  if (rule.weekdayMask && (rule.weekdayMask & (1 << weekdayBit(day))) === 0) {
     return false;
   }
-  return weekParityMatches(rule.anchorDate, cand.dtstart, rule.cadenceWeeks);
+  return weekParityMatches(rule.anchorDate, day, rule.cadenceWeeks);
 }
 
 /**
