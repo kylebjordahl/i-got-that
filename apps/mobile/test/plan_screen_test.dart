@@ -3,6 +3,7 @@ import 'package:caretaker_app/models.dart';
 import 'package:caretaker_app/screens/plan_screen.dart';
 import 'package:caretaker_app/state/auth.dart';
 import 'package:caretaker_app/state/family.dart';
+import 'package:caretaker_app/theme/app_colors.dart';
 import 'package:caretaker_app/theme/app_theme.dart';
 import 'package:caretaker_app/util/format.dart';
 import 'package:caretaker_app/widgets/app_bottom_nav.dart'
@@ -1449,6 +1450,71 @@ void main() {
 
     expect(find.textContaining('linked as free/busy'), findsOneWidget);
     expect(find.textContaining('Rebuild'), findsNothing);
+  });
+
+  testWidgets('the now-line never swallows a tap on the event it crosses', (
+    tester,
+  ) async {
+    final now = DateTime.now();
+    final midnight = DateTime(now.year, now.month, now.day);
+    final me = _m('mom', 'Mom', caretaker: true);
+    final dad = _m('dad', 'Dad', caretaker: true, generatesTasks: false);
+    // An hour-long event with "now" in the middle of it, kept inside today so
+    // it is still on the selected day's grid however close to midnight this
+    // runs. Whatever the clock says, the now-line is drawn across the block.
+    final start = now.subtract(const Duration(minutes: 30));
+    final end = now.add(const Duration(minutes: 30));
+    final events = [
+      CalendarEventItem(
+        id: 'lesson',
+        familyMemberId: 'dad',
+        provenance: 'human',
+        start: start.isBefore(midnight) ? midnight : start,
+        end: end.isAfter(midnight.add(const Duration(days: 1)))
+            ? midnight.add(const Duration(days: 1))
+            : end,
+        allDay: false,
+        summary: 'Piano lesson',
+        taskIneligibleReason: 'paused',
+      ),
+    ];
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          membersProvider.overrideWith((ref) async => [me, dad]),
+          currentMemberProvider.overrideWith((ref) async => me),
+          allTasksProvider.overrideWith((ref) async => const <TaskItem>[]),
+          calendarEventsProvider.overrideWith((ref) async => events),
+          pendingDecisionsProvider.overrideWith((ref) async => const []),
+          threadingThresholdProvider.overrideWith((ref) async => 30),
+          // The event sheets ask whether the event has an absence email; never hit the network.
+          absenceNoticeProvider.overrideWith((ref, id) async => null),
+        ],
+        child: MaterialApp(
+          theme: buildAppTheme(),
+          themeMode: ThemeMode.dark,
+          home: const Scaffold(body: SafeArea(child: PlanScreen())),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // The line itself: the 2px bar in the now-line colour. The grid opens on
+    // 7 AM, so bring it on screen first — it sits wherever the clock says.
+    final line = find.byWidgetPredicate(
+      (w) => w is Container && w.color == AppColors.nowLine,
+    );
+    expect(line, findsOneWidget);
+    await tester.ensureVisible(line);
+    await tester.pumpAndSettle();
+    expect(find.textContaining("don't generate family tasks"), findsNothing);
+
+    // Tap the block exactly where the line crosses it. The line is decoration:
+    // if it took the hit the tap would stop there and nothing would open.
+    await tester.tapAt(tester.getCenter(line));
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining("don't generate family tasks"), findsOneWidget);
   });
 
   testWidgets('an eligible event with no tasks at all offers a rebuild', (
