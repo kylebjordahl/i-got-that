@@ -994,6 +994,22 @@ export const memberCalendars = sqliteTable(
     active: integer('active', { mode: 'boolean' }).notNull().default(true),
     lastMirroredAt: integer('last_mirrored_at', { mode: 'timestamp_ms' }),
     lastReadBackAt: integer('last_read_back_at', { mode: 'timestamp_ms' }),
+    // Durable health for each direction, the target calendar's counterpart of
+    // `feeds.lastAttemptedAt` / `consecutiveFailures` / `lastErrorMessage`.
+    // `last*At` above only moves on success (read-back) or completion (mirror),
+    // so on their own a target that has stopped working just looks idle. The
+    // attempt stamp moves on every try; the failure count is consecutive
+    // failed tries (incremented in SQL, cleared by the next good one); the
+    // message says why. Read-back: a throw, or a target whose credential
+    // can't be used at all. Mirror: any per-event error, an event held back
+    // after repeated rejections (see `event_mirrors.failure_count`), or a
+    // target whose credential can't be used.
+    readBackAttemptedAt: integer('read_back_attempted_at', { mode: 'timestamp_ms' }),
+    readBackFailures: integer('read_back_failures').notNull().default(0),
+    lastReadBackError: text('last_read_back_error'),
+    mirrorAttemptedAt: integer('mirror_attempted_at', { mode: 'timestamp_ms' }),
+    mirrorFailures: integer('mirror_failures').notNull().default(0),
+    lastMirrorError: text('last_mirror_error'),
     createdAt: createdAt(),
   },
   (t) => ({
@@ -1026,7 +1042,20 @@ export const eventMirrors = sqliteTable(
     status: text('status', { enum: MirrorStatus.options })
       .notNull()
       .default('sent'),
+    // Null on a row whose event has never been delivered — a new event whose
+    // first write failed (status 'failed', `externalRef` null). The row exists
+    // so the failure has somewhere to live; cancelling it is a no-op remotely.
     sentAt: integer('sent_at', { mode: 'timestamp_ms' }),
+    // Per-event failure bookkeeping, so one event the target keeps refusing
+    // (a Google 400) is a recorded, bounded problem instead of a retry loop
+    // that reruns the whole member mirror forever. `failureCount` is the
+    // number of consecutive *rejections* of exactly `failedPayloadHash`'s
+    // content; at MIRROR_REJECTION_LIMIT the mirror stops sending that content
+    // and retries only when the payload (and so its hash) changes. `lastError`
+    // is the most recent failure of any kind. All three clear on success.
+    failureCount: integer('failure_count').notNull().default(0),
+    lastError: text('last_error'),
+    failedPayloadHash: text('failed_payload_hash'),
     createdAt: createdAt(),
   },
   (t) => ({

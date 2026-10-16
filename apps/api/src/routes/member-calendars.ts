@@ -65,7 +65,12 @@ export function mayManageMemberOutputs(
   return me.isAdmin && target.userId == null;
 }
 
-/** Read a member's target config (any family member). */
+/**
+ * Read a member's target config (any family member). The row carries the
+ * target's health in both directions — `readBack*` / `mirror*` attempt stamp,
+ * consecutive failure count and last error — so a target that has stopped
+ * working can say why, the way a failing feed does.
+ */
 memberCalendarRoutes.get('/members/:memberId/calendar-target', async (c) => {
   const db = getDb(c.env.DB);
   const me = c.get('member');
@@ -157,6 +162,17 @@ memberCalendarRoutes.put('/members/:memberId/calendar-target', async (c) => {
     prior.targetCalendarId === parsed.data.targetCalendarId &&
     prior.targetExternalAccountId === account.id;
   const timezoneChanged = sameCalendar && prior!.timezone !== values.timezone;
+  // A different calendar starts with a clean record: its predecessor's errors
+  // describe somewhere else. (Re-saving the same one keeps them — nothing has
+  // been proven healthy yet.)
+  const freshHealth = {
+    readBackAttemptedAt: null,
+    readBackFailures: 0,
+    lastReadBackError: null,
+    mirrorAttemptedAt: null,
+    mirrorFailures: 0,
+    lastMirrorError: null,
+  } as const;
 
   let row;
   if (prior) {
@@ -169,7 +185,7 @@ memberCalendarRoutes.put('/members/:memberId/calendar-target', async (c) => {
     row = (
       await db
         .update(memberCalendars)
-        .set(values)
+        .set(sameCalendar ? values : { ...values, ...freshHealth })
         .where(eq(memberCalendars.id, prior.id))
         .returning()
     )[0]!;

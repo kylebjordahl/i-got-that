@@ -1,4 +1,5 @@
 import { buildStoredEventICalendar } from '@igt/ical';
+import { DeliveryHttpError } from './errors.js';
 import type {
   DeliveryEvent,
   DeliveryProvider,
@@ -64,7 +65,10 @@ export class CalDavProvider implements DeliveryProvider {
     });
     if (!res.ok) {
       const detail = await res.text().catch(() => '');
-      throw new Error(`caldav PUT ${res.status} for ${url}${detail ? `: ${detail.slice(0, 200)}` : ''}`);
+      throw new DeliveryHttpError(
+        `caldav PUT ${res.status} for ${url}${detail ? `: ${detail.slice(0, 200)}` : ''}`,
+        res.status,
+      );
     }
     return { externalRef: event.uid, sequence: event.sequence };
   }
@@ -79,7 +83,10 @@ export class CalDavProvider implements DeliveryProvider {
     // 404/410 = already gone; anything else non-2xx is a real failure.
     if (!res.ok && res.status !== 404 && res.status !== 410) {
       const detail = await res.text().catch(() => '');
-      throw new Error(`caldav DELETE ${res.status} for ${url}${detail ? `: ${detail.slice(0, 200)}` : ''}`);
+      throw new DeliveryHttpError(
+        `caldav DELETE ${res.status} for ${url}${detail ? `: ${detail.slice(0, 200)}` : ''}`,
+        res.status,
+      );
     }
   }
 }

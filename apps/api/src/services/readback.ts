@@ -7,6 +7,7 @@ import {
   inArray,
   memberCalendars,
   sourceEvents,
+  sql,
 } from '@igt/db';
 import {
   fetchCalDavOccurrences,
@@ -14,6 +15,12 @@ import {
   type Occurrence,
 } from '@igt/ical';
 import { resolveAccountCredential } from '../lib/account-credentials.js';
+import {
+  clearAccountAuthFailure,
+  errorMessage,
+  recordAccountAuthFailure,
+  truncateError,
+} from '../lib/account-health.js';
 import { batchChunked, type BatchStatement, chunkForD1 } from '../lib/d1.js';
 import type { KekKeySet } from '../lib/secrets.js';
 import { hashCalendarEvent, overlapsWindow, synthesisWindow } from './synthesis.js';
@@ -35,7 +42,23 @@ export interface ReadBackResult {
   fetched: boolean;
   upserted: number;
   removed: number;
+  /**
+   * Set (with `fetched: false`) when the target can't be read at all for want
+   * of a usable credential. A read that *throws* is thrown, as before; both are
+   * recorded on the member calendar row (`lastReadBackError`).
+   */
+  error?: string;
 }
+
+/** Why a target that has an account configured still can't be read. */
+const NO_CREDENTIAL_ERROR =
+  "the target account's credential is unavailable (account removed, no stored secret, or no encryption key configured)";
+const WRONG_CREDENTIAL_ERROR = {
+  caldav: 'the target account has no CalDAV (basic) credential',
+  google: 'the target account has no Google (oauth) credential',
+} as const;
+const NO_ACCESS_TOKEN_ERROR =
+  "the target Google account has no usable access token (no refresh token, or Google sign-in isn't configured)";
 
 /** Our own mirrored events carry this UID prefix and must never be re-imported. */
 const MIRROR_UID_PREFIX = 'igt-';
@@ -56,6 +79,59 @@ export async function readBackMember(
   cal: MemberCalendarRow,
   opts: ReadBackOptions = {},
 ): Promise<ReadBackResult> {
+  const attemptedAt = new Date();
+  let result: ReadBackResult;
+  try {
+    result = await readBackTarget(db, cal, opts, attemptedAt);
+  } catch (err) {
+    await recordReadBackFailure(db, cal, attemptedAt, errorMessage(err), err);
+    throw err;
+  }
+  if (result.error) {
+    await recordReadBackFailure(db, cal, attemptedAt, result.error);
+  } else if (result.fetched) {
+    // The target account reads fine again: drop its reconnect prompt.
+    await clearAccountAuthFailure(db, cal.targetExternalAccountId);
+  }
+  return result;
+}
+
+/**
+ * Stamp a failed read-back on the member calendar so a target that has stopped
+ * reading can say why — otherwise `lastReadBackAt` just silently stops moving
+ * — and, when the cause is a Google grant only its owner can renew, raise the
+ * same reconnect prompt a failing input feed does. Never throws: it runs on the
+ * way out of a failure and must not replace the failure being reported.
+ */
+async function recordReadBackFailure(
+  db: Db,
+  cal: MemberCalendarRow,
+  attemptedAt: Date,
+  message: string,
+  err?: unknown,
+): Promise<void> {
+  try {
+    await db
+      .update(memberCalendars)
+      .set({
+        readBackAttemptedAt: attemptedAt,
+        // In SQL, not from `cal`: overlapping read-backs both hold the old count.
+        readBackFailures: sql`${memberCalendars.readBackFailures} + 1`,
+        lastReadBackError: truncateError(message),
+      })
+      .where(eq(memberCalendars.id, cal.id));
+    await recordAccountAuthFailure(db, cal.targetExternalAccountId, err, attemptedAt);
+  } catch (bookkeepingErr) {
+    console.error(`read-back: couldn't record failure for member ${cal.familyMemberId}`, bookkeepingErr);
+  }
+}
+
+async function readBackTarget(
+  db: Db,
+  cal: MemberCalendarRow,
+  opts: ReadBackOptions,
+  attemptedAt: Date,
+): Promise<ReadBackResult> {
   const result: ReadBackResult = {
     familyMemberId: cal.familyMemberId,
     fetched: false,
@@ -69,7 +145,7 @@ export async function readBackMember(
     opts.kek,
     cal.targetExternalAccountId,
   );
-  if (!credential) return result;
+  if (!credential) return { ...result, error: NO_CREDENTIAL_ERROR };
 
   const window = synthesisWindow(opts);
   // `cal.timezone` is whatever a prior read-back auto-detected (from some
@@ -81,9 +157,15 @@ export async function readBackMember(
 
   let occurrences: Occurrence[];
   let timezone: string | null;
+  // Objects the server returned that we couldn't parse. An event we failed to
+  // *read* is not one that was *deleted*: their UIDs are exempt from the prune
+  // below, and an object with no recoverable UID (we can't say whose it was)
+  // suspends the prune for this pass altogether.
+  let failedUids: ReadonlySet<string> = new Set();
+  let unidentifiedFailures = 0;
   if (cal.targetMethod === 'caldav') {
-    if (credential.kind !== 'basic') return result;
-    ({ occurrences, timezone } = await fetchCalDavOccurrences(
+    if (credential.kind !== 'basic') return { ...result, error: WRONG_CREDENTIAL_ERROR.caldav };
+    const fetched = await fetchCalDavOccurrences(
       {
         collectionUrl: cal.targetCalendarId,
         username: credential.username,
@@ -91,15 +173,18 @@ export async function readBackMember(
       },
       expand,
       opts.fetchImpl,
-    ));
+    );
+    ({ occurrences, timezone } = fetched);
+    failedUids = new Set(fetched.failedUids);
+    unidentifiedFailures = fetched.unidentifiedFailures;
   } else {
-    if (credential.kind !== 'oauth') return result;
+    if (credential.kind !== 'oauth') return { ...result, error: WRONG_CREDENTIAL_ERROR.google };
     const accessToken =
       credential.accessToken ??
       (credential.refreshToken && opts.googleRefresh
         ? await opts.googleRefresh(credential.refreshToken)
         : undefined);
-    if (!accessToken) return result;
+    if (!accessToken) return { ...result, error: NO_ACCESS_TOKEN_ERROR };
     ({ occurrences, timezone } = await fetchGoogleOccurrences(
       accessToken,
       cal.targetCalendarId,
@@ -225,10 +310,18 @@ export async function readBackMember(
   }
 
   // Human events that vanished remotely disappear here too (their unowned
-  // tasks are swept by the next task-gen pass).
-  const vanishedIds = existing
-    .filter((prior) => !desiredKeys.has(prior.synthKey))
-    .map((prior) => prior.id);
+  // tasks are swept by the next task-gen pass) — but only when absence means
+  // "deleted", not "couldn't be read" (see `failedUids` above).
+  const vanishedIds =
+    unidentifiedFailures > 0
+      ? []
+      : existing
+          .filter(
+            (prior) =>
+              !desiredKeys.has(prior.synthKey) &&
+              !(prior.externalUid && failedUids.has(prior.externalUid)),
+          )
+          .map((prior) => prior.id);
   writes.push(
     ...chunkForD1(vanishedIds).map((chunk) =>
       db.delete(calendarEvents).where(inArray(calendarEvents.id, chunk)),
@@ -237,9 +330,27 @@ export async function readBackMember(
   result.removed += vanishedIds.length;
   await batchChunked(db, writes);
 
+  // A read that worked clears the failure record; one that had to skip
+  // unparseable objects still worked, but leaves a note saying so rather than
+  // looking perfectly healthy.
+  const unparsed = failedUids.size + unidentifiedFailures;
   await db
     .update(memberCalendars)
-    .set({ lastReadBackAt: new Date(), timezone: timezone ?? cal.timezone })
+    .set({
+      lastReadBackAt: attemptedAt,
+      timezone: timezone ?? cal.timezone,
+      readBackAttemptedAt: attemptedAt,
+      readBackFailures: 0,
+      lastReadBackError:
+        unparsed === 0
+          ? null
+          : truncateError(
+              `${failedUids.size} UID(s) in unparseable calendar objects were left untouched` +
+                (unidentifiedFailures > 0
+                  ? `; ${unidentifiedFailures} object(s) had no readable UID, so nothing was removed this pass`
+                  : ''),
+            ),
+    })
     .where(eq(memberCalendars.id, cal.id));
   return result;
 }

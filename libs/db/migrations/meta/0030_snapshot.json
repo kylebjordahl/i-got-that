@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "c06ec869-ce31-4c79-be86-615637d11ab1",
+  "id": "af9d3e37-b26c-41c4-922b-35a58485147c",
   "prevId": "b168b11b-361d-4462-9b11-5e178f46a0f9",
   "tables": {
     "absence_notice_settings": {
@@ -1517,6 +1517,28 @@
           "notNull": false,
           "autoincrement": false
         },
+        "failure_count": {
+          "name": "failure_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 0
+        },
+        "last_error": {
+          "name": "last_error",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "failed_payload_hash": {
+          "name": "failed_payload_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
         "created_at": {
           "name": "created_at",
           "type": "integer",
@@ -2822,6 +2844,50 @@
           "notNull": false,
           "autoincrement": false
         },
+        "read_back_attempted_at": {
+          "name": "read_back_attempted_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "read_back_failures": {
+          "name": "read_back_failures",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 0
+        },
+        "last_read_back_error": {
+          "name": "last_read_back_error",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "mirror_attempted_at": {
+          "name": "mirror_attempted_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "mirror_failures": {
+          "name": "mirror_failures",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 0
+        },
+        "last_mirror_error": {
+          "name": "last_mirror_error",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
         "created_at": {
           "name": "created_at",
           "type": "integer",
@@ -3574,13 +3640,6 @@
         },
         "location_geo": {
           "name": "location_geo",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "description": {
-          "name": "description",
           "type": "text",
           "primaryKey": false,
           "notNull": false,
