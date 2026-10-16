@@ -287,6 +287,31 @@ paths in particular).
   `feeds.suspicious_sweep_count` / `suspicious_since` — via the reader's
   `feedPatch`, since `ingestFeed`'s success `UPDATE` would clear a separate
   write — and never sweeps rows of CalDAV objects that failed to parse.
+- **A target calendar that can't be read or written must never go quiet
+  either.** `member_calendars` carries the same durable bookkeeping per
+  direction — `readBackAttemptedAt` / `readBackFailures` / `lastReadBackError`
+  and `mirrorAttemptedAt` / `mirrorFailures` / `lastMirrorError` (attempt
+  stamp on every try, failure count incremented in SQL and cleared by the next
+  good pass, message capped like a feed's) — written by the `readBackMember` and
+  `syncMemberMirror` wrappers, so no path (a throw, a missing credential, a
+  wrong-kind credential) can fail without leaving a reason. A dead Google grant
+  on a *target* account raises the same `externalAccounts.authFailedAt` reconnect
+  prompt a failing feed does (`lib/account-health.ts` is the one helper both
+  use), and a good read-back lowers it. The mirror also remembers per event
+  (`event_mirrors.failureCount` / `lastError` / `failedPayloadHash`): content the
+  target *rejects* (`DeliveryHttpError.rejectedPayload` — a 4xx about the
+  payload, not auth, a missing resource, or load) `MIRROR_REJECTION_LIMIT`
+  times in a row is held back until the payload changes instead of failing the
+  whole member job on every tick forever. Only rejections count — a 5xx,
+  network error or dead credential is the target's state, and counting it would
+  freeze every unchanged event after a few bad ticks. A held event is not a
+  `SyncResult` error (the queue would retry the job) but still counts as a
+  failed pass on the member calendar, so it stays visible. A new event whose
+  first write fails gets a `status: 'failed'` row with no `sentAt`/`externalRef`
+  to hold the failure (both providers' cancel treats "not there" as success, so
+  it cancels harmlessly if the event goes away). Read-back never prunes a human
+  event it merely failed to *parse* (`failedUids`), and skips the prune
+  entirely when an unparseable object had no readable UID.
 - **Nothing on the outbound path may be served from cache.** A Worker's
   `fetch()` is not a bare socket — a cacheable GET comes from Cloudflare's
   cache, honouring the origin's `Cache-Control`, and that entry answers our
