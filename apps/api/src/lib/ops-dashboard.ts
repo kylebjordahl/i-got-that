@@ -192,6 +192,13 @@ export const opsDashboardHtml = `<!doctype html>
         'Active feeds',
         summary.feeds.error ? summary.feeds.error + ' in error' : undefined,
       ),
+      statTile(
+        summary.targets.total,
+        'Target calendars',
+        summary.targets.readBackFailing || summary.targets.mirrorFailing
+          ? summary.targets.readBackFailing + ' read-back / ' + summary.targets.mirrorFailing + ' mirror failing'
+          : undefined,
+      ),
       statTile(summary.calendarEvents.last30d, 'Calendar events (30d)', summary.calendarEvents.last7d + ' in last 7d'),
       statTile(summary.sourceEvents.last30d, 'Source events ingested (30d)'),
     );

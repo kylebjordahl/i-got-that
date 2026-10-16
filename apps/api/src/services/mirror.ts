@@ -13,10 +13,12 @@ import {
   lte,
   memberCalendars,
   or,
+  sql,
   tasks,
 } from '@igt/db';
 import {
   CalDavProvider,
+  DeliveryHttpError,
   type DeliveryEvent,
   type DeliveryProvider,
   DeliveryProviderRegistry,
@@ -30,6 +32,12 @@ import { emailEnabled, emailLinkBase, getOutbox } from '../lib/email.js';
 import { googleRefresherFor } from '../lib/google-oauth.js';
 import { createGuardedFetch } from '../lib/outbound-url.js';
 import { resolveAccountCredential } from '../lib/account-credentials.js';
+import {
+  errorMessage,
+  needsReauth,
+  recordAccountAuthFailure,
+  truncateError,
+} from '../lib/account-health.js';
 import { selectChunked } from '../lib/d1.js';
 import { buildKekKeySet, type KekKeySet } from '../lib/secrets.js';
 import { syncFamilyEmailOutputs, syncMemberEmailOutputs } from './email-outputs.js';
@@ -504,16 +512,187 @@ export async function claimedTaskMeta(
 }
 
 /**
+ * How many times in a row the target may refuse the exact same payload before
+ * the mirror stops sending it. Without a bound, one event a target permanently
+ * rejects (a Google 400) fails the member's mirror job on every cron tick and
+ * every queue retry for as long as the event exists, re-running the whole
+ * member each time. Past the limit the event is *held back*: not sent, not an
+ * error that retries the job, but still reported on the member calendar's
+ * `lastMirrorError`. A changed payload has a new hash and is sent at once.
+ */
+export const MIRROR_REJECTION_LIMIT = 3;
+
+/** What one reconcile pass learned that `SyncResult` doesn't carry. */
+interface MirrorPass {
+  /** The pass finished its reconcile (as opposed to bailing at setup). */
+  completed: boolean;
+  /** The target can't be used at all (no provider, no credential). */
+  problem?: string;
+  /** Events not sent this pass because the target keeps refusing their content. */
+  held: { calendarEventId: string; error: string }[];
+  /** The account the target is drawn from, for the reconnect prompt. */
+  accountId: string | null;
+  /** A failure only reconnecting the account fixes, if the pass hit one. */
+  authError?: unknown;
+}
+
+/** An event whose first write failed: a row exists only to hold the failure. */
+function neverDelivered(m: Pick<typeof eventMirrors.$inferSelect, 'status' | 'sentAt'>): boolean {
+  return m.status === 'failed' && m.sentAt == null;
+}
+
+/**
+ * Record on the event's mirror row that writing it just failed.
+ *
+ * The count only advances for a *rejection* of the payload (the target read it
+ * and said no — see `DeliveryHttpError.rejectedPayload`), and restarts at 1
+ * when the content differs from the last rejected content. A network error, a
+ * 5xx or a dead credential is the target's state, not the event's: counting it
+ * would hold every unchanged event back after a few bad ticks and leave the
+ * calendar stale long after the target recovers.
+ *
+ * A new event has no row yet, so one is created with status 'failed' and no
+ * `sentAt`/`externalRef`: the failure needs somewhere to live, and the next
+ * pass finds the row and treats the event as the first send of a never-sent
+ * one. Cancelling it is harmless — both providers treat "not there" as success.
+ * Never throws: bookkeeping must not turn into a second failure.
+ */
+async function recordEventFailure(
+  db: Db,
+  memberId: string,
+  event: { id: string },
+  uid: string,
+  prior: typeof eventMirrors.$inferSelect | undefined,
+  hash: string,
+  err: unknown,
+): Promise<void> {
+  const rejected = err instanceof DeliveryHttpError && err.rejectedPayload;
+  const lastError = errorMessage(err);
+  try {
+    if (prior) {
+      await db
+        .update(eventMirrors)
+        .set({
+          status: 'failed',
+          lastError,
+          ...(rejected
+            ? {
+                // In SQL: overlapping reconciles both read the old count.
+                failureCount: sql`case when ${eventMirrors.failedPayloadHash} = ${hash} then ${eventMirrors.failureCount} + 1 else 1 end`,
+                failedPayloadHash: hash,
+              }
+            : {}),
+        })
+        .where(eq(eventMirrors.id, prior.id));
+    } else {
+      await db
+        .insert(eventMirrors)
+        .values({
+          familyMemberId: memberId,
+          calendarEventId: event.id,
+          icalUid: uid,
+          sequence: 0,
+          payloadHash: null,
+          externalRef: null,
+          status: 'failed',
+          sentAt: null,
+          lastError,
+          ...(rejected ? { failureCount: 1, failedPayloadHash: hash } : {}),
+        })
+        .onConflictDoNothing();
+    }
+  } catch (bookkeepingErr) {
+    console.error(`mirror: couldn't record failure for event ${event.id}`, bookkeepingErr);
+  }
+}
+
+/** The one-line summary a pass leaves on the member calendar, or null if it was clean. */
+function summarizeMirrorPass(pass: MirrorPass, errors: SyncResult['errors']): string | null {
+  if (pass.problem) return truncateError(pass.problem);
+  const parts: string[] = [];
+  const tidy = (e: string) => e.replace(/^\w*Error: /, '');
+  if (errors.length > 0) {
+    const more = errors.length - 1;
+    parts.push(tidy(errors[0]!.error) + (more > 0 ? ` (and ${more} more)` : ''));
+  }
+  if (pass.held.length > 0) {
+    const n = pass.held.length;
+    parts.push(
+      `${n} event${n === 1 ? '' : 's'} not sent: the target keeps rejecting ${n === 1 ? 'it' : 'them'} (${pass.held[0]!.error}); will retry once edited`,
+    );
+  }
+  return parts.length > 0 ? truncateError(parts.join('; ')) : null;
+}
+
+/**
  * Reconcile one member's target calendar so it reflects exactly their
  * unified calendar's synthesized + claimed events. Mirror rows deliberately
  * outlive their events (no FK): a vanished event is remote-cancelled here,
  * then its row is dropped.
+ *
+ * Every pass is stamped on the member calendar (`mirrorAttemptedAt`,
+ * `mirrorFailures`, `lastMirrorError`) so a target that has stopped taking
+ * writes can say why. A pass counts as failed if any event errored, any event
+ * is being held back (`MIRROR_REJECTION_LIMIT`), or the target couldn't be used
+ * at all; one clean pass clears it.
  */
 export async function syncMemberMirror(
   db: Db,
   registry: DeliveryProviderRegistry,
   keys: KekKeySet | undefined,
   memberId: string,
+): Promise<SyncResult> {
+  const attemptedAt = new Date();
+  const pass: MirrorPass = { completed: false, held: [], accountId: null };
+  let result: SyncResult;
+  try {
+    result = await reconcileMemberMirror(db, registry, keys, memberId, pass);
+  } catch (err) {
+    pass.problem = errorMessage(err);
+    await recordMirrorPass(db, memberId, attemptedAt, pass, emptyResult());
+    throw err;
+  }
+  // `targets` is 0 when the member has no target calendar: nothing to stamp.
+  if (result.targets > 0) await recordMirrorPass(db, memberId, attemptedAt, pass, result);
+  return result;
+}
+
+/** Stamp a pass's outcome on the member calendar. Never throws. */
+async function recordMirrorPass(
+  db: Db,
+  memberId: string,
+  attemptedAt: Date,
+  pass: MirrorPass,
+  result: SyncResult,
+): Promise<void> {
+  try {
+    const problem = summarizeMirrorPass(pass, result.errors);
+    await db
+      .update(memberCalendars)
+      .set({
+        mirrorAttemptedAt: attemptedAt,
+        ...(pass.completed ? { lastMirroredAt: new Date() } : {}),
+        ...(problem
+          ? {
+              // In SQL, not from a stale read: overlapping passes both hold the old count.
+              mirrorFailures: sql`${memberCalendars.mirrorFailures} + 1`,
+              lastMirrorError: problem,
+            }
+          : { mirrorFailures: 0, lastMirrorError: null }),
+      })
+      .where(eq(memberCalendars.familyMemberId, memberId));
+    await recordAccountAuthFailure(db, pass.accountId, pass.authError, attemptedAt);
+  } catch (err) {
+    console.error(`mirror: couldn't record outcome for member ${memberId}`, err);
+  }
+}
+
+async function reconcileMemberMirror(
+  db: Db,
+  registry: DeliveryProviderRegistry,
+  keys: KekKeySet | undefined,
+  memberId: string,
+  pass: MirrorPass,
 ): Promise<SyncResult> {
   const result = emptyResult();
   const cal = (
@@ -525,10 +704,20 @@ export async function syncMemberMirror(
   )[0];
   if (!cal) return result;
   result.targets++;
-  if (!registry.has(cal.targetMethod)) return result;
+  pass.accountId = cal.targetExternalAccountId;
+  if (!registry.has(cal.targetMethod)) {
+    pass.problem = `no delivery provider is registered for ${cal.targetMethod} targets`;
+    return result;
+  }
 
   const target = await mirrorTarget(db, keys, cal);
-  if (!target) return result; // account gone / no KEK — leave remote state alone
+  if (!target) {
+    // Account gone / no KEK — leave remote state alone, but say so: this is not
+    // a retryable job error (it would never succeed), yet not a healthy target.
+    pass.problem =
+      "the target account's credential is unavailable (account removed, no stored secret, or no encryption key configured)";
+    return result;
+  }
   const provider = registry.get(cal.targetMethod);
 
   // Desired = the member's synthesized + claimed events from the active
@@ -618,6 +807,7 @@ export async function syncMemberMirror(
         calendarEventId: m.calendarEventId,
         error: String(err),
       });
+      if (needsReauth(err)) pass.authError ??= err;
       continue;
     }
     await db.delete(eventMirrors).where(eq(eventMirrors.id, m.id));
@@ -634,9 +824,26 @@ export async function syncMemberMirror(
     const hash = hashMirrorPayload(summary, event, alertMinutes, timezone, travelMinutes);
     const prior = existingByEvent.get(event.id);
     if (prior && prior.payloadHash === hash) continue;
+    if (
+      prior &&
+      prior.failureCount >= MIRROR_REJECTION_LIMIT &&
+      prior.failedPayloadHash === hash
+    ) {
+      // The target has refused exactly this content enough times. Sending it
+      // again is a request that fails the same way and, as an error, retries
+      // the whole job; hold it until the payload changes (a new hash).
+      pass.held.push({
+        calendarEventId: event.id,
+        error: prior.lastError ?? 'rejected by the target',
+      });
+      continue;
+    }
 
     const uid = prior?.icalUid ?? mirrorUid(event.id);
-    const sequence = prior ? prior.sequence + 1 : 0;
+    // A row left by a first write that failed has delivered nothing: the
+    // event's first real send is still sequence 0.
+    const firstSend = !prior || neverDelivered(prior);
+    const sequence = firstSend ? 0 : prior!.sequence + 1;
     const deliveryEvent: DeliveryEvent = {
       uid,
       externalRef: prior?.externalRef,
@@ -657,14 +864,18 @@ export async function syncMemberMirror(
         await db
           .update(eventMirrors)
           .set({
-            status: 'updated',
+            status: firstSend ? 'sent' : 'updated',
             sequence,
             externalRef: res.externalRef ?? prior.externalRef,
             payloadHash: hash,
             sentAt: new Date(),
+            failureCount: 0,
+            lastError: null,
+            failedPayloadHash: null,
           })
           .where(eq(eventMirrors.id, prior.id));
-        result.updated++;
+        if (firstSend) result.created++;
+        else result.updated++;
       } else {
         await db.insert(eventMirrors).values({
           familyMemberId: memberId,
@@ -680,6 +891,8 @@ export async function syncMemberMirror(
       }
     } catch (err) {
       result.errors.push({ memberId, calendarEventId: event.id, error: String(err) });
+      if (needsReauth(err)) pass.authError ??= err;
+      await recordEventFailure(db, memberId, event, uid, prior, hash, err);
     }
   }
 
@@ -691,10 +904,7 @@ export async function syncMemberMirror(
     }
   }
 
-  await db
-    .update(memberCalendars)
-    .set({ lastMirroredAt: new Date() })
-    .where(eq(memberCalendars.id, cal.id));
+  pass.completed = true;
   return result;
 }
 
