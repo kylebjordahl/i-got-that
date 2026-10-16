@@ -1,45 +1,41 @@
-import { eq, families, feeds, getDb } from '@igt/db';
+import { families, getDb } from '@igt/db';
 import type { Bindings } from './env.js';
-import { emailEnabled, emailLinkBase, getOutbox } from './lib/email.js';
-import { googleRefresherFor } from './lib/google-oauth.js';
-import { createGuardedFetch } from './lib/outbound-url.js';
 import { sweepOrphanedSecrets } from './services/auth.js';
-import { reconcileClaimEvents } from './services/claim.js';
-import { reconcileFamilyConflicts } from './services/conflicts.js';
-import { syncFamilyEmailOutputs } from './services/email-outputs.js';
-import { getProductionRegistry, syncFamilyMirror } from './services/mirror.js';
-import { ingestFeed, isFeedDue } from './services/ingest.js';
+import type { DeliveryJob } from './services/mirror.js';
 import { dispatchDueDigests } from './services/notifications.js';
+import { runFamilyTick } from './services/pipeline.js';
 import { dispatchReauthAlerts } from './services/reauth-alerts.js';
-import { readBackFamily } from './services/readback.js';
-import { buildKekKeySet } from './lib/secrets.js';
-import { synthesizeFeed } from './services/synthesis.js';
-import { buildFamilyTasks } from './services/task-gen.js';
 
 /**
- * Cron tick, per family — the full pipeline in dependency order:
+ * `Queue.sendBatch` takes at most 100 messages per call (and 256 KB in total —
+ * a few dozen bytes per family is nowhere near it).
+ */
+const SEND_BATCH_MAX = 100;
+
+/**
+ * Cron tick. Does the global sweeps itself, then hands each family's pipeline
+ * (`runFamilyTick`, services/pipeline.ts) to the delivery queue as a
+ * `family-pipeline` message of its own.
  *
- *   1. ingest + synthesize any feed that's due — its refresh interval elapsed,
- *      or, for a feed left in 'error', its retry backoff did
- *      (feeds → source_events → calendar_events + pending_decisions)
- *   2. read back each configured target calendar (human events land as
- *      first-class unified-calendar events) — before task-gen so they get
- *      their convertible attendance tasks this tick
- *   3. resolve agenda overlaps: detect conflicts and apply resolved splits
- *      (a member can't be in two places at once) — before task-gen so the
- *      split segments spawn their own drop-off/pickup tasks
- *   4. task generation for every member (calendar_events → tasks)
- *   5. claimed-event true-up + mirror reconcile (unified calendar → target),
- *      then email invite outputs (where outbound mail is enabled)
+ * Why not run the families here: a cron invocation with an interval under an
+ * hour gets one 30 s CPU budget, one 10,000-subrequest budget (every D1 query
+ * counts) and six simultaneous outgoing connections — shared by every family.
+ * Past any of them the runtime kills the invocation and every family's
+ * in-flight work dies mid-pipeline, to be retried only by the next tick. A
+ * queue consumer invocation gets a budget of its own, so the cost of a tick
+ * scales with one batch of families instead of all of them, and a family that
+ * blows its budget can't take the others down with it. (The consumer's CPU
+ * ceiling is raised in wrangler.jsonc, since it runs whole family pipelines.)
  *
- * The mirror true-up is cheap when nothing drifted (payloadHash skips
- * unchanged events), so it's safe to run every tick.
+ * Local dev and tests have no `DELIVERY_QUEUE`, so there each family runs
+ * inline under `waitUntil`, exactly as the cron always did.
  *
- * Push-notification digests are dispatched alongside, not inside, that loop —
- * a schedule belongs to a *user* and its digest spans every family they're in.
- * It reads whatever state the pipeline has settled on, which is at most one
- * tick stale; sequencing it behind the per-family work would mean awaiting all
- * of it, which is exactly what `waitUntil` is here to avoid.
+ * Push-notification digests, reauth alerts and the orphaned-secret sweep are
+ * dispatched alongside, not per family — a schedule belongs to a *user* and its
+ * digest spans every family they're in. A digest reads whatever state the
+ * pipeline has settled on, which is at most one tick stale; sequencing it
+ * behind the per-family work would mean awaiting all of it, which is exactly
+ * what `waitUntil` and the queue are here to avoid.
  */
 export async function scheduled(
   _event: ScheduledController,
@@ -47,15 +43,6 @@ export async function scheduled(
   ctx: ExecutionContext,
 ): Promise<void> {
   const db = getDb(env.DB);
-  const registry = getProductionRegistry(env);
-  const keys = buildKekKeySet(env);
-  const secrets = {
-    kek: keys,
-    googleRefresh: googleRefresherFor(env),
-    // Every feed / read-back URL in here came from a user; the guard re-vets
-    // each one at request time (these rows may predate the policy).
-    fetchImpl: createGuardedFetch(env),
-  };
   const now = new Date();
 
   // Backstop for the small best-effort window in account-deletion cleanup (D1
@@ -90,49 +77,36 @@ export async function scheduled(
       .catch((err) => console.error('digest dispatch failed', err)),
   );
 
-  const allFamilies = await db.select().from(families);
-  for (const fam of allFamilies) {
+  const familyIds = (await db.select({ id: families.id }).from(families)).map((f) => f.id);
+
+  const queue = env.DELIVERY_QUEUE;
+  if (queue) {
+    // A chunk that fails to enqueue costs those families this tick only: the
+    // next one enqueues them again, and the other chunks still go out.
+    // Overlapping ticks (or a redelivered message) can run a family twice
+    // until the per-family lease in #264 lands — see `runFamilyTick`.
+    for (let i = 0; i < familyIds.length; i += SEND_BATCH_MAX) {
+      const chunk = familyIds.slice(i, i + SEND_BATCH_MAX);
+      try {
+        await queue.sendBatch(
+          chunk.map(
+            (familyId): MessageSendRequest<DeliveryJob> => ({
+              body: { kind: 'family-pipeline', familyId },
+            }),
+          ),
+        );
+      } catch (err) {
+        console.error(`failed to enqueue ${chunk.length} family pipeline job(s)`, err);
+      }
+    }
+    return;
+  }
+
+  for (const familyId of familyIds) {
     ctx.waitUntil(
-      (async () => {
-        try {
-          const familyFeeds = await db
-            .select()
-            .from(feeds)
-            .where(eq(feeds.familyId, fam.id));
-          for (const feed of familyFeeds) {
-            if (!isFeedDue(feed, now)) continue;
-            try {
-              await ingestFeed(db, feed, secrets);
-              await synthesizeFeed(db, feed);
-            } catch (err) {
-              // One unreachable feed must not cost the family its whole tick:
-              // the read-back, conflict, task-gen and mirror passes below don't
-              // depend on it, and skipping them would strand human edits and
-              // claims that have nothing to do with this feed. `ingestFeed` has
-              // already recorded why the row is in 'error'.
-              console.error(`feed ${feed.id} ingest failed`, err);
-            }
-          }
-          await readBackFamily(db, fam.id, secrets);
-          // Resolve agenda overlaps (split/trim by priority) before task-gen so
-          // the split segments drive their own drop-off/pickup tasks.
-          await reconcileFamilyConflicts(db, fam.id);
-          await buildFamilyTasks(db, fam.id);
-          await reconcileClaimEvents(db, fam.id);
-          await syncFamilyMirror(db, registry, keys, fam.id);
-          if (emailEnabled(env)) {
-            await syncFamilyEmailOutputs(
-              db,
-              getOutbox(env),
-              fam.id,
-              new Date(),
-              emailLinkBase(env),
-            );
-          }
-        } catch (err) {
-          console.error(`scheduled tick failed for family ${fam.id}`, err);
-        }
-      })(),
+      runFamilyTick(env, familyId, now).catch((err) =>
+        console.error(`scheduled tick failed for family ${familyId}`, err),
+      ),
     );
   }
 }
