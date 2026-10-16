@@ -895,6 +895,15 @@ cd apps/api && pnpm wrangler tail --env staging        # live logs
   the optional `OUTBOUND_ALLOWED_HOSTS` var to a comma-separated list of
   `host` / `host:port` entries — that's the only escape hatch; there is no
   "disable the guard" switch.
+- **The cron fans out per family through the delivery queue.** Each `*/15`
+  tick enqueues one `family-pipeline` message per family onto
+  `DELIVERY_QUEUE`, and the queue consumer runs that family's ingest →
+  read-back → task-gen → mirror pipeline (`runFamilyTick`), so no single
+  invocation carries every family. Queue-consumer CPU defaults to 30 s per
+  invocation; `wrangler.jsonc` sets `limits.cpu_ms` to 300000 (the Workers Paid
+  maximum), which named envs inherit. It is a ceiling, not a charge, and it
+  applies to the Worker's other invocations (HTTP requests) too. Raising it
+  needs **Workers Paid**, which the email and analytics bindings already do.
 - **Outbound email** (magic-link sign-in and email invite outputs) is covered
   in §12.
 - The **web client** is built in CI and served by the same Worker under `/app`

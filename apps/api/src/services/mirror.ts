@@ -32,6 +32,7 @@ import { selectChunked } from '../lib/d1.js';
 import { buildKekKeySet, type KekKeySet } from '../lib/secrets.js';
 import { syncFamilyEmailOutputs, syncMemberEmailOutputs } from './email-outputs.js';
 import { deliverDigest, type PushDigestJob } from './notifications.js';
+import { type FamilyPipelineJob, runFamilyTick } from './pipeline.js';
 import { synthesisWindow } from './synthesis.js';
 
 type CalendarEventRow = typeof calendarEvents.$inferSelect;
@@ -72,12 +73,12 @@ export type MirrorJob =
   | { kind: 'family'; familyId: string };
 
 /**
- * Everything the delivery queue carries. Push digests ride the same queue as
- * mirror reconciles rather than getting their own: they want the identical
- * retry/backoff/DLQ behaviour, and sharing it means no new Terraform-managed
- * queue and no new binding to keep in sync.
+ * Everything the delivery queue carries. Push digests and the cron's per-family
+ * pipeline runs ride the same queue as mirror reconciles rather than getting
+ * their own: they want the identical retry/backoff/DLQ behaviour, and sharing
+ * it means no new Terraform-managed queue and no new binding to keep in sync.
  */
-export type DeliveryJob = MirrorJob | PushDigestJob;
+export type DeliveryJob = MirrorJob | PushDigestJob | FamilyPipelineJob;
 
 type ReconcileCtx = {
   env: Bindings;
@@ -135,9 +136,11 @@ export function enqueueReconcile(c: ReconcileCtx, job: MirrorJob): void {
 }
 
 /**
- * Queue consumer: process mirror jobs, acking on success and asking Cloudflare
+ * Queue consumer: process delivery jobs, acking on success and asking Cloudflare
  * to retry (with its built-in backoff, up to max_retries → dead-letter) on
- * failure. Bound to the DELIVERY_QUEUE consumer in wrangler.jsonc.
+ * failure. Each message is acked or retried on its own, so one failing job
+ * never re-queues the rest of its batch. Bound to the DELIVERY_QUEUE consumer
+ * in wrangler.jsonc.
  */
 export async function deliveryQueueConsumer(
   batch: MessageBatch<DeliveryJob>,
@@ -151,6 +154,15 @@ export async function deliveryQueueConsumer(
         else message.ack();
         continue;
       }
+      if (message.body.kind === 'family-pipeline') {
+        // A stage that throws is logged inside `runFamilyTick` and not retried
+        // — re-running a whole family pipeline because its mirror hiccuped
+        // would be a retry storm, and the next cron tick is the retry anyway.
+        // Only a tick that couldn't start at all lands in the catch below.
+        await runFamilyTick(env, message.body.familyId);
+        message.ack();
+        continue;
+      }
       const result = await runJob(env, message.body);
       if (result.errors.length > 0) {
         // A per-target failure (e.g. iCloud briefly unreachable) → retry later.
@@ -160,7 +172,7 @@ export async function deliveryQueueConsumer(
         message.ack();
       }
     } catch (err) {
-      console.error('mirror job threw', message.body, err);
+      console.error('delivery job threw', message.body, err);
       message.retry();
     }
   }
