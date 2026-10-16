@@ -1,5 +1,6 @@
-import { env } from 'cloudflare:test';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { env, fetchMock } from 'cloudflare:test';
+import { calendarEvents, eq, familyMemberFeeds, feeds, getDb } from '@igt/db';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { deliveryQueueConsumer } from '../src/services/mirror.js';
 import { runFamilyTick } from '../src/services/pipeline.js';
 import { setupFamily } from './helpers.js';
@@ -35,6 +36,13 @@ function flakyDb(failOn?: RegExp) {
 /** Position of the first recorded statement matching `re` at or after `from`. */
 const indexOfSql = (seen: string[], re: RegExp, from = 0) =>
   seen.findIndex((sql, i) => i >= from && re.test(sql));
+
+// The synthesis specs below point feeds at a URL that is never meant to answer;
+// with net connect disabled an unmocked fetch fails fast instead of reaching DNS.
+beforeAll(() => {
+  fetchMock.activate();
+  fetchMock.disableNetConnect();
+});
 
 let errorLog: ReturnType<typeof vi.spyOn>;
 beforeEach(() => {
@@ -87,6 +95,181 @@ describe('runFamilyTick', () => {
 
     expect(result.failedStages).toEqual(['ingest']);
     expect(indexOfSql(seen, /from "tasks"/)).toBeGreaterThan(-1);
+  });
+});
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+const FEED_ORIGIN = 'https://feed.example.com';
+const FEED_PATH = '/down.ics';
+
+/** `YYYY-MM-DD` of the UTC day `days` after `from`'s. */
+const dayAfter = (from: Date, days: number) =>
+  new Date(from.getTime() + days * DAY_MS).toISOString().slice(0, 10);
+
+/**
+ * A family whose child is on a school's exception feed: no source events at all,
+ * so every calendar event is a `bl:` baseline day generated from the link's
+ * config alone (all seven weekdays, so every day of the window has one).
+ */
+async function baselineFeed(
+  email: string,
+  values: Partial<typeof feeds.$inferInsert> = {},
+) {
+  const fam = await setupFamily(email);
+  const db = getDb(env.DB);
+  const feed = (
+    await db
+      .insert(feeds)
+      .values({
+        familyId: fam.familyId,
+        mode: 'exception',
+        url: `${FEED_ORIGIN}${FEED_PATH}`,
+        sourceCalendarName: 'Lincoln Elementary',
+        ...values,
+      })
+      .returning()
+  )[0]!;
+  const link = (
+    await db
+      .insert(familyMemberFeeds)
+      .values({
+        familyId: fam.familyId,
+        feedId: feed.id,
+        familyMemberId: fam.childId,
+        weekdayMask: 127,
+        dayStart: '08:30',
+        dayEnd: '14:45',
+      })
+      .returning()
+  )[0]!;
+  const baselineDays = async (): Promise<string[]> =>
+    (
+      await db
+        .select({ synthKey: calendarEvents.synthKey })
+        .from(calendarEvents)
+        .where(eq(calendarEvents.linkId, link.id))
+    )
+      .map((r) => r.synthKey)
+      .filter((k) => k.startsWith(`bl:${link.id}:`))
+      .map((k) => k.slice(`bl:${link.id}:`.length))
+      .sort();
+  const reloadFeed = async () =>
+    (await db.select().from(feeds).where(eq(feeds.id, feed.id)).limit(1))[0]!;
+  return { ...fam, db, feed, link, baselineDays, reloadFeed };
+}
+
+describe('runFamilyTick: synthesis does not wait on ingest', () => {
+  it('keeps rolling the window for a feed whose ingest fails every tick', async () => {
+    // A feed that stays broken for days: with the retry backoff grown to hours
+    // it is rarely even attempted, and when it is, the fetch throws. Synthesis
+    // used to sit in the same try as the ingest, so none of that ever reached
+    // it and the family's horizon shrank by a day per day.
+    fetchMock
+      .get(FEED_ORIGIN)
+      .intercept({ path: FEED_PATH, method: 'GET' })
+      .reply(503, 'down')
+      .persist();
+    const f = await baselineFeed('tick-synth-ingest-fails@example.com');
+    const day0 = new Date();
+
+    const first = await runFamilyTick(env, f.familyId, day0);
+    // The ingest really was attempted and really failed...
+    expect((await f.reloadFeed()).status).toBe('error');
+    expect((await f.reloadFeed()).lastErrorMessage).toContain('503');
+    // ...a dead feed is not a failed tick, and the window got its days anyway.
+    expect(first.failedStages).toEqual([]);
+    const before = await f.baselineDays();
+    expect(before).toContain(dayAfter(day0, 0));
+    expect(before).toContain(dayAfter(day0, 29));
+    expect(before).not.toContain(dayAfter(day0, 30));
+
+    // A UTC day on, the feed is still failing; the window moves with the clock.
+    const day1 = new Date(day0.getTime() + DAY_MS);
+    const second = await runFamilyTick(env, f.familyId, day1);
+    expect((await f.reloadFeed()).consecutiveFailures).toBe(2);
+    expect(second.failedStages).toEqual([]);
+    expect(await f.baselineDays()).toContain(dayAfter(day0, 30));
+  });
+
+  it('synthesizes a feed that is not due, so a daily poll still rolls the window', async () => {
+    const day0 = new Date();
+    const f = await baselineFeed('tick-synth-not-due@example.com', {
+      refreshMinutes: 1440,
+      lastSyncedAt: new Date(day0.getTime() - 60 * 60_000),
+    });
+
+    await runFamilyTick(env, f.familyId, day0);
+    expect(await f.baselineDays()).toContain(dayAfter(day0, 29));
+    expect(await f.baselineDays()).not.toContain(dayAfter(day0, 30));
+
+    // Synced an hour before this tick too, so it is not due this time either.
+    const day1 = new Date(day0.getTime() + DAY_MS);
+    await f.db
+      .update(feeds)
+      .set({ lastSyncedAt: new Date(day1.getTime() - 60 * 60_000) })
+      .where(eq(feeds.id, f.feed.id));
+    await runFamilyTick(env, f.familyId, day1);
+
+    expect(await f.baselineDays()).toContain(dayAfter(day0, 30));
+    // Never fetched: it was synthesized without being ingested.
+    const row = await f.reloadFeed();
+    expect(row.lastAttemptedAt).toBeNull();
+    expect(row.status).toBe('active');
+  });
+
+  it('leaves a paused feed alone', async () => {
+    const f = await baselineFeed('tick-synth-paused@example.com', { status: 'paused' });
+
+    const result = await runFamilyTick(env, f.familyId, new Date());
+
+    expect(result.failedStages).toEqual([]);
+    expect(await f.baselineDays()).toEqual([]);
+    expect((await f.reloadFeed()).lastAttemptedAt).toBeNull();
+  });
+
+  it("reports a feed's synthesis failure as its own stage and still synthesizes the others", async () => {
+    const day0 = new Date();
+    const recentlySynced = new Date(day0.getTime() - 60 * 60_000);
+    const first = await baselineFeed('tick-synth-isolated@example.com', {
+      lastSyncedAt: recentlySynced,
+    });
+    // A second feed in the same family, linked to the same child.
+    const second = (
+      await first.db
+        .insert(feeds)
+        .values({
+          familyId: first.familyId,
+          mode: 'exception',
+          url: `${FEED_ORIGIN}/other.ics`,
+          lastSyncedAt: recentlySynced,
+        })
+        .returning()
+    )[0]!;
+    await first.db.insert(familyMemberFeeds).values({
+      familyId: first.familyId,
+      feedId: second.id,
+      familyMemberId: first.childId,
+      weekdayMask: 127,
+      dayStart: '08:30',
+      dayEnd: '14:45',
+    });
+    // The first synthesis in the tick dies on its first query (a feed's links);
+    // neither feed is due, so nothing before it reads that table.
+    const { env: probe } = flakyDb(/from "family_member_feeds"/);
+
+    const result = await runFamilyTick(probe, first.familyId, day0);
+
+    expect(result.failedStages).toEqual(['synthesis']);
+    expect(errorLog).toHaveBeenCalledWith(
+      expect.stringMatching(/^feed .+ synthesis failed$/),
+      expect.any(Error),
+    );
+    // Exactly one of the two feeds made it: the failure didn't end the loop.
+    const withDays = await first.db
+      .select({ feedId: calendarEvents.linkId })
+      .from(calendarEvents)
+      .where(eq(calendarEvents.familyId, first.familyId));
+    expect(new Set(withDays.map((r) => r.feedId)).size).toBe(1);
   });
 });
 
