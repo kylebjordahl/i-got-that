@@ -165,6 +165,19 @@ paths in particular).
   reconciles via `enqueueReconcile(c, job)` → Cloudflare **Queue** (deployed)
   or inline `waitUntil` (local/tests). Never `await` a full reconcile in a
   request path (it blocks on slow CalDAV/Google writes).
+- **Recurring passes work over the *active horizon*, not a family's history.**
+  Nothing prunes finished rows (`calendar_events`, `tasks`, `event_mirrors`,
+  `source_events` only grow), yet the mirror, the travel-origin lookup, the
+  claim true-up, task rebuilds and read-back's feed dedupe run on every cron
+  tick *and* every queue job — so each is bounded by `activeHorizon()`
+  (`services/synthesis.ts`: the synthesis window plus 30 days behind it; read-back
+  uses its own window) via `overlapsWindow` / `endsAtOrAfter`. A finished event's
+  remote copy and claim are simply left as they were; only an event that no
+  longer exists (or moved to another caretaker) is cancelled, whatever its age.
+  A new recurring pass that reads "all of a member's events/tasks" is a cost
+  that grows every day, so bound it the same way. There is deliberately no
+  retention sweep yet. Specs whose fixtures use literal dates pin "now" with
+  `pinClockTo` (`test/helpers.ts`) so they stay on the horizon.
 - **Owned tasks are never deleted by reconciliation** (`services/task-gen.ts`):
   only unowned tasks are removed/swept, and user-converted (`createdVia:
   'manual'`) tasks are healed, never reclassified.

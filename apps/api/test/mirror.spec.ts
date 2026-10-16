@@ -18,18 +18,32 @@ import {
   type DeliveryTarget,
 } from '@igt/delivery';
 import { estimateTravelMinutes } from '@igt/classification';
-import type { DeliveryMethod } from '@igt/domain';
+import type { DeliveryMethod, GeoLocation } from '@igt/domain';
 import { describe, expect, it } from 'vitest';
 import { decryptSecret, encryptSecret } from '../src/lib/secrets.js';
 import {
   type DeliveryJob,
   deliveryQueueConsumer,
   enqueueReconcile,
+  eventTravelMinutes,
   purgeMemberMirror,
   syncMemberMirror,
+  travelContext,
 } from '../src/services/mirror.js';
 import { hashCalendarEvent } from '../src/services/synthesis.js';
-import { authed, bearer, call, linkMember, setupFamily, testKeys } from './helpers.js';
+import {
+  authed,
+  bearer,
+  call,
+  linkMember,
+  pinClockTo,
+  setupFamily,
+  testKeys,
+} from './helpers.js';
+
+// The fixtures are the week of 2026-07-06; the mirror only works over the
+// active horizon around "now".
+pinClockTo('2026-07-06T12:00:00Z');
 
 class FakeProvider implements DeliveryProvider {
   upserts: { event: DeliveryEvent; target: DeliveryTarget }[] = [];
@@ -186,6 +200,159 @@ describe('mirror reconcile (syncMemberMirror)', () => {
     expect(
       await db.select().from(eventMirrors).where(eq(eventMirrors.calendarEventId, event.id)),
     ).toHaveLength(0);
+  });
+
+  it('leaves finished history alone: an old event is neither re-sent nor cancelled', async () => {
+    const fam = await setupFamily('mirror-history@example.com');
+    const db = getDb(env.DB);
+    const { cal } = await connectTarget(db, fam, fam.childId);
+
+    // Six months before the pinned clock: far outside the active horizon. Each
+    // was mirrored back when it was current; the stale hash is what a pass
+    // that looked at them would re-send.
+    const oldEvent = (summary: string, day: string) =>
+      insertEvent(db, fam.familyId, fam.childId, {
+        synthKey: `bl:l1:${day}`,
+        summary,
+        dtstart: new Date(`${day}T15:30:00Z`),
+        dtend: new Date(`${day}T21:45:00Z`),
+      });
+    const oldMirror = async (event: { id: string }) =>
+      (
+        await db
+          .insert(eventMirrors)
+          .values({
+            familyMemberId: fam.childId,
+            calendarEventId: event.id,
+            icalUid: `igt-${event.id}`,
+            sequence: 3,
+            payloadHash: 'stale',
+            externalRef: 'old-ref',
+            status: 'sent',
+          })
+          .returning()
+      )[0]!;
+    const kept = await oldEvent('Kept for the record', '2026-01-06');
+    const deleted = await oldEvent('Deleted since', '2026-01-07');
+    const keptRow = await oldMirror(kept);
+    await oldMirror(deleted);
+    const current = await insertEvent(db, fam.familyId, fam.childId, {
+      synthKey: 'bl:l1:2026-07-06',
+      summary: 'School day',
+    });
+
+    const fake = new FakeProvider('caldav');
+    const registry = new DeliveryProviderRegistry().register(fake);
+    const rowFor = async (eventId: string) =>
+      (
+        await db.select().from(eventMirrors).where(eq(eventMirrors.calendarEventId, eventId))
+      )[0];
+
+    // 1) Only the current event is sent; the old one is not re-sent or cancelled.
+    const r1 = await syncMemberMirror(db, registry, testKeys(), fam.childId);
+    expect(r1.created).toBe(1);
+    expect(r1.removed).toBe(0);
+    expect(fake.upserts.map((u) => u.event.uid)).toEqual([`igt-${current.id}`]);
+    expect(fake.cancels).toHaveLength(0);
+    expect(await rowFor(kept.id)).toMatchObject({
+      sequence: 3,
+      payloadHash: 'stale',
+      externalRef: 'old-ref',
+    });
+
+    // 2) An event that no longer exists is cancelled whatever its age.
+    await db.delete(calendarEvents).where(eq(calendarEvents.id, deleted.id));
+    const r2 = await syncMemberMirror(db, registry, testKeys(), fam.childId);
+    expect(r2.removed).toBe(1);
+    expect(fake.cancels.map((c) => c.event.uid)).toEqual([`igt-${deleted.id}`]);
+    expect(await rowFor(deleted.id)).toBeUndefined();
+    expect(await rowFor(kept.id)).toBeDefined();
+
+    // 3) Pausing the calendar cancels what is current; history stays put.
+    await db.update(memberCalendars).set({ active: false }).where(eq(memberCalendars.id, cal.id));
+    const r3 = await syncMemberMirror(db, registry, testKeys(), fam.childId);
+    expect(r3.removed).toBe(1);
+    expect(fake.cancels.map((c) => c.event.uid)).toEqual([
+      `igt-${deleted.id}`,
+      `igt-${current.id}`,
+    ]);
+    expect(await rowFor(current.id)).toBeUndefined();
+    expect(await rowFor(kept.id)).toMatchObject({ sequence: 3, payloadHash: 'stale' });
+    expect(fake.upserts).toHaveLength(1);
+  });
+
+  it("cancels a claim that moved to another caretaker, however old it is", async () => {
+    const fam = await setupFamily('mirror-history-moved@example.com');
+    const db = getDb(env.DB);
+    await connectTarget(db, fam, fam.adminMemberId);
+    const claim = await insertEvent(db, fam.familyId, fam.adminMemberId, {
+      synthKey: 'task:old',
+      provenance: 'claimed_task',
+      summary: 'Pickup — child',
+      dtstart: new Date('2026-01-06T21:45:00Z'),
+      dtend: null,
+    });
+    await db.insert(eventMirrors).values({
+      familyMemberId: fam.adminMemberId,
+      calendarEventId: claim.id,
+      icalUid: `igt-${claim.id}`,
+      payloadHash: 'stale',
+    });
+
+    const fake = new FakeProvider('caldav');
+    const registry = new DeliveryProviderRegistry().register(fake);
+    // Still on their calendar, but finished: left alone.
+    expect((await syncMemberMirror(db, registry, testKeys(), fam.adminMemberId)).removed).toBe(0);
+
+    // Reassigned (syncClaimEvents moves the row): no longer on this calendar,
+    // so the remote copy comes down.
+    await db
+      .update(calendarEvents)
+      .set({ familyMemberId: fam.childId })
+      .where(eq(calendarEvents.id, claim.id));
+    const r = await syncMemberMirror(db, registry, testKeys(), fam.adminMemberId);
+    expect(r.removed).toBe(1);
+    expect(fake.cancels.map((c) => c.event.uid)).toEqual([`igt-${claim.id}`]);
+    expect(fake.upserts).toHaveLength(0);
+  });
+
+  it('cancels a conflict-masked event and mirrors its cf: segments instead', async () => {
+    const fam = await setupFamily('mirror-masked@example.com');
+    const db = getDb(env.DB);
+    await connectTarget(db, fam, fam.childId);
+    const fake = new FakeProvider('caldav');
+    const registry = new DeliveryProviderRegistry().register(fake);
+
+    const whole = await insertEvent(db, fam.familyId, fam.childId, {
+      synthKey: 'bl:l1:2026-07-06',
+      summary: 'School day',
+    });
+    expect((await syncMemberMirror(db, registry, testKeys(), fam.childId)).created).toBe(1);
+
+    // A resolved conflict masks the day and stands in two segments for it.
+    await db.update(calendarEvents).set({ maskedAt: new Date() }).where(eq(calendarEvents.id, whole.id));
+    const morning = await insertEvent(db, fam.familyId, fam.childId, {
+      synthKey: `cf:${whole.synthKey}:0`,
+      summary: 'School day',
+      dtstart: new Date('2026-07-06T15:30:00Z'),
+      dtend: new Date('2026-07-06T17:00:00Z'),
+    });
+    const afternoon = await insertEvent(db, fam.familyId, fam.childId, {
+      synthKey: `cf:${whole.synthKey}:1`,
+      summary: 'School day',
+      dtstart: new Date('2026-07-06T19:00:00Z'),
+      dtend: new Date('2026-07-06T21:45:00Z'),
+    });
+
+    const r = await syncMemberMirror(db, registry, testKeys(), fam.childId);
+    expect(r).toMatchObject({ created: 2, removed: 1 });
+    expect(fake.cancels.map((c) => c.event.uid)).toEqual([`igt-${whole.id}`]);
+    expect(
+      fake.upserts
+        .slice(1)
+        .map((u) => u.event.uid)
+        .sort(),
+    ).toEqual([`igt-${morning.id}`, `igt-${afternoon.id}`].sort());
   });
 
   it("carries a synthesized event's geocode into the delivery payload", async () => {
@@ -400,6 +567,132 @@ describe('mirror reconcile (syncMemberMirror)', () => {
     // Sanity: the long haul from home really is the bigger block, so the three
     // assertions above aren't all quietly agreeing on the same number.
     expect(travelFor(fromHome.id)!).toBeGreaterThan(travelFor(fromMeeting.id)!);
+  });
+
+  it('finds each trip\'s origin exactly as a scan of the whole calendar would', async () => {
+    const fam = await setupFamily('mirror-travel-parity@example.com');
+    const db = getDb(env.DB);
+
+    const home: GeoLocation = { lat: 37.4419, lon: -122.143, title: 'Home' };
+    const school: GeoLocation = { lat: 37.8, lon: -122.4, title: 'Lincoln Elementary' };
+    await db
+      .update(familyMembers)
+      .set({ homeLocation: 'Home', homeLocationGeo: home })
+      .where(eq(familyMembers.id, fam.adminMemberId));
+    // Spread out, so taking the wrong predecessor changes the minutes.
+    const place = (i: number): GeoLocation => ({
+      lat: 37.2 + i * 0.1,
+      lon: -122.45 + i * 0.05,
+      title: `Place ${i}`,
+    });
+    const t = (hhmm: string) => new Date(`2026-07-08T${hhmm}:00Z`);
+    const own = (synthKey: string, values: Partial<typeof calendarEvents.$inferInsert>) =>
+      insertEvent(db, fam.familyId, fam.adminMemberId, { synthKey, provenance: 'human', ...values });
+
+    // Not trips: the caretaker's own calendar, as awkward as it gets.
+    await own('ext:a', { dtstart: t('12:00'), dtend: t('13:00'), locationGeo: place(1) });
+    await own('ext:b', { dtstart: t('12:30'), dtend: t('13:20'), locationGeo: place(2) });
+    await own('ext:day', {
+      allDay: true, // says what the day is about, not where they are
+      dtstart: new Date('2026-07-08T00:00:00Z'),
+      dtend: new Date('2026-07-09T00:00:00Z'),
+      locationGeo: place(3),
+    });
+    await own('ext:instant', { dtstart: t('13:25'), dtend: null, locationGeo: place(4) });
+    await own('ext:long', { dtstart: t('12:50'), dtend: t('15:00'), locationGeo: place(5) });
+    const masked = await own('ext:masked', {
+      dtstart: t('13:30'),
+      dtend: t('13:55'),
+      locationGeo: place(6),
+    });
+    await db
+      .update(calendarEvents)
+      .set({ maskedAt: new Date() })
+      .where(eq(calendarEvents.id, masked.id));
+    await insertEvent(db, fam.familyId, fam.childId, {
+      synthKey: 'ext:not-theirs', // somebody else's calendar
+      provenance: 'human',
+      dtstart: t('13:56'),
+      dtend: t('13:58'),
+      locationGeo: place(7),
+    });
+    await own('ext:no-geo', { dtstart: t('18:30'), dtend: t('19:00'), locationGeo: null });
+    // Long before the horizon: never loaded, and could not be anyone's origin.
+    const ancient = await own('ext:ancient', {
+      dtstart: new Date('2026-01-08T14:00:00Z'),
+      dtend: new Date('2026-01-08T14:30:00Z'),
+      locationGeo: place(8),
+    });
+
+    // The trips, in the order they are checked.
+    const trip = (name: string, start: string, end: string | null) =>
+      insertEvent(db, fam.familyId, fam.adminMemberId, {
+        synthKey: `task:${name}`,
+        provenance: 'claimed_task',
+        summary: `Drop-off ${name}`,
+        dtstart: t(start),
+        dtend: end ? t(end) : null,
+        location: 'Lincoln Elementary',
+        locationGeo: school,
+      });
+    const trips = {
+      afterInstant: await trip('t1', '14:00', '14:15'), // 13:25 is the latest to have ended
+      afterLong: await trip('t2', '15:30', '15:45'), // 15:00 ends the latest
+      instant: await trip('t3', '15:35', null), // must not be its own origin
+      overlapped: await trip('t4', '15:40', '15:55'), // t2 still running; t3 is the latest
+      gap89: await trip('t5', '17:24', '17:39'),
+      gap90: await trip('t6', '17:25', '17:40'), // 90 minutes is "been elsewhere": home
+      afterNoGeo: await trip('t7', '19:30', '19:50'), // unknown place, so not home either
+    };
+
+    // The pre-change algorithm: one linear scan of the whole calendar per trip.
+    const everything = (await db
+      .select()
+      .from(calendarEvents)
+      .where(eq(calendarEvents.familyMemberId, fam.adminMemberId))).filter((e) => !e.maskedAt);
+    const endOf = (e: { dtstart: Date; dtend: Date | null }) => (e.dtend ?? e.dtstart).getTime();
+    const reference = (tripEvent: (typeof everything)[number]) => {
+      let preceding: (typeof everything)[number] | null = null;
+      for (const e of everything) {
+        if (e.id === tripEvent.id || e.allDay) continue;
+        if (endOf(e) > tripEvent.dtstart.getTime()) continue;
+        if (!preceding || endOf(e) > endOf(preceding)) preceding = e;
+      }
+      let origin: GeoLocation | null = home;
+      if (preceding && (tripEvent.dtstart.getTime() - endOf(preceding)) / 60_000 < 90) {
+        origin = preceding.locationGeo ?? null;
+      }
+      const window = tripEvent.dtend
+        ? Math.round((tripEvent.dtend.getTime() - tripEvent.dtstart.getTime()) / 60_000)
+        : 0;
+      return origin
+        ? estimateTravelMinutes(origin, school)
+        : Math.min(window > 0 ? window : 15, 120);
+    };
+
+    const ctx = await travelContext(db, fam.adminMemberId);
+    expect(ctx.ownCalendar.map((e) => e.id)).not.toContain(ancient.id);
+    for (const [name, event] of Object.entries(trips)) {
+      expect(eventTravelMinutes(ctx, event, 'dropoff'), name).toBe(reference(event));
+    }
+
+    // And the answers are the ones the fixture was built to produce.
+    const minutes = (key: keyof typeof trips) => eventTravelMinutes(ctx, trips[key], 'dropoff');
+    expect(minutes('afterInstant')).toBe(estimateTravelMinutes(place(4), school));
+    expect(minutes('afterLong')).toBe(estimateTravelMinutes(place(5), school));
+    expect(minutes('instant')).toBe(estimateTravelMinutes(place(5), school));
+    expect(minutes('overlapped')).toBe(estimateTravelMinutes(school, school));
+    expect(minutes('gap89')).toBe(estimateTravelMinutes(school, school));
+    expect(minutes('gap90')).toBe(estimateTravelMinutes(home, school));
+    expect(minutes('afterNoGeo')).toBe(20); // the claim's own window
+    expect(
+      new Set([
+        minutes('afterInstant'),
+        minutes('afterLong'),
+        minutes('gap90'),
+        minutes('overlapped'),
+      ]).size,
+    ).toBe(4);
   });
 
   it('measures a claimed attendance event the same way — it is a trip too', async () => {

@@ -3,9 +3,27 @@ import {
   env,
   waitOnExecutionContext,
 } from 'cloudflare:test';
-import { expect } from 'vitest';
+import { afterAll, beforeAll, expect, vi } from 'vitest';
 import app from '../src/index.js';
 import { buildKekKeySet, type KekKeySet } from '../src/lib/secrets.js';
+
+/**
+ * Pin "now" for the rest of the file. The mirror, claim true-up and task
+ * rebuilds only work over the family's active horizon (`activeHorizon`: the
+ * synthesis window and the 30 days behind it), so a fixture on a literal date
+ * is only handled while the clock is near it — run a few months later it would
+ * be history, and those passes would rightly ignore it. Only `Date` is faked;
+ * timers and I/O stay real.
+ */
+export function pinClockTo(iso: string): void {
+  beforeAll(() => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date(iso));
+  });
+  afterAll(() => {
+    vi.useRealTimers();
+  });
+}
 
 export async function call(path: string, init?: RequestInit) {
   const ctx = createExecutionContext();

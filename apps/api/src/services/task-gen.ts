@@ -29,6 +29,7 @@ import {
 } from '@igt/classification';
 import { geoKey, type GeoLocation } from '@igt/domain';
 import { runChunked } from '../lib/d1.js';
+import { activeHorizon, endsAtOrAfter } from './synthesis.js';
 import { isRuleOwned, ownerRowsFor, setTaskOwners } from './task-owners.js';
 
 type CalendarEventRow = typeof calendarEvents.$inferSelect;
@@ -478,8 +479,10 @@ export async function buildMemberTasks(
 
 /**
  * Rebuild a member's tasks after a task-rule/default change. Task rules don't
- * touch event content hashes, so force reconsideration by clearing every
- * (non-claimed) event's `tasksBuiltHash` first, then run task-gen.
+ * touch event content hashes, so force reconsideration by clearing the
+ * `tasksBuiltHash` of every (non-claimed) event on the active horizon first,
+ * then run task-gen. Events that finished before the horizon keep theirs: a
+ * rule edit shouldn't regenerate tasks for the family's entire history.
  */
 export async function rebuildMemberTasks(
   db: Db,
@@ -492,6 +495,7 @@ export async function rebuildMemberTasks(
       and(
         eq(calendarEvents.familyMemberId, familyMemberId),
         ne(calendarEvents.provenance, 'claimed_task'),
+        endsAtOrAfter(calendarEvents.dtstart, calendarEvents.dtend, activeHorizon().start),
       ),
     );
   return buildMemberTasks(db, familyMemberId);
@@ -521,7 +525,8 @@ export async function buildFamilyTasks(
  * Rebuild every member's tasks after an assignment-rule change. Assignment rules
  * are family-scoped and their owner is a different member than the task is
  * about, so a change can affect any child's tasks — force reconsideration by
- * clearing every (non-claimed) event's `tasksBuiltHash`, then run family task-gen.
+ * clearing the `tasksBuiltHash` of every (non-claimed) event on the active
+ * horizon (as `rebuildMemberTasks`), then run family task-gen.
  */
 export async function rebuildFamilyTasks(
   db: Db,
@@ -534,6 +539,7 @@ export async function rebuildFamilyTasks(
       and(
         eq(calendarEvents.familyId, familyId),
         ne(calendarEvents.provenance, 'claimed_task'),
+        endsAtOrAfter(calendarEvents.dtstart, calendarEvents.dtend, activeHorizon().start),
       ),
     );
   return buildFamilyTasks(db, familyId);
