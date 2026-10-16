@@ -12,7 +12,11 @@ import {
 import { describe, expect, it } from 'vitest';
 import { hashCalendarEvent } from '../src/services/synthesis.js';
 import { withOwners } from '../src/services/task-owners.js';
-import { authed, bearer, call, setupFamily } from './helpers.js';
+import { authed, bearer, call, pinClockTo, setupFamily } from './helpers.js';
+
+// The fixtures are on 2026-07-06; a rule change only rebuilds events on the
+// active horizon around "now".
+pinClockTo('2026-07-06T12:00:00Z');
 
 type Db = ReturnType<typeof getDb>;
 

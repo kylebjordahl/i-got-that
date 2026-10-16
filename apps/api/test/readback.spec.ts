@@ -329,6 +329,79 @@ describe('read-back (human events from the target calendar)', () => {
     expect(humans).toHaveLength(1);
   });
 
+  it('dedupes against the feed events in the read-back window, not the feed\'s whole history', async () => {
+    const f = await googleTargetFixture('readback-feed-window@example.com');
+    const feed = (
+      await f.db
+        .insert(feeds)
+        .values({
+          familyId: f.familyId,
+          kind: 'google',
+          externalAccountId: (
+            await f.db
+              .select()
+              .from(externalAccounts)
+              .where(eq(externalAccounts.userId, f.admin.userId))
+              .limit(1)
+          )[0]!.id,
+          sourceCalendarId: 'kid-calendar-id',
+          mode: 'standard',
+        })
+        .returning()
+    )[0]!;
+    await f.db.insert(familyMemberFeeds).values({
+      familyId: f.familyId,
+      feedId: feed.id,
+      familyMemberId: f.childId,
+    });
+    const source = (uid: string, start: string, end: string) => ({
+      feedId: feed.id,
+      familyId: f.familyId,
+      icalUid: uid,
+      recurrenceId: '',
+      summary: uid,
+      dtstart: new Date(start),
+      dtend: new Date(end),
+      allDay: false,
+      contentHash: 'h',
+    });
+    await f.db.insert(sourceEvents).values([
+      // Began before the window but is still running at its start: in range.
+      source('ongoing@example.com', '2026-07-05T22:00:00Z', '2026-07-06T02:00:00Z'),
+      source('inside@example.com', '2026-07-09T15:00:00Z', '2026-07-09T16:00:00Z'),
+      // Finished months ago: it takes no part in deduping this window.
+      source('history@example.com', '2026-01-09T15:00:00Z', '2026-01-09T16:00:00Z'),
+    ]);
+
+    const occurrence = (uid: string, start: string, end: string) => ({
+      iCalUID: uid,
+      status: 'confirmed',
+      summary: uid,
+      start: { dateTime: start },
+      end: { dateTime: end },
+    });
+    const r = await readBackMember(f.db, f.cal, {
+      ...opts,
+      fetchImpl: googleFetch([
+        occurrence('ongoing@example.com', '2026-07-05T22:00:00Z', '2026-07-06T02:00:00Z'),
+        occurrence('inside@example.com', '2026-07-09T15:00:00Z', '2026-07-09T16:00:00Z'),
+        occurrence('history@example.com', '2026-07-10T15:00:00Z', '2026-07-10T16:00:00Z'),
+      ]),
+    });
+
+    expect(r.upserted).toBe(1);
+    const humans = await f.db
+      .select()
+      .from(calendarEvents)
+      .where(
+        and(
+          eq(calendarEvents.familyMemberId, f.childId),
+          eq(calendarEvents.provenance, 'human'),
+        ),
+      );
+    expect(humans.map((h) => h.externalUid)).toEqual(['history@example.com']);
+  });
+
   it('skips an inactive target and one without a resolvable credential', async () => {
     const f = await googleTargetFixture('readback-skip@example.com');
     const db = f.db;
