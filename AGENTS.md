@@ -259,7 +259,14 @@ paths in particular).
   refresh additionally passes `force` to `ingestFeed`, which drops
   `If-None-Match` and sends `Cache-Control: no-cache` so no intermediary can
   answer it either. The background poll still uses the stored ETag — being
-  told "nothing changed" is exactly what it's for.
+  told "nothing changed" is exactly what it's for — but only while the last
+  full parse's expansion still covers the synthesis window: `source_events`
+  holds only the RRULE instances expanded inside that parse's window, so a
+  publisher with a stable ETag would otherwise answer 304 until the series ran
+  dry. `feeds.expanded_through` records the horizon, and `ingestIcsFeed` goes
+  unconditional (no `If-None-Match`, but no `no-cache` either) once fewer than
+  45 days of it remain. Account and busy feeds re-fetch their window every poll
+  and don't use it.
 - **D1 binds at most 100 parameters per statement, and the tests won't tell
   you.** The 101st comes back as `too many SQL variables: SQLITE_ERROR` — a
   500. Every `inArray(col, ids)` binds one per id, so any query that fans out
