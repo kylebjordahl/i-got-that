@@ -271,7 +271,16 @@ paths in particular).
   reports a failed ingest in its 200 response (`ingest.error`) instead of
   throwing past synthesis and task-gen. Without that a feed broken for days
   loses a day of horizon per day. Only `paused` (a user's decision) is ever
-  skipped outright.
+  skipped outright. The mirror image is a read that *succeeds* but is
+  incomplete (an empty VCALENDAR from a publisher outage, a CalDAV 207 with no
+  objects): `deleteStaleSourceEvents` holds any sweep that would remove all of a
+  feed's in-window rows (of ≥3) or over half (of ≥10) until the third
+  consecutive such fetch *and* six hours after the first (a Refresh-button
+  cooldown is 60 s, so the count alone is no evidence of an outage), recording
+  `suspicious fetch: …` in `lastErrorMessage` and counting
+  `feeds.suspicious_sweep_count` / `suspicious_since` — via the reader's
+  `feedPatch`, since `ingestFeed`'s success `UPDATE` would clear a separate
+  write — and never sweeps rows of CalDAV objects that failed to parse.
 - **Nothing on the outbound path may be served from cache.** A Worker's
   `fetch()` is not a bare socket — a cacheable GET comes from Cloudflare's
   cache, honouring the origin's `Cache-Control`, and that entry answers our
@@ -283,7 +292,14 @@ paths in particular).
   refresh additionally passes `force` to `ingestFeed`, which drops
   `If-None-Match` and sends `Cache-Control: no-cache` so no intermediary can
   answer it either. The background poll still uses the stored ETag — being
-  told "nothing changed" is exactly what it's for.
+  told "nothing changed" is exactly what it's for — but only while the last
+  full parse's expansion still covers the synthesis window: `source_events`
+  holds only the RRULE instances expanded inside that parse's window, so a
+  publisher with a stable ETag would otherwise answer 304 until the series ran
+  dry. `feeds.expanded_through` records the horizon, and `ingestIcsFeed` goes
+  unconditional (no `If-None-Match`, but no `no-cache` either) once fewer than
+  45 days of it remain. Account and busy feeds re-fetch their window every poll
+  and don't use it.
 - **D1 binds at most 100 parameters per statement, and the tests won't tell
   you.** The 101st comes back as `too many SQL variables: SQLITE_ERROR` — a
   500. Every `inArray(col, ids)` binds one per id, so any query that fans out

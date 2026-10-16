@@ -500,6 +500,165 @@ describe('ingest: an ICS feed is read in its own timezone, parsed once', () => {
   });
 });
 
+describe('ingest: a 304 only holds while the stored expansion still covers the synthesis window', () => {
+  // `source_events` holds only what the last FULL parse expanded, and a 304
+  // never parses. A publisher with a stable ETag answers 304 forever, so unless
+  // ingest stops asking once the horizon gets close, the occurrences of every
+  // RRULE series run out under the (moving) synthesis window.
+  const DAY = 24 * 60 * 60 * 1000;
+  const T0 = new Date('2026-07-01T00:00:00Z');
+  const at = (days: number) => new Date(T0.getTime() + days * DAY);
+  // The default ICS window is 90 days from `windowStart`.
+  const T0_HORIZON = at(90);
+
+  /** A static file: an open-ended weekly series (Mondays) that never changes. */
+  const weeklyIcs = [
+    'BEGIN:VCALENDAR',
+    'VERSION:2.0',
+    'PRODID:-//test//test//EN',
+    'BEGIN:VEVENT',
+    'UID:weekly@example.com',
+    'DTSTART:20260706T090000Z',
+    'DTEND:20260706T100000Z',
+    'RRULE:FREQ=WEEKLY',
+    'SUMMARY:Weekly',
+    'END:VEVENT',
+    'END:VCALENDAR',
+  ].join('\r\n');
+
+  /** Serves the file with a fixed ETag, and answers 304 whenever it's sent back. */
+  function staticPublisher(etag = '"v1"') {
+    const requests: Record<string, string>[] = [];
+    const fetchImpl = (async (_url: string, init?: { headers?: Record<string, string> }) => {
+      const headers = { ...(init?.headers ?? {}) };
+      requests.push(headers);
+      if (headers['If-None-Match'] === etag) {
+        return { ok: false, status: 304, headers: { get: () => null }, text: async () => '' };
+      }
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: (h: string) => (h.toLowerCase() === 'etag' ? etag : null) },
+        text: async () => weeklyIcs,
+      };
+    }) as unknown as typeof fetch;
+    return { requests, fetchImpl };
+  }
+
+  async function setup(email: string, extra: Partial<typeof feeds.$inferInsert> = {}) {
+    const user = await login(email);
+    const familyId = await createFamily(user.token, 'Ingest Horizon');
+    const db = getDb(env.DB);
+    const feed = (
+      await db
+        .insert(feeds)
+        .values({ familyId, kind: 'ics', url: 'https://example.invalid/static.ics', mode: 'standard', ...extra })
+        .returning()
+    )[0]!;
+    const reload = async () =>
+      (await db.select().from(feeds).where(eq(feeds.id, feed.id)).limit(1))[0]!;
+    const starts = async () =>
+      (await db.select().from(sourceEvents).where(eq(sourceEvents.feedId, feed.id)))
+        .map((r) => r.dtstart.getTime())
+        .sort((a, b) => a - b);
+    return { db, feed, reload, starts };
+  }
+
+  it('stops sending If-None-Match once fewer than 45 days of expansion remain, and expands further out', async () => {
+    const { db, feed, reload, starts } = await setup('ingest-horizon-reexpand@example.com');
+    const { requests, fetchImpl } = staticPublisher();
+
+    // First sync: unconditional (no ETag yet), and it records how far it expanded.
+    await ingestFeed(db, feed, { fetchImpl, windowStart: T0 });
+    const first = await reload();
+    expect(first.etag).toBe('"v1"');
+    expect(first.expandedThrough?.getTime()).toBe(T0_HORIZON.getTime());
+    expect(requests[0]).not.toHaveProperty('If-None-Match');
+    const firstStarts = await starts();
+    // Mondays from 2026-07-06, up to (not including) the horizon.
+    expect(firstStarts[0]).toBe(new Date('2026-07-06T09:00:00Z').getTime());
+    expect(firstStarts.at(-1)).toBe(new Date('2026-09-28T09:00:00Z').getTime());
+
+    // Day 45: exactly 45 days of expansion left — still trusted, still a 304.
+    await ingestFeed(db, first, { fetchImpl, windowStart: at(45) });
+    expect(requests[1]!['If-None-Match']).toBe('"v1"');
+    expect((await reload()).expandedThrough?.getTime()).toBe(T0_HORIZON.getTime());
+    expect(await starts()).toEqual(firstStarts);
+
+    // Day 46: 44 days left, short of the 30-day synthesis window + 15 days of
+    // margin. The ETag is not sent, so the publisher can't answer 304 — the
+    // feed is re-parsed and the series extends. It is not a *user* refresh, so
+    // nothing asks intermediaries to revalidate.
+    await ingestFeed(db, await reload(), { fetchImpl, windowStart: at(46) });
+    expect(requests[2]).toEqual({});
+    const second = await reload();
+    expect(second.expandedThrough?.getTime()).toBe(at(46 + 90).getTime());
+    const secondStarts = await starts();
+    expect(secondStarts.length).toBeGreaterThan(firstStarts.length);
+    expect(secondStarts.at(-1)).toBe(new Date('2026-11-09T09:00:00Z').getTime());
+    // Nothing was lost on the way, and nothing is duplicated.
+    expect(secondStarts.slice(0, firstStarts.length)).toEqual(firstStarts);
+    expect(new Set(secondStarts).size).toBe(secondStarts.length);
+
+    // With a fresh horizon the ETag is trusted again.
+    await ingestFeed(db, second, { fetchImpl, windowStart: at(47) });
+    expect(requests[3]!['If-None-Match']).toBe('"v1"');
+    expect((await reload()).expandedThrough?.getTime()).toBe(at(46 + 90).getTime());
+  });
+
+  it('keeps skipping the parse on a 304 while headroom remains, and leaves expandedThrough alone', async () => {
+    const { db, feed, reload, starts } = await setup('ingest-horizon-304@example.com');
+    const { requests, fetchImpl } = staticPublisher();
+    await ingestFeed(db, feed, { fetchImpl, windowStart: T0 });
+    const synced = await reload();
+    const before = await starts();
+
+    const parse = vi.spyOn(ICAL, 'parse');
+    try {
+      const res = await ingestFeed(db, synced, { fetchImpl, windowStart: at(20) });
+      expect(res.fetched).toBe(false);
+      expect(parse).not.toHaveBeenCalled();
+    } finally {
+      parse.mockRestore();
+    }
+    expect(requests[1]!['If-None-Match']).toBe('"v1"');
+    const after = await reload();
+    expect(after.expandedThrough?.getTime()).toBe(T0_HORIZON.getTime());
+    expect(after.status).toBe('active');
+    expect(await starts()).toEqual(before);
+  });
+
+  it('re-expands a legacy feed (ETag stored, expandedThrough null) on its next poll', async () => {
+    // Rows from before the column existed: they have an ETag and no recorded
+    // horizon, so there is no telling how far their `source_events` reach.
+    const { db, feed, reload, starts } = await setup('ingest-horizon-legacy@example.com', {
+      etag: '"v1"',
+    });
+    expect(feed.expandedThrough).toBeNull();
+    const { requests, fetchImpl } = staticPublisher();
+
+    const res = await ingestFeed(db, feed, { fetchImpl, windowStart: T0 });
+    expect(res.fetched).toBe(true);
+    expect(requests[0]).not.toHaveProperty('If-None-Match');
+    const synced = await reload();
+    expect(synced.expandedThrough?.getTime()).toBe(T0_HORIZON.getTime());
+    expect((await starts()).length).toBeGreaterThan(0);
+
+    // And from then on it behaves like any other feed.
+    const again = await ingestFeed(db, synced, { fetchImpl, windowStart: at(1) });
+    expect(again.fetched).toBe(false);
+    expect(requests[1]!['If-None-Match']).toBe('"v1"');
+  });
+
+  it('records the horizon on a forced refresh too (which is unconditional anyway)', async () => {
+    const { db, feed, reload } = await setup('ingest-horizon-force@example.com', { etag: '"v1"' });
+    const { requests, fetchImpl } = staticPublisher();
+    await ingestFeed(db, feed, { fetchImpl, windowStart: T0, force: true });
+    expect(requests[0]).toEqual({ 'cache-control': 'no-cache' });
+    expect((await reload()).expandedThrough?.getTime()).toBe(T0_HORIZON.getTime());
+  });
+});
+
 describe('ingest: a rescheduled recurring instance keeps its identity', () => {
   // Fixed window so the assertions don't depend on today's date — including the
   // claim true-up, which only works over the active horizon around "now".
@@ -645,5 +804,408 @@ describe('ingest: a rescheduled recurring instance keeps its identity', () => {
     expect(claimsAfter[0]!.id).toBe(claimBefore!.id);
     expect(claimsAfter[0]!.dtstart.toISOString()).toBe('2026-08-05T19:30:00.000Z');
     expect(claimsAfter[0]!.travelTimeOverrideMin).toBe(25);
+  });
+});
+
+describe('ingest: the stale sweep does not trust a fetch that looks like a bad read', () => {
+  // Fixed window so the assertions don't depend on today's date.
+  const window = {
+    windowStart: new Date('2026-07-01T00:00:00Z'),
+    windowEnd: new Date('2026-09-01T00:00:00Z'),
+  };
+  const uidsOf = (n: number) => Array.from({ length: n }, (_, i) => `ev-${i}@example.com`);
+  const dayOf = (i: number) => String((i % 27) + 1).padStart(2, '0');
+
+  /** A VCALENDAR with one hour-long August event per uid. */
+  function icsOf(uids: string[]): string {
+    return [
+      'BEGIN:VCALENDAR',
+      'VERSION:2.0',
+      ...uids.flatMap((uid, i) => [
+        'BEGIN:VEVENT',
+        `UID:${uid}`,
+        `DTSTART:202608${dayOf(i)}T150000Z`,
+        `DTEND:202608${dayOf(i)}T160000Z`,
+        `SUMMARY:${uid}`,
+        'END:VEVENT',
+      ]),
+      'END:VCALENDAR',
+    ].join('\r\n');
+  }
+
+  /** An ICS feed whose upstream document (and ETag) the test steers. */
+  async function icsFeedFixture(email: string) {
+    const user = await login(email);
+    const familyId = await createFamily(user.token, 'Sweep Guard');
+    const db = getDb(env.DB);
+    const feed = (
+      await db
+        .insert(feeds)
+        .values({ familyId, kind: 'ics', url: 'https://example.invalid/guard.ics', mode: 'standard' })
+        .returning()
+    )[0]!;
+    const upstream = { body: '', etag: null as string | null, notModified: false };
+    const requests: Record<string, string>[] = [];
+    const fetchImpl = (async (_url: string, init?: { headers?: Record<string, string> }) => {
+      requests.push({ ...(init?.headers ?? {}) });
+      if (upstream.notModified) return { ok: false, status: 304, headers: { get: () => null } };
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: (h: string) => (h.toLowerCase() === 'etag' ? upstream.etag : null) },
+        text: async () => upstream.body,
+      };
+    }) as unknown as typeof fetch;
+    const reload = async () =>
+      (await db.select().from(feeds).where(eq(feeds.id, feed.id)).limit(1))[0]!;
+    /** One poll, the way the cron does it: from the row as it is now. */
+    const sync = async () => ingestFeed(db, await reload(), { fetchImpl, ...window });
+    const storedUids = async () =>
+      (await db.select().from(sourceEvents).where(eq(sourceEvents.feedId, feed.id)))
+        .map((r) => r.icalUid)
+        .sort();
+    /** Pretend the hold began `hours` earlier than it did (the sweep reads the real clock). */
+    const ageHold = async (hours: number) => {
+      const since = (await reload()).suspiciousSince!;
+      await db
+        .update(feeds)
+        .set({ suspiciousSince: new Date(since.getTime() - hours * 60 * 60 * 1000) })
+        .where(eq(feeds.id, feed.id));
+    };
+    return { db, feed, upstream, requests, fetchImpl, reload, sync, storedUids, ageHold };
+  }
+
+  it('keeps every row and warns when a populated feed comes back empty, and only deletes once the hold has also lasted six hours', async () => {
+    const f = await icsFeedFixture('sweep-guard-empty@example.com');
+    const all = uidsOf(5);
+    f.upstream.body = icsOf(all);
+    await f.sync();
+    expect(await f.storedUids()).toEqual(all);
+    expect((await f.reload()).suspiciousSweepCount).toBe(0);
+
+    // An outage page that still parses: a VCALENDAR with nothing in it.
+    f.upstream.body = icsOf([]);
+    const first = await f.sync();
+    expect(first.fetched).toBe(true);
+    expect(await f.storedUids()).toEqual(all);
+    const held1 = await f.reload();
+    expect(held1.suspiciousSweepCount).toBe(1);
+    expect(held1.lastErrorMessage).toBe(
+      'suspicious fetch: 5 of 5 in-window events missing — holding them (1/3)',
+    );
+    const since = held1.suspiciousSince!;
+    expect(since).toBeInstanceOf(Date);
+    // Not a failed read: the feed stays active and unpaced by the error backoff.
+    expect(held1.status).toBe('active');
+    expect(held1.consecutiveFailures).toBe(0);
+
+    await f.sync();
+    expect(await f.storedUids()).toEqual(all);
+    const held2 = await f.reload();
+    expect(held2.suspiciousSweepCount).toBe(2);
+    expect(held2.lastErrorMessage).toContain('(2/3)');
+    // The clock started at the first held sweep and is not restarted.
+    expect(held2.suspiciousSince).toEqual(since);
+
+    // The count has now been reached, but three quick fetches (a person
+    // mashing Refresh, or a 15-minute poll) prove nothing about an outage: it
+    // keeps holding, and says until when.
+    await f.sync();
+    expect(await f.storedUids()).toEqual(all);
+    const held3 = await f.reload();
+    expect(held3.suspiciousSweepCount).toBe(3);
+    expect(held3.suspiciousSince).toEqual(since);
+    const until = new Date(since.getTime() + 6 * 60 * 60 * 1000).toISOString().slice(0, 16);
+    expect(held3.lastErrorMessage).toBe(
+      `suspicious fetch: 5 of 5 in-window events missing — holding them until ${until}Z`,
+    );
+    await f.sync();
+    expect(await f.storedUids()).toEqual(all);
+    expect((await f.reload()).suspiciousSweepCount).toBe(4);
+
+    // Just short of six hours: still held.
+    await f.ageHold(5.9);
+    await f.sync();
+    expect(await f.storedUids()).toEqual(all);
+
+    // Past the floor, the next suspicious fetch is believed.
+    await f.ageHold(0.2);
+    await f.sync();
+    expect(await f.storedUids()).toEqual([]);
+    const done = await f.reload();
+    expect(done.suspiciousSweepCount).toBe(0);
+    expect(done.suspiciousSince).toBeNull();
+    expect(done.lastErrorMessage).toBeNull();
+    expect(done.status).toBe('active');
+  });
+
+  it("holds the sweep from the count stored on the feed, not from the caller's copy of the row", async () => {
+    const f = await icsFeedFixture('sweep-guard-stale-row@example.com');
+    const all = uidsOf(4);
+    f.upstream.body = icsOf(all);
+    await ingestFeed(f.db, f.feed, { fetchImpl: f.fetchImpl, ...window });
+
+    f.upstream.body = icsOf([]);
+    // `f.feed` still says suspiciousSweepCount: 0 on every call.
+    await ingestFeed(f.db, f.feed, { fetchImpl: f.fetchImpl, ...window });
+    await ingestFeed(f.db, f.feed, { fetchImpl: f.fetchImpl, ...window });
+    await ingestFeed(f.db, f.feed, { fetchImpl: f.fetchImpl, ...window });
+    expect(await f.storedUids()).toEqual(all);
+    expect((await f.reload()).suspiciousSweepCount).toBe(3);
+    await f.ageHold(7);
+    await ingestFeed(f.db, f.feed, { fetchImpl: f.fetchImpl, ...window });
+    expect(await f.storedUids()).toEqual([]);
+  });
+
+  it('a normal fetch in between resets the count and clears the warning', async () => {
+    const f = await icsFeedFixture('sweep-guard-reset@example.com');
+    const all = uidsOf(5);
+    f.upstream.body = icsOf(all);
+    await f.sync();
+
+    f.upstream.body = icsOf([]);
+    await f.sync();
+    await f.sync();
+    expect((await f.reload()).suspiciousSweepCount).toBe(2);
+    // Long-running hold: the time floor is already met, so only the count and
+    // the reset below are what's under test.
+    await f.ageHold(7);
+
+    // The publisher recovers.
+    f.upstream.body = icsOf(all);
+    await f.sync();
+    const recovered = await f.reload();
+    expect(recovered.suspiciousSweepCount).toBe(0);
+    expect(recovered.suspiciousSince).toBeNull();
+    expect(recovered.lastErrorMessage).toBeNull();
+    expect(await f.storedUids()).toEqual(all);
+
+    // Empty fetches start from scratch — count AND clock — so even two of them
+    // (the old hold was long past six hours) still delete nothing, and a third
+    // is held too, because the new hold is minutes old.
+    f.upstream.body = icsOf([]);
+    await f.sync();
+    await f.sync();
+    expect(await f.storedUids()).toEqual(all);
+    expect((await f.reload()).suspiciousSweepCount).toBe(2);
+    await f.sync();
+    expect(await f.storedUids()).toEqual(all);
+    expect((await f.reload()).suspiciousSweepCount).toBe(3);
+  });
+
+  it('still deletes a small genuine removal (1 of 10) immediately, with no warning', async () => {
+    const f = await icsFeedFixture('sweep-guard-small@example.com');
+    const all = uidsOf(10);
+    f.upstream.body = icsOf(all);
+    await f.sync();
+
+    f.upstream.body = icsOf(all.slice(1));
+    await f.sync();
+    expect(await f.storedUids()).toEqual(all.slice(1));
+    const row = await f.reload();
+    expect(row.suspiciousSweepCount).toBe(0);
+    expect(row.lastErrorMessage).toBeNull();
+  });
+
+  // [rows before, rows still served upstream, whether the sweep is held back]
+  it.each([
+    [2, 0, false], // too few rows to tell an outage from a real clear-out
+    [3, 0, true], // every row of a feed with at least three
+    [9, 4, false], // more than half, but under ten rows
+    [10, 5, false], // exactly half is not "more than half"
+    [10, 4, true], // six of ten
+    [10, 0, true],
+  ])('a feed of %i events that now serves %i: held back = %s', async (before, kept, held) => {
+    const f = await icsFeedFixture(`sweep-guard-threshold-${before}-${kept}@example.com`);
+    const all = uidsOf(before);
+    f.upstream.body = icsOf(all);
+    await f.sync();
+
+    f.upstream.body = icsOf(all.slice(0, kept));
+    await f.sync();
+    expect(await f.storedUids()).toEqual(held ? all : all.slice(0, kept).sort());
+    expect((await f.reload()).suspiciousSweepCount).toBe(held ? 1 : 0);
+  });
+
+  it("does not record a held document's ETag, and a 304 afterwards clears the warning", async () => {
+    const f = await icsFeedFixture('sweep-guard-etag@example.com');
+    const all = uidsOf(5);
+    f.upstream.body = icsOf(all);
+    f.upstream.etag = '"good"';
+    await f.sync();
+    expect((await f.reload()).etag).toBe('"good"');
+
+    // The empty document arrives with its own ETag. Storing it would make the
+    // next poll a 304 — skipping the sweep — so the count could never advance.
+    f.upstream.body = icsOf([]);
+    f.upstream.etag = '"empty"';
+    await f.sync();
+    expect((await f.reload()).etag).toBe('"good"');
+    await f.sync();
+    expect(f.requests.at(-1)).toMatchObject({ 'If-None-Match': '"good"' });
+    expect((await f.reload()).suspiciousSweepCount).toBe(2);
+
+    // Upstream reverts to the document we accepted: "not modified" is all clear.
+    f.upstream.notModified = true;
+    await f.sync();
+    const row = await f.reload();
+    expect(row.suspiciousSweepCount).toBe(0);
+    expect(row.suspiciousSince).toBeNull();
+    expect(row.lastErrorMessage).toBeNull();
+    expect(await f.storedUids()).toEqual(all);
+  });
+});
+
+describe('ingest: a CalDAV object we could not read is not an event the server deleted', () => {
+  const window = {
+    windowStart: new Date('2026-07-01T00:00:00Z'),
+    windowEnd: new Date('2026-09-01T00:00:00Z'),
+  };
+  const COLLECTION = 'https://caldav.example.com/calendars/user/home/';
+
+  const goodObject = (uid: string, day: number) => ({
+    href: `/calendars/user/home/${uid}.ics`,
+    etag: `e-${uid}`,
+    data: `BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:${uid}\r\nDTSTART:202608${String(day).padStart(2, '0')}T150000Z\r\nDTEND:202608${String(day).padStart(2, '0')}T160000Z\r\nSUMMARY:${uid}\r\nEND:VEVENT\r\nEND:VCALENDAR`,
+  });
+  /** A VEVENT that never closes: the parser rejects the whole object. */
+  const brokenObject = (uid: string | null) => ({
+    href: `/calendars/user/home/${uid ?? 'anonymous'}.ics`,
+    etag: `bad-${uid}`,
+    data: `BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\n${uid ? `UID:${uid}\r\n` : ''}DTSTART:20260806T150000Z\r\nSUMMARY:Broken\r\n`,
+  });
+
+  function multistatusXml(entries: { href: string; etag: string; data?: string }[]): string {
+    const responses = entries
+      .map(
+        (e) => `<D:response>
+  <D:href>${e.href}</D:href>
+  <D:propstat>
+    <D:prop>
+      <D:getetag>"${e.etag}"</D:getetag>
+      ${e.data !== undefined ? `<C:calendar-data>${e.data.replace(/&/g, '&amp;').replace(/</g, '&lt;')}</C:calendar-data>` : ''}
+    </D:prop>
+    <D:status>HTTP/1.1 200 OK</D:status>
+  </D:propstat>
+</D:response>`,
+      )
+      .join('\n');
+    return `<?xml version="1.0" encoding="utf-8"?>\n<D:multistatus xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">\n${responses}\n</D:multistatus>`;
+  }
+
+  async function caldavFixture(email: string) {
+    const user = await login(email);
+    const familyId = await createFamily(user.token, 'CalDAV Sweep');
+    const db = getDb(env.DB);
+    const credRef = await storeSecret(
+      db,
+      testKeys(),
+      null,
+      JSON.stringify({ kind: 'basic', username: 'u', password: 'p' }),
+    );
+    const account = (
+      await db
+        .insert(externalAccounts)
+        .values({ userId: user.userId, kind: 'caldav', name: 'CalDAV', credentialsRef: credRef })
+        .returning()
+    )[0]!;
+    const feed = (
+      await db
+        .insert(feeds)
+        .values({
+          familyId,
+          kind: 'caldav',
+          externalAccountId: account.id,
+          sourceCalendarId: COLLECTION,
+          mode: 'standard',
+        })
+        .returning()
+    )[0]!;
+    // What the server's REPORT returns next (tsdav asks twice: hrefs, then multiget).
+    let objects: { href: string; etag: string; data: string }[] = [];
+    const fetchImpl = (async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = String(init?.body ?? '');
+      const xml = body.includes('calendar-multiget')
+        ? multistatusXml(objects)
+        : multistatusXml(objects.map(({ href, etag }) => ({ href, etag })));
+      return new Response(xml, {
+        status: 207,
+        headers: { 'content-type': 'application/xml; charset=utf-8' },
+      });
+    }) as unknown as typeof fetch;
+    const reload = async () =>
+      (await db.select().from(feeds).where(eq(feeds.id, feed.id)).limit(1))[0]!;
+    return {
+      serve: (next: typeof objects) => {
+        objects = next;
+      },
+      sync: async () => ingestFeed(db, await reload(), { fetchImpl, kek: testKeys(), ...window }),
+      reload,
+      storedUids: async () =>
+        (await db.select().from(sourceEvents).where(eq(sourceEvents.feedId, feed.id)))
+          .map((r) => r.icalUid)
+          .sort(),
+    };
+  }
+
+  it("keeps a source row whose object fails to parse, while still sweeping what the server really dropped", async () => {
+    const f = await caldavFixture('sweep-caldav-parse@example.com');
+    const four = [goodObject('c1', 3), goodObject('c2', 4), goodObject('c3', 5), goodObject('c4', 6)];
+    f.serve(four);
+    await f.sync();
+    expect(await f.storedUids()).toEqual(['c1', 'c2', 'c3', 'c4']);
+
+    // c3 is now served in a form we can't parse; c4 was genuinely deleted.
+    f.serve([four[0]!, four[1]!, brokenObject('c3')]);
+    const res = await f.sync();
+    expect(res.fetched).toBe(true);
+    expect(await f.storedUids()).toEqual(['c1', 'c2', 'c3']);
+    const warned = await f.reload();
+    expect(warned.status).toBe('active');
+    expect(warned.lastErrorMessage).toBe(
+      "1 calendar object couldn't be parsed — events already stored for them are kept",
+    );
+
+    // Readable again: the warning goes, and c3 is an ordinary row once more.
+    f.serve(four.slice(0, 3));
+    await f.sync();
+    expect(await f.storedUids()).toEqual(['c1', 'c2', 'c3']);
+    expect((await f.reload()).lastErrorMessage).toBeNull();
+  });
+
+  it("skips the sweep entirely when a failed object can't even be identified", async () => {
+    const f = await caldavFixture('sweep-caldav-anon@example.com');
+    const four = [goodObject('c1', 3), goodObject('c2', 4), goodObject('c3', 5), goodObject('c4', 6)];
+    f.serve(four);
+    await f.sync();
+
+    // c4 is genuinely gone, but we can't rule out that the unreadable object
+    // was c4 — so nothing is removed this time.
+    f.serve([four[0]!, four[1]!, four[2]!, brokenObject(null)]);
+    await f.sync();
+    expect(await f.storedUids()).toEqual(['c1', 'c2', 'c3', 'c4']);
+    expect((await f.reload()).lastErrorMessage).toBe(
+      "1 calendar object couldn't be parsed — not removing any events this sync",
+    );
+
+    // A clean read sweeps normally again.
+    f.serve(four.slice(0, 3));
+    await f.sync();
+    expect(await f.storedUids()).toEqual(['c1', 'c2', 'c3']);
+    expect((await f.reload()).lastErrorMessage).toBeNull();
+  });
+
+  it('holds a 207 with no objects at all (an auth/ACL blip) like any other empty read', async () => {
+    const f = await caldavFixture('sweep-caldav-empty@example.com');
+    const four = [goodObject('c1', 3), goodObject('c2', 4), goodObject('c3', 5), goodObject('c4', 6)];
+    f.serve(four);
+    await f.sync();
+
+    f.serve([]);
+    await f.sync();
+    expect(await f.storedUids()).toEqual(['c1', 'c2', 'c3', 'c4']);
+    expect((await f.reload()).lastErrorMessage).toBe(
+      'suspicious fetch: 4 of 4 in-window events missing — holding them (1/3)',
+    );
   });
 });
