@@ -116,6 +116,26 @@ describe('feed health: recording why a feed is stuck', () => {
     expect(healthy.lastSyncedAt).not.toBeNull();
   });
 
+  it('counts every failure when attempts overlap (cron + a refresh both holding the same row)', async () => {
+    // Both attempts start from the same in-memory row (consecutiveFailures: 0).
+    // Writing `row.consecutiveFailures + 1` back from it makes them both store 1;
+    // the increment has to happen in SQL so each one lands.
+    const { feed, db } = await setupFeed('feed-health-concurrent@example.com');
+    const fetchImpl = (async () => {
+      throw new Error('getaddrinfo ENOTFOUND feed.example.com');
+    }) as unknown as typeof fetch;
+
+    const outcomes = await Promise.allSettled([
+      ingestFeed(db, feed, { fetchImpl }),
+      ingestFeed(db, feed, { fetchImpl }),
+    ]);
+    expect(outcomes.map((o) => o.status)).toEqual(['rejected', 'rejected']);
+
+    const failed = await reload(db, feed.id);
+    expect(failed.status).toBe('error');
+    expect(failed.consecutiveFailures).toBe(2);
+  });
+
   it('surfaces the failure message on the feeds list', async () => {
     const { admin, familyId, feed, db } = await setupFeed('feed-health-list@example.com');
     const fetchImpl = (async () => {

@@ -13,6 +13,22 @@
     // other behaviour change a date bump would bring in.
     "compatibility_flags": ["nodejs_compat", "cache_option_enabled"],
     "observability": { "enabled": true },
+    // Raise the per-invocation CPU ceiling from the 30 s default to the Workers
+    // Paid maximum (5 min). The cron no longer runs the families itself: it
+    // enqueues one `family-pipeline` message per family (scheduled.ts), and the
+    // queue consumer runs that family's whole ingest → synthesis → read-back →
+    // conflicts → task-gen → claims → mirror → email pipeline in one
+    // invocation, which can outrun 30 s of CPU for a large family. CPU time
+    // only (waiting on CalDAV/Google costs none), and a ceiling rather than a
+    // charge — billing follows the CPU actually used — but it covers every
+    // invocation of this Worker, HTTP requests included. Unlike `vars`, wrangler
+    // lets the named envs below inherit `limits`, so it is set once, here.
+    // A consumer batch runs its messages one after another, each acked as it
+    // finishes, so a batch of `max_batch_size` families shares one invocation's
+    // budget (5 min CPU, 15 min wall) — kept at 10 because the mirror and digest
+    // jobs on the same queue are cheap and a killed batch only re-delivers its
+    // unfinished messages; lower it if family ticks start timing out.
+    "limits": { "cpu_ms": 300000 },
     "triggers": {
         // Tick every 15 min; the scheduled handler ingests feeds whose
         // refresh_minutes has elapsed.

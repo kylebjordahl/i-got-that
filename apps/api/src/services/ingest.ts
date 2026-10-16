@@ -20,6 +20,7 @@ import {
   hashOccurrence,
   type Occurrence,
   parseAndExpand,
+  parseCalendar,
 } from '@igt/ical';
 import { resolveAccountCredential } from '../lib/account-credentials.js';
 import { runChunked } from '../lib/d1.js';
@@ -57,6 +58,17 @@ export interface IngestResult {
 }
 
 type FeedRow = typeof feeds.$inferSelect;
+
+/**
+ * What a reader hands back to `ingestFeed`: the public result, plus the feed-row
+ * fields it learned along the way. The readers only read and upsert
+ * `source_events`; `ingestFeed` writes the row once, folding this patch into the
+ * attempt stamp, so a sync is one `UPDATE feeds` rather than one per layer.
+ */
+interface ReaderOutcome {
+  result: IngestResult;
+  feedPatch: Partial<typeof feeds.$inferInsert>;
+}
 
 /** Default fetch/reconcile window when the caller doesn't pin one — mirrors `@igt/ical`'s own default. */
 const DEFAULT_WINDOW_MS = 90 * 24 * 60 * 60 * 1000;
@@ -220,7 +232,7 @@ async function ingestIcsFeed(
   db: Db,
   feed: FeedRow,
   opts: IngestOptions,
-): Promise<IngestResult> {
+): Promise<ReaderOutcome> {
   const fetchImpl = opts.fetchImpl ?? fetch;
   if (!feed.url) throw new Error(`feed ${feed.id}: ics feed has no url`);
 
@@ -231,11 +243,10 @@ async function ingestIcsFeed(
   const res = await fetchImpl(feed.url, { headers });
 
   if (res.status === 304) {
-    await db
-      .update(feeds)
-      .set({ lastSyncedAt: new Date(), status: 'active' })
-      .where(eq(feeds.id, feed.id));
-    return { feedId: feed.id, fetched: false, processed: 0 };
+    return {
+      result: { feedId: feed.id, fetched: false, processed: 0 },
+      feedPatch: { lastSyncedAt: new Date(), status: 'active' },
+    };
   }
   if (!res.ok) throw new Error(`feed ${feed.id} fetch failed: ${res.status}`);
 
@@ -245,33 +256,38 @@ async function ingestIcsFeed(
   const etag = res.headers.get('etag');
   const windowStart = opts.windowStart ?? new Date();
   const windowEnd = opts.windowEnd ?? new Date(windowStart.getTime() + DEFAULT_WINDOW_MS);
-  // `feed.timezone` is whatever a prior sync auto-detected (X-WR-TIMEZONE /
-  // VTIMEZONE) or an admin manually set — used to resolve this document's own
-  // floating (zone-less) timed values, which some sources (e.g. booking-
-  // software exports) never carry timezone metadata for at all.
-  const occurrences = parseAndExpand(text, {
+  // Parse once: the parse is the most CPU-heavy step of an ingest, and the
+  // timezone / calendar-name lookups only need the root it produces.
+  const root = parseCalendar(text);
+  // The document's own zone (X-WR-TIMEZONE / VTIMEZONE) is read *before*
+  // expanding, to resolve its floating (zone-less) timed values — some sources
+  // (e.g. booking-software exports) never carry timezone metadata at all, and
+  // then `feed.timezone` (what a prior sync detected, or an admin set) is the
+  // fallback. Reading it only afterwards left a feed's first sync, which has no
+  // stored zone yet, resolving floating times in the host zone (UTC on workerd),
+  // and flipped every row's contentHash on the next sync once the zone was known.
+  const timezone = extractTimezone(root) ?? feed.timezone;
+  const occurrences = parseAndExpand(root, {
     windowStart,
     windowEnd,
-    defaultTimezone: feed.timezone ?? undefined,
+    defaultTimezone: timezone ?? undefined,
   });
 
   await upsertOccurrences(db, feed, occurrences);
   await deleteStaleSourceEvents(db, feed, { windowStart, windowEnd }, occurrences);
 
-  await db
-    .update(feeds)
-    .set({
+  return {
+    result: { feedId: feed.id, fetched: true, processed: occurrences.length },
+    feedPatch: {
       lastSyncedAt: new Date(),
       etag: etag ?? feed.etag,
-      timezone: extractTimezone(text) ?? feed.timezone,
+      timezone,
       // Backfill the display title from the feed's own X-WR-CALNAME when the
       // user didn't supply one on creation.
-      sourceCalendarName: feed.sourceCalendarName ?? extractCalendarName(text),
+      sourceCalendarName: feed.sourceCalendarName ?? extractCalendarName(root),
       status: 'active',
-    })
-    .where(eq(feeds.id, feed.id));
-
-  return { feedId: feed.id, fetched: true, processed: occurrences.length };
+    },
+  };
 }
 
 /**
@@ -284,7 +300,7 @@ async function ingestAccountFeed(
   db: Db,
   feed: FeedRow,
   opts: IngestOptions,
-): Promise<IngestResult> {
+): Promise<ReaderOutcome> {
   const windowStart = opts.windowStart ?? new Date();
   const windowEnd = opts.windowEnd ?? new Date(windowStart.getTime() + DEFAULT_WINDOW_MS);
   const window = {
@@ -342,12 +358,11 @@ async function ingestAccountFeed(
 
   await upsertOccurrences(db, feed, occurrences);
   await deleteStaleSourceEvents(db, feed, busyWindow ?? window, occurrences);
-  await db
-    .update(feeds)
-    .set({ lastSyncedAt: new Date(), status: 'active', timezone: timezone ?? feed.timezone })
-    .where(eq(feeds.id, feed.id));
 
-  return { feedId: feed.id, fetched: true, processed: occurrences.length };
+  return {
+    result: { feedId: feed.id, fetched: true, processed: occurrences.length },
+    feedPatch: { lastSyncedAt: new Date(), status: 'active', timezone: timezone ?? feed.timezone },
+  };
 }
 
 /**
@@ -416,8 +431,9 @@ export function isFeedDue(
  *
  * Every attempt is stamped on the feed row — `lastAttemptedAt` always, and on
  * failure the count and message behind `status: 'error'`. The readers' job is
- * just to read and throw; recording *why* a feed is stuck (and how long to wait
- * before trying again) happens once, here, so no path can fail silently.
+ * just to read and throw (handing back what they learned about the feed in a
+ * patch); recording *why* a feed is stuck (and how long to wait before trying
+ * again) happens once, here, so no path can fail silently.
  */
 export async function ingestFeed(
   db: Db,
@@ -426,13 +442,13 @@ export async function ingestFeed(
 ): Promise<IngestResult> {
   const attemptedAt = new Date();
   try {
-    const result =
+    const { result, feedPatch } =
       feed.kind === 'caldav' || feed.kind === 'google'
         ? await ingestAccountFeed(db, feed, opts)
         : await ingestIcsFeed(db, feed, opts);
     await db
       .update(feeds)
-      .set({ lastAttemptedAt: attemptedAt, consecutiveFailures: 0, lastErrorMessage: null })
+      .set({ ...feedPatch, lastAttemptedAt: attemptedAt, consecutiveFailures: 0, lastErrorMessage: null })
       .where(eq(feeds.id, feed.id));
     if (feed.externalAccountId) {
       // The account reads fine again: drop its reconnect prompt.
@@ -462,7 +478,10 @@ export async function ingestFeed(
       .set({
         status: 'error',
         lastAttemptedAt: attemptedAt,
-        consecutiveFailures: feed.consecutiveFailures + 1,
+        // Incremented in SQL, not from the in-memory row: two attempts at the
+        // same feed (cron + a user's refresh) both read the old count, and
+        // writing `old + 1` back would lose one of the two increments.
+        consecutiveFailures: sql`${feeds.consecutiveFailures} + 1`,
         lastErrorMessage: message.slice(0, MAX_ERROR_MESSAGE_LENGTH),
       })
       .where(eq(feeds.id, feed.id));

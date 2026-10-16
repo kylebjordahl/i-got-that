@@ -11,7 +11,8 @@ import {
   taskOwners,
   tasks,
 } from '@igt/db';
-import { describe, expect, it } from 'vitest';
+import ICAL from 'ical.js';
+import { describe, expect, it, vi } from 'vitest';
 import { storeSecret } from '../src/lib/secrets.js';
 import { reconcileClaimEvents } from '../src/services/claim.js';
 import { ingestFamilyFeeds, ingestFeed } from '../src/services/ingest.js';
@@ -371,6 +372,131 @@ describe('ingest: account-backed input feeds', () => {
     await expect(ingestFeed(db, feed, { fetchImpl })).rejects.toThrow();
     const after = (await db.select().from(feeds).where(eq(feeds.id, feed.id)).limit(1))[0]!;
     expect(after.status).toBe('error');
+  });
+});
+
+describe('ingest: an ICS feed is read in its own timezone, parsed once', () => {
+  // Fixed window so the assertions don't depend on today's date.
+  const window = {
+    windowStart: new Date('2026-07-01T00:00:00Z'),
+    windowEnd: new Date('2026-08-01T00:00:00Z'),
+  };
+
+  /** A booking-style export: floating (zone-less) times, zone only in X-WR-TIMEZONE. */
+  const floatingIcs = (zoneLines: string[] = ['X-WR-TIMEZONE:America/Los_Angeles']) =>
+    [
+      'BEGIN:VCALENDAR',
+      'VERSION:2.0',
+      'PRODID:-//test//test//EN',
+      ...zoneLines,
+      'X-WR-CALNAME:Floating Co',
+      'BEGIN:VEVENT',
+      'UID:single@example.com',
+      'DTSTART:20260707T090000',
+      'DTEND:20260707T100000',
+      'SUMMARY:Single',
+      'END:VEVENT',
+      'BEGIN:VEVENT',
+      'UID:daily@example.com',
+      'DTSTART:20260708T170000',
+      'DTEND:20260708T180000',
+      'RRULE:FREQ=DAILY;COUNT=3',
+      'SUMMARY:Daily',
+      'END:VEVENT',
+      'END:VCALENDAR',
+    ].join('\r\n');
+
+  const serving = (body: () => string) =>
+    (async () => ({
+      ok: true,
+      status: 200,
+      headers: { get: () => null },
+      text: async () => body(),
+    })) as unknown as typeof fetch;
+
+  async function setupIcsFeed(email: string, extra: Partial<typeof feeds.$inferInsert> = {}) {
+    const user = await login(email);
+    const familyId = await createFamily(user.token, 'Ingest ICS TZ');
+    const db = getDb(env.DB);
+    const feed = (
+      await db
+        .insert(feeds)
+        .values({ familyId, kind: 'ics', url: 'https://example.invalid/tz.ics', mode: 'standard', ...extra })
+        .returning()
+    )[0]!;
+    const reload = async () =>
+      (await db.select().from(feeds).where(eq(feeds.id, feed.id)).limit(1))[0]!;
+    const rows = () =>
+      db
+        .select()
+        .from(sourceEvents)
+        .where(eq(sourceEvents.feedId, feed.id))
+        .then((r) => r.sort((a, b) => a.dtstart.getTime() - b.dtstart.getTime()));
+    return { db, feed, reload, rows };
+  }
+
+  it("resolves floating times in the document's own zone on the very first sync, and the second sync changes nothing", async () => {
+    // Regression: the document's X-WR-TIMEZONE was read only *after* expansion,
+    // so a first sync (no stored zone yet) resolved 09:00 as 09:00 UTC on
+    // workerd — hours off — and the next sync, now knowing the zone, flipped
+    // every row's contentHash (full resynthesis + re-mirror).
+    const { db, feed, reload, rows } = await setupIcsFeed('ingest-ics-first-sync-tz@example.com');
+    expect(feed.timezone).toBeNull();
+    const fetchImpl = serving(() => floatingIcs());
+
+    await ingestFeed(db, feed, { fetchImpl, ...window });
+    const first = await rows();
+    expect(first.map((r) => [r.icalUid, r.dtstart.toISOString()])).toEqual([
+      // 09:00 PDT (UTC-7) — not 09:00Z.
+      ['single@example.com', '2026-07-07T16:00:00.000Z'],
+      ['daily@example.com', '2026-07-09T00:00:00.000Z'],
+      ['daily@example.com', '2026-07-10T00:00:00.000Z'],
+      ['daily@example.com', '2026-07-11T00:00:00.000Z'],
+    ]);
+    const stored = await reload();
+    expect(stored.timezone).toBe('America/Los_Angeles');
+    expect(stored.sourceCalendarName).toBe('Floating Co');
+
+    // Second sync: against the stale in-memory row (no zone) and the reloaded
+    // one (zone known) — either way the same rows with the same hashes.
+    for (const row of [feed, stored]) {
+      await ingestFeed(db, row, { fetchImpl, ...window });
+      const again = await rows();
+      expect(again.map((r) => [r.id, r.icalUid, r.recurrenceId, r.contentHash])).toEqual(
+        first.map((r) => [r.id, r.icalUid, r.recurrenceId, r.contentHash]),
+      );
+    }
+  });
+
+  it("falls back to the feed's stored zone when the document carries none", async () => {
+    const { db, feed, reload, rows } = await setupIcsFeed('ingest-ics-stored-tz@example.com', {
+      timezone: 'America/New_York',
+    });
+    await ingestFeed(db, feed, { fetchImpl: serving(() => floatingIcs([])), ...window });
+    // 09:00 EDT (UTC-4).
+    expect((await rows())[0]!.dtstart.toISOString()).toBe('2026-07-07T13:00:00.000Z');
+    expect((await reload()).timezone).toBe('America/New_York');
+  });
+
+  it("prefers the document's zone over a stale stored one", async () => {
+    const { db, feed, reload, rows } = await setupIcsFeed('ingest-ics-doc-tz-wins@example.com', {
+      timezone: 'America/New_York',
+    });
+    await ingestFeed(db, feed, { fetchImpl: serving(() => floatingIcs()), ...window });
+    expect((await rows())[0]!.dtstart.toISOString()).toBe('2026-07-07T16:00:00.000Z');
+    expect((await reload()).timezone).toBe('America/Los_Angeles');
+  });
+
+  it('parses the document once per sync, not once per helper', async () => {
+    const { db, feed } = await setupIcsFeed('ingest-ics-parse-count@example.com');
+    const parse = vi.spyOn(ICAL, 'parse');
+    try {
+      await ingestFeed(db, feed, { fetchImpl: serving(() => floatingIcs()), ...window });
+      // parseAndExpand + extractTimezone + extractCalendarName used to be three.
+      expect(parse).toHaveBeenCalledTimes(1);
+    } finally {
+      parse.mockRestore();
+    }
   });
 });
 

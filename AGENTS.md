@@ -165,11 +165,25 @@ paths in particular).
   reconciles via `enqueueReconcile(c, job)` → Cloudflare **Queue** (deployed)
   or inline `waitUntil` (local/tests). Never `await` a full reconcile in a
   request path (it blocks on slow CalDAV/Google writes).
+- **The cron fans out one queue message per family; it never runs a pipeline
+  itself.** A cron invocation gets a single CPU / subrequest budget (30 s CPU,
+  10,000 subrequests — every D1 query counts) shared by every family, and past
+  it the whole invocation dies mid-pipeline. So `scheduled()` does only the
+  global sweeps (orphaned secrets, reauth alerts, digests) and `sendBatch`es a
+  `family-pipeline` job per family (≤100 per call) onto `DELIVERY_QUEUE`; the
+  consumer runs `runFamilyTick` (`services/pipeline.ts`: ingest → read-back →
+  conflicts → task-gen → claims → mirror → email) in an invocation with its own
+  budget (`limits.cpu_ms` is raised in `wrangler.jsonc` for exactly this). A
+  stage that throws is logged and the later ones still run; the message is
+  acked, not retried (the next tick is the retry) — only a tick that couldn't
+  start is `retry()`d. With no queue bound (local dev / tests) the cron runs
+  each family inline under `waitUntil`, as it always did. Until the per-family
+  lease (#264) lands, overlapping ticks or a redelivery can run a family twice.
 - **Recurring passes work over the *active horizon*, not a family's history.**
   Nothing prunes finished rows (`calendar_events`, `tasks`, `event_mirrors`,
   `source_events` only grow), yet the mirror, the travel-origin lookup, the
-  claim true-up, task rebuilds and read-back's feed dedupe run on every cron
-  tick *and* every queue job — so each is bounded by `activeHorizon()`
+  claim true-up, task rebuilds and read-back's feed dedupe run on every family
+  tick *and* every reconcile job — so each is bounded by `activeHorizon()`
   (`services/synthesis.ts`: the synthesis window plus 30 days behind it; read-back
   uses its own window) via `overlapsWindow` / `endsAtOrAfter`. A finished event's
   remote copy and claim are simply left as they were; only an event that no
@@ -230,9 +244,10 @@ paths in particular).
   feed can say why; the cron polls **every** feed that `isFeedDue` says is due
   — an `error` feed on a growing backoff off `lastAttemptedAt`, since
   `lastSyncedAt` doesn't move on a failure — so a transient blip can't park a
-  feed forever; and one feed's failure is caught per-feed in `scheduled.ts` so
-  it can't cost the family the read-back/task-gen/mirror passes that don't
-  depend on it. Only `paused` (a user's decision) is ever skipped outright.
+  feed forever; and one feed's failure is caught per-feed in `runFamilyTick`
+  (`services/pipeline.ts`) so it can't cost the family the
+  read-back/task-gen/mirror passes that don't depend on it. Only `paused` (a
+  user's decision) is ever skipped outright.
 - **Nothing on the outbound path may be served from cache.** A Worker's
   `fetch()` is not a bare socket — a cacheable GET comes from Cloudflare's
   cache, honouring the origin's `Cache-Control`, and that entry answers our
