@@ -14,8 +14,9 @@ import 'support/duration_wheel.dart';
 /// Records the `types` passed to convertTask so tests can assert on it
 /// without a real network call.
 class _RecordingApiClient extends ApiClient {
-  _RecordingApiClient() : super(baseUrl: 'http://test');
+  _RecordingApiClient({this.onConvert}) : super(baseUrl: 'http://test');
 
+  final void Function(List<String> types)? onConvert;
   List<String>? lastConvertTypes;
   ({String eventId, int? minutes})? lastTravelTime;
   ({String taskId, List<String>? memberIds, String? memberId})? lastAssign;
@@ -47,6 +48,7 @@ class _RecordingApiClient extends ApiClient {
     List<String> types,
   ) async {
     lastConvertTypes = types;
+    onConvert?.call(types);
   }
 
   @override
@@ -188,6 +190,88 @@ void main() {
       });
     },
   );
+
+  testWidgets('the sheet stays open across type switches', (tester) async {
+    final me = _m('dad', 'Dad', caretaker: true, admin: true);
+    TaskItem leg(String id, String type) => TaskItem(
+      id: id,
+      familyMemberId: 'theo',
+      type: type,
+      start: DateTime.now().add(const Duration(hours: 2)),
+      status: 'unowned',
+      createdVia: 'generated',
+      calendarEventId: 'e2',
+    );
+    // What the server holds; converting rewrites it the way POST /convert does
+    // (kept types keep their rows, new types get fresh ids).
+    var live = [leg('t2', 'attendance')];
+    final api = _RecordingApiClient(
+      onConvert: (types) {
+        live = [
+          for (final type in types)
+            live.where((t) => t.type == type).firstOrNull ??
+                leg('new-$type', type),
+        ];
+      },
+    );
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          apiClientProvider.overrideWithValue(api),
+          familyProvider.overrideWith((ref) async => 'fam-1'),
+          membersProvider.overrideWith(
+            (ref) async => [me, _m('theo', 'Theo', child: true)],
+          ),
+          currentMemberProvider.overrideWith((ref) async => me),
+          unownedTasksProvider.overrideWith((ref) async => live),
+          allTasksProvider.overrideWith((ref) async => live),
+          pendingDecisionsProvider.overrideWith((ref) async => const []),
+          conflictsProvider.overrideWith((ref) async => const []),
+          calendarEventsProvider.overrideWith((ref) async => const []),
+          threadingThresholdProvider.overrideWith((ref) async => 30),
+        ],
+        child: MaterialApp(
+          theme: buildAppTheme(),
+          themeMode: ThemeMode.dark,
+          home: const Scaffold(body: HomeScreen()),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byType(TaskRow));
+    await tester.pumpAndSettle();
+
+    bool isOn(int i) =>
+        tester.widgetList<Switch>(find.byType(Switch)).toList()[i].value;
+
+    // Drop off on: the sheet is still there, and shows it on.
+    await tester.tap(find.byType(Switch).at(0));
+    await tester.pumpAndSettle();
+    expect(find.text('TYPE'), findsOneWidget);
+    expect(isOn(0), isTrue);
+    expect(isOn(1), isTrue);
+
+    // Pick up on too: builds on the first switch rather than starting over.
+    await tester.tap(find.byType(Switch).at(2));
+    await tester.pumpAndSettle();
+    expect(Set<String>.from(api.lastConvertTypes!), {
+      'attendance',
+      'dropoff',
+      'pickup',
+    });
+    expect(find.text('TYPE'), findsOneWidget);
+    expect([isOn(0), isOn(1), isOn(2)], [true, true, true]);
+
+    // Turning off the type the sheet opened on leaves it usable (that task row
+    // was deleted server-side), with the remaining types still on.
+    await tester.tap(find.byType(Switch).at(1));
+    await tester.pumpAndSettle();
+    expect(find.text('TYPE'), findsOneWidget);
+    expect([isOn(0), isOn(1), isOn(2)], [true, false, true]);
+    expect(find.text('Mark as not needed'), findsOneWidget);
+  });
 
   testWidgets(
     'tapping one leg of a multi-task event notes the toggle covers the whole event',
