@@ -6,6 +6,7 @@ import {
   type OverrideMatchOp,
   type OverrideOutcome,
   type TaskResultType,
+  type TaskRuleResultType,
   type TaskRuleScope,
   type TaskType,
 } from '@igt/domain';
@@ -594,7 +595,7 @@ export interface TaskRuleLike extends MatcherLike {
   scope: TaskRuleScope;
   /** Which source calendar it lives on; null = the member's unified/direct calendar. */
   linkId: string | null;
-  resultType: TaskResultType;
+  resultType: TaskRuleResultType;
   dropoffWindowMin?: number | null;
   pickupWindowMin?: number | null;
 }
@@ -608,7 +609,7 @@ export interface TaskDefault {
 
 /** The resolved task shape for an event (from a rule, or the calendar default). */
 export interface TaskResolution {
-  resultType: TaskResultType;
+  resultType: TaskRuleResultType;
   dropoffWindowMin: number;
   pickupWindowMin: number;
 }
@@ -795,7 +796,8 @@ export function transitionWindow(
 /**
  * What claimable tasks an event spawns, given its resolved result type. A
  * `transition` yields a drop-off (padded from the event start) and a pickup
- * (padded from the event end); `attendance` yields one task spanning the event.
+ * (padded from the event end); `attendance` yields one task spanning the event;
+ * `none` (a rule that ignores the event) yields nothing.
  */
 export function generateTaskIntents(
   event: {
@@ -808,6 +810,7 @@ export function generateTaskIntents(
 ): TaskIntent[] {
   const location = event.location ?? null;
   const locationGeo = event.locationGeo ?? null;
+  if (resolution.resultType === 'none') return [];
   if (resolution.resultType === 'attendance') {
     return [
       {

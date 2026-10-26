@@ -21,6 +21,40 @@ class _RecordingApiClient extends ApiClient {
   ({String eventId, int? minutes})? lastTravelTime;
   ({String taskId, List<String>? memberIds, String? memberId})? lastAssign;
   String? lastUnassignedTaskId;
+  final dismissedTaskIds = <String>[];
+  Map<String, Object?>? lastCreatedRule;
+
+  @override
+  Future<void> dismissTask(String familyId, String taskId) async {
+    dismissedTaskIds.add(taskId);
+  }
+
+  @override
+  Future<Map<String, dynamic>> createTaskRule(
+    String familyId,
+    String memberId, {
+    String? linkId,
+    required String scope,
+    required String resultType,
+    String matchField = 'summary',
+    String matchOp = 'regex',
+    String? matchValue,
+    int? position,
+    int? dropoffWindowMin,
+    int? pickupWindowMin,
+  }) async {
+    lastCreatedRule = {
+      'memberId': memberId,
+      'linkId': linkId,
+      'scope': scope,
+      'resultType': resultType,
+      'matchValue': matchValue,
+      'position': position,
+      'dropoffWindowMin': dropoffWindowMin,
+      'pickupWindowMin': pickupWindowMin,
+    };
+    return {};
+  }
 
   @override
   Future<void> assignTask(
@@ -529,4 +563,144 @@ void main() {
       expect(api.lastAssign?.memberIds, ['dad', 'mom']);
     },
   );
+
+  group('marking a whole event not needed offers a "No tasks" rule', () {
+    final me = _m('dad', 'Dad', caretaker: true, admin: true);
+    final event = CalendarEventItem(
+      id: 'e9',
+      familyMemberId: 'theo',
+      provenance: 'synthesized',
+      start: DateTime.now().add(const Duration(hours: 2)),
+      end: DateTime.now().add(const Duration(hours: 3)),
+      allDay: false,
+      linkId: 'link-1',
+      summary: 'Soccer (U10) practice',
+    );
+    TaskItem leg(String id, String type) => TaskItem(
+      id: id,
+      familyMemberId: 'theo',
+      type: type,
+      start: DateTime.now().add(const Duration(hours: 2)),
+      status: 'unowned',
+      createdVia: 'generated',
+      calendarEventId: 'e9',
+    );
+
+    Future<void> pump(
+      WidgetTester tester,
+      _RecordingApiClient api,
+      List<TaskItem> tasks, {
+      Member? as,
+    }) async {
+      final viewer = as ?? me;
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            apiClientProvider.overrideWithValue(api),
+            familyProvider.overrideWith((ref) async => 'fam-1'),
+            membersProvider.overrideWith(
+              (ref) async => [me, _m('theo', 'Theo', child: true)],
+            ),
+            currentMemberProvider.overrideWith((ref) async => viewer),
+            // A dismissed task leaves the queue, as it does server-side — so
+            // the row that was tapped is gone by the time the prompt shows.
+            unownedTasksProvider.overrideWith(
+              (ref) async => tasks
+                  .where((t) => !api.dismissedTaskIds.contains(t.id))
+                  .toList(),
+            ),
+            allTasksProvider.overrideWith((ref) async => tasks),
+            pendingDecisionsProvider.overrideWith((ref) async => const []),
+            conflictsProvider.overrideWith((ref) async => const []),
+            calendarEventsProvider.overrideWith((ref) async => [event]),
+            threadingThresholdProvider.overrideWith((ref) async => 30),
+          ],
+          child: MaterialApp(
+            theme: buildAppTheme(),
+            themeMode: ThemeMode.dark,
+            home: const Scaffold(body: HomeScreen()),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+    }
+
+    Future<void> markNotNeeded(WidgetTester tester) async {
+      await tester.tap(find.byType(TaskRow).first);
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.text('Mark as not needed'));
+      await tester.tap(find.text('Mark as not needed'));
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('yes drafts an exact-title rule in the editor, saved first', (
+      tester,
+    ) async {
+      final api = _RecordingApiClient();
+      await pump(tester, api, [leg('t9', 'attendance')]);
+      await markNotNeeded(tester);
+
+      expect(api.dismissedTaskIds, ['t9']);
+      expect(find.byType(TaskRow), findsNothing);
+      expect(find.text('Make this a rule?'), findsOneWidget);
+      await tester.tap(find.text('Make a rule'));
+      await tester.pumpAndSettle();
+
+      // The editor opens on the draft for refinement; nothing is saved yet.
+      expect(find.text('New task rule'), findsOneWidget);
+      expect(find.text('No tasks'), findsOneWidget);
+      expect(find.text(r'/^Soccer \(U10\) practice$/i'), findsOneWidget);
+      expect(api.lastCreatedRule, isNull);
+
+      await tester.ensureVisible(find.text('Save rule'));
+      await tester.tap(find.text('Save rule'));
+      await tester.pumpAndSettle();
+      expect(api.lastCreatedRule, {
+        'memberId': 'theo',
+        'linkId': 'link-1',
+        'scope': 'this_calendar',
+        'resultType': 'none',
+        'matchValue': r'/^Soccer \(U10\) practice$/i',
+        'position': 0,
+        'dropoffWindowMin': null,
+        'pickupWindowMin': null,
+      });
+    });
+
+    testWidgets('not now leaves it a one-off dismissal', (tester) async {
+      final api = _RecordingApiClient();
+      await pump(tester, api, [leg('t9', 'attendance')]);
+      await markNotNeeded(tester);
+
+      await tester.tap(find.text('Not now'));
+      await tester.pumpAndSettle();
+      expect(find.text('New task rule'), findsNothing);
+      expect(api.lastCreatedRule, isNull);
+    });
+
+    testWidgets('dismissing one leg of the event does not offer a rule', (
+      tester,
+    ) async {
+      final api = _RecordingApiClient();
+      await pump(tester, api, [leg('t9', 'dropoff'), leg('t10', 'pickup')]);
+      await markNotNeeded(tester);
+
+      expect(api.dismissedTaskIds, hasLength(1));
+      expect(find.text('Make this a rule?'), findsNothing);
+    });
+
+    testWidgets('a non-admin is not offered a rule', (tester) async {
+      final api = _RecordingApiClient();
+      await pump(
+        tester,
+        api,
+        [leg('t9', 'attendance')],
+        as: _m('dad', 'Dad', caretaker: true),
+      );
+      await markNotNeeded(tester);
+
+      expect(api.dismissedTaskIds, ['t9']);
+      expect(find.text('Make this a rule?'), findsNothing);
+    });
+  });
 }

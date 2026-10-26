@@ -640,12 +640,19 @@ class TaskRule {
   final String matchField;
   final String matchOp;
   final String? matchValue;
-  final String resultType; // 'transition' | 'attendance'
+  final String resultType; // 'transition' | 'attendance' | 'none'
   final int? dropoffWindowMin;
   final int? pickupWindowMin;
 
   bool get isTransition => resultType == 'transition';
-  String get resultLabel => isTransition ? 'Drop-off & pickup' : 'Attendance';
+
+  /// A rule that ignores the event: it stays on the calendar with no tasks.
+  bool get isNone => resultType == 'none';
+  String get resultLabel => switch (resultType) {
+    'transition' => 'Drop-off & pickup',
+    'none' => 'No tasks',
+    _ => 'Attendance',
+  };
   String get scopeLabel =>
       scope == 'all_calendars' ? 'All calendars' : 'This calendar';
 
@@ -831,6 +838,7 @@ class CalendarEventItem {
     required this.start,
     required this.allDay,
     this.end,
+    this.linkId,
     this.summary,
     this.description,
     this.location,
@@ -847,6 +855,10 @@ class CalendarEventItem {
   final DateTime start;
   final DateTime? end;
   final bool allDay;
+
+  /// The source calendar (feed link) the event came from; null ⇒ the member's
+  /// own unified/direct calendar. Task rules are scoped by it.
+  final String? linkId;
   final String? summary;
   final String? description;
   final String? location;
@@ -860,9 +872,10 @@ class CalendarEventItem {
   final String? taskId;
 
   /// Why this event can't carry claimable tasks at all — 'paused' (the member's
-  /// task generation is off), 'busy_calendar' (a free/busy firewall block) or
-  /// 'claimed' (it *is* a claim). Null ⇒ eligible, so having no tasks is a
-  /// dismissal or a stale build, which [ApiClient.rebuildEventTasks] undoes.
+  /// task generation is off), 'busy_calendar' (a free/busy firewall block),
+  /// 'claimed' (it *is* a claim) or 'skipped_by_rule' (a "No tasks" task rule
+  /// matches it). Null ⇒ eligible, so having no tasks is a dismissal or a stale
+  /// build, which [ApiClient.rebuildEventTasks] undoes.
   final String? taskIneligibleReason;
 
   bool get isClaimedTask => provenance == 'claimed_task';
@@ -910,6 +923,7 @@ class CalendarEventItem {
       end: j['dtend'] == null
           ? null
           : (allDay ? parseAllDayDate(j['dtend']) : parseTimestamp(j['dtend'])),
+      linkId: j['linkId'] as String?,
       summary: j['summary'] as String?,
       description: j['description'] as String?,
       location: j['location'] as String?,

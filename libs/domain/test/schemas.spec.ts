@@ -6,6 +6,7 @@ import {
   CreateTaskRuleInput,
   parseEcmaRegex,
   ResolvePendingDecisionInput,
+  SetTaskDefaultInput,
   TimeOfDay,
 } from '../src/index.js';
 
@@ -165,6 +166,9 @@ describe('domain schemas', () => {
     expect(
       CreateTaskRuleInput.safeParse({ resultType: 'transition', matchOp: 'regex', matchValue: '(' }).success,
     ).toBe(false);
+    // A rule may skip the event's tasks entirely; a calendar default may not.
+    expect(CreateTaskRuleInput.safeParse({ resultType: 'none', matchValue: '/^Soccer$/i' }).success).toBe(true);
+    expect(SetTaskDefaultInput.safeParse({ defaultResultType: 'none' }).success).toBe(false);
   });
 
   it('validates assignment rules (owner required, anchor required when biweekly)', () => {

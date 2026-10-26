@@ -1310,7 +1310,7 @@ class ApiClient {
     String memberId, {
     String? linkId,
     required String scope, // 'this_calendar' | 'all_calendars'
-    required String resultType, // 'transition' | 'attendance'
+    required String resultType, // 'transition' | 'attendance' | 'none'
     String matchField = 'summary',
     String matchOp = 'regex',
     String? matchValue,

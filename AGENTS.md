@@ -25,7 +25,7 @@ exception event covers, or `add_event` to put the feed event on the calendar
 *beside* an untouched baseline day — a school's community dinner; plus `keep`,
 which on a **routed** feed claims the event for that link's member);
 `task_rules` are the per-member TYPING pipeline (`transition` vs `attendance`
-+ drop-off/pickup windows, scoped `this_calendar`/`all_calendars`, with a
+vs `none` — no tasks, the event stays on the calendar — + drop-off/pickup windows, scoped `this_calendar`/`all_calendars`, with a
 terminal default per calendar on the link + member). Task type is resolved at
 task-gen time, keyed by the event's source calendar (`calendar_events.linkId`;
 null ⇒ the member's own unified/direct calendar). A member's
@@ -253,9 +253,10 @@ paths in particular).
   healed, never resurrected), and a `convert` freezes the type set. `POST
   /calendar-events/:id/tasks` is the operator escape hatch for all of them — it
   restores dismissed rows, clears the stamp, and re-runs the member's pipeline.
-  It refuses the three cases where having no tasks is the *rule* (paused member,
-  `fb:` busy block, `claimed_task`), which `/calendar-events` also reports per
-  event as `taskIneligibleReason` so the client can say which it is.
+  It refuses the cases where having no tasks is the *rule* (paused member,
+  `fb:` busy block, `claimed_task`, or a matching `none` task rule), which
+  `/calendar-events` also reports per event as `taskIneligibleReason` so the
+  client can say which it is.
 - **A feed that can't be read must never go quiet.** Everything downstream of
   `source_events` keeps working off the rows already there, so a feed that has
   stopped ingesting looks *healthy* — the calendar is full, it just silently
