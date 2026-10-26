@@ -584,6 +584,48 @@ export function buildCancelICalendar(input: InviteEventInput): string {
   return buildICalendar(input, ICalCalendarMethod.CANCEL, ICalEventStatus.CANCELLED);
 }
 
+/** "+0530" / "-0700": `tz`'s UTC offset at `instant`, as an iCalendar UTC-OFFSET. */
+function utcOffset(instant: Date, tz: string): string | null {
+  const local = toZonedLocal(instant, tz);
+  if (!local) return null;
+  const whole = Math.floor(instant.getTime() / 1000) * 1000;
+  const minutes = Math.round((Date.UTC(
+    local.getFullYear(), local.getMonth(), local.getDate(),
+    local.getHours(), local.getMinutes(), local.getSeconds(),
+  ) - whole) / 60000);
+  const abs = Math.abs(minutes);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${minutes < 0 ? '-' : '+'}${pad(Math.floor(abs / 60))}${pad(abs % 60)}`;
+}
+
+/**
+ * A VTIMEZONE defining `tz` as the single observance in force at `instant`.
+ * A bare TZID isn't enough for iMIP: Outlook/Exchange ignore a TZID the message
+ * doesn't define and show the time as UTC. One observance is exact for these
+ * invites (one non-recurring VEVENT) and, unlike a full rule table, needs no
+ * bundled tz database — which can't be read on Workers. Null for an unknown zone.
+ */
+function vtimezoneFor(tz: string, instant: Date): string | null {
+  const offset = utcOffset(instant, tz);
+  if (!offset) return null;
+  const name =
+    new Intl.DateTimeFormat('en-US', { timeZone: tz, timeZoneName: 'short' })
+      .formatToParts(instant)
+      .find((p) => p.type === 'timeZoneName')?.value ?? tz;
+  return [
+    'BEGIN:VTIMEZONE',
+    `TZID:${tz}`,
+    'BEGIN:STANDARD',
+    'DTSTART:19700101T000000',
+    `TZOFFSETFROM:${offset}`,
+    `TZOFFSETTO:${offset}`,
+    `TZNAME:${name}`,
+    'END:STANDARD',
+    'END:VTIMEZONE',
+    '',
+  ].join('\r\n');
+}
+
 function buildICalendar(
   input: InviteEventInput,
   method: ICalCalendarMethod,
@@ -618,7 +660,9 @@ function buildICalendar(
     email: input.attendeeEmail,
     rsvp: true,
   });
-  return cal.toString();
+  const ics = cal.toString();
+  const vtimezone = timezone ? vtimezoneFor(timezone, input.start) : null;
+  return vtimezone ? ics.replace('BEGIN:VEVENT', `${vtimezone}BEGIN:VEVENT`) : ics;
 }
 
 /**

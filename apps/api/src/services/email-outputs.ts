@@ -12,6 +12,7 @@ import {
   isNotNull,
   isNull,
   lte,
+  memberCalendars,
 } from '@igt/db';
 import {
   buildTextEmailMime,
@@ -257,6 +258,15 @@ export async function syncMemberEmailOutputs(
   ).sort((a, b) => a.dtstart.getTime() - b.dtstart.getTime());
   const familyId = verified[0]!.familyId;
   const timezones = await linkTimezones(db, familyId);
+  // Last resort for events with no feed zone (a feed that advertises none, a
+  // claimed task whose source event is gone): the zone the member's own target
+  // calendar is in, rather than bare UTC.
+  const [memberCal] = await db
+    .select({ timezone: memberCalendars.timezone })
+    .from(memberCalendars)
+    .where(eq(memberCalendars.familyMemberId, memberId))
+    .limit(1);
+  const fallbackTimezone = memberCal?.timezone ?? undefined;
   const claimedTasks = await claimedTaskMeta(
     db,
     candidates.flatMap((e) => (e.taskId ? [e.taskId] : [])),
@@ -325,7 +335,8 @@ export async function syncMemberEmailOutputs(
     }
     for (const event of desired) {
       const task = event.taskId ? claimedTasks.get(event.taskId) : undefined;
-      const timezone = event.linkId ? timezones.get(event.linkId) : task?.timezone;
+      const timezone =
+        (event.linkId ? timezones.get(event.linkId) : task?.timezone) ?? fallbackTimezone;
       const travelMinutes =
         output.padTravelTime && travel ? eventTravelMinutes(travel, event, task?.type) : 0;
       const masked = output.maskTitle != null && output.maskTitle.trim() !== '';
