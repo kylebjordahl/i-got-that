@@ -576,15 +576,16 @@ void main() {
       linkId: 'link-1',
       summary: 'Soccer (U10) practice',
     );
-    TaskItem leg(String id, String type) => TaskItem(
-      id: id,
-      familyMemberId: 'theo',
-      type: type,
-      start: DateTime.now().add(const Duration(hours: 2)),
-      status: 'unowned',
-      createdVia: 'generated',
-      calendarEventId: 'e9',
-    );
+    TaskItem leg(String id, String type, {String status = 'unowned'}) =>
+        TaskItem(
+          id: id,
+          familyMemberId: 'theo',
+          type: type,
+          start: DateTime.now().add(const Duration(hours: 2)),
+          status: status,
+          createdVia: 'generated',
+          calendarEventId: 'e9',
+        );
 
     Future<void> pump(
       WidgetTester tester,
@@ -602,14 +603,21 @@ void main() {
               (ref) async => [me, _m('theo', 'Theo', child: true)],
             ),
             currentMemberProvider.overrideWith((ref) async => viewer),
-            // A dismissed task leaves the queue, as it does server-side — so
-            // the row that was tapped is gone by the time the prompt shows.
+            // A dismissed task comes back dismissed, as it does server-side —
+            // so the row that was tapped is gone by the time the prompt shows.
             unownedTasksProvider.overrideWith(
               (ref) async => tasks
                   .where((t) => !api.dismissedTaskIds.contains(t.id))
                   .toList(),
             ),
-            allTasksProvider.overrideWith((ref) async => tasks),
+            allTasksProvider.overrideWith(
+              (ref) async => [
+                for (final t in tasks)
+                  api.dismissedTaskIds.contains(t.id)
+                      ? leg(t.id, t.type, status: 'dismissed')
+                      : t,
+              ],
+            ),
             pendingDecisionsProvider.overrideWith((ref) async => const []),
             conflictsProvider.overrideWith((ref) async => const []),
             calendarEventsProvider.overrideWith((ref) async => [event]),
@@ -691,12 +699,9 @@ void main() {
 
     testWidgets('a non-admin is not offered a rule', (tester) async {
       final api = _RecordingApiClient();
-      await pump(
-        tester,
-        api,
-        [leg('t9', 'attendance')],
-        as: _m('dad', 'Dad', caretaker: true),
-      );
+      await pump(tester, api, [
+        leg('t9', 'attendance'),
+      ], as: _m('dad', 'Dad', caretaker: true));
       await markNotNeeded(tester);
 
       expect(api.dismissedTaskIds, ['t9']);

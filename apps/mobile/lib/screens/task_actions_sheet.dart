@@ -479,9 +479,9 @@ Future<void> showTaskActions(
                             if (ok && offerSkipRule && rootContext.mounted) {
                               await _offerSkipRule(
                                 rootContext,
-                                child!,
+                                child,
                                 sourceEvent!,
-                                eventTitle!,
+                                eventTitle,
                               );
                             }
                           },
