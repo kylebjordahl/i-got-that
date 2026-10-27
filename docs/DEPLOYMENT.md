@@ -314,7 +314,14 @@ Staging is configured to host everything on **one** subdomain
 | --- | --- |
 | `/api/*` | the API (the Worker strips the `/api` prefix) |
 | `/app/*` | the Flutter **web client** (static assets, with SPA deep-link fallback) |
+| `/legal/privacy`, `/legal/terms`, `/legal/cookies` | static legal pages |
 | `/` (and anything else) | redirect → `/app/` |
+
+The legal pages live in `apps/api/legal/` (committed) and CI copies them into
+`apps/api/public/legal/` on every deploy. They're served straight from the
+assets binding without invoking the Worker (assets win over the Worker by
+default), and `html_handling`'s default maps `privacy.html` to `/legal/privacy`.
+Keep these URLs stable: store listings and OAuth consent screens reference them.
 
 This is wired in `apps/api/wrangler.jsonc` under `env.staging`:
 - a **custom-domain route** (`staging.igt.kylebjordahl.com`), and
