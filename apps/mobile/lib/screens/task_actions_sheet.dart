@@ -402,7 +402,6 @@ Future<void> showTaskActions(
                               Navigator.of(sheetCtx).pop();
                               _runScope(
                                 context,
-                                ref,
                                 scope.where((t) => t.status == 'unowned'),
                                 (api, fid, t) => api.assignTask(fid, t.id),
                                 'Claimed',
@@ -446,7 +445,6 @@ Future<void> showTaskActions(
                               Navigator.of(sheetCtx).pop();
                               _runScope(
                                 context,
-                                ref,
                                 scope.where((t) => t.status == 'owned'),
                                 (api, fid, t) => api.unassignTask(fid, t.id),
                                 'Returned to the queue',
@@ -471,7 +469,6 @@ Future<void> showTaskActions(
                             ).context;
                             final ok = await _runScope(
                               context,
-                              ref,
                               scope,
                               (api, fid, t) => api.dismissTask(fid, t.id),
                               'Marked not needed',
@@ -642,7 +639,7 @@ Future<void> showEventDetails(
             ],
             const SizedBox(height: 18),
             _DetailRow(icon: Icons.info_outline_rounded, text: reason),
-            // Only an eligible event can be rebuilt — for the three rule cases
+            // Only an eligible event can be rebuilt — for the rule cases
             // there's nothing this sheet could do that wouldn't be a lie.
             if (event.canHaveTasks) ...[
               const SizedBox(height: 18),
@@ -809,7 +806,6 @@ Future<void> _pickAndAssign(
                   Navigator.of(sheetCtx).pop();
                   _runScope(
                     context,
-                    ref,
                     scope,
                     (api, fid, t) => api.assignTask(fid, t.id, memberId: m.id),
                     'Assigned to ${m.relationName}',
@@ -879,21 +875,24 @@ Future<bool> _run(
 /// every action succeeded.
 Future<bool> _runScope(
   BuildContext context,
-  WidgetRef ref,
   Iterable<TaskItem> tasks,
   Future<void> Function(dynamic api, String familyId, TaskItem task) action,
   String success,
 ) async {
+  // Read up front: the caller's row can unmount while the actions run (a
+  // dismissed task leaves the list), and its `ref` goes with it.
+  final container = ProviderScope.containerOf(context, listen: false);
   try {
-    final familyId = await ref.read(familyProvider.future);
-    final api = ref.read(apiClientProvider);
+    final familyId = await container.read(familyProvider.future);
+    final api = container.read(apiClientProvider);
     for (final t in tasks) {
       await action(api, familyId, t);
     }
-    ref.invalidate(unownedTasksProvider);
-    ref.invalidate(allTasksProvider);
-    // Claims move events between calendars (the recursion) — refresh Plan too.
-    ref.invalidate(calendarEventsProvider);
+    container
+      ..invalidate(unownedTasksProvider)
+      ..invalidate(allTasksProvider)
+      // Claims move events between calendars (the recursion) — refresh Plan.
+      ..invalidate(calendarEventsProvider);
     if (context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(

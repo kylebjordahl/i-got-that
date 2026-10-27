@@ -8,6 +8,7 @@ import {
   familyMembers,
   feeds,
   getDb,
+  sourceEvents,
   tasks,
 } from '@igt/db';
 import { describe, expect, it } from 'vitest';
@@ -627,5 +628,92 @@ describe("a 'none' task rule (made from marking an event not needed)", () => {
       events: { id: string; taskIneligibleReason: string | null }[];
     };
     expect(events.find((e) => e.id === event.id)?.taskIneligibleReason).toBeNull();
+  });
+
+  it("doesn't skip or refuse an event a user converted (its manual tasks are frozen)", async () => {
+    const fam = await setupFamily('event-tasks-none-manual@example.com');
+    const db = getDb(env.DB);
+    const { link } = await linkedFeed(db, fam.familyId, fam.childId);
+    const event = await insertEvent(db, fam.familyId, fam.childId, {
+      synthKey: `ev:${link.id}:a`,
+      linkId: link.id,
+      summary: 'Soccer practice',
+    });
+    await buildMemberTasks(db, fam.childId);
+    const [task] = await eventTasks(db, event.id);
+    await call(
+      `/families/${fam.familyId}/tasks/${task!.id}/convert`,
+      authed(fam.admin.token, { types: ['attendance'] }),
+    );
+    await call(`/families/${fam.familyId}/tasks/${task!.id}/dismiss`, authed(fam.admin.token));
+    await call(
+      `/families/${fam.familyId}/members/${fam.childId}/task-rules`,
+      authed(fam.admin.token, { linkId: link.id, matchValue: '/^Soccer practice$/i', resultType: 'none' }),
+    );
+
+    const list = await call(`/families/${fam.familyId}/calendar-events`, bearer(fam.admin.token));
+    const { events } = (await list.json()) as {
+      events: { id: string; taskIneligibleReason: string | null }[];
+    };
+    expect(events.find((e) => e.id === event.id)?.taskIneligibleReason).toBeNull();
+
+    // The rebuild still restores the dismissed manual row the rule can't touch.
+    const rebuild = await call(
+      `/families/${fam.familyId}/calendar-events/${event.id}/tasks`,
+      authed(fam.admin.token),
+    );
+    expect(rebuild.status).toBe(200);
+    expect((await eventTasks(db, event.id)).map((t) => t.status)).toEqual(['unowned']);
+  });
+
+  it("matches a feed event's source description, which the calendar event doesn't carry", async () => {
+    const fam = await setupFamily('event-tasks-none-description@example.com');
+    const db = getDb(env.DB);
+    const { feed, link } = await linkedFeed(db, fam.familyId, fam.childId);
+    const source = (
+      await db
+        .insert(sourceEvents)
+        .values({
+          feedId: feed.id,
+          familyId: fam.familyId,
+          icalUid: 'assembly@school',
+          dtstart: START,
+          dtend: END,
+          summary: 'Assembly',
+          description: 'No parents needed — students only.',
+          contentHash: 'h',
+        })
+        .returning()
+    )[0]!;
+    const event = await insertEvent(db, fam.familyId, fam.childId, {
+      synthKey: `ev:${link.id}:${source.id}`,
+      linkId: link.id,
+      summary: 'Assembly',
+    });
+    await db
+      .update(calendarEvents)
+      .set({ sourceEventId: source.id })
+      .where(eq(calendarEvents.id, event.id));
+
+    const create = await call(
+      `/families/${fam.familyId}/members/${fam.childId}/task-rules`,
+      authed(fam.admin.token, {
+        linkId: link.id,
+        matchField: 'description',
+        matchValue: '/students only/i',
+        resultType: 'none',
+      }),
+    );
+    expect(create.status).toBe(201);
+    expect(await eventTasks(db, event.id)).toHaveLength(0);
+
+    const list = await call(`/families/${fam.familyId}/calendar-events`, bearer(fam.admin.token));
+    const { events } = (await list.json()) as {
+      events: { id: string; taskIneligibleReason: string | null; description: string | null }[];
+    };
+    const row = events.find((e) => e.id === event.id);
+    expect(row?.taskIneligibleReason).toBe('skipped_by_rule');
+    // Matched on, never shown.
+    expect(row?.description).toBeNull();
   });
 });

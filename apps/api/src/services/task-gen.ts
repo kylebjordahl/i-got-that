@@ -72,7 +72,8 @@ function toTaskRuleLike(r: typeof taskRules.$inferSelect): TaskRuleLike {
  * instead of offering to rebuild it (a rebuild would just come back empty).
  *
  * The same first-match resolution task-gen runs, but only a matching `none`
- * rule counts: a calendar's default is never `none`. Descriptions (which rules
+ * rule counts (a calendar's default is never `none`), and not on an event a
+ * user converted, whose frozen `manual` tasks no rule touches. Descriptions (which rules
  * may match but the calendar event doesn't carry for a feed event) are read
  * only when some `none` rule actually matches on one.
  */
@@ -149,6 +150,17 @@ export async function eventsSkippedByTaskRules(
     );
     if (match?.resultType === 'none') skipped.add(e.id);
   }
+
+  // A user-converted (`manual`) task set is frozen — task-gen keeps it whatever
+  // the rules say — so an event holding one isn't skipped, and a rebuild of it
+  // (restoring dismissed manual rows) still has something to bring back.
+  const manualEvents = await selectChunked([...skipped], (chunk) =>
+    db
+      .select({ calendarEventId: tasks.calendarEventId })
+      .from(tasks)
+      .where(and(inArray(tasks.calendarEventId, chunk), eq(tasks.createdVia, 'manual'))),
+  );
+  for (const t of manualEvents) skipped.delete(t.calendarEventId!);
   return skipped;
 }
 
