@@ -745,6 +745,69 @@ class TaskRuleMatch {
   }
 }
 
+/// One task an assignment rule's filters match (its match list or an editor
+/// preview), and how the family's pipeline resolves its owner.
+class AssignmentRuleMatch {
+  AssignmentRuleMatch({
+    required this.task,
+    required this.eventId,
+    required this.aboutMemberId,
+    required this.start,
+    required this.allDay,
+    required this.status,
+    this.end,
+    this.summary,
+    this.linkId,
+    this.decidedByRuleId,
+  });
+
+  final TaskItem task;
+  final String eventId;
+
+  /// Whose calendar the event is on (the child the task is about).
+  final String aboutMemberId;
+  final DateTime start;
+  final DateTime? end;
+  final bool allDay;
+  final String? summary;
+  final String? linkId;
+
+  /// 'applies' (this rule claims it), 'shadowed' (an earlier rule does),
+  /// 'omitted' (excepted from this rule), 'held' (a person took it in hand,
+  /// so no rule touches it) or 'owner_unavailable' (this rule matches first
+  /// but its owner is no longer a caretaker, so nobody claims it).
+  final String status;
+
+  /// The rule that claims the task; null ⇒ none does, or a person holds it.
+  final String? decidedByRuleId;
+
+  bool get applies => status == 'applies';
+  bool get omitted => status == 'omitted';
+  bool get held => status == 'held';
+  String get displaySummary => summary ?? 'Event';
+
+  factory AssignmentRuleMatch.fromJson(Map<String, dynamic> j) {
+    final e = j['event'] as Map<String, dynamic>;
+    final allDay = e['allDay'] as bool? ?? false;
+    return AssignmentRuleMatch(
+      task: TaskItem.fromJson(j['task'] as Map<String, dynamic>),
+      eventId: e['id'] as String,
+      aboutMemberId: e['familyMemberId'] as String,
+      allDay: allDay,
+      start: allDay
+          ? parseAllDayDate(e['dtstart'])
+          : parseTimestamp(e['dtstart']),
+      end: e['dtend'] == null
+          ? null
+          : (allDay ? parseAllDayDate(e['dtend']) : parseTimestamp(e['dtend'])),
+      summary: e['summary'] as String?,
+      linkId: e['linkId'] as String?,
+      status: j['status'] as String,
+      decidedByRuleId: j['decidedByRuleId'] as String?,
+    );
+  }
+}
+
 /// A family auto-assignment rule (issue #24): when a generated task matches, it
 /// is claimed for [ownerMemberId]. Targeting filters ([aboutMemberId], [linkId],
 /// [taskType]) are ANDed and each is optional (null = "any"). The recurrence

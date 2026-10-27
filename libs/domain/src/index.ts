@@ -950,6 +950,27 @@ export const UpdateAssignmentRuleInput = z
   .refine((v) => Object.keys(v).length > 0, { message: 'no fields to update' });
 export type UpdateAssignmentRuleInput = z.infer<typeof UpdateAssignmentRuleInput>;
 
+/**
+ * Dry-run an assignment rule the editor hasn't saved: which tasks in the window
+ * its filters match and which of those it would claim. `ruleId` names the rule
+ * being edited (the draft takes its place and keeps its omissions); without it
+ * the draft is a new rule at `rule.position` (default: appended).
+ */
+export const PreviewAssignmentRuleInput = z.object({
+  ruleId: Id.optional(),
+  rule: CreateAssignmentRuleInput,
+  from: z.string().datetime({ offset: true }).optional(),
+  to: z.string().datetime({ offset: true }).optional(),
+});
+export type PreviewAssignmentRuleInput = z.infer<typeof PreviewAssignmentRuleInput>;
+
+/** Omit one event's task of `taskType` from an assignment rule (a one-off). */
+export const AssignmentRuleExceptionInput = z.object({
+  calendarEventId: Id,
+  taskType: TaskType,
+});
+export type AssignmentRuleExceptionInput = z.infer<typeof AssignmentRuleExceptionInput>;
+
 /** Full ordering of a family's assignment rules — every rule id once, new order. */
 export const ReorderAssignmentRulesInput = z.object({
   ruleIds: z.array(Id).min(1),

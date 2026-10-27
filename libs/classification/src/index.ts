@@ -724,6 +724,11 @@ export interface AssignmentCandidate {
    * `dtstart` falls on in this zone, not its UTC date. Default `'UTC'`.
    */
   tz?: string;
+  /**
+   * Rules this task has been omitted from (one-off exceptions): they're
+   * skipped, so the task falls to the next matching rule or stays unclaimed.
+   */
+  omittedRuleIds?: ReadonlySet<string>;
 }
 
 /** A rule matches when every present filter matches and the cadence is "on". */
@@ -757,6 +762,7 @@ export function resolveTaskOwner(
 ): AssignmentRuleLike | null {
   const sorted = [...rules].sort((a, b) => a.position - b.position);
   for (const rule of sorted) {
+    if (cand.omittedRuleIds?.has(rule.id)) continue;
     if (assignmentRuleMatches(rule, cand)) return rule;
   }
   return null;

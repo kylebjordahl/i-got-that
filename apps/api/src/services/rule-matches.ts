@@ -16,7 +16,11 @@ import {
   tasks,
 } from '@igt/db';
 import {
+  type AssignmentCandidate,
+  type AssignmentRuleLike,
+  assignmentRuleMatches,
   DAY_MS,
+  resolveTaskOwner,
   resolveTaskResult,
   ruleMatches,
   startOfUtcDay,
@@ -26,7 +30,14 @@ import {
 } from '@igt/classification';
 import { RULE_MATCH_WINDOW_MAX_DAYS, type TaskRuleResultType } from '@igt/domain';
 import { selectChunked } from '../lib/d1.js';
-import { taskRuleOmissions } from './task-gen.js';
+import {
+  assignmentOmissionKey,
+  assignmentRuleOmissions,
+  loadMemberZones,
+  type MemberZones,
+  taskRuleOmissions,
+  zoneFor,
+} from './task-gen.js';
 import { type TaskWithOwners, withOwners } from './task-owners.js';
 
 /** A rule's match list covers the past and next 30 days unless asked otherwise. */
@@ -241,4 +252,162 @@ export async function matchTaskRule(
       ...(opts.withTasks ? { tasks: decoratedByEvent.get(e.id) ?? [] } : {}),
     };
   });
+}
+
+/**
+ * How an assignment rule stands on one task its filters match:
+ *  - `applies`: it's the first match, so it's the rule that claims the task;
+ *  - `shadowed`: an earlier rule matches first and claims it instead;
+ *  - `omitted`: the task was excepted from this rule, so it falls through;
+ *  - `held`: a person took the task in hand (claimed or reassigned it, or
+ *    converted it or a sibling task of its event), and no rule touches it;
+ *  - `owner_unavailable`: this rule is the first match, but its owner is no
+ *    longer a caretaker, so it claims nothing (task-gen doesn't fall through).
+ */
+export type AssignmentRuleMatchStatus =
+  | 'applies'
+  | 'shadowed'
+  | 'omitted'
+  | 'held'
+  | 'owner_unavailable';
+
+export interface AssignmentRuleMatch {
+  task: TaskWithOwners;
+  event: {
+    id: string;
+    familyMemberId: string;
+    summary: string | null;
+    dtstart: Date;
+    dtend: Date | null;
+    allDay: boolean;
+    linkId: string | null;
+  };
+  status: AssignmentRuleMatchStatus;
+  /**
+   * The first matching rule — the one that claims the task, unless its owner
+   * is no longer a caretaker. Null: no rule matches, or a person holds it.
+   */
+  decidedByRuleId: string | null;
+}
+
+/**
+ * Every task in `window` (by its event's start) that `target`'s filters match —
+ * about-member, source calendar, task type, weekday, cadence — with how the
+ * family's `pipeline` (which must contain `target`, saved or a draft) resolves
+ * its owner. Dismissed tasks and claims are left out: no rule acts on them.
+ */
+export async function matchAssignmentRule(
+  db: Db,
+  familyId: string,
+  target: AssignmentRuleLike,
+  pipeline: AssignmentRuleLike[],
+  window: { from: Date; to: Date },
+): Promise<AssignmentRuleMatch[]> {
+  const conditions = [
+    eq(calendarEvents.familyId, familyId),
+    ne(calendarEvents.provenance, 'claimed_task'),
+    isNull(calendarEvents.maskedAt),
+    gte(calendarEvents.dtstart, window.from),
+    lt(calendarEvents.dtstart, window.to),
+  ];
+  if (target.aboutMemberId) {
+    conditions.push(eq(calendarEvents.familyMemberId, target.aboutMemberId));
+  }
+  if (target.linkId) conditions.push(eq(calendarEvents.linkId, target.linkId));
+  const events = (
+    await db
+      .select()
+      .from(calendarEvents)
+      .where(and(...conditions))
+      .orderBy(asc(calendarEvents.dtstart))
+  ).filter((e) => !e.synthKey.startsWith('fb:'));
+  if (events.length === 0) return [];
+  const eventsById = new Map(events.map((e) => [e.id, e]));
+
+  const ids = events.map((e) => e.id);
+  const allTasks = await selectChunked(ids, (chunk) =>
+    db.select().from(tasks).where(inArray(tasks.calendarEventId, chunk)),
+  );
+  // Task-gen freezes every task of an event with a user-converted task (it only
+  // heals them), so none of that event's tasks is ever reconciled by a rule.
+  const frozenEvents = new Set(
+    allTasks.filter((t) => t.createdVia === 'manual').map((t) => t.calendarEventId!),
+  );
+  const taskRows = allTasks.filter(
+    (t) => t.status !== 'dismissed' && (!target.taskType || t.type === target.taskType),
+  );
+  if (taskRows.length === 0) return [];
+  const decorated = new Map((await withOwners(db, taskRows)).map((t) => [t.id, t]));
+  // Who a rule may still give a task to — task-gen drops a match whose owner
+  // stopped being a caretaker. Bounded by the family.
+  const caretakerIds = new Set(
+    (
+      await db
+        .select({ id: familyMembers.id })
+        .from(familyMembers)
+        .where(and(eq(familyMembers.familyId, familyId), eq(familyMembers.isCaretaker, true)))
+    ).map((r) => r.id),
+  );
+
+  // Weekday and cadence are judged on the event's local day, in the zone its
+  // member's calendar reads it in — loaded once per member (family-bounded).
+  const zones = new Map<string, MemberZones>();
+  for (const memberId of new Set(events.map((e) => e.familyMemberId))) {
+    zones.set(memberId, await loadMemberZones(db, familyId, memberId));
+  }
+  const omissions = await assignmentRuleOmissions(db, ids);
+
+  const matched: { task: (typeof taskRows)[number]; status: AssignmentRuleMatchStatus; decidedByRuleId: string | null }[] = [];
+  for (const task of taskRows) {
+    const event = eventsById.get(task.calendarEventId!)!;
+    const omitted = omissions.get(assignmentOmissionKey(event.id, task.type));
+    const cand: AssignmentCandidate = {
+      aboutMemberId: task.familyMemberId,
+      linkId: event.linkId ?? null,
+      type: task.type,
+      dtstart: event.dtstart,
+      allDay: event.allDay,
+      tz: zoneFor(zones.get(event.familyMemberId)!, event.linkId ?? null),
+    };
+    if (!assignmentRuleMatches(target, cand)) continue;
+    // Exactly the tasks `reconcileTaskOwner` leaves alone: a person's override,
+    // a frozen (converted) event, or an owned task no rule put there.
+    const withOwner = decorated.get(task.id)!;
+    const held =
+      task.manualOwnerOverride ||
+      frozenEvents.has(event.id) ||
+      (task.status === 'owned' && withOwner.autoAssignedRuleId == null);
+    const winner = held ? null : resolveTaskOwner({ ...cand, omittedRuleIds: omitted }, pipeline);
+    // Held first: an omission on a task a person has changes nothing.
+    const status: AssignmentRuleMatchStatus = held
+      ? 'held'
+      : omitted?.has(target.id)
+        ? 'omitted'
+        : winner?.id === target.id
+          ? caretakerIds.has(target.ownerMemberId)
+            ? 'applies'
+            : 'owner_unavailable'
+          : 'shadowed';
+    matched.push({ task, status, decidedByRuleId: winner?.id ?? null });
+  }
+
+  return matched
+    .map(({ task, status, decidedByRuleId }) => {
+      const e = eventsById.get(task.calendarEventId!)!;
+      return {
+        task: decorated.get(task.id)!,
+        event: {
+          id: e.id,
+          familyMemberId: e.familyMemberId,
+          summary: e.summary,
+          dtstart: e.dtstart,
+          dtend: e.dtend,
+          allDay: e.allDay,
+          linkId: e.linkId ?? null,
+        },
+        status,
+        decidedByRuleId,
+      };
+    })
+    .sort((a, b) => a.event.dtstart.getTime() - b.event.dtstart.getTime());
 }

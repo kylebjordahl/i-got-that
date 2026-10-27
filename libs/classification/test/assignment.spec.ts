@@ -35,6 +35,14 @@ describe('resolveTaskOwner', () => {
     expect(resolveTaskOwner(cand({}), [rule({})])?.ownerMemberId).toBe('parentA');
   });
 
+  it('skips a rule the task was omitted from, falling to the next or none', () => {
+    const first = rule({ id: 'r1', position: 0, ownerMemberId: 'parentA' });
+    const second = rule({ id: 'r2', position: 1, ownerMemberId: 'parentB' });
+    expect(resolveTaskOwner(cand({}), [first, second])?.id).toBe('r1');
+    expect(resolveTaskOwner(cand({ omittedRuleIds: new Set(['r1']) }), [first, second])?.id).toBe('r2');
+    expect(resolveTaskOwner(cand({ omittedRuleIds: new Set(['r1', 'r2']) }), [first, second])).toBeNull();
+  });
+
   it('filters by weekday mask', () => {
     const monRule = rule({ weekdayMask: 1 }); // Monday
     expect(resolveTaskOwner(cand({ dtstart: MON }), [monRule])).not.toBeNull();

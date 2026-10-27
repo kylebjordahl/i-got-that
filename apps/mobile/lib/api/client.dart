@@ -1532,6 +1532,77 @@ class ApiClient {
     );
   }
 
+  /// The tasks an assignment rule's filters match in the past and next 30
+  /// days: `{ from, to, matches: [...] }`.
+  Future<Map<String, dynamic>> getAssignmentRuleMatches(
+    String familyId,
+    String ruleId,
+  ) async => _obj(
+    await _dio.get(
+      '${_assignmentRulesBase(familyId)}/$ruleId/matches',
+      options: _auth,
+    ),
+  );
+
+  /// Dry-run an unsaved assignment rule: `{ from, to, matches: [...] }`.
+  /// [ruleId] names the rule being edited (the draft takes its place);
+  /// without it the draft is appended, as a create would be.
+  Future<Map<String, dynamic>> previewAssignmentRule(
+    String familyId, {
+    String? ruleId,
+    required String ownerMemberId,
+    String? aboutMemberId,
+    String? linkId,
+    String? taskType,
+    int weekdayMask = 0,
+    int cadenceWeeks = 1,
+    int? anchorDate,
+  }) async => _obj(
+    await _dio.post(
+      '${_assignmentRulesBase(familyId)}/preview',
+      data: {
+        if (ruleId != null) 'ruleId': ruleId,
+        'rule': {
+          'ownerMemberId': ownerMemberId,
+          if (aboutMemberId != null) 'aboutMemberId': aboutMemberId,
+          if (linkId != null) 'linkId': linkId,
+          if (taskType != null) 'taskType': taskType,
+          'weekdayMask': weekdayMask,
+          'cadenceWeeks': cadenceWeeks,
+          if (anchorDate != null) 'anchorDate': anchorDate,
+        },
+      },
+      options: _auth,
+    ),
+  );
+
+  /// Omit one event's [taskType] task from an assignment rule (a one-off).
+  Future<void> omitAssignmentRuleTask(
+    String familyId,
+    String ruleId,
+    String calendarEventId,
+    String taskType,
+  ) async {
+    await _dio.post(
+      '${_assignmentRulesBase(familyId)}/$ruleId/exceptions',
+      data: {'calendarEventId': calendarEventId, 'taskType': taskType},
+      options: _auth,
+    );
+  }
+
+  /// Put an omitted task back under its assignment rule.
+  Future<void> restoreAssignmentRuleTask(
+    String familyId,
+    String ruleId,
+    String calendarEventId,
+    String taskType,
+  ) async {
+    await _dio.delete(
+      '${_assignmentRulesBase(familyId)}/$ruleId/exceptions/$calendarEventId/$taskType',
+      options: _auth,
+    );
+  }
+
   Future<void> reorderAssignmentRules(
     String familyId,
     List<String> ruleIds,

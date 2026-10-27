@@ -1,5 +1,6 @@
 import {
   and,
+  assignmentRuleExceptions,
   assignmentRules,
   calendarEvents,
   type Db,
@@ -199,7 +200,40 @@ export async function taskRuleOmissions(
   return byEvent;
 }
 
-function toAssignmentRuleLike(
+/** The key an assignment omission is stored under: one event's task of a type. */
+export function assignmentOmissionKey(calendarEventId: string, type: string): string {
+  return `${calendarEventId}|${type}`;
+}
+
+/**
+ * The assignment rules each (event, task type) has been omitted from, keyed by
+ * `assignmentOmissionKey`. Chunked: the ids grow with a calendar.
+ */
+export async function assignmentRuleOmissions(
+  db: Db,
+  eventIds: string[],
+): Promise<Map<string, Set<string>>> {
+  const rows = await selectChunked(eventIds, (chunk) =>
+    db
+      .select({
+        calendarEventId: assignmentRuleExceptions.calendarEventId,
+        taskType: assignmentRuleExceptions.taskType,
+        ruleId: assignmentRuleExceptions.ruleId,
+      })
+      .from(assignmentRuleExceptions)
+      .where(inArray(assignmentRuleExceptions.calendarEventId, chunk)),
+  );
+  const byTask = new Map<string, Set<string>>();
+  for (const r of rows) {
+    const key = assignmentOmissionKey(r.calendarEventId, r.taskType);
+    const set = byTask.get(key) ?? new Set<string>();
+    set.add(r.ruleId);
+    byTask.set(key, set);
+  }
+  return byTask;
+}
+
+export function toAssignmentRuleLike(
   r: typeof assignmentRules.$inferSelect,
 ): AssignmentRuleLike {
   return {
@@ -224,12 +258,12 @@ function toAssignmentRuleLike(
  * judge an event's weekday by the local date it starts on, so they need to know
  * where "local" is.
  */
-interface MemberZones {
+export interface MemberZones {
   byLink: Map<string, string>;
   member: string | null;
 }
 
-async function loadMemberZones(
+export async function loadMemberZones(
   db: Db,
   familyId: string,
   familyMemberId: string,
@@ -259,7 +293,7 @@ async function loadMemberZones(
   };
 }
 
-function zoneFor(zones: MemberZones, linkId: string | null): string {
+export function zoneFor(zones: MemberZones, linkId: string | null): string {
   return (linkId ? zones.byLink.get(linkId) : undefined) ?? zones.member ?? 'UTC';
 }
 
@@ -469,6 +503,14 @@ async function buildEventTasks(
           buildable.map((e) => e.id),
         )
       : new Map<string, Set<string>>();
+  // Likewise the (event, task type)s omitted from an assignment rule.
+  const assignOmissions =
+    pass.assignCtx.rules.length > 0
+      ? await assignmentRuleOmissions(
+          db,
+          buildable.map((e) => e.id),
+        )
+      : new Map<string, Set<string>>();
 
   // Decide what each event should have (pure: no reads or writes in here).
   const plans = buildable.map((event) => {
@@ -558,6 +600,7 @@ async function buildEventTasks(
         dtstart: event.dtstart,
         allDay: event.allDay,
         tz: zoneFor(pass.zones, event.linkId ?? null),
+        omittedRuleIds: assignOmissions.get(assignmentOmissionKey(event.id, intent.type)),
       };
       const prior = existingByType.get(intent.type);
       if (prior) {

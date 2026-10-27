@@ -3,6 +3,7 @@ import 'dart:ui' as ui;
 
 import 'package:caretaker_app/api/client.dart';
 import 'package:caretaker_app/models.dart';
+import 'package:caretaker_app/screens/assignment_rule_matches_screen.dart';
 import 'package:caretaker_app/screens/assignment_rules_screen.dart';
 import 'package:caretaker_app/screens/email_outputs_section.dart';
 import 'package:caretaker_app/screens/member_detail_screen.dart';
@@ -400,6 +401,65 @@ void main() {
     await tester.pumpAndSettle();
     await capture(tester, key, '07-task-rule-editor-preview');
   });
+
+  testWidgets('render an assignment rule\'s match list and editor preview', (
+    tester,
+  ) async {
+    if (outDir == null) return; // no-op unless explicitly requested
+    await loadFonts();
+    tester.view.devicePixelRatio = 1.0;
+    tester.view.physicalSize = const Size(400, 1100);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final key = GlobalKey();
+    Widget app(Widget home) => ProviderScope(
+      overrides: [
+        ...overrides(),
+        apiClientProvider.overrideWithValue(_ShotApiClient()),
+        familyProvider.overrideWith((ref) async => 'fam-1'),
+        currentMemberProvider.overrideWith((ref) async => members.first),
+      ],
+      child: RepaintBoundary(
+        key: key,
+        child: MaterialApp(
+          debugShowCheckedModeBanner: false,
+          theme: buildAppTheme(),
+          themeMode: ThemeMode.dark,
+          home: home,
+        ),
+      ),
+    );
+
+    await tester.pumpWidget(app(const AssignmentRulesScreen()));
+    await tester.pumpAndSettle();
+    await capture(tester, key, '08-assignment-rules-see-what-it-claims');
+
+    await tester.pumpWidget(
+      app(
+        AssignmentRuleMatchesScreen(
+          rule: ruleSet.rules.first,
+          ruleSet: ruleSet,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await capture(tester, key, '09-assignment-rule-matches');
+
+    await tester.pumpWidget(app(const AssignmentRulesScreen()));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Add rule'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Pickup'));
+    await tester.pump(const Duration(milliseconds: 500));
+    await tester.pumpAndSettle();
+    await tester.drag(
+      find.byType(SingleChildScrollView).last,
+      const Offset(0, -600),
+    );
+    await tester.pumpAndSettle();
+    await capture(tester, key, '10-assignment-rule-editor-preview');
+  });
 }
 
 const _shotSchedule = {
@@ -527,6 +587,70 @@ class _ShotApiClient extends ApiClient {
           _task('pickup', 'unowned'),
         ],
       ),
+    ],
+  };
+
+  static Map<String, dynamic> _assignMatch(
+    String eventId,
+    String type,
+    int days,
+    String status,
+    String? decidedBy,
+    List<String> owners,
+  ) {
+    final m = _match(
+      eventId,
+      'Practice',
+      days,
+      status,
+      decidedBy,
+      'transition',
+      [],
+    );
+    return {
+      'task': {
+        ..._task(type, owners.isEmpty ? 'unowned' : 'owned', owners),
+        'id': '$eventId-$type',
+      },
+      'event': {
+        ...(m['event'] as Map<String, dynamic>),
+        'familyMemberId': 'ada',
+      },
+      'status': status,
+      'decidedByRuleId': decidedBy,
+    };
+  }
+
+  @override
+  Future<Map<String, dynamic>> getAssignmentRuleMatches(
+    String familyId,
+    String ruleId,
+  ) async => {
+    'matches': [
+      _assignMatch('a', 'pickup', -5, 'applies', 'r1', ['mom']),
+      _assignMatch('b', 'pickup', 2, 'applies', 'r1', ['mom']),
+      _assignMatch('c', 'pickup', 4, 'held', null, ['dad']),
+      _assignMatch('d', 'pickup', 9, 'omitted', 'r2', ['dad']),
+      _assignMatch('e', 'pickup', 11, 'omitted', null, []),
+    ],
+  };
+
+  @override
+  Future<Map<String, dynamic>> previewAssignmentRule(
+    String familyId, {
+    String? ruleId,
+    required String ownerMemberId,
+    String? aboutMemberId,
+    String? linkId,
+    String? taskType,
+    int weekdayMask = 0,
+    int cadenceWeeks = 1,
+    int? anchorDate,
+  }) async => {
+    'matches': [
+      _assignMatch('b', 'pickup', 2, 'shadowed', 'r1', ['mom']),
+      _assignMatch('c', 'pickup', 4, 'held', null, ['dad']),
+      _assignMatch('f', 'pickup', 6, 'applies', 'draft', []),
     ],
   };
 

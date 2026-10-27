@@ -36,6 +36,10 @@ for that event, so it falls through to the next match or the default. Anything
 that resolves an event's task type — task-gen, `eventsSkippedByTaskRules`, the
 match list / editor preview (`services/rule-matches.ts`) — must pass the
 event's omissions (`taskRuleOmissions`) or it disagrees with what was built.
+Assignment rules have the same one-offs (`assignment_rule_exceptions`, keyed by
+event + task type, since an unowned task row is recreated when its event's
+types change): `AssignmentCandidate.omittedRuleIds`, loaded with
+`assignmentRuleOmissions`.
 
 Every member (child or caretaker) can have a unified calendar: the DB
 (`calendar_events`) is canonical; an optional per-member external target
