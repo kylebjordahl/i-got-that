@@ -23,7 +23,7 @@ import { Hono } from 'hono';
 import type { Bindings, HonoEnv } from '../env.js';
 import { requireAdmin, requireFamilyMember } from '../middleware/auth.js';
 import { enqueueReconcile } from '../services/mirror.js';
-import { defaultMatchWindow, matchTaskRule } from '../services/rule-matches.js';
+import { matchTaskRule, resolveMatchWindow } from '../services/rule-matches.js';
 import { buildMemberTasks, rebuildMemberTasks, toTaskRuleLike } from '../services/task-gen.js';
 
 /**
@@ -328,15 +328,6 @@ taskRuleRoutes.put('/members/:memberId/task-default', requireAdmin, async (c) =>
 
 // --- What a rule catches (match list, dry-run preview, one-off omissions) ----
 
-/** The window a match list covers: the request's, else the past/next 30 days. */
-function matchWindow(from?: string, to?: string): { from: Date; to: Date } {
-  const fallback = defaultMatchWindow();
-  return {
-    from: from ? new Date(from) : fallback.from,
-    to: to ? new Date(to) : fallback.to,
-  };
-}
-
 /**
  * Every event in the window this rule's matcher catches on its calendars, with
  * how the member's pipeline resolves each (`applies` / `shadowed` by an earlier
@@ -351,6 +342,8 @@ taskRuleRoutes.get('/members/:memberId/task-rules/:ruleId/matches', async (c) =>
   if (!parsed.success) {
     return c.json({ error: 'invalid', issues: parsed.error.issues }, 400);
   }
+  const window = resolveMatchWindow(parsed.data.from, parsed.data.to);
+  if (!window) return c.json({ error: 'invalid_window' }, 400);
   const db = getDb(c.env.DB);
   const me = c.get('member');
   const member = await loadMember(db, me.familyId, c.req.param('memberId'));
@@ -362,7 +355,6 @@ taskRuleRoutes.get('/members/:memberId/task-rules/:ruleId/matches', async (c) =>
   const target = pipeline.find((r) => r.id === c.req.param('ruleId'));
   if (!target) return c.json({ error: 'rule_not_found' }, 404);
 
-  const window = matchWindow(parsed.data.from, parsed.data.to);
   const matches = await matchTaskRule(db, member.id, target, pipeline, window, {
     withTasks: true,
   });
@@ -393,6 +385,8 @@ taskRuleRoutes.post('/members/:memberId/task-rules/preview', async (c) => {
   if (!windowParsed.success) {
     return c.json({ error: 'invalid', issues: windowParsed.error.issues }, 400);
   }
+  const window = resolveMatchWindow(windowParsed.data.from, windowParsed.data.to);
+  if (!window) return c.json({ error: 'invalid_window' }, 400);
   const db = getDb(c.env.DB);
   const me = c.get('member');
   const member = await loadMember(db, me.familyId, c.req.param('memberId'));
@@ -418,7 +412,10 @@ taskRuleRoutes.post('/members/:memberId/task-rules/preview', async (c) => {
       ? editing.position
       : Math.min(d.position ?? saved.length, saved.length) - 0.5,
     scope: d.scope,
-    linkId: d.scope === 'all_calendars' ? null : (d.linkId ?? null),
+    // An edit can't move a rule's calendar (PATCH has no linkId), so preview
+    // it where it lives; a new rule goes where its create would put it.
+    linkId:
+      d.scope === 'all_calendars' ? null : editing ? editing.linkId : (d.linkId ?? null),
     matchField: d.matchField,
     matchOp: d.matchOp,
     matchValue: d.matchValue ?? null,
@@ -428,7 +425,6 @@ taskRuleRoutes.post('/members/:memberId/task-rules/preview', async (c) => {
   };
   const pipeline = [...saved.filter((r) => r.id !== draft.id), draft];
 
-  const window = matchWindow(windowParsed.data.from, windowParsed.data.to);
   const matches = await matchTaskRule(db, member.id, draft, pipeline, window, {
     withTasks: false,
   });

@@ -10,7 +10,7 @@ import {
 import { describe, expect, it } from 'vitest';
 import { hashCalendarEvent } from '../src/services/synthesis.js';
 import { buildMemberTasks } from '../src/services/task-gen.js';
-import { authed, bearer, call, setupFamily } from './helpers.js';
+import { authed, bearer, call, linkMember, login, setupFamily } from './helpers.js';
 
 type Db = ReturnType<typeof getDb>;
 
@@ -260,6 +260,65 @@ describe('a task rule’s match list', () => {
       bearer(fam.admin.token),
     );
     expect(tooWide.status).toBe(400);
+    // One bound alone is capped too, once the other defaults in.
+    for (const q of [
+      `from=${at(-200).toISOString()}`,
+      `to=${at(400).toISOString()}`,
+      `from=${at(60).toISOString()}`,
+    ]) {
+      expect((await call(`${base}/${trips}/matches?${q}`, bearer(fam.admin.token))).status).toBe(400);
+    }
+    const narrower = await call(
+      `${base}/${trips}/matches?from=${at(0).toISOString()}`,
+      bearer(fam.admin.token),
+    );
+    // From now on: the past trip drops out.
+    expect(((await narrower.json()) as { matches: Match[] }).matches.map((m) => m.event.id)).toEqual([
+      ev.nextTrip.id,
+      ev.museumTrip.id,
+    ]);
+  });
+
+  it('lets any family member look, but only an admin omit', async () => {
+    const { fam, school, ev, base } = await fixture('trm-nonadmin@example.com');
+    const trips = await createRule(base, fam.admin.token, {
+      linkId: school.id,
+      matchValue: '/field trip/i',
+      resultType: 'attendance',
+    });
+    const partnerRes = await call(
+      `/families/${fam.familyId}/members`,
+      authed(fam.admin.token, { relationName: 'partner', isCaretaker: true }),
+    );
+    const partnerId = ((await partnerRes.json()) as { member: { id: string } }).member.id;
+    const partner = await login('trm-nonadmin-partner@example.com');
+    await linkMember(fam.admin.token, fam.familyId, partnerId, partner.token);
+
+    expect((await call(`${base}/${trips}/matches`, bearer(partner.token))).status).toBe(200);
+    expect(
+      (
+        await call(
+          `${base}/preview`,
+          authed(partner.token, { rule: { matchValue: '/trip/i', resultType: 'none' } }),
+        )
+      ).status,
+    ).toBe(200);
+    expect(
+      (
+        await call(
+          `${base}/${trips}/exceptions`,
+          authed(partner.token, { calendarEventId: ev.nextTrip.id }),
+        )
+      ).status,
+    ).toBe(403);
+    expect(
+      (
+        await call(`${base}/${trips}/exceptions/${ev.nextTrip.id}`, {
+          ...bearer(partner.token),
+          method: 'DELETE',
+        })
+      ).status,
+    ).toBe(403);
   });
 });
 
