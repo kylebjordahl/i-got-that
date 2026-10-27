@@ -584,6 +584,99 @@ export function buildCancelICalendar(input: InviteEventInput): string {
   return buildICalendar(input, ICalCalendarMethod.CANCEL, ICalEventStatus.CANCELLED);
 }
 
+/** `tz`'s UTC offset at `instant`, in minutes; null for an unknown zone. */
+function offsetMinutes(instant: Date, tz: string): number | null {
+  try {
+    const p: Record<string, number> = {};
+    for (const part of new Intl.DateTimeFormat('en-US', {
+      timeZone: tz,
+      hourCycle: 'h23',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    }).formatToParts(instant)) {
+      if (part.type !== 'literal') p[part.type] = Number(part.value);
+    }
+    // Pure UTC arithmetic: no host-local Date, so the host's own zone can't skew it.
+    const wall = Date.UTC(p.year!, p.month! - 1, p.day!, p.hour!, p.minute!, p.second!);
+    return Math.round((wall - Math.floor(instant.getTime() / 1000) * 1000) / 60000);
+  } catch {
+    return null;
+  }
+}
+
+/** "+0530" / "-0700": an iCalendar UTC-OFFSET. */
+function formatOffset(minutes: number): string {
+  const abs = Math.abs(minutes);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${minutes < 0 ? '-' : '+'}${pad(Math.floor(abs / 60))}${pad(abs % 60)}`;
+}
+
+/** Whether `tz` observes daylight time at `instant` (offset above its winter/summer minimum). */
+function inDaylightTime(instant: Date, tz: string, offset: number): boolean {
+  const year = instant.getUTCFullYear();
+  const jan = offsetMinutes(new Date(Date.UTC(year, 0, 1)), tz) ?? offset;
+  const jul = offsetMinutes(new Date(Date.UTC(year, 6, 1)), tz) ?? offset;
+  return jan !== jul && offset === Math.max(jan, jul);
+}
+
+function zoneAbbreviation(instant: Date, tz: string): string {
+  return (
+    new Intl.DateTimeFormat('en-US', { timeZone: tz, timeZoneName: 'short' })
+      .formatToParts(instant)
+      .find((p) => p.type === 'timeZoneName')?.value ?? tz
+  );
+}
+
+/** "20261101T010000" — `instant` shifted by `offset` minutes, as a local DATE-TIME. */
+function localDateTime(instant: Date, offset: number): string {
+  return new Date(instant.getTime() + offset * 60000)
+    .toISOString()
+    .replace(/[-:]/g, '')
+    .slice(0, 15);
+}
+
+/**
+ * A VTIMEZONE defining `tz` for an event spanning `start`..`end`. A bare TZID
+ * isn't enough for iMIP: Outlook/Exchange ignore a TZID the message doesn't
+ * define and show the time as UTC. The invite is one non-recurring VEVENT, so
+ * only the offset(s) in force over that span are needed — one observance, or
+ * two when a DST change falls inside it — which, unlike a full rule table,
+ * needs no bundled tz database (it can't be read on Workers). Null for an
+ * unknown zone.
+ */
+function vtimezoneFor(tz: string, start: Date, end: Date): string | null {
+  const from = offsetMinutes(start, tz);
+  const to = offsetMinutes(end, tz);
+  if (from == null || to == null) return null;
+  const observance = (at: Date, dtstart: string, offsetFrom: number, offsetTo: number) =>
+    [
+      inDaylightTime(at, tz, offsetTo) ? 'BEGIN:DAYLIGHT' : 'BEGIN:STANDARD',
+      `DTSTART:${dtstart}`,
+      `TZOFFSETFROM:${formatOffset(offsetFrom)}`,
+      `TZOFFSETTO:${formatOffset(offsetTo)}`,
+      `TZNAME:${zoneAbbreviation(at, tz)}`,
+      inDaylightTime(at, tz, offsetTo) ? 'END:DAYLIGHT' : 'END:STANDARD',
+    ].join('\r\n');
+  const parts = [observance(start, '19700101T000000', from, from)];
+  if (to !== from) {
+    // Bisect to the moment the offset changes; the new observance starts at
+    // that moment's wall-clock time under the old offset (RFC 5545 §3.6.5).
+    let lo = start;
+    let hi = end;
+    while (hi.getTime() - lo.getTime() > 1000) {
+      const mid = new Date(Math.floor((lo.getTime() + hi.getTime()) / 2));
+      if (offsetMinutes(mid, tz) === from) lo = mid;
+      else hi = mid;
+    }
+    parts.push(observance(end, localDateTime(hi, from), from, to));
+  }
+  return ['BEGIN:VTIMEZONE', `TZID:${tz}`, ...parts, 'END:VTIMEZONE', ''].join('\r\n');
+}
+
 function buildICalendar(
   input: InviteEventInput,
   method: ICalCalendarMethod,
@@ -618,7 +711,9 @@ function buildICalendar(
     email: input.attendeeEmail,
     rsvp: true,
   });
-  return cal.toString();
+  const ics = cal.toString();
+  const vtimezone = timezone ? vtimezoneFor(timezone, input.start, endInstant) : null;
+  return vtimezone ? ics.replace('BEGIN:VEVENT', () => `${vtimezone}BEGIN:VEVENT`) : ics;
 }
 
 /**
