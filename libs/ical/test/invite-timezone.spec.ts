@@ -49,4 +49,36 @@ describe('invite timezone', () => {
     expect(ics).toContain('DTSTART:20260706T143000Z');
     expect(ics).not.toContain('VTIMEZONE');
   });
+
+  it('handles negative half-hour offsets and CRLF line endings', () => {
+    const ics = buildInviteICalendar({ ...base, timezone: 'America/St_Johns' });
+    expect(ics).toContain('TZOFFSETTO:-0230');
+    expect(ics).not.toMatch(/[^\r]\n/);
+  });
+
+  it('marks daylight time as DAYLIGHT and winter as STANDARD', () => {
+    expect(buildInviteICalendar({ ...base, timezone: 'America/Denver' })).toContain('BEGIN:DAYLIGHT');
+    const winter = buildInviteICalendar({
+      ...base,
+      start: new Date('2027-01-11T15:30:00Z'),
+      end: new Date('2027-01-11T16:00:00Z'),
+      timezone: 'America/Denver',
+    });
+    expect(winter).toContain('BEGIN:STANDARD');
+    expect(winter).not.toContain('BEGIN:DAYLIGHT');
+  });
+
+  it('describes both offsets when a DST change falls inside the event', () => {
+    // Denver falls back 2026-11-01 02:00 MDT (08:00Z).
+    const ics = buildInviteICalendar({
+      ...base,
+      start: new Date('2026-10-31T20:00:00Z'),
+      end: new Date('2026-11-01T12:00:00Z'),
+      timezone: 'America/Denver',
+    });
+    expect(ics).toContain('DTSTART;TZID=America/Denver:20261031T140000');
+    expect(ics).toContain('DTEND;TZID=America/Denver:20261101T050000');
+    expect(ics).toContain('TZOFFSETFROM:-0600\r\nTZOFFSETTO:-0700');
+    expect(ics).toContain('DTSTART:20261101T020000\r\nTZOFFSETFROM:-0600');
+  });
 });

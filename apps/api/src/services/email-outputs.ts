@@ -122,6 +122,9 @@ function hashInvite(
     event.description ?? '',
     alertMinutes.join(','),
     timezone ?? '',
+    // Bump when the invite's .ics shape changes in a way recipients should
+    // pick up (v1: embedded VTIMEZONE), so live invites are re-sent once.
+    'ics2',
   ].join('|');
   let h = 5381;
   for (let i = 0; i < parts.length; i++) h = ((h << 5) + h) ^ parts.charCodeAt(i);
