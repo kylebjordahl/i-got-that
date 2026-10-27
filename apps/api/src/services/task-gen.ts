@@ -19,6 +19,7 @@ import {
   tasks,
 } from '@igt/db';
 import {
+  firstMatch,
   generateTaskIntents,
   resolveTaskOwner,
   resolveTaskResult,
@@ -28,6 +29,7 @@ import {
   type TaskDefault,
   type TaskIntent,
   type TaskRuleLike,
+  taskRulesForCalendar,
 } from '@igt/classification';
 import { geoKey, type GeoLocation } from '@igt/domain';
 import {
@@ -62,6 +64,104 @@ function toTaskRuleLike(r: typeof taskRules.$inferSelect): TaskRuleLike {
     dropoffWindowMin: r.dropoffWindowMin,
     pickupWindowMin: r.pickupWindowMin,
   };
+}
+
+/**
+ * Which of these events a `none` task rule deliberately leaves without tasks —
+ * so a client showing one with nothing to claim can say "a rule skips this"
+ * instead of offering to rebuild it (a rebuild would just come back empty).
+ *
+ * The same first-match resolution task-gen runs, but only a matching `none`
+ * rule counts (a calendar's default is never `none`), and not on an event a
+ * user converted, whose frozen `manual` tasks no rule touches. Descriptions (which rules
+ * may match but the calendar event doesn't carry for a feed event) are read
+ * only when some `none` rule actually matches on one.
+ */
+export async function eventsSkippedByTaskRules(
+  db: Db,
+  events: {
+    id: string;
+    familyMemberId: string;
+    linkId: string | null;
+    sourceEventId: string | null;
+    summary: string | null;
+    location: string | null;
+    description: string | null;
+    allDay: boolean;
+    dtstart: Date;
+    dtend: Date | null;
+  }[],
+): Promise<Set<string>> {
+  const skipped = new Set<string>();
+  const memberIds = [...new Set(events.map((e) => e.familyMemberId))];
+  if (memberIds.length === 0) return skipped;
+  // Bounded by the family's members, so one unchunked read is fine.
+  const rules = (
+    await db.select().from(taskRules).where(inArray(taskRules.familyMemberId, memberIds))
+  ).map((r) => ({ ...toTaskRuleLike(r), familyMemberId: r.familyMemberId }));
+  const skipRules = rules.filter((r) => r.resultType === 'none');
+  if (skipRules.length === 0) return skipped;
+
+  const skipMembers = new Set(skipRules.map((r) => r.familyMemberId));
+  const candidates = events.filter((e) => skipMembers.has(e.familyMemberId));
+  const needsDescription = skipRules.some(
+    (r) => r.matchField === 'description' || r.matchField === 'any_text',
+  );
+  const sourceIds = needsDescription
+    ? [
+        ...new Set(
+          candidates.flatMap((e) =>
+            e.description == null && e.sourceEventId ? [e.sourceEventId] : [],
+          ),
+        ),
+      ]
+    : [];
+  const sourceDescriptions = new Map(
+    (
+      await selectChunked(sourceIds, (chunk) =>
+        db
+          .select({ id: sourceEvents.id, description: sourceEvents.description })
+          .from(sourceEvents)
+          .where(and(inArray(sourceEvents.id, chunk), isNotNull(sourceEvents.description))),
+      )
+    ).map((r): [string, string | null] => [r.id, r.description]),
+  );
+
+  const rulesByMember = new Map<string, TaskRuleLike[]>();
+  for (const r of rules) {
+    const list = rulesByMember.get(r.familyMemberId) ?? [];
+    list.push(r);
+    rulesByMember.set(r.familyMemberId, list);
+  }
+  for (const e of candidates) {
+    const match = firstMatch(
+      {
+        summary: e.summary,
+        location: e.location,
+        description:
+          e.description ??
+          (e.sourceEventId ? sourceDescriptions.get(e.sourceEventId) : null) ??
+          null,
+        allDay: e.allDay,
+        dtstart: e.dtstart,
+        dtend: e.dtend,
+      },
+      taskRulesForCalendar(rulesByMember.get(e.familyMemberId) ?? [], e.linkId),
+    );
+    if (match?.resultType === 'none') skipped.add(e.id);
+  }
+
+  // A user-converted (`manual`) task set is frozen — task-gen keeps it whatever
+  // the rules say — so an event holding one isn't skipped, and a rebuild of it
+  // (restoring dismissed manual rows) still has something to bring back.
+  const manualEvents = await selectChunked([...skipped], (chunk) =>
+    db
+      .select({ calendarEventId: tasks.calendarEventId })
+      .from(tasks)
+      .where(and(inArray(tasks.calendarEventId, chunk), eq(tasks.createdVia, 'manual'))),
+  );
+  for (const t of manualEvents) skipped.delete(t.calendarEventId!);
+  return skipped;
 }
 
 function toAssignmentRuleLike(

@@ -31,6 +31,7 @@ import {
   PushPlatform,
   TaskCreatedVia,
   TaskResultType,
+  TaskRuleResultType,
   TaskRuleScope,
   TaskStatus,
   TaskType,
@@ -493,7 +494,8 @@ export const linkRules = sqliteTable(
 
 /**
  * One rule in a member's task-generation pipeline. Decides whether a matched
- * event generates a `transition` (drop-off + pickup) or an `attendance` task.
+ * event generates a `transition` (drop-off + pickup), an `attendance` task, or
+ * `none` (no tasks at all — the event stays on the calendar).
  * `scope` = `this_calendar` (only the calendar named by `linkId`; null linkId =
  * the member's own unified/direct calendar) or `all_calendars` (every calendar
  * of the member). Rules share one `position` order per member; when a calendar
@@ -524,7 +526,7 @@ export const taskRules = sqliteTable(
     }).notNull(),
     matchOp: text('match_op', { enum: OverrideMatchOp.options }).notNull(),
     matchValue: text('match_value'),
-    resultType: text('result_type', { enum: TaskResultType.options }).notNull(),
+    resultType: text('result_type', { enum: TaskRuleResultType.options }).notNull(),
     // Only meaningful when resultType = transition.
     dropoffWindowMin: integer('dropoff_window_min'),
     pickupWindowMin: integer('pickup_window_min'),

@@ -133,6 +133,14 @@ export type TaskRuleScope = z.infer<typeof TaskRuleScope>;
 export const TaskResultType = z.enum(['transition', 'attendance']);
 export type TaskResultType = z.infer<typeof TaskResultType>;
 
+/**
+ * What a matched task RULE makes an event generate: either task result, or
+ * `none` — the event stays on the calendar (and its mirror) but spawns nothing
+ * to claim. Rules only: a calendar's terminal default is always a real result.
+ */
+export const TaskRuleResultType = z.enum(['transition', 'attendance', 'none']);
+export type TaskRuleResultType = z.infer<typeof TaskRuleResultType>;
+
 /** An unmatched exception-feed event awaiting a human decision — never guessed. */
 export const PendingDecisionStatus = z.enum(['pending', 'resolved', 'dismissed']);
 export type PendingDecisionStatus = z.infer<typeof PendingDecisionStatus>;
@@ -811,7 +819,7 @@ export const CreateTaskRuleInput = z
     matchField: OverrideMatchField.default('summary'),
     matchOp: OverrideMatchOp.default('regex'),
     matchValue: z.string().min(1).optional(),
-    resultType: TaskResultType,
+    resultType: TaskRuleResultType,
     dropoffWindowMin: WindowMinutes.optional(),
     pickupWindowMin: WindowMinutes.optional(),
   })
@@ -824,7 +832,7 @@ export const UpdateTaskRuleInput = z
     matchField: OverrideMatchField.optional(),
     matchOp: OverrideMatchOp.optional(),
     matchValue: z.string().min(1).nullable().optional(),
-    resultType: TaskResultType.optional(),
+    resultType: TaskRuleResultType.optional(),
     dropoffWindowMin: WindowMinutes.nullable().optional(),
     pickupWindowMin: WindowMinutes.nullable().optional(),
   })

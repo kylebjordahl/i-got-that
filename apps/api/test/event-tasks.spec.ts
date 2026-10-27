@@ -8,6 +8,7 @@ import {
   familyMembers,
   feeds,
   getDb,
+  sourceEvents,
   tasks,
 } from '@igt/db';
 import { describe, expect, it } from 'vitest';
@@ -496,5 +497,223 @@ describe('un-masking an event after a conflict', () => {
     expect((await eventTasks(db, baseline.id)).map((t) => t.status)).toEqual([
       'unowned',
     ]);
+  });
+});
+
+describe("a 'none' task rule (made from marking an event not needed)", () => {
+  it('stops matching events generating tasks, but keeps owned and dismissed rows', async () => {
+    const fam = await setupFamily('event-tasks-none-rule@example.com');
+    const db = getDb(env.DB);
+    const { link } = await linkedFeed(db, fam.familyId, fam.childId);
+    const dismissed = await insertEvent(db, fam.familyId, fam.childId, {
+      synthKey: `ev:${link.id}:a`,
+      linkId: link.id,
+      summary: 'Soccer practice',
+    });
+    const unclaimed = await insertEvent(db, fam.familyId, fam.childId, {
+      synthKey: `ev:${link.id}:b`,
+      linkId: link.id,
+      summary: 'Soccer practice',
+      dtstart: new Date(START.getTime() + 2 * 86_400_000),
+      dtend: new Date(END.getTime() + 2 * 86_400_000),
+    });
+    const claimed = await insertEvent(db, fam.familyId, fam.childId, {
+      synthKey: `ev:${link.id}:c`,
+      linkId: link.id,
+      summary: 'Soccer practice',
+      dtstart: new Date(START.getTime() + 4 * 86_400_000),
+      dtend: new Date(END.getTime() + 4 * 86_400_000),
+    });
+    const other = await insertEvent(db, fam.familyId, fam.childId, {
+      synthKey: `ev:${link.id}:d`,
+      linkId: link.id,
+      summary: 'Soccer practice makeup',
+    });
+    await buildMemberTasks(db, fam.childId);
+
+    const [dismissedTask] = await eventTasks(db, dismissed.id);
+    const [claimedTask] = await eventTasks(db, claimed.id);
+    expect(
+      (
+        await call(
+          `/families/${fam.familyId}/tasks/${dismissedTask!.id}/dismiss`,
+          authed(fam.admin.token),
+        )
+      ).status,
+    ).toBe(200);
+    expect(
+      (
+        await call(
+          `/families/${fam.familyId}/tasks/${claimedTask!.id}/assign`,
+          authed(fam.admin.token),
+        )
+      ).status,
+    ).toBe(200);
+
+    // The rule the client offers after "Mark as not needed": this exact title,
+    // this calendar, no tasks.
+    const create = await call(
+      `/families/${fam.familyId}/members/${fam.childId}/task-rules`,
+      authed(fam.admin.token, {
+        linkId: link.id,
+        scope: 'this_calendar',
+        position: 0,
+        matchValue: '/^Soccer practice$/i',
+        resultType: 'none',
+      }),
+    );
+    expect(create.status).toBe(201);
+
+    // The unclaimed match lost its task; the claimed one and the dismissed row
+    // stay (owned tasks are never reconciled away); the non-match is untouched.
+    expect(await eventTasks(db, unclaimed.id)).toHaveLength(0);
+    expect((await eventTasks(db, claimed.id)).map((t) => t.status)).toEqual(['owned']);
+    expect((await eventTasks(db, dismissed.id)).map((t) => t.status)).toEqual([
+      'dismissed',
+    ]);
+    expect((await eventTasks(db, other.id)).map((t) => t.type)).toEqual(['attendance']);
+
+    // The calendar says a rule skips it, rather than offering a rebuild...
+    const list = await call(
+      `/families/${fam.familyId}/calendar-events`,
+      bearer(fam.admin.token),
+    );
+    const { events } = (await list.json()) as {
+      events: { id: string; taskIneligibleReason: string | null; sourceEventId?: unknown }[];
+    };
+    const reasons = new Map(events.map((e) => [e.id, e.taskIneligibleReason]));
+    expect(reasons.get(unclaimed.id)).toBe('skipped_by_rule');
+    expect(reasons.get(dismissed.id)).toBe('skipped_by_rule');
+    expect(reasons.get(other.id)).toBeNull();
+    expect(events.every((e) => !('sourceEventId' in e))).toBe(true);
+
+    // ...and a rebuild is refused, since it could only come back empty.
+    const rebuild = await call(
+      `/families/${fam.familyId}/calendar-events/${unclaimed.id}/tasks`,
+      authed(fam.admin.token),
+    );
+    expect(rebuild.status).toBe(409);
+    expect(await rebuild.json()).toMatchObject({ reason: 'skipped_by_rule' });
+  });
+
+  it('only counts when the none rule is the first match on that calendar', async () => {
+    const fam = await setupFamily('event-tasks-none-shadowed@example.com');
+    const db = getDb(env.DB);
+    const { link } = await linkedFeed(db, fam.familyId, fam.childId);
+    const event = await insertEvent(db, fam.familyId, fam.childId, {
+      synthKey: `ev:${link.id}:a`,
+      linkId: link.id,
+      summary: 'Soccer practice',
+    });
+    const base = `/families/${fam.familyId}/members/${fam.childId}/task-rules`;
+    await call(
+      base,
+      authed(fam.admin.token, { scope: 'all_calendars', matchValue: '/soccer/i', resultType: 'transition' }),
+    );
+    // Appended after the transition rule, so it never wins.
+    await call(
+      base,
+      authed(fam.admin.token, { linkId: link.id, matchValue: '/soccer/i', resultType: 'none' }),
+    );
+
+    expect((await eventTasks(db, event.id)).map((t) => t.type).sort()).toEqual([
+      'dropoff',
+      'pickup',
+    ]);
+    const list = await call(
+      `/families/${fam.familyId}/calendar-events`,
+      bearer(fam.admin.token),
+    );
+    const { events } = (await list.json()) as {
+      events: { id: string; taskIneligibleReason: string | null }[];
+    };
+    expect(events.find((e) => e.id === event.id)?.taskIneligibleReason).toBeNull();
+  });
+
+  it("doesn't skip or refuse an event a user converted (its manual tasks are frozen)", async () => {
+    const fam = await setupFamily('event-tasks-none-manual@example.com');
+    const db = getDb(env.DB);
+    const { link } = await linkedFeed(db, fam.familyId, fam.childId);
+    const event = await insertEvent(db, fam.familyId, fam.childId, {
+      synthKey: `ev:${link.id}:a`,
+      linkId: link.id,
+      summary: 'Soccer practice',
+    });
+    await buildMemberTasks(db, fam.childId);
+    const [task] = await eventTasks(db, event.id);
+    await call(
+      `/families/${fam.familyId}/tasks/${task!.id}/convert`,
+      authed(fam.admin.token, { types: ['attendance'] }),
+    );
+    await call(`/families/${fam.familyId}/tasks/${task!.id}/dismiss`, authed(fam.admin.token));
+    await call(
+      `/families/${fam.familyId}/members/${fam.childId}/task-rules`,
+      authed(fam.admin.token, { linkId: link.id, matchValue: '/^Soccer practice$/i', resultType: 'none' }),
+    );
+
+    const list = await call(`/families/${fam.familyId}/calendar-events`, bearer(fam.admin.token));
+    const { events } = (await list.json()) as {
+      events: { id: string; taskIneligibleReason: string | null }[];
+    };
+    expect(events.find((e) => e.id === event.id)?.taskIneligibleReason).toBeNull();
+
+    // The rebuild still restores the dismissed manual row the rule can't touch.
+    const rebuild = await call(
+      `/families/${fam.familyId}/calendar-events/${event.id}/tasks`,
+      authed(fam.admin.token),
+    );
+    expect(rebuild.status).toBe(200);
+    expect((await eventTasks(db, event.id)).map((t) => t.status)).toEqual(['unowned']);
+  });
+
+  it("matches a feed event's source description, which the calendar event doesn't carry", async () => {
+    const fam = await setupFamily('event-tasks-none-description@example.com');
+    const db = getDb(env.DB);
+    const { feed, link } = await linkedFeed(db, fam.familyId, fam.childId);
+    const source = (
+      await db
+        .insert(sourceEvents)
+        .values({
+          feedId: feed.id,
+          familyId: fam.familyId,
+          icalUid: 'assembly@school',
+          dtstart: START,
+          dtend: END,
+          summary: 'Assembly',
+          description: 'No parents needed — students only.',
+          contentHash: 'h',
+        })
+        .returning()
+    )[0]!;
+    const event = await insertEvent(db, fam.familyId, fam.childId, {
+      synthKey: `ev:${link.id}:${source.id}`,
+      linkId: link.id,
+      summary: 'Assembly',
+    });
+    await db
+      .update(calendarEvents)
+      .set({ sourceEventId: source.id })
+      .where(eq(calendarEvents.id, event.id));
+
+    const create = await call(
+      `/families/${fam.familyId}/members/${fam.childId}/task-rules`,
+      authed(fam.admin.token, {
+        linkId: link.id,
+        matchField: 'description',
+        matchValue: '/students only/i',
+        resultType: 'none',
+      }),
+    );
+    expect(create.status).toBe(201);
+    expect(await eventTasks(db, event.id)).toHaveLength(0);
+
+    const list = await call(`/families/${fam.familyId}/calendar-events`, bearer(fam.admin.token));
+    const { events } = (await list.json()) as {
+      events: { id: string; taskIneligibleReason: string | null; description: string | null }[];
+    };
+    const row = events.find((e) => e.id === event.id);
+    expect(row?.taskIneligibleReason).toBe('skipped_by_rule');
+    // Matched on, never shown.
+    expect(row?.description).toBeNull();
   });
 });

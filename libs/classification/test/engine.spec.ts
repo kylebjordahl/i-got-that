@@ -778,6 +778,10 @@ describe('generateTaskIntents', () => {
     ]);
   });
 
+  it('none → nothing to claim', () => {
+    expect(generateTaskIntents(span, { resultType: 'none', dropoffWindowMin: 15, pickupWindowMin: 15 })).toEqual([]);
+  });
+
   it("carries the event's geocode onto every task it spawns", () => {
     const geo = { lat: 37.331686, lon: -122.030656, title: 'Lincoln Elementary' };
     const intents = generateTaskIntents(

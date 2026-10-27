@@ -42,7 +42,7 @@ import { enqueueReconcile, getProductionRegistry, syncFamilyMirror } from '../se
 import { type PipelineContext, resynthesizeFeed, runPipeline } from '../services/pipeline.js';
 import { buildKekKeySet } from '../lib/secrets.js';
 import { hashCalendarEvent } from '../services/synthesis.js';
-import { buildMemberTasks } from '../services/task-gen.js';
+import { buildMemberTasks, eventsSkippedByTaskRules } from '../services/task-gen.js';
 import { ownerRowsFor, setTaskOwners, withOwners } from '../services/task-owners.js';
 
 /** Mounted under /families/:familyId (auth applied by parent router). */
@@ -923,6 +923,7 @@ taskRoutes.get('/calendar-events', async (c) => {
       location: calendarEvents.location,
       travelTimeOverrideMin: calendarEvents.travelTimeOverrideMin,
       synthKey: calendarEvents.synthKey,
+      sourceEventId: calendarEvents.sourceEventId,
       generatesFamilyTasks: familyMembers.generatesFamilyTasks,
     })
     .from(calendarEvents)
@@ -933,30 +934,35 @@ taskRoutes.get('/calendar-events', async (c) => {
     .where(and(...conditions))
     .orderBy(asc(calendarEvents.dtstart));
 
+  const skipped = await eventsSkippedByTaskRules(db, rows);
+
   // Why an event can't carry claimable tasks, so a client showing one with none
   // can say which of these it is rather than just "nothing to claim". Null ⇒ it
   // is eligible, and any absence of tasks is a dismissal or a stale build.
   return c.json({
-    events: rows.map(({ synthKey, generatesFamilyTasks, ...e }) => ({
+    events: rows.map(({ synthKey, sourceEventId: _source, generatesFamilyTasks, ...e }) => ({
       ...e,
       taskIneligibleReason: taskIneligibleReason({
         provenance: e.provenance,
         synthKey,
         generatesFamilyTasks,
+        skippedByRule: skipped.has(e.id),
       }),
     })),
   });
 });
 
 /**
- * Why an event is structurally incapable of carrying claimable tasks — the same
- * three exclusions task-gen applies, named so a client can explain them:
+ * Why an event is incapable of carrying claimable tasks — the same exclusions
+ * task-gen applies, named so a client can explain them:
  *
  *  - `paused`: the member's `generatesFamilyTasks` is off (rules kept, gen off).
  *  - `busy_calendar`: an `fb:` free/busy firewall block — opaque availability
  *    from a `busy`-mode feed, never family logistics.
  *  - `claimed`: a `claimed_task` event, which *is* somebody's claim already
  *    (generating from it would echo the recursion).
+ *  - `skipped_by_rule`: the member's first matching task rule is a `none` rule
+ *    (`eventsSkippedByTaskRules`) — the family chose no tasks for it.
  *
  * Null means the event is eligible, so having no tasks is a dismissal or a
  * stale build rather than a rule — `POST /calendar-events/:id/tasks` fixes that.
@@ -965,10 +971,12 @@ function taskIneligibleReason(e: {
   provenance: string;
   synthKey: string;
   generatesFamilyTasks: boolean;
-}): 'paused' | 'busy_calendar' | 'claimed' | null {
+  skippedByRule: boolean;
+}): 'paused' | 'busy_calendar' | 'claimed' | 'skipped_by_rule' | null {
   if (e.provenance === 'claimed_task') return 'claimed';
   if (e.synthKey.startsWith('fb:')) return 'busy_calendar';
   if (!e.generatesFamilyTasks) return 'paused';
+  if (e.skippedByRule) return 'skipped_by_rule';
   return null;
 }
 
@@ -984,8 +992,8 @@ function taskIneligibleReason(e: {
  * task-gen over it, so whatever the member's task-rule pipeline says the event
  * should generate is what it ends up with.
  *
- * Rejects the three cases where having no tasks is the rule rather than a
- * mishap — see `taskIneligibleReason`.
+ * Rejects the cases where having no tasks is the rule rather than a mishap —
+ * see `taskIneligibleReason`.
  */
 taskRoutes.post('/calendar-events/:eventId/tasks', async (c) => {
   const db = getDb(c.env.DB);
@@ -1021,6 +1029,7 @@ taskRoutes.post('/calendar-events/:eventId/tasks', async (c) => {
     provenance: event.provenance,
     synthKey: event.synthKey,
     generatesFamilyTasks: member.generatesFamilyTasks,
+    skippedByRule: (await eventsSkippedByTaskRules(db, [event])).has(event.id),
   });
   if (reason) return c.json({ error: 'not_eligible', reason }, 409);
 

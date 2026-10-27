@@ -226,7 +226,6 @@ class _TaskRulesScreenState extends ConsumerState<TaskRulesScreen> {
   Future<void> _openSheet({TaskRule? existing}) async {
     final changed = await showTaskRuleSheet(
       context,
-      ref,
       member: widget.member,
       activeLinkId: _activeLinkId,
       existing: existing,
@@ -298,7 +297,9 @@ class _RuleCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final resultColor = rule.isTransition ? AppColors.green : AppColors.purple;
+    final resultColor = rule.isTransition
+        ? AppColors.green
+        : (rule.isNone ? AppColors.coral : AppColors.purple);
     return AppCard(
       onTap: onTap,
       child: Column(
@@ -330,9 +331,16 @@ class _RuleCard extends StatelessWidget {
 }
 
 class _ResultSegmented extends StatelessWidget {
-  const _ResultSegmented({required this.value, required this.onChanged});
+  const _ResultSegmented({
+    required this.value,
+    required this.onChanged,
+    this.allowNone = false,
+  });
   final String value;
   final ValueChanged<String> onChanged;
+
+  /// Offer "No tasks" — rules only; a calendar's default always makes tasks.
+  final bool allowNone;
 
   @override
   Widget build(BuildContext context) {
@@ -377,6 +385,7 @@ class _ResultSegmented extends StatelessWidget {
         children: [
           seg('transition', 'Drop-off & pickup'),
           seg('attendance', 'Attendance'),
+          if (allowNone) seg('none', 'No tasks'),
         ],
       ),
     );
@@ -456,12 +465,19 @@ class _DefaultWindowFieldsState extends State<_DefaultWindowFields> {
 }
 
 /// Task-rule edit sheet (6n). Returns true when something changed.
+///
+/// A new rule can be prefilled — [initialMatch] / [initialResult] — and placed
+/// at [position] in the member's pipeline (appended when null); [intro] says
+/// where the draft came from (e.g. an event just marked not needed).
 Future<bool?> showTaskRuleSheet(
-  BuildContext context,
-  WidgetRef ref, {
+  BuildContext context, {
   required Member member,
   required String? activeLinkId,
   TaskRule? existing,
+  String? initialMatch,
+  String? initialResult,
+  int? position,
+  String? intro,
 }) {
   return showModalBottomSheet<bool>(
     context: context,
@@ -473,6 +489,10 @@ Future<bool?> showTaskRuleSheet(
       member: member,
       activeLinkId: activeLinkId,
       existing: existing,
+      initialMatch: initialMatch,
+      initialResult: initialResult,
+      position: position,
+      intro: intro,
     ),
   );
 }
@@ -482,10 +502,18 @@ class _TaskRuleSheet extends ConsumerStatefulWidget {
     required this.member,
     required this.activeLinkId,
     this.existing,
+    this.initialMatch,
+    this.initialResult,
+    this.position,
+    this.intro,
   });
   final Member member;
   final String? activeLinkId;
   final TaskRule? existing;
+  final String? initialMatch;
+  final String? initialResult;
+  final int? position;
+  final String? intro;
 
   @override
   ConsumerState<_TaskRuleSheet> createState() => _TaskRuleSheetState();
@@ -507,8 +535,8 @@ class _TaskRuleSheetState extends ConsumerState<_TaskRuleSheet> {
     super.initState();
     final ex = widget.existing;
     _allCalendars = ex?.scope == 'all_calendars';
-    _result = ex?.resultType ?? 'transition';
-    _match.text = ex?.matchValue ?? '';
+    _result = ex?.resultType ?? widget.initialResult ?? 'transition';
+    _match.text = ex?.matchValue ?? widget.initialMatch ?? '';
     _dropoff = ex?.dropoffWindowMin ?? 15;
     _pickup = ex?.pickupWindowMin ?? 15;
   }
@@ -550,6 +578,7 @@ class _TaskRuleSheetState extends ConsumerState<_TaskRuleSheet> {
           scope: scope,
           resultType: _result,
           matchValue: matchValue,
+          position: widget.position,
           dropoffWindowMin: drop,
           pickupWindowMin: pick,
         );
@@ -610,6 +639,10 @@ class _TaskRuleSheetState extends ConsumerState<_TaskRuleSheet> {
                   ),
               ],
             ),
+            if (widget.intro != null) ...[
+              const SizedBox(height: 4),
+              Text(widget.intro!, style: AppText.subtitle),
+            ],
             const SizedBox(height: 12),
             Text('APPLIES TO', style: AppText.eyebrow()),
             const SizedBox(height: 8),
@@ -643,6 +676,7 @@ class _TaskRuleSheetState extends ConsumerState<_TaskRuleSheet> {
             const SizedBox(height: 8),
             _ResultSegmented(
               value: _result,
+              allowNone: true,
               onChanged: (v) => setState(() => _result = v),
             ),
             if (_result == 'transition') ...[
@@ -694,7 +728,9 @@ class _TaskRuleSheetState extends ConsumerState<_TaskRuleSheet> {
             ] else ...[
               const SizedBox(height: 10),
               Text(
-                'Attendance tasks span the matched event itself — no window to configure.',
+                _result == 'none'
+                    ? 'Matching events stay on the calendar, but nobody is asked to cover them.'
+                    : 'Attendance tasks span the matched event itself — no window to configure.',
                 style: AppText.subtitle,
               ),
             ],

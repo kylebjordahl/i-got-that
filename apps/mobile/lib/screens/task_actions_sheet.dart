@@ -14,6 +14,7 @@ import '../widgets/app_bottom_nav.dart';
 import '../widgets/primitives.dart';
 import '../widgets/settings.dart';
 import '../widgets/time_fields.dart';
+import 'task_rules_screen.dart';
 
 /// Quick-actions for a timeline task (Home rows + Plan blocks/tags): change its
 /// type (drop off / attend / pick up, any combination), (re)assign or unassign
@@ -116,6 +117,19 @@ Future<void> showTaskActions(
           // need a nudge that they're not just retyping this one drop-off or
           // pick-up.
           final isSingleLegOfGroup = group.length > 1 && !scopesWholeEvent;
+          // Dismissing every live task on the event says the whole event isn't
+          // needed — which a "No tasks" rule can say for its repeats, so offer
+          // one (task rules are admin-only, and match on the event's title).
+          final eventTitle = sourceEvent?.summary;
+          final offerSkipRule =
+              isAdmin &&
+              child != null &&
+              eventTitle != null &&
+              eventTitle.trim().isNotEmpty &&
+              group.isNotEmpty &&
+              group
+                  .where((t) => t.status != 'dismissed')
+                  .every((t) => scope.any((s) => s.id == t.id));
 
           final owners = scope
               .where((t) => t.status == 'owned')
@@ -388,7 +402,6 @@ Future<void> showTaskActions(
                               Navigator.of(sheetCtx).pop();
                               _runScope(
                                 context,
-                                ref,
                                 scope.where((t) => t.status == 'unowned'),
                                 (api, fid, t) => api.assignTask(fid, t.id),
                                 'Claimed',
@@ -432,7 +445,6 @@ Future<void> showTaskActions(
                               Navigator.of(sheetCtx).pop();
                               _runScope(
                                 context,
-                                ref,
                                 scope.where((t) => t.status == 'owned'),
                                 (api, fid, t) => api.unassignTask(fid, t.id),
                                 'Returned to the queue',
@@ -446,15 +458,29 @@ Future<void> showTaskActions(
                           iconColor: AppColors.coral,
                           label: 'Mark as not needed',
                           destructive: true,
-                          onTap: () {
+                          onTap: () async {
                             Navigator.of(sheetCtx).pop();
-                            _runScope(
+                            // The tapped row leaves the list once its task is
+                            // dismissed, taking `context` and `ref` with it, so
+                            // the follow-up prompt hangs off the root navigator.
+                            final rootContext = Navigator.of(
                               context,
-                              ref,
+                              rootNavigator: true,
+                            ).context;
+                            final ok = await _runScope(
+                              context,
                               scope,
                               (api, fid, t) => api.dismissTask(fid, t.id),
                               'Marked not needed',
                             );
+                            if (ok && offerSkipRule && rootContext.mounted) {
+                              await _offerSkipRule(
+                                rootContext,
+                                child,
+                                sourceEvent!,
+                                eventTitle,
+                              );
+                            }
                           },
                         ),
                       ],
@@ -478,7 +504,8 @@ Future<void> showTaskActions(
 /// which is one of two very different situations:
 ///
 ///  * A rule — the event can't have tasks at all. The member's generation is
-///    paused, it's a free/busy firewall block, or it already *is* a claim
+///    paused, a "No tasks" task rule matches it, it's a free/busy firewall
+///    block, or it already *is* a claim
 ///    ([CalendarEventItem.taskIneligibleReason]). Nothing to offer here; the
 ///    fix, where there is one, lives in that member's or feed's settings.
 ///  * A mishap — the event is eligible, so its tasks were marked not needed
@@ -520,6 +547,10 @@ Future<void> showEventDetails(
           "$name's availability — those blocks never generate tasks. Switch "
           'that feed off "busy" mode to have its events typed.',
     'claimed' => 'This event is already a claimed task.',
+    'skipped_by_rule' =>
+      "One of $name's task rules says events like this don't need anyone, so "
+          'nothing is generated. Change or remove that rule in Task rules to '
+          'get tasks for it again.',
     // Eligible, so the tasks were dismissed or never built — both rebuildable.
     _ =>
       dismissed > 0
@@ -608,7 +639,7 @@ Future<void> showEventDetails(
             ],
             const SizedBox(height: 18),
             _DetailRow(icon: Icons.info_outline_rounded, text: reason),
-            // Only an eligible event can be rebuilt — for the three rule cases
+            // Only an eligible event can be rebuilt — for the rule cases
             // there's nothing this sheet could do that wouldn't be a lie.
             if (event.canHaveTasks) ...[
               const SizedBox(height: 18),
@@ -775,7 +806,6 @@ Future<void> _pickAndAssign(
                   Navigator.of(sheetCtx).pop();
                   _runScope(
                     context,
-                    ref,
                     scope,
                     (api, fid, t) => api.assignTask(fid, t.id, memberId: m.id),
                     'Assigned to ${m.relationName}',
@@ -841,24 +871,28 @@ Future<bool> _run(
 }
 
 /// Run a per-task [action] across every task in a scope (a Plan block's group),
-/// then refresh once. A single snackbar reports the whole batch.
-Future<void> _runScope(
+/// then refresh once. A single snackbar reports the whole batch. True when
+/// every action succeeded.
+Future<bool> _runScope(
   BuildContext context,
-  WidgetRef ref,
   Iterable<TaskItem> tasks,
   Future<void> Function(dynamic api, String familyId, TaskItem task) action,
   String success,
 ) async {
+  // Read up front: the caller's row can unmount while the actions run (a
+  // dismissed task leaves the list), and its `ref` goes with it.
+  final container = ProviderScope.containerOf(context, listen: false);
   try {
-    final familyId = await ref.read(familyProvider.future);
-    final api = ref.read(apiClientProvider);
+    final familyId = await container.read(familyProvider.future);
+    final api = container.read(apiClientProvider);
     for (final t in tasks) {
       await action(api, familyId, t);
     }
-    ref.invalidate(unownedTasksProvider);
-    ref.invalidate(allTasksProvider);
-    // Claims move events between calendars (the recursion) — refresh Plan too.
-    ref.invalidate(calendarEventsProvider);
+    container
+      ..invalidate(unownedTasksProvider)
+      ..invalidate(allTasksProvider)
+      // Claims move events between calendars (the recursion) — refresh Plan.
+      ..invalidate(calendarEventsProvider);
     if (context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -867,6 +901,7 @@ Future<void> _runScope(
         ),
       );
     }
+    return true;
   } catch (e) {
     if (context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -876,6 +911,65 @@ Future<void> _runScope(
         ),
       );
     }
+    return false;
+  }
+}
+
+/// After an event's tasks were all marked not needed: ask whether events like
+/// it should stop generating tasks, and if so open the task-rule sheet with a
+/// "No tasks" rule drafted for this exact title on this calendar, first in the
+/// member's pipeline so no broader rule shadows it. The sheet is where it gets
+/// refined (a looser match, all calendars) before anything is saved.
+///
+/// [context] must outlive the dismissed task's row (the root navigator's).
+Future<void> _offerSkipRule(
+  BuildContext context,
+  Member member,
+  CalendarEventItem event,
+  String title,
+) async {
+  final yes = await showDialog<bool>(
+    context: context,
+    // `dialogContext`, not `context`: showDialog raises on the root Navigator.
+    builder: (dialogContext) => AlertDialog(
+      title: const Text('Make this a rule?'),
+      content: Text(
+        'Stop creating tasks for “$title” on '
+        "${member.relationName}'s calendar from now on? You can adjust the "
+        'rule before saving it.',
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(dialogContext).pop(false),
+          child: const Text('Not now'),
+        ),
+        PillButton(
+          label: 'Make a rule',
+          variant: PillVariant.white,
+          onPressed: () => Navigator.of(dialogContext).pop(true),
+        ),
+      ],
+    ),
+  );
+  if (yes != true || !context.mounted) return;
+  final container = ProviderScope.containerOf(context, listen: false);
+  final changed = await showTaskRuleSheet(
+    context,
+    member: member,
+    activeLinkId: event.linkId,
+    initialMatch: '/^${RegExp.escape(title)}\$/i',
+    initialResult: 'none',
+    position: 0,
+    intro:
+        'Drafted from “$title”. Matching events stay on the calendar without '
+        'tasks; tasks someone already covers are kept.',
+  );
+  if (changed == true) {
+    container
+      ..invalidate(taskRulesProvider(member.id))
+      ..invalidate(unownedTasksProvider)
+      ..invalidate(allTasksProvider)
+      ..invalidate(calendarEventsProvider);
   }
 }
 
