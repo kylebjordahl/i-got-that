@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -8,9 +10,12 @@ import '../theme/app_colors.dart';
 import '../theme/app_text.dart';
 import '../theme/person_colors.dart';
 import '../util/assignment_text.dart';
+import '../util/format.dart';
+import '../util/task_visuals.dart';
 import '../widgets/day_chip.dart';
 import '../widgets/primitives.dart';
 import '../widgets/settings.dart';
+import 'assignment_rule_matches_screen.dart';
 
 String _initialFor(String name) =>
     name.trim().isEmpty ? '?' : name.trim()[0].toUpperCase();
@@ -106,6 +111,7 @@ class AssignmentRulesScreen extends ConsumerWidget {
             feeds: feeds,
             links: ruleSet.links,
             onTap: () => _openSheet(context, ref, ruleSet, existing: r),
+            onShowMatches: () => _openMatches(context, ref, r, ruleSet),
           ),
           const SizedBox(height: 10),
         ],
@@ -124,6 +130,20 @@ class AssignmentRulesScreen extends ConsumerWidget {
           ),
         ),
       ],
+    );
+  }
+
+  Future<void> _openMatches(
+    BuildContext context,
+    WidgetRef ref,
+    AssignmentRule rule,
+    AssignmentRuleSet ruleSet,
+  ) async {
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) =>
+            AssignmentRuleMatchesScreen(rule: rule, ruleSet: ruleSet),
+      ),
     );
   }
 
@@ -155,6 +175,7 @@ class _RuleCard extends StatelessWidget {
     required this.feeds,
     required this.links,
     required this.onTap,
+    required this.onShowMatches,
   });
 
   final AssignmentRule rule;
@@ -163,39 +184,69 @@ class _RuleCard extends StatelessWidget {
   final List<AssignmentLink> links;
   final VoidCallback onTap;
 
+  /// Opens the rule's match list (what it claims, ±30 days).
+  final VoidCallback onShowMatches;
+
   @override
   Widget build(BuildContext context) {
     final owner = members.where((m) => m.id == rule.ownerMemberId).firstOrNull;
     final color = owner != null ? personColor(owner) : AppColors.indigo;
     return AppCard(
       onTap: onTap,
-      child: Row(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          PersonAvatar(
-            initial: _initialFor(owner?.relationName ?? '?'),
-            color: color,
-            size: 38,
+          Row(
+            children: [
+              PersonAvatar(
+                initial: _initialFor(owner?.relationName ?? '?'),
+                color: color,
+                size: 38,
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      owner?.relationName ?? 'Unknown',
+                      style: AppText.sectionItemTitle,
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      describeRule(rule, members, feeds, links),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: AppText.secondary,
+                    ),
+                  ],
+                ),
+              ),
+              const Icon(
+                Icons.chevron_right_rounded,
+                color: AppColors.textMuted,
+              ),
+            ],
           ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  owner?.relationName ?? 'Unknown',
-                  style: AppText.sectionItemTitle,
-                ),
-                const SizedBox(height: 3),
-                Text(
-                  describeRule(rule, members, feeds, links),
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: AppText.secondary,
-                ),
-              ],
+          Padding(
+            padding: const EdgeInsets.only(left: 50),
+            child: TextButton.icon(
+              onPressed: onShowMatches,
+              style: TextButton.styleFrom(
+                padding: EdgeInsets.zero,
+                visualDensity: VisualDensity.compact,
+              ),
+              icon: const Icon(
+                Icons.manage_search_rounded,
+                size: 18,
+                color: AppColors.purple,
+              ),
+              label: Text(
+                'See what it claims',
+                style: font(kBodyFont, 12.5, 700, color: AppColors.purple),
+              ),
             ),
           ),
-          const Icon(Icons.chevron_right_rounded, color: AppColors.textMuted),
         ],
       ),
     );
@@ -241,6 +292,12 @@ class _AssignmentRuleSheetState extends ConsumerState<_AssignmentRuleSheet> {
   bool _saving = false;
   String? _error;
 
+  /// The live "what would this claim" preview, re-run (debounced) whenever the
+  /// rule's filters change.
+  Future<List<AssignmentRuleMatch>>? _preview;
+  Timer? _previewDebounce;
+  String? _previewKey;
+
   static DateTime _mondayOf(DateTime d) {
     final day = DateTime(d.year, d.month, d.day);
     return day.subtract(Duration(days: day.weekday - 1)); // weekday: Mon=1
@@ -259,6 +316,66 @@ class _AssignmentRuleSheetState extends ConsumerState<_AssignmentRuleSheet> {
       _biweekly = e.isBiweekly;
       if (e.anchorDate != null) _anchor = _mondayOf(e.anchorDate!.toLocal());
     }
+    _preview = _startPreview();
+  }
+
+  @override
+  void dispose() {
+    _previewDebounce?.cancel();
+    super.dispose();
+  }
+
+  /// The filters the preview depends on; a change is what re-runs it.
+  String get _previewQuery =>
+      '$_aboutMemberId|$_linkId|$_taskType|$_weekdayMask|$_biweekly|'
+      '${_biweekly ? _anchor.millisecondsSinceEpoch : ''}';
+
+  /// Called from build: every filter change goes through setState, so this
+  /// sees each one, and only a changed query (re)starts the debounce.
+  void _syncPreview() {
+    if (_previewQuery == _previewKey) return;
+    _previewKey = _previewQuery;
+    _previewDebounce?.cancel();
+    _previewDebounce = Timer(const Duration(milliseconds: 400), () {
+      if (!mounted) return;
+      setState(() {
+        _preview = _startPreview();
+      });
+    });
+  }
+
+  /// Dry-runs the draft against the past and next 30 days — in the saved
+  /// rule's place (with its omissions) when editing, else appended.
+  Future<List<AssignmentRuleMatch>> _startPreview() {
+    _previewKey = _previewQuery;
+    // Both read now: the sheet (and its ref) may be gone when they'd be used.
+    final family = ref.read(familyProvider.future);
+    final api = ref.read(apiClientProvider);
+    final ruleId = widget.existing?.id;
+    // Who it's for doesn't change what it matches; the server needs an id.
+    final owner = _ownerId ?? widget.existing?.ownerMemberId ?? 'anyone';
+    final about = _aboutMemberId;
+    final link = _linkId;
+    final type = _taskType;
+    final mask = _weekdayMask;
+    final biweekly = _biweekly;
+    final anchor = _anchor.millisecondsSinceEpoch;
+    return () async {
+      final res = await api.previewAssignmentRule(
+        await family,
+        ruleId: ruleId,
+        ownerMemberId: owner,
+        aboutMemberId: about,
+        linkId: link,
+        taskType: type,
+        weekdayMask: mask,
+        cadenceWeeks: biweekly ? 2 : 1,
+        anchorDate: biweekly ? anchor : null,
+      );
+      return ((res['matches'] as List?) ?? const [])
+          .map((m) => AssignmentRuleMatch.fromJson(m as Map<String, dynamic>))
+          .toList();
+    }();
   }
 
   int get _weekdayMask => _weekdays.fold(0, (m, b) => m | (1 << b));
@@ -271,6 +388,7 @@ class _AssignmentRuleSheetState extends ConsumerState<_AssignmentRuleSheet> {
         ref.watch(dependentsProvider).valueOrNull ?? const <Member>[];
     final feeds = ref.watch(feedsProvider).valueOrNull ?? const <FeedItem>[];
     final members = ref.watch(membersProvider).valueOrNull ?? const <Member>[];
+    _syncPreview();
 
     return Padding(
       padding: EdgeInsets.fromLTRB(
@@ -444,6 +562,14 @@ class _AssignmentRuleSheetState extends ConsumerState<_AssignmentRuleSheet> {
               ),
             ],
 
+            if (_preview != null) ...[
+              const SizedBox(height: 20),
+              _AssignmentPreview(
+                preview: _preview!,
+                draftId: widget.existing?.id ?? 'draft',
+                names: {for (final m in members) m.id: m.relationName},
+              ),
+            ],
             if (_error != null) ...[
               const SizedBox(height: 14),
               Text(
@@ -576,6 +702,104 @@ class _AssignmentRuleSheetState extends ConsumerState<_AssignmentRuleSheet> {
         _error = 'Failed: $e';
       });
     }
+  }
+}
+
+/// The editor's live preview: how many tasks in the past and next 30 days the
+/// draft's filters match, how many it would actually claim, and the first few.
+class _AssignmentPreview extends StatelessWidget {
+  const _AssignmentPreview({
+    required this.preview,
+    required this.draftId,
+    required this.names,
+  });
+
+  final Future<List<AssignmentRuleMatch>> preview;
+
+  /// The id the preview reports for the draft ('draft', or the edited rule's).
+  final String draftId;
+  final Map<String, String> names;
+
+  static const _shown = 4;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: AppColors.tint(AppColors.purple, 0.07),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppColors.purple.withValues(alpha: 0.3)),
+      ),
+      child: FutureBuilder<List<AssignmentRuleMatch>>(
+        future: preview,
+        builder: (context, snap) {
+          if (snap.connectionState != ConnectionState.done) {
+            return Text(
+              'Checking the past and next 30 days…',
+              style: AppText.subtitle,
+            );
+          }
+          if (snap.hasError) {
+            return Text(
+              'Couldn’t preview: ${snap.error}',
+              style: font(kBodyFont, 12.5, 500, color: AppColors.coral),
+            );
+          }
+          final matches = snap.data ?? const <AssignmentRuleMatch>[];
+          if (matches.isEmpty) {
+            return Text(
+              'Matches no tasks in the past or next 30 days.',
+              style: AppText.subtitle,
+            );
+          }
+          final claims = matches
+              .where((m) => m.decidedByRuleId == draftId)
+              .length;
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Matches ${matches.length} '
+                '${matches.length == 1 ? 'task' : 'tasks'} in the past and '
+                'next 30 days; this rule would claim $claims.',
+                style: font(kBodyFont, 12.5, 700, color: AppColors.purple),
+              ),
+              const SizedBox(height: 6),
+              for (final m in matches.take(_shown))
+                Padding(
+                  padding: const EdgeInsets.only(top: 2),
+                  child: Text(
+                    '${dayHeading(dayKey(m.start), DateTime.now())} · '
+                    '${taskTypeLabel(m.task.type)} · '
+                    '${names[m.aboutMemberId] ?? m.displaySummary}'
+                    '${_note(m)}',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: AppText.subtitle,
+                  ),
+                ),
+              if (matches.length > _shown)
+                Padding(
+                  padding: const EdgeInsets.only(top: 2),
+                  child: Text(
+                    '+ ${matches.length - _shown} more',
+                    style: AppText.subtitle,
+                  ),
+                ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  String _note(AssignmentRuleMatch m) {
+    if (m.omitted) return ' (omitted)';
+    if (m.held) return ' (handled by hand)';
+    if (m.decidedByRuleId != draftId) return ' (earlier rule wins)';
+    return '';
   }
 }
 

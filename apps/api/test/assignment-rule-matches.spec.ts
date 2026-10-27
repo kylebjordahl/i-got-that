@@ -11,7 +11,7 @@ import { describe, expect, it } from 'vitest';
 import { hashCalendarEvent } from '../src/services/synthesis.js';
 import { buildMemberTasks } from '../src/services/task-gen.js';
 import { withOwners } from '../src/services/task-owners.js';
-import { authed, bearer, call, setupFamily } from './helpers.js';
+import { authed, bearer, call, linkMember, login, setupFamily } from './helpers.js';
 
 type Db = ReturnType<typeof getDb>;
 
@@ -234,6 +234,44 @@ describe('an assignment rule’s match list', () => {
       method: 'DELETE',
     });
     expect(badType.status).toBe(400);
+  });
+});
+
+describe('who may look and who may omit', () => {
+  it('lets any family member look, but only an admin omit', async () => {
+    const { fam, partnerId, ev, base } = await fixture('arm-nonadmin@example.com');
+    const mondays = await createRule(base, fam.admin.token, {
+      ownerMemberId: fam.adminMemberId,
+      weekdayMask: MONDAY_BIT,
+    });
+    const partner = await login('arm-nonadmin-partner@example.com');
+    await linkMember(fam.admin.token, fam.familyId, partnerId, partner.token);
+
+    expect((await call(`${base}/${mondays}/matches`, bearer(partner.token))).status).toBe(200);
+    expect(
+      (
+        await call(
+          `${base}/preview`,
+          authed(partner.token, { rule: { ownerMemberId: partnerId } }),
+        )
+      ).status,
+    ).toBe(200);
+    expect(
+      (
+        await call(
+          `${base}/${mondays}/exceptions`,
+          authed(partner.token, { calendarEventId: ev.mon.id, taskType: 'pickup' }),
+        )
+      ).status,
+    ).toBe(403);
+    expect(
+      (
+        await call(`${base}/${mondays}/exceptions/${ev.mon.id}/pickup`, {
+          ...bearer(partner.token),
+          method: 'DELETE',
+        })
+      ).status,
+    ).toBe(403);
   });
 });
 

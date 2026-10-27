@@ -23,7 +23,7 @@ import { Hono } from 'hono';
 import type { Bindings, HonoEnv } from '../env.js';
 import { requireAdmin, requireFamilyMember } from '../middleware/auth.js';
 import { enqueueReconcile } from '../services/mirror.js';
-import { defaultMatchWindow, matchAssignmentRule } from '../services/rule-matches.js';
+import { matchAssignmentRule, resolveMatchWindow } from '../services/rule-matches.js';
 import {
   buildMemberTasks,
   rebuildFamilyTasks,
@@ -302,15 +302,6 @@ assignmentRuleRoutes.put('/assignment-rules/order', requireAdmin, async (c) => {
 
 // --- What a rule claims (match list, dry-run preview, one-off omissions) -----
 
-/** The window a match list covers: the request's, else the past/next 30 days. */
-function matchWindow(from?: string, to?: string): { from: Date; to: Date } {
-  const fallback = defaultMatchWindow();
-  return {
-    from: from ? new Date(from) : fallback.from,
-    to: to ? new Date(to) : fallback.to,
-  };
-}
-
 /**
  * Every task in the window this rule's filters match, with how the family's
  * pipeline resolves its owner (`applies` / `shadowed` by an earlier rule /
@@ -325,6 +316,8 @@ assignmentRuleRoutes.get('/assignment-rules/:ruleId/matches', async (c) => {
   if (!parsed.success) {
     return c.json({ error: 'invalid', issues: parsed.error.issues }, 400);
   }
+  const window = resolveMatchWindow(parsed.data.from, parsed.data.to);
+  if (!window) return c.json({ error: 'invalid_window' }, 400);
   const db = getDb(c.env.DB);
   const me = c.get('member');
   const pipeline = (
@@ -333,7 +326,6 @@ assignmentRuleRoutes.get('/assignment-rules/:ruleId/matches', async (c) => {
   const target = pipeline.find((r) => r.id === c.req.param('ruleId'));
   if (!target) return c.json({ error: 'rule_not_found' }, 404);
 
-  const window = matchWindow(parsed.data.from, parsed.data.to);
   const matches = await matchAssignmentRule(db, me.familyId, target, pipeline, window);
   return c.json({ from: window.from, to: window.to, matches });
 });
@@ -356,6 +348,8 @@ assignmentRuleRoutes.post('/assignment-rules/preview', async (c) => {
   if (!windowParsed.success) {
     return c.json({ error: 'invalid', issues: windowParsed.error.issues }, 400);
   }
+  const window = resolveMatchWindow(windowParsed.data.from, windowParsed.data.to);
+  if (!window) return c.json({ error: 'invalid_window' }, 400);
   const db = getDb(c.env.DB);
   const me = c.get('member');
 
@@ -388,7 +382,6 @@ assignmentRuleRoutes.post('/assignment-rules/preview', async (c) => {
   };
   const pipeline = [...saved.filter((r) => r.id !== draft.id), draft];
 
-  const window = matchWindow(windowParsed.data.from, windowParsed.data.to);
   const matches = await matchAssignmentRule(db, me.familyId, draft, pipeline, window);
   return c.json({ from: window.from, to: window.to, matches });
 });

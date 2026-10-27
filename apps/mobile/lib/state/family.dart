@@ -366,6 +366,18 @@ final assignmentRulesProvider = FutureProvider<AssignmentRuleSet>((ref) async {
   return AssignmentRuleSet.fromJson(await api.getAssignmentRules(familyId));
 });
 
+/// The tasks one assignment rule's filters match in the past and next 30 days,
+/// and how the family's pipeline resolves each one's owner.
+final assignmentRuleMatchesProvider = FutureProvider.autoDispose
+    .family<List<AssignmentRuleMatch>, String>((ref, ruleId) async {
+      final api = ref.watch(apiClientProvider);
+      final familyId = await ref.watch(familyProvider.future);
+      final res = await api.getAssignmentRuleMatches(familyId, ruleId);
+      return ((res['matches'] as List?) ?? const [])
+          .map((m) => AssignmentRuleMatch.fromJson(m as Map<String, dynamic>))
+          .toList();
+    });
+
 /// A member's unified-calendar target config (null ⇒ DB-only calendar).
 final memberCalendarProvider =
     FutureProvider.family<MemberCalendarConfig?, String>((ref, memberId) async {
