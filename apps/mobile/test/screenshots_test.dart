@@ -8,6 +8,8 @@ import 'package:caretaker_app/screens/email_outputs_section.dart';
 import 'package:caretaker_app/screens/member_detail_screen.dart';
 import 'package:caretaker_app/screens/me_screen.dart';
 import 'package:caretaker_app/screens/notification_schedule_screen.dart';
+import 'package:caretaker_app/screens/task_rule_matches_screen.dart';
+import 'package:caretaker_app/screens/task_rules_screen.dart';
 import 'package:caretaker_app/services/push.dart';
 import 'package:caretaker_app/state/auth.dart';
 import 'package:caretaker_app/state/family.dart';
@@ -305,6 +307,99 @@ void main() {
     expect(find.byType(EmailOutputSheet), findsOneWidget);
     await capture(tester, key, '06-email-invites-sheet');
   });
+
+  testWidgets('render a task rule\'s match list and editor preview', (
+    tester,
+  ) async {
+    if (outDir == null) return; // no-op unless explicitly requested
+    await loadFonts();
+    tester.view.devicePixelRatio = 1.0;
+    tester.view.physicalSize = const Size(400, 1100);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final ada = members[2];
+    TaskRule rule(String id, int position, String match, String result) =>
+        TaskRule(
+          id: id,
+          position: position,
+          scope: 'this_calendar',
+          linkId: 'l1',
+          matchField: 'summary',
+          matchOp: 'regex',
+          matchValue: match,
+          resultType: result,
+        );
+    final trips = rule('trips', 1, '/field trip/i', 'attendance');
+    final taskRules = TaskRuleSet(
+      rules: [rule('museum', 0, '/museum/i', 'none'), trips],
+      unifiedDefault: TaskDefault(
+        resultType: 'transition',
+        dropoffWindowMin: 15,
+        pickupWindowMin: 15,
+      ),
+      linkDefaults: {
+        'l1': TaskDefault(
+          resultType: 'transition',
+          dropoffWindowMin: 15,
+          pickupWindowMin: 15,
+        ),
+      },
+    );
+
+    final key = GlobalKey();
+    Widget app(Widget home) => ProviderScope(
+      overrides: [
+        ...overrides(),
+        apiClientProvider.overrideWithValue(_ShotApiClient()),
+        familyProvider.overrideWith((ref) async => 'fam-1'),
+        currentMemberProvider.overrideWith((ref) async => members.first),
+        feedLinksProvider.overrideWith(
+          (ref, feedId) async => [
+            FeedLink(id: 'l1', familyMemberId: 'ada', active: true),
+          ],
+        ),
+        taskRulesProvider.overrideWith((ref, memberId) async => taskRules),
+      ],
+      child: RepaintBoundary(
+        key: key,
+        child: MaterialApp(
+          debugShowCheckedModeBanner: false,
+          theme: buildAppTheme(),
+          themeMode: ThemeMode.dark,
+          home: home,
+        ),
+      ),
+    );
+
+    await tester.pumpWidget(
+      app(
+        TaskRuleMatchesScreen(
+          member: ada,
+          rule: trips,
+          ruleSet: taskRules,
+          calendarLabels: const {'l1': 'Soccer', null: 'Unified'},
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await capture(tester, key, '06-task-rule-matches');
+
+    // The calendar chips fill in once the feeds load, so pump it twice.
+    await tester.pumpWidget(app(TaskRulesScreen(member: ada)));
+    await tester.pumpAndSettle();
+    await tester.pumpWidget(app(TaskRulesScreen(member: ada)));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Soccer'));
+    await tester.pumpAndSettle();
+    await capture(tester, key, '05-task-rules-see-what-it-catches');
+    await tester.tap(find.text('Add rule'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField), '/museum/i');
+    await tester.pump(const Duration(milliseconds: 500));
+    await tester.pumpAndSettle();
+    await capture(tester, key, '07-task-rule-editor-preview');
+  });
 }
 
 const _shotSchedule = {
@@ -347,6 +442,128 @@ class _ShotPush implements PushService {
 
 class _ShotApiClient extends ApiClient {
   _ShotApiClient() : super(baseUrl: 'http://shots');
+
+  static Map<String, dynamic> _match(
+    String id,
+    String summary,
+    int days,
+    String status,
+    String? decidedBy,
+    String result,
+    List<Map<String, dynamic>> tasks,
+  ) {
+    final start = DateTime.now()
+        .add(Duration(days: days))
+        .copyWith(hour: 9, minute: 30);
+    return {
+      'event': {
+        'id': id,
+        'summary': summary,
+        'dtstart': start.toUtc().toIso8601String(),
+        'dtend': start.add(const Duration(hours: 5)).toUtc().toIso8601String(),
+        'allDay': false,
+        'linkId': 'l1',
+        'provenance': 'synthesized',
+      },
+      'status': status,
+      'decidedByRuleId': decidedBy,
+      'resultType': result,
+      'converted': false,
+      'tasks': tasks,
+    };
+  }
+
+  static Map<String, dynamic> _task(
+    String type,
+    String status, [
+    List<String> owners = const [],
+  ]) => {
+    'id': '$type-$status',
+    'familyMemberId': 'ada',
+    'type': type,
+    'dtstart': DateTime.now().toUtc().toIso8601String(),
+    'status': status,
+    'createdVia': 'generated',
+    'ownerMemberIds': owners,
+  };
+
+  @override
+  Future<Map<String, dynamic>> getTaskRuleMatches(
+    String familyId,
+    String memberId,
+    String ruleId,
+  ) async => {
+    'matches': [
+      _match(
+        'a',
+        'Field trip: aquarium',
+        -12,
+        'applies',
+        'trips',
+        'attendance',
+        [
+          _task('attendance', 'owned', ['mom']),
+        ],
+      ),
+      _match(
+        'b',
+        'Field trip: fire station',
+        3,
+        'applies',
+        'trips',
+        'attendance',
+        [_task('attendance', 'unowned')],
+      ),
+      _match('c', 'Museum field trip', 9, 'shadowed', 'museum', 'none', []),
+      _match(
+        'd',
+        'Field trip: zoo (parents not needed)',
+        16,
+        'omitted',
+        null,
+        'transition',
+        [
+          _task('dropoff', 'owned', ['dad']),
+          _task('pickup', 'unowned'),
+        ],
+      ),
+    ],
+  };
+
+  @override
+  Future<Map<String, dynamic>> previewTaskRule(
+    String familyId,
+    String memberId, {
+    String? ruleId,
+    String? linkId,
+    required String scope,
+    required String resultType,
+    required String matchValue,
+    String matchField = 'summary',
+    String matchOp = 'regex',
+    int? position,
+  }) async => {
+    'matches': [
+      _match(
+        'c',
+        'Museum field trip',
+        9,
+        'shadowed',
+        'trips',
+        'transition',
+        [],
+      ),
+      _match(
+        'e',
+        'Science museum day',
+        20,
+        'applies',
+        'draft',
+        'transition',
+        [],
+      ),
+    ],
+  };
 
   @override
   Future<Map<String, dynamic>> me() async => {

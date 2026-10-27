@@ -1,3 +1,6 @@
+import 'dart:async';
+
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models.dart';
@@ -5,9 +8,11 @@ import '../state/auth.dart';
 import '../state/family.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_text.dart';
+import '../util/format.dart';
 import '../widgets/primitives.dart';
 import '../widgets/settings.dart';
 import '../widgets/time_fields.dart';
+import 'task_rule_matches_screen.dart';
 
 /// Task rules (6k) — pick an active calendar (a source feed, or the member's
 /// own Unified calendar) and see its resolution order as one pipeline:
@@ -166,6 +171,7 @@ class _TaskRulesScreenState extends ConsumerState<TaskRulesScreen> {
             // Inherited (all-calendars) rules aren't editable from another
             // calendar's view — they belong to the pipeline as a whole.
             onTap: () => _openSheet(existing: r),
+            onShowMatches: () => _openMatches(r, ruleSet),
           ),
           const SizedBox(height: 10),
         ],
@@ -233,6 +239,21 @@ class _TaskRulesScreenState extends ConsumerState<TaskRulesScreen> {
     if (changed == true) _refresh();
   }
 
+  Future<void> _openMatches(TaskRule rule, TaskRuleSet ruleSet) async {
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => TaskRuleMatchesScreen(
+          member: widget.member,
+          rule: rule,
+          ruleSet: ruleSet,
+          calendarLabels: {for (final (label, id) in _calendars()) id: label},
+        ),
+      ),
+    );
+    // Omissions re-type events, which can change what the list shows here.
+    _refresh();
+  }
+
   Future<void> _saveDefault(
     String resultType, {
     int? dropoffWindowMin,
@@ -291,9 +312,16 @@ class _CalChip extends StatelessWidget {
 }
 
 class _RuleCard extends StatelessWidget {
-  const _RuleCard({required this.rule, required this.onTap});
+  const _RuleCard({
+    required this.rule,
+    required this.onTap,
+    required this.onShowMatches,
+  });
   final TaskRule rule;
   final VoidCallback onTap;
+
+  /// Opens the rule's match list (what it catches, ±30 days).
+  final VoidCallback onShowMatches;
 
   @override
   Widget build(BuildContext context) {
@@ -323,6 +351,25 @@ class _RuleCard extends StatelessWidget {
             maxLines: 2,
             overflow: TextOverflow.ellipsis,
             style: AppText.sectionItemTitle,
+          ),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton.icon(
+              onPressed: onShowMatches,
+              style: TextButton.styleFrom(
+                padding: EdgeInsets.zero,
+                visualDensity: VisualDensity.compact,
+              ),
+              icon: const Icon(
+                Icons.manage_search_rounded,
+                size: 18,
+                color: AppColors.purple,
+              ),
+              label: Text(
+                'See what it catches',
+                style: font(kBodyFont, 12.5, 700, color: AppColors.purple),
+              ),
+            ),
           ),
         ],
       ),
@@ -528,6 +575,12 @@ class _TaskRuleSheetState extends ConsumerState<_TaskRuleSheet> {
   bool _busy = false;
   String? _error;
 
+  /// The live "what would this catch" preview, re-run (debounced) as the match,
+  /// scope or result changes. Null while there's no pattern to try.
+  Future<List<TaskRuleMatch>>? _preview;
+  Timer? _previewDebounce;
+  String? _previewKey;
+
   bool get _editing => widget.existing != null;
 
   @override
@@ -539,12 +592,63 @@ class _TaskRuleSheetState extends ConsumerState<_TaskRuleSheet> {
     _match.text = ex?.matchValue ?? widget.initialMatch ?? '';
     _dropoff = ex?.dropoffWindowMin ?? 15;
     _pickup = ex?.pickupWindowMin ?? 15;
+    _match.addListener(_schedulePreview);
+    _preview = _startPreview();
   }
 
   @override
   void dispose() {
+    _previewDebounce?.cancel();
     _match.dispose();
     super.dispose();
+  }
+
+  /// What the preview is asked with; a change is what re-runs it (the
+  /// controller also notifies on cursor moves, which shouldn't).
+  String get _previewQuery => '$_allCalendars|$_result|${_match.text.trim()}';
+
+  void _schedulePreview() {
+    if (_previewQuery == _previewKey) return;
+    _previewDebounce?.cancel();
+    _previewDebounce = Timer(const Duration(milliseconds: 400), () {
+      // A block, not `=>`: setState rejects a callback that returns a Future.
+      if (!mounted) return;
+      setState(() {
+        _preview = _startPreview();
+      });
+    });
+  }
+
+  /// Dry-runs the draft against the past and next 30 days — the saved rule's
+  /// place and omissions when editing, else where the save would put it.
+  Future<List<TaskRuleMatch>>? _startPreview() {
+    _previewKey = _previewQuery;
+    final pattern = _match.text.trim();
+    if (pattern.isEmpty) return null;
+    final ex = widget.existing;
+    // Both read now: the sheet (and its ref) may be gone when they'd be used.
+    final family = ref.read(familyProvider.future);
+    final api = ref.read(apiClientProvider);
+    return () async {
+      final res = await api.previewTaskRule(
+        await family,
+        widget.member.id,
+        ruleId: ex?.id,
+        // An edit keeps its calendar (the save doesn't move it).
+        linkId: _allCalendars
+            ? null
+            : (ex != null ? ex.linkId : widget.activeLinkId),
+        scope: _allCalendars ? 'all_calendars' : 'this_calendar',
+        resultType: _result,
+        matchValue: pattern,
+        matchField: ex?.matchField ?? 'summary',
+        matchOp: ex?.matchOp ?? 'regex',
+        position: ex == null ? widget.position : null,
+      );
+      return ((res['matches'] as List?) ?? const [])
+          .map((m) => TaskRuleMatch.fromJson(m as Map<String, dynamic>))
+          .toList();
+    }();
   }
 
   Future<void> _save() async {
@@ -651,13 +755,19 @@ class _TaskRuleSheetState extends ConsumerState<_TaskRuleSheet> {
                 _PillToggle(
                   label: 'This calendar',
                   selected: !_allCalendars,
-                  onTap: () => setState(() => _allCalendars = false),
+                  onTap: () {
+                    setState(() => _allCalendars = false);
+                    _schedulePreview();
+                  },
                 ),
                 const SizedBox(width: 8),
                 _PillToggle(
                   label: 'All calendars',
                   selected: _allCalendars,
-                  onTap: () => setState(() => _allCalendars = true),
+                  onTap: () {
+                    setState(() => _allCalendars = true);
+                    _schedulePreview();
+                  },
                 ),
               ],
             ),
@@ -671,13 +781,23 @@ class _TaskRuleSheetState extends ConsumerState<_TaskRuleSheet> {
                 hintText: '/field trip/i',
               ),
             ),
+            if (_preview != null) ...[
+              const SizedBox(height: 10),
+              _RulePreview(
+                preview: _preview!,
+                draftId: widget.existing?.id ?? 'draft',
+              ),
+            ],
             const SizedBox(height: 18),
             Text('THEN', style: AppText.eyebrow()),
             const SizedBox(height: 8),
             _ResultSegmented(
               value: _result,
               allowNone: true,
-              onChanged: (v) => setState(() => _result = v),
+              onChanged: (v) {
+                setState(() => _result = v);
+                _schedulePreview();
+              },
             ),
             if (_result == 'transition') ...[
               const SizedBox(height: 14),
@@ -752,6 +872,94 @@ class _TaskRuleSheetState extends ConsumerState<_TaskRuleSheet> {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// The editor's live preview: how many events in the past and next 30 days
+/// the draft catches, how many it would actually decide, and the first few.
+class _RulePreview extends StatelessWidget {
+  const _RulePreview({required this.preview, required this.draftId});
+
+  final Future<List<TaskRuleMatch>> preview;
+
+  /// The id the preview reports for the draft ('draft', or the edited rule's).
+  final String draftId;
+
+  static const _shown = 4;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: AppColors.tint(AppColors.purple, 0.07),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppColors.purple.withValues(alpha: 0.3)),
+      ),
+      child: FutureBuilder<List<TaskRuleMatch>>(
+        future: preview,
+        builder: (context, snap) {
+          if (snap.connectionState != ConnectionState.done) {
+            return Text(
+              'Checking the past and next 30 days…',
+              style: AppText.subtitle,
+            );
+          }
+          if (snap.hasError) {
+            final e = snap.error;
+            return Text(
+              e is DioException && e.response?.statusCode == 400
+                  ? 'That pattern isn’t valid yet.'
+                  : 'Couldn’t preview: $e',
+              style: font(kBodyFont, 12.5, 500, color: AppColors.coral),
+            );
+          }
+          final matches = snap.data ?? const <TaskRuleMatch>[];
+          if (matches.isEmpty) {
+            return Text(
+              'Catches nothing in the past or next 30 days.',
+              style: AppText.subtitle,
+            );
+          }
+          final decides = matches
+              .where((m) => m.decidedByRuleId == draftId)
+              .length;
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Catches ${matches.length} '
+                '${matches.length == 1 ? 'event' : 'events'} in the past and '
+                'next 30 days; $decides would follow this rule.',
+                style: font(kBodyFont, 12.5, 700, color: AppColors.purple),
+              ),
+              const SizedBox(height: 6),
+              for (final m in matches.take(_shown))
+                Padding(
+                  padding: const EdgeInsets.only(top: 2),
+                  child: Text(
+                    '${dayHeading(dayKey(m.start), DateTime.now())} · '
+                    '${m.displaySummary}'
+                    '${m.omitted ? ' (omitted)' : (m.decidedByRuleId == draftId ? '' : ' (earlier rule wins)')}',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: AppText.subtitle,
+                  ),
+                ),
+              if (matches.length > _shown)
+                Padding(
+                  padding: const EdgeInsets.only(top: 2),
+                  child: Text(
+                    '+ ${matches.length - _shown} more',
+                    style: AppText.subtitle,
+                  ),
+                ),
+            ],
+          );
+        },
       ),
     );
   }

@@ -839,6 +839,38 @@ export const UpdateTaskRuleInput = z
   .refine((v) => Object.keys(v).length > 0, { message: 'no fields to update' });
 export type UpdateTaskRuleInput = z.infer<typeof UpdateTaskRuleInput>;
 
+/**
+ * The window a rule's match list covers — by default the past and next 30 days
+ * (`from`/`to` are ISO instants; `to` exclusive). Either bound may be left to
+ * its default; the RESOLVED window is what's capped (`resolveMatchWindow` in
+ * the API), so a request can't ask for a member's whole history with one bound.
+ */
+export const RULE_MATCH_WINDOW_MAX_DAYS = 120;
+export const RuleMatchWindowInput = z.object({
+  from: z.string().datetime({ offset: true }).optional(),
+  to: z.string().datetime({ offset: true }).optional(),
+});
+export type RuleMatchWindowInput = z.infer<typeof RuleMatchWindowInput>;
+
+/**
+ * Dry-run a task rule the editor hasn't saved: which events in the window it
+ * would catch, and which of those it would actually decide. `ruleId` names the
+ * rule being edited (the draft stands in for it, keeping its place and its
+ * omissions); without it the draft is a new rule at `rule.position` (default:
+ * appended, as a create would).
+ */
+export const PreviewTaskRuleInput = z.object({
+  ruleId: Id.optional(),
+  rule: CreateTaskRuleInput,
+  from: z.string().datetime({ offset: true }).optional(),
+  to: z.string().datetime({ offset: true }).optional(),
+});
+export type PreviewTaskRuleInput = z.infer<typeof PreviewTaskRuleInput>;
+
+/** Omit one calendar event from a task rule (a one-off exception). */
+export const TaskRuleExceptionInput = z.object({ calendarEventId: Id });
+export type TaskRuleExceptionInput = z.infer<typeof TaskRuleExceptionInput>;
+
 /** Reorder a member's task rules within one calendar view (visible ids in order). */
 export const ReorderTaskRulesInput = z.object({
   ruleIds: z.array(Id).min(1),

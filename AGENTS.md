@@ -30,6 +30,12 @@ terminal default per calendar on the link + member). Task type is resolved at
 task-gen time, keyed by the event's source calendar (`calendar_events.linkId`;
 null ⇒ the member's own unified/direct calendar). A member's
 `generatesFamilyTasks=false` pauses task generation (rules/defaults kept).
+An event can be **omitted** from one task rule (`task_rule_exceptions`, a
+one-off made from the rule's match list): `resolveTaskResult` skips that rule
+for that event, so it falls through to the next match or the default. Anything
+that resolves an event's task type — task-gen, `eventsSkippedByTaskRules`, the
+match list / editor preview (`services/rule-matches.ts`) — must pass the
+event's omissions (`taskRuleOmissions`) or it disagrees with what was built.
 
 Every member (child or caretaker) can have a unified calendar: the DB
 (`calendar_events`) is canonical; an optional per-member external target

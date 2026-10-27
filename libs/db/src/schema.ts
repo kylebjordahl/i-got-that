@@ -959,6 +959,38 @@ export const calendarEvents = sqliteTable(
 );
 
 /**
+ * A one-off omission: task rule `ruleId` is skipped for this one calendar event,
+ * so the event falls through to the next matching rule (or its calendar's
+ * default) as if the rule didn't match it. Made from a rule's match list, for
+ * the occasional exception a rule shouldn't be loosened or tightened around.
+ * Calendar-event ids are stable (synthesis upserts by synthKey), and the row
+ * goes with the event or the rule.
+ */
+export const taskRuleExceptions = sqliteTable(
+  'task_rule_exceptions',
+  {
+    id: id(),
+    familyId: text('family_id')
+      .notNull()
+      .references(() => families.id, { onDelete: 'cascade' }),
+    ruleId: text('rule_id')
+      .notNull()
+      .references(() => taskRules.id, { onDelete: 'cascade' }),
+    calendarEventId: text('calendar_event_id')
+      .notNull()
+      .references(() => calendarEvents.id, { onDelete: 'cascade' }),
+    createdAt: createdAt(),
+  },
+  (t) => ({
+    ruleEventUq: uniqueIndex('task_rule_exceptions_rule_event_uq').on(
+      t.ruleId,
+      t.calendarEventId,
+    ),
+    eventIdx: index('task_rule_exceptions_event_idx').on(t.calendarEventId),
+  }),
+);
+
+/**
  * A member's designated external target calendar — the write-through mirror of
  * their unified calendar (and the source of human events read back into it).
  * At most one per member; a member without a row still has a fully working
@@ -1495,6 +1527,7 @@ export const schema = {
   linkRules,
   linkBaselineChanges,
   taskRules,
+  taskRuleExceptions,
   pendingDecisions,
   conflicts,
   tasks,

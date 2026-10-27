@@ -15,6 +15,7 @@ import {
   or,
   sourceEvents,
   sql,
+  taskRuleExceptions,
   taskRules,
   tasks,
 } from '@igt/db';
@@ -51,7 +52,7 @@ export interface TaskGenResult {
   tasksRemoved: number;
 }
 
-function toTaskRuleLike(r: typeof taskRules.$inferSelect): TaskRuleLike {
+export function toTaskRuleLike(r: typeof taskRules.$inferSelect): TaskRuleLike {
   return {
     id: r.id,
     position: r.position,
@@ -133,7 +134,12 @@ export async function eventsSkippedByTaskRules(
     list.push(r);
     rulesByMember.set(r.familyMemberId, list);
   }
+  const omissions = await taskRuleOmissions(
+    db,
+    candidates.map((e) => e.id),
+  );
   for (const e of candidates) {
+    const omitted = omissions.get(e.id);
     const match = firstMatch(
       {
         summary: e.summary,
@@ -146,7 +152,9 @@ export async function eventsSkippedByTaskRules(
         dtstart: e.dtstart,
         dtend: e.dtend,
       },
-      taskRulesForCalendar(rulesByMember.get(e.familyMemberId) ?? [], e.linkId),
+      taskRulesForCalendar(rulesByMember.get(e.familyMemberId) ?? [], e.linkId).filter(
+        (r) => !omitted?.has(r.id),
+      ),
     );
     if (match?.resultType === 'none') skipped.add(e.id);
   }
@@ -162,6 +170,33 @@ export async function eventsSkippedByTaskRules(
   );
   for (const t of manualEvents) skipped.delete(t.calendarEventId!);
   return skipped;
+}
+
+/**
+ * The task rules each of these events has been omitted from (one-off
+ * exceptions made from a rule's match list), as eventId → rule ids. Events with
+ * none are absent. Chunked: the ids grow with a member's calendar.
+ */
+export async function taskRuleOmissions(
+  db: Db,
+  eventIds: string[],
+): Promise<Map<string, Set<string>>> {
+  const rows = await selectChunked(eventIds, (chunk) =>
+    db
+      .select({
+        calendarEventId: taskRuleExceptions.calendarEventId,
+        ruleId: taskRuleExceptions.ruleId,
+      })
+      .from(taskRuleExceptions)
+      .where(inArray(taskRuleExceptions.calendarEventId, chunk)),
+  );
+  const byEvent = new Map<string, Set<string>>();
+  for (const r of rows) {
+    const set = byEvent.get(r.calendarEventId) ?? new Set<string>();
+    set.add(r.ruleId);
+    byEvent.set(r.calendarEventId, set);
+  }
+  return byEvent;
 }
 
 function toAssignmentRuleLike(
@@ -425,6 +460,16 @@ async function buildEventTasks(
     ).map((r): [string, string | null] => [r.id, r.description]),
   );
 
+  // One-off omissions (an event excepted from a rule) — only possible when the
+  // member has rules at all, so a rule-less member pays no read for them.
+  const omissions =
+    pass.rules.length > 0
+      ? await taskRuleOmissions(
+          db,
+          buildable.map((e) => e.id),
+        )
+      : new Map<string, Set<string>>();
+
   // Decide what each event should have (pure: no reads or writes in here).
   const plans = buildable.map((event) => {
     const fallback =
@@ -445,6 +490,7 @@ async function buildEventTasks(
       pass.rules,
       event.linkId ?? null,
       fallback,
+      omissions.get(event.id),
     );
     return {
       event,

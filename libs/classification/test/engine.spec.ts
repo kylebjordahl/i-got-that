@@ -736,10 +736,24 @@ describe('taskRulesForCalendar + resolveTaskResult', () => {
     expect(trip.resultType).toBe('attendance');
 
     const early = resolveTaskResult(occ({ summary: 'Early pickup today' }), rules, 'link-1', dfault);
-    expect(early).toEqual({ resultType: 'transition', dropoffWindowMin: 20, pickupWindowMin: 10 });
+    expect(early).toEqual({ ruleId: 'ee', resultType: 'transition', dropoffWindowMin: 20, pickupWindowMin: 10 });
 
     const normal = resolveTaskResult(occ({ summary: 'Regular day' }), rules, 'link-1', dfault);
-    expect(normal).toEqual(dfault);
+    expect(normal).toEqual({ ...dfault, ruleId: null });
+  });
+
+  it('an event omitted from a rule falls through to the next match, then the default', () => {
+    const both = taskRule({ id: 'both', position: 3, scope: 'all_calendars', matchValue: '/trip/i', resultType: 'none' });
+    const event = occ({ summary: 'Class field trip' });
+    expect(resolveTaskResult(event, [...rules, both], 'link-1', dfault).ruleId).toBe('ft');
+    expect(resolveTaskResult(event, [...rules, both], 'link-1', dfault, new Set(['ft']))).toMatchObject({
+      ruleId: 'both',
+      resultType: 'none',
+    });
+    expect(resolveTaskResult(event, [...rules, both], 'link-1', dfault, new Set(['ft', 'both']))).toEqual({
+      ...dfault,
+      ruleId: null,
+    });
   });
 
   it('a task rule can match the description the caller hands it', () => {
@@ -753,7 +767,7 @@ describe('taskRulesForCalendar + resolveTaskResult', () => {
     });
     const event = { summary: 'Assembly', location: null, allDay: false, dtstart: new Date('2026-07-06T10:00:00Z'), dtend: null };
     expect(resolveTaskResult({ ...event, description: 'Parents welcome!' }, [byBody], null, dfault).resultType).toBe('attendance');
-    expect(resolveTaskResult({ ...event, description: null }, [byBody], null, dfault)).toEqual(dfault);
+    expect(resolveTaskResult({ ...event, description: null }, [byBody], null, dfault)).toEqual({ ...dfault, ruleId: null });
   });
 });
 

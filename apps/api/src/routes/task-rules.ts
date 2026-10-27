@@ -1,23 +1,30 @@
 import {
   and,
   asc,
+  calendarEvents,
   eq,
   familyMemberFeeds,
   familyMembers,
   getDb,
+  taskRuleExceptions,
   taskRules,
 } from '@igt/db';
+import type { TaskRuleLike } from '@igt/classification';
 import {
   CreateTaskRuleInput,
+  PreviewTaskRuleInput,
   ReorderTaskRulesInput,
+  RuleMatchWindowInput,
   SetTaskDefaultInput,
+  TaskRuleExceptionInput,
   UpdateTaskRuleInput,
 } from '@igt/domain';
 import { Hono } from 'hono';
 import type { Bindings, HonoEnv } from '../env.js';
 import { requireAdmin, requireFamilyMember } from '../middleware/auth.js';
 import { enqueueReconcile } from '../services/mirror.js';
-import { rebuildMemberTasks } from '../services/task-gen.js';
+import { matchTaskRule, resolveMatchWindow } from '../services/rule-matches.js';
+import { buildMemberTasks, rebuildMemberTasks, toTaskRuleLike } from '../services/task-gen.js';
 
 /**
  * A member's task-rule pipeline (screen 6k/6n): what tasks their events
@@ -318,3 +325,212 @@ taskRuleRoutes.put('/members/:memberId/task-default', requireAdmin, async (c) =>
   await afterChange(c, db, member.id);
   return c.json({ ok: true });
 });
+
+// --- What a rule catches (match list, dry-run preview, one-off omissions) ----
+
+/**
+ * Every event in the window this rule's matcher catches on its calendars, with
+ * how the member's pipeline resolves each (`applies` / `shadowed` by an earlier
+ * rule / `omitted` one-off) and the tasks each has now. Read-only, so any
+ * family member may look.
+ */
+taskRuleRoutes.get('/members/:memberId/task-rules/:ruleId/matches', async (c) => {
+  const parsed = RuleMatchWindowInput.safeParse({
+    from: c.req.query('from'),
+    to: c.req.query('to'),
+  });
+  if (!parsed.success) {
+    return c.json({ error: 'invalid', issues: parsed.error.issues }, 400);
+  }
+  const window = resolveMatchWindow(parsed.data.from, parsed.data.to);
+  if (!window) return c.json({ error: 'invalid_window' }, 400);
+  const db = getDb(c.env.DB);
+  const me = c.get('member');
+  const member = await loadMember(db, me.familyId, c.req.param('memberId'));
+  if (!member) return c.json({ error: 'not_found' }, 404);
+
+  const pipeline = (
+    await db.select().from(taskRules).where(eq(taskRules.familyMemberId, member.id))
+  ).map(toTaskRuleLike);
+  const target = pipeline.find((r) => r.id === c.req.param('ruleId'));
+  if (!target) return c.json({ error: 'rule_not_found' }, 404);
+
+  const matches = await matchTaskRule(db, member.id, target, pipeline, window, {
+    withTasks: true,
+  });
+  return c.json({
+    from: window.from,
+    to: window.to,
+    generatesFamilyTasks: member.generatesFamilyTasks,
+    matches,
+  });
+});
+
+/**
+ * Dry-run an unsaved rule from the editor: what it would catch in the window,
+ * and what each of those would then generate. The draft stands in for the rule
+ * named by `ruleId` (keeping its place in the pipeline and its omissions), or
+ * is inserted at `rule.position` (default: appended, as a create would). Reads
+ * only, so it doesn't need admin.
+ */
+taskRuleRoutes.post('/members/:memberId/task-rules/preview', async (c) => {
+  const parsed = PreviewTaskRuleInput.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) {
+    return c.json({ error: 'invalid', issues: parsed.error.issues }, 400);
+  }
+  const windowParsed = RuleMatchWindowInput.safeParse({
+    from: parsed.data.from,
+    to: parsed.data.to,
+  });
+  if (!windowParsed.success) {
+    return c.json({ error: 'invalid', issues: windowParsed.error.issues }, 400);
+  }
+  const window = resolveMatchWindow(windowParsed.data.from, windowParsed.data.to);
+  if (!window) return c.json({ error: 'invalid_window' }, 400);
+  const db = getDb(c.env.DB);
+  const me = c.get('member');
+  const member = await loadMember(db, me.familyId, c.req.param('memberId'));
+  if (!member) return c.json({ error: 'not_found' }, 404);
+
+  // The saved pipeline, renumbered to its order so a draft can slot between.
+  const saved = (
+    await db
+      .select()
+      .from(taskRules)
+      .where(eq(taskRules.familyMemberId, member.id))
+      .orderBy(asc(taskRules.position))
+  ).map((r, i) => ({ ...toTaskRuleLike(r), position: i }));
+  const d = parsed.data.rule;
+  const editing = parsed.data.ruleId
+    ? saved.find((r) => r.id === parsed.data.ruleId)
+    : undefined;
+  if (parsed.data.ruleId && !editing) return c.json({ error: 'rule_not_found' }, 404);
+
+  const draft: TaskRuleLike = {
+    id: editing?.id ?? 'draft',
+    position: editing
+      ? editing.position
+      : Math.min(d.position ?? saved.length, saved.length) - 0.5,
+    scope: d.scope,
+    // An edit can't move a rule's calendar (PATCH has no linkId), so preview
+    // it where it lives; a new rule goes where its create would put it.
+    linkId:
+      d.scope === 'all_calendars' ? null : editing ? editing.linkId : (d.linkId ?? null),
+    matchField: d.matchField,
+    matchOp: d.matchOp,
+    matchValue: d.matchValue ?? null,
+    resultType: d.resultType,
+    dropoffWindowMin: d.dropoffWindowMin ?? null,
+    pickupWindowMin: d.pickupWindowMin ?? null,
+  };
+  const pipeline = [...saved.filter((r) => r.id !== draft.id), draft];
+
+  const matches = await matchTaskRule(db, member.id, draft, pipeline, window, {
+    withTasks: false,
+  });
+  return c.json({ from: window.from, to: window.to, matches });
+});
+
+/** The rule and the calendar event an omission names, both scoped to the member. */
+async function ruleAndEvent(
+  db: ReturnType<typeof getDb>,
+  memberId: string,
+  ruleId: string,
+  calendarEventId: string,
+) {
+  const rule = (
+    await db
+      .select()
+      .from(taskRules)
+      .where(and(eq(taskRules.id, ruleId), eq(taskRules.familyMemberId, memberId)))
+      .limit(1)
+  )[0];
+  const event = (
+    await db
+      .select()
+      .from(calendarEvents)
+      .where(
+        and(eq(calendarEvents.id, calendarEventId), eq(calendarEvents.familyMemberId, memberId)),
+      )
+      .limit(1)
+  )[0];
+  return { rule, event };
+}
+
+/** Re-type one event after its omissions changed, then reconcile the mirror. */
+async function rebuildEvent(
+  c: { env: Bindings; executionCtx: { waitUntil(p: Promise<unknown>): void } },
+  db: ReturnType<typeof getDb>,
+  memberId: string,
+  eventId: string,
+): Promise<void> {
+  // The event's content didn't change, so its build stamp would skip it.
+  await db
+    .update(calendarEvents)
+    .set({ tasksBuiltHash: null })
+    .where(eq(calendarEvents.id, eventId));
+  await buildMemberTasks(db, memberId);
+  enqueueReconcile(c, { kind: 'member', memberId });
+}
+
+/**
+ * Omit one event from a rule (admin) — a one-off exception: the event falls
+ * through to the next matching rule or its calendar's default, as if this rule
+ * didn't match it. Tasks someone already covers are kept, as with any re-type.
+ */
+taskRuleRoutes.post('/members/:memberId/task-rules/:ruleId/exceptions', requireAdmin, async (c) => {
+  const parsed = TaskRuleExceptionInput.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) {
+    return c.json({ error: 'invalid', issues: parsed.error.issues }, 400);
+  }
+  const db = getDb(c.env.DB);
+  const me = c.get('member');
+  const member = await loadMember(db, me.familyId, c.req.param('memberId'));
+  if (!member) return c.json({ error: 'not_found' }, 404);
+  const { rule, event } = await ruleAndEvent(
+    db,
+    member.id,
+    c.req.param('ruleId'),
+    parsed.data.calendarEventId,
+  );
+  if (!rule) return c.json({ error: 'rule_not_found' }, 404);
+  if (!event) return c.json({ error: 'event_not_found' }, 404);
+
+  await db
+    .insert(taskRuleExceptions)
+    .values({ familyId: me.familyId, ruleId: rule.id, calendarEventId: event.id })
+    .onConflictDoNothing();
+  await rebuildEvent(c, db, member.id, event.id);
+  return c.json({ ok: true }, 201);
+});
+
+/** Put an omitted event back under the rule (admin). */
+taskRuleRoutes.delete(
+  '/members/:memberId/task-rules/:ruleId/exceptions/:calendarEventId',
+  requireAdmin,
+  async (c) => {
+    const db = getDb(c.env.DB);
+    const me = c.get('member');
+    const member = await loadMember(db, me.familyId, c.req.param('memberId'));
+    if (!member) return c.json({ error: 'not_found' }, 404);
+    const { rule, event } = await ruleAndEvent(
+      db,
+      member.id,
+      c.req.param('ruleId'),
+      c.req.param('calendarEventId'),
+    );
+    if (!rule) return c.json({ error: 'rule_not_found' }, 404);
+    if (!event) return c.json({ error: 'event_not_found' }, 404);
+
+    await db
+      .delete(taskRuleExceptions)
+      .where(
+        and(
+          eq(taskRuleExceptions.ruleId, rule.id),
+          eq(taskRuleExceptions.calendarEventId, event.id),
+        ),
+      );
+    await rebuildEvent(c, db, member.id, event.id);
+    return c.json({ ok: true });
+  },
+);
