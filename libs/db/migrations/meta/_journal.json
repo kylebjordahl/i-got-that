@@ -232,6 +232,13 @@
       "when": 1793114724928,
       "tag": "0032_tricky_carnage",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "6",
+      "when": 1793115864428,
+      "tag": "0033_hot_deathstrike",
+      "breakpoints": true
     }
   ]
 }

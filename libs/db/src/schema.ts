@@ -991,6 +991,39 @@ export const taskRuleExceptions = sqliteTable(
 );
 
 /**
+ * A one-off omission from an assignment rule: rule `ruleId` doesn't claim the
+ * `taskType` task of this one calendar event, so it falls to the next matching
+ * rule or stays unclaimed. Keyed by event + type rather than task id because an
+ * unowned task row is deleted and recreated when its event's types change; the
+ * (event, type) pair is what task-gen keeps one task per.
+ */
+export const assignmentRuleExceptions = sqliteTable(
+  'assignment_rule_exceptions',
+  {
+    id: id(),
+    familyId: text('family_id')
+      .notNull()
+      .references(() => families.id, { onDelete: 'cascade' }),
+    ruleId: text('rule_id')
+      .notNull()
+      .references(() => assignmentRules.id, { onDelete: 'cascade' }),
+    calendarEventId: text('calendar_event_id')
+      .notNull()
+      .references(() => calendarEvents.id, { onDelete: 'cascade' }),
+    taskType: text('task_type', { enum: TaskType.options }).notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => ({
+    ruleEventTypeUq: uniqueIndex('assignment_rule_exceptions_rule_event_type_uq').on(
+      t.ruleId,
+      t.calendarEventId,
+      t.taskType,
+    ),
+    eventIdx: index('assignment_rule_exceptions_event_idx').on(t.calendarEventId),
+  }),
+);
+
+/**
  * A member's designated external target calendar — the write-through mirror of
  * their unified calendar (and the source of human events read back into it).
  * At most one per member; a member without a row still has a fully working
@@ -1528,6 +1561,7 @@ export const schema = {
   linkBaselineChanges,
   taskRules,
   taskRuleExceptions,
+  assignmentRuleExceptions,
   pendingDecisions,
   conflicts,
   tasks,
