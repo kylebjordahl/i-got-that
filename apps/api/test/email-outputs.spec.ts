@@ -8,6 +8,7 @@ import {
   familyMembers,
   feeds,
   getDb,
+  memberCalendars,
   taskOwners,
   tasks,
 } from '@igt/db';
@@ -465,6 +466,45 @@ describe('email output reconcile', () => {
       .from(emailOutputMirrors)
       .where(eq(emailOutputMirrors.emailOutputId, output.id));
     expect(mirrors.map((m) => m.calendarEventId)).toEqual([cal.meeting.id]);
+  });
+
+  it('anchors an invite to its feed zone, else the member calendar zone, else UTC', async () => {
+    const fam = await setupFamily('eo-tz@example.com');
+    const db = getDb(env.DB);
+    const cal = await seedCalendar(db, fam);
+    await verifiedOutput(fam.admin.token, fam.familyId, fam.adminMemberId, {
+      email: 'tz@example.com',
+      filters: { include: ['schedule'] },
+    });
+    const send = async () => {
+      const outbox = new DevOutbox();
+      await syncMemberEmailOutputs(db, outbox, fam.adminMemberId, NOW);
+      return ics(outbox.sent[0]!.mime);
+    };
+
+    // Nothing knows a zone: bare UTC, as before.
+    expect(await send()).toContain('DTSTART:20260706T200000Z');
+
+    // The member's target calendar supplies one when the feed has none.
+    await db.insert(memberCalendars).values({
+      familyId: fam.familyId,
+      familyMemberId: fam.adminMemberId,
+      targetMethod: 'google',
+      targetCalendarId: 'work',
+      timezone: 'America/Denver',
+    });
+    await db.delete(emailOutputMirrors);
+    const fallback = await send();
+    expect(fallback).toContain('DTSTART;TZID=America/Denver:20260706T140000');
+    expect(fallback).toContain('BEGIN:VTIMEZONE');
+
+    // The event's own feed zone wins over the member calendar's.
+    const ownFeed = (
+      await db.select().from(familyMemberFeeds).where(eq(familyMemberFeeds.id, cal.ownLink.id))
+    )[0]!;
+    await db.update(feeds).set({ timezone: 'America/New_York' }).where(eq(feeds.id, ownFeed.feedId));
+    await db.delete(emailOutputMirrors);
+    expect(await send()).toContain('DTSTART;TZID=America/New_York:20260706T160000');
   });
 
   it('pads trips for travel when asked, marks them with a car, and re-sends on toggling', async () => {
