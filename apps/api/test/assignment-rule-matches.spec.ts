@@ -3,6 +3,7 @@ import {
   calendarEvents,
   eq,
   familyMemberFeeds,
+  familyMembers,
   feeds,
   getDb,
   tasks,
@@ -234,6 +235,61 @@ describe('an assignment rule’s match list', () => {
       method: 'DELETE',
     });
     expect(badType.status).toBe(400);
+  });
+});
+
+describe('the list agrees with what task-gen will do', () => {
+  it('holds every task of an event a person converted, and an omitted task a person then took', async () => {
+    const { fam, db, partnerId, ev, base } = await fixture('arm-held@example.com');
+    const mondays = await createRule(base, fam.admin.token, {
+      ownerMemberId: fam.adminMemberId,
+      weekdayMask: MONDAY_BIT,
+    });
+    // Converting next Monday's drop-off freezes that event's tasks: task-gen
+    // only heals them, so no rule claims or releases its pickup either.
+    const dropoff = await taskOf(db, ev.nextMon.id, 'dropoff');
+    expect(
+      (
+        await call(
+          `/families/${fam.familyId}/tasks/${dropoff.id}/convert`,
+          authed(fam.admin.token, { types: ['dropoff', 'pickup'] }),
+        )
+      ).status,
+    ).toBe(200);
+    // This Monday's pickup is omitted, then a person takes it anyway.
+    await call(
+      `${base}/${mondays}/exceptions`,
+      authed(fam.admin.token, { calendarEventId: ev.mon.id, taskType: 'pickup' }),
+    );
+    const pickup = await taskOf(db, ev.mon.id, 'pickup');
+    await call(
+      `/families/${fam.familyId}/tasks/${pickup.id}/assign`,
+      authed(fam.admin.token, { memberId: partnerId }),
+    );
+
+    const matches = await matchesOf(base, fam.admin.token, mondays);
+    const status = (eventId: string, type: string) =>
+      matches.find((m) => m.event.id === eventId && m.task.type === type)?.status;
+    expect(status(ev.nextMon.id, 'dropoff')).toBe('held');
+    expect(status(ev.nextMon.id, 'pickup')).toBe('held');
+    expect(status(ev.mon.id, 'pickup')).toBe('held');
+    expect(status(ev.mon.id, 'dropoff')).toBe('applies');
+  });
+
+  it('says a rule whose owner stopped being a caretaker claims nothing', async () => {
+    const { fam, db, partnerId, ev, base } = await fixture('arm-unavailable@example.com');
+    const mondays = await createRule(base, fam.admin.token, {
+      ownerMemberId: partnerId,
+      weekdayMask: MONDAY_BIT,
+    });
+    await db
+      .update(familyMembers)
+      .set({ isCaretaker: false })
+      .where(eq(familyMembers.id, partnerId));
+    const m = (await matchesOf(base, fam.admin.token, mondays)).find(
+      (x) => x.event.id === ev.mon.id && x.task.type === 'pickup',
+    );
+    expect(m).toMatchObject({ status: 'owner_unavailable', decidedByRuleId: mondays });
   });
 });
 

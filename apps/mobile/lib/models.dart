@@ -773,8 +773,9 @@ class AssignmentRuleMatch {
   final String? linkId;
 
   /// 'applies' (this rule claims it), 'shadowed' (an earlier rule does),
-  /// 'omitted' (excepted from this rule) or 'held' (a person took it in hand,
-  /// so no rule touches it).
+  /// 'omitted' (excepted from this rule), 'held' (a person took it in hand,
+  /// so no rule touches it) or 'owner_unavailable' (this rule matches first
+  /// but its owner is no longer a caretaker, so nobody claims it).
   final String status;
 
   /// The rule that claims the task; null ⇒ none does, or a person holds it.

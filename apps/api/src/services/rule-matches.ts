@@ -260,9 +260,16 @@ export async function matchTaskRule(
  *  - `shadowed`: an earlier rule matches first and claims it instead;
  *  - `omitted`: the task was excepted from this rule, so it falls through;
  *  - `held`: a person took the task in hand (claimed or reassigned it, or
- *    converted it), and no rule touches it.
+ *    converted it or a sibling task of its event), and no rule touches it;
+ *  - `owner_unavailable`: this rule is the first match, but its owner is no
+ *    longer a caretaker, so it claims nothing (task-gen doesn't fall through).
  */
-export type AssignmentRuleMatchStatus = 'applies' | 'shadowed' | 'omitted' | 'held';
+export type AssignmentRuleMatchStatus =
+  | 'applies'
+  | 'shadowed'
+  | 'omitted'
+  | 'held'
+  | 'owner_unavailable';
 
 export interface AssignmentRuleMatch {
   task: TaskWithOwners;
@@ -276,7 +283,10 @@ export interface AssignmentRuleMatch {
     linkId: string | null;
   };
   status: AssignmentRuleMatchStatus;
-  /** The rule that claims the task (null: none does, or a person holds it). */
+  /**
+   * The first matching rule — the one that claims the task, unless its owner
+   * is no longer a caretaker. Null: no rule matches, or a person holds it.
+   */
   decidedByRuleId: string | null;
 }
 
@@ -315,14 +325,29 @@ export async function matchAssignmentRule(
   const eventsById = new Map(events.map((e) => [e.id, e]));
 
   const ids = events.map((e) => e.id);
-  const taskRows = (
-    await selectChunked(ids, (chunk) =>
-      db.select().from(tasks).where(inArray(tasks.calendarEventId, chunk)),
-    )
-  ).filter(
+  const allTasks = await selectChunked(ids, (chunk) =>
+    db.select().from(tasks).where(inArray(tasks.calendarEventId, chunk)),
+  );
+  // Task-gen freezes every task of an event with a user-converted task (it only
+  // heals them), so none of that event's tasks is ever reconciled by a rule.
+  const frozenEvents = new Set(
+    allTasks.filter((t) => t.createdVia === 'manual').map((t) => t.calendarEventId!),
+  );
+  const taskRows = allTasks.filter(
     (t) => t.status !== 'dismissed' && (!target.taskType || t.type === target.taskType),
   );
   if (taskRows.length === 0) return [];
+  const decorated = new Map((await withOwners(db, taskRows)).map((t) => [t.id, t]));
+  // Who a rule may still give a task to — task-gen drops a match whose owner
+  // stopped being a caretaker. Bounded by the family.
+  const caretakerIds = new Set(
+    (
+      await db
+        .select({ id: familyMembers.id })
+        .from(familyMembers)
+        .where(and(eq(familyMembers.familyId, familyId), eq(familyMembers.isCaretaker, true)))
+    ).map((r) => r.id),
+  );
 
   // Weekday and cadence are judged on the event's local day, in the zone its
   // member's calendar reads it in — loaded once per member (family-bounded).
@@ -345,21 +370,27 @@ export async function matchAssignmentRule(
       tz: zoneFor(zones.get(event.familyMemberId)!, event.linkId ?? null),
     };
     if (!assignmentRuleMatches(target, cand)) continue;
-    const held = task.manualOwnerOverride || task.createdVia === 'manual';
+    // Exactly the tasks `reconcileTaskOwner` leaves alone: a person's override,
+    // a frozen (converted) event, or an owned task no rule put there.
+    const withOwner = decorated.get(task.id)!;
+    const held =
+      task.manualOwnerOverride ||
+      frozenEvents.has(event.id) ||
+      (task.status === 'owned' && withOwner.autoAssignedRuleId == null);
     const winner = held ? null : resolveTaskOwner({ ...cand, omittedRuleIds: omitted }, pipeline);
-    const status: AssignmentRuleMatchStatus = omitted?.has(target.id)
-      ? 'omitted'
-      : held
-        ? 'held'
+    // Held first: an omission on a task a person has changes nothing.
+    const status: AssignmentRuleMatchStatus = held
+      ? 'held'
+      : omitted?.has(target.id)
+        ? 'omitted'
         : winner?.id === target.id
-          ? 'applies'
+          ? caretakerIds.has(target.ownerMemberId)
+            ? 'applies'
+            : 'owner_unavailable'
           : 'shadowed';
     matched.push({ task, status, decidedByRuleId: winner?.id ?? null });
   }
 
-  const decorated = new Map(
-    (await withOwners(db, matched.map((m) => m.task))).map((t) => [t.id, t]),
-  );
   return matched
     .map(({ task, status, decidedByRuleId }) => {
       const e = eventsById.get(task.calendarEventId!)!;

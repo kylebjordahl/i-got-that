@@ -187,6 +187,13 @@ void main() {
     ),
     _match('mon2', 'pickup', 10, status: 'held', owners: ['dad']),
     _match('mon3', 'pickup', 17, status: 'omitted'),
+    _match(
+      'mon4',
+      'pickup',
+      24,
+      status: 'owner_unavailable',
+      decidedBy: 'mondays',
+    ),
   ];
 
   testWidgets('lists what a rule claims, with who has each task', (
@@ -202,7 +209,7 @@ void main() {
     expect(find.text('What this rule claims'), findsOneWidget);
     expect(
       find.text(
-        '4 tasks in the past and next 30 days match; this rule claims 1 of '
+        '5 tasks in the past and next 30 days match; this rule claims 1 of '
         'them.',
       ),
       findsOneWidget,
@@ -217,8 +224,12 @@ void main() {
       findsOneWidget,
     );
     expect(find.text('Omitted · back in the queue'), findsOneWidget);
+    expect(
+      find.text('Mom can’t take tasks any more, so this rule claims nothing'),
+      findsOneWidget,
+    );
     expect(find.text('Has it: Mom'), findsOneWidget);
-    expect(find.text('Unclaimed'), findsOneWidget);
+    expect(find.text('Unclaimed'), findsNWidgets(2));
 
     // Omit / include-again only where this rule is (or was) the one deciding.
     expect(find.text('Omit from this rule'), findsOneWidget);

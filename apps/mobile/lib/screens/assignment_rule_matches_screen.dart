@@ -154,6 +154,11 @@ class AssignmentRuleMatchesScreen extends ConsumerWidget {
         'Handled by hand, so no rule changes who has it',
         AppColors.textSecondary,
       ),
+      'owner_unavailable' => (
+        '${names[rule.ownerMemberId] ?? 'Its caretaker'} can’t take tasks any '
+            'more, so this rule claims nothing',
+        AppColors.coral,
+      ),
       _ => (
         'Claimed by an earlier rule, ${otherRule()}',
         AppColors.textSecondary,
