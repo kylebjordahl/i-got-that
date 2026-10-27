@@ -839,6 +839,48 @@ export const UpdateTaskRuleInput = z
   .refine((v) => Object.keys(v).length > 0, { message: 'no fields to update' });
 export type UpdateTaskRuleInput = z.infer<typeof UpdateTaskRuleInput>;
 
+/**
+ * The window a rule's match list covers — by default the past and next 30 days
+ * (`from`/`to` are ISO instants; `to` exclusive). Capped so a request can't ask
+ * for a member's whole history.
+ */
+export const RULE_MATCH_WINDOW_MAX_DAYS = 120;
+export const RuleMatchWindowInput = z
+  .object({
+    from: z.string().datetime({ offset: true }).optional(),
+    to: z.string().datetime({ offset: true }).optional(),
+  })
+  .refine((v) => !v.from || !v.to || Date.parse(v.from) < Date.parse(v.to), {
+    message: 'from must be before to',
+  })
+  .refine(
+    (v) =>
+      !v.from ||
+      !v.to ||
+      Date.parse(v.to) - Date.parse(v.from) <= RULE_MATCH_WINDOW_MAX_DAYS * 86_400_000,
+    { message: `window is at most ${RULE_MATCH_WINDOW_MAX_DAYS} days` },
+  );
+export type RuleMatchWindowInput = z.infer<typeof RuleMatchWindowInput>;
+
+/**
+ * Dry-run a task rule the editor hasn't saved: which events in the window it
+ * would catch, and which of those it would actually decide. `ruleId` names the
+ * rule being edited (the draft stands in for it, keeping its place and its
+ * omissions); without it the draft is a new rule at `rule.position` (default:
+ * appended, as a create would).
+ */
+export const PreviewTaskRuleInput = z.object({
+  ruleId: Id.optional(),
+  rule: CreateTaskRuleInput,
+  from: z.string().datetime({ offset: true }).optional(),
+  to: z.string().datetime({ offset: true }).optional(),
+});
+export type PreviewTaskRuleInput = z.infer<typeof PreviewTaskRuleInput>;
+
+/** Omit one calendar event from a task rule (a one-off exception). */
+export const TaskRuleExceptionInput = z.object({ calendarEventId: Id });
+export type TaskRuleExceptionInput = z.infer<typeof TaskRuleExceptionInput>;
+
 /** Reorder a member's task rules within one calendar view (visible ids in order). */
 export const ReorderTaskRulesInput = z.object({
   ruleIds: z.array(Id).min(1),

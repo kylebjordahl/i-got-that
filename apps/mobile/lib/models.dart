@@ -618,6 +618,13 @@ String matcherSummary(String matchField, String matchOp, String? matchValue) {
   };
 }
 
+/// What a task-rule result makes an event generate, as the rule editor says it.
+String taskResultLabel(String resultType) => switch (resultType) {
+  'transition' => 'Drop-off & pickup',
+  'none' => 'No tasks',
+  _ => 'Attendance',
+};
+
 /// One rule of a member's task-rule pipeline (6k/6n): what tasks an event makes.
 class TaskRule {
   TaskRule({
@@ -648,11 +655,7 @@ class TaskRule {
 
   /// A rule that ignores the event: it stays on the calendar with no tasks.
   bool get isNone => resultType == 'none';
-  String get resultLabel => switch (resultType) {
-    'transition' => 'Drop-off & pickup',
-    'none' => 'No tasks',
-    _ => 'Attendance',
-  };
+  String get resultLabel => taskResultLabel(resultType);
   String get scopeLabel =>
       scope == 'all_calendars' ? 'All calendars' : 'This calendar';
 
@@ -670,6 +673,76 @@ class TaskRule {
     dropoffWindowMin: j['dropoffWindowMin'] as int?,
     pickupWindowMin: j['pickupWindowMin'] as int?,
   );
+}
+
+/// One event a task rule's matcher catches (its match list or an editor
+/// preview), and how the member's pipeline resolves it.
+class TaskRuleMatch {
+  TaskRuleMatch({
+    required this.eventId,
+    required this.start,
+    required this.allDay,
+    required this.status,
+    required this.resultType,
+    required this.converted,
+    this.end,
+    this.summary,
+    this.linkId,
+    this.decidedByRuleId,
+    this.tasks,
+  });
+
+  final String eventId;
+  final DateTime start;
+  final DateTime? end;
+  final bool allDay;
+  final String? summary;
+  final String? linkId; // null = the member's unified/direct calendar
+
+  /// 'applies' (this rule decides it), 'shadowed' (an earlier rule does) or
+  /// 'omitted' (excepted from this rule, so it falls through).
+  final String status;
+
+  /// The rule that actually decides the event; null ⇒ its calendar's default.
+  final String? decidedByRuleId;
+
+  /// What the event generates: 'transition' | 'attendance' | 'none'.
+  final String resultType;
+
+  /// Its tasks were converted by hand, so no rule changes them.
+  final bool converted;
+
+  /// The event's current tasks (null in an editor preview).
+  final List<TaskItem>? tasks;
+
+  bool get applies => status == 'applies';
+  bool get shadowed => status == 'shadowed';
+  bool get omitted => status == 'omitted';
+  String get displaySummary => summary ?? 'Event';
+
+  factory TaskRuleMatch.fromJson(Map<String, dynamic> j) {
+    final e = j['event'] as Map<String, dynamic>;
+    final allDay = e['allDay'] as bool? ?? false;
+    return TaskRuleMatch(
+      eventId: e['id'] as String,
+      allDay: allDay,
+      start: allDay
+          ? parseAllDayDate(e['dtstart'])
+          : parseTimestamp(e['dtstart']),
+      end: e['dtend'] == null
+          ? null
+          : (allDay ? parseAllDayDate(e['dtend']) : parseTimestamp(e['dtend'])),
+      summary: e['summary'] as String?,
+      linkId: e['linkId'] as String?,
+      status: j['status'] as String,
+      decidedByRuleId: j['decidedByRuleId'] as String?,
+      resultType: j['resultType'] as String,
+      converted: j['converted'] as bool? ?? false,
+      tasks: (j['tasks'] as List?)
+          ?.map((t) => TaskItem.fromJson(t as Map<String, dynamic>))
+          .toList(),
+    );
+  }
 }
 
 /// A family auto-assignment rule (issue #24): when a generated task matches, it

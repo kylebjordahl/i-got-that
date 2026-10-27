@@ -340,6 +340,25 @@ final taskRulesProvider = FutureProvider.family<TaskRuleSet, String>((
   return TaskRuleSet.fromJson(await api.getTaskRules(familyId, memberId));
 });
 
+/// What one task rule catches — every event its matcher hits in the past and
+/// next 30 days, and how the member's pipeline resolves each.
+final taskRuleMatchesProvider = FutureProvider.autoDispose
+    .family<List<TaskRuleMatch>, ({String memberId, String ruleId})>((
+      ref,
+      key,
+    ) async {
+      final api = ref.watch(apiClientProvider);
+      final familyId = await ref.watch(familyProvider.future);
+      final res = await api.getTaskRuleMatches(
+        familyId,
+        key.memberId,
+        key.ruleId,
+      );
+      return ((res['matches'] as List?) ?? const [])
+          .map((m) => TaskRuleMatch.fromJson(m as Map<String, dynamic>))
+          .toList();
+    });
+
 /// The family's auto-assignment pipeline (issue #24).
 final assignmentRulesProvider = FutureProvider<AssignmentRuleSet>((ref) async {
   final api = ref.watch(apiClientProvider);

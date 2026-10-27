@@ -1374,6 +1374,79 @@ class ApiClient {
     );
   }
 
+  /// What a task rule catches in the window (default: the past and next 30
+  /// days): `{ from, to, generatesFamilyTasks, matches: [...] }`.
+  Future<Map<String, dynamic>> getTaskRuleMatches(
+    String familyId,
+    String memberId,
+    String ruleId,
+  ) async => _obj(
+    await _dio.get(
+      '${_taskRulesBase(familyId, memberId)}/$ruleId/matches',
+      options: _auth,
+    ),
+  );
+
+  /// Dry-run an unsaved rule: `{ from, to, matches: [...] }`. [ruleId] names
+  /// the rule being edited (the draft takes its place); without it the draft is
+  /// a new rule at [position] (appended when null).
+  Future<Map<String, dynamic>> previewTaskRule(
+    String familyId,
+    String memberId, {
+    String? ruleId,
+    String? linkId,
+    required String scope,
+    required String resultType,
+    required String matchValue,
+    String matchField = 'summary',
+    String matchOp = 'regex',
+    int? position,
+  }) async => _obj(
+    await _dio.post(
+      '${_taskRulesBase(familyId, memberId)}/preview',
+      data: {
+        if (ruleId != null) 'ruleId': ruleId,
+        'rule': {
+          if (linkId != null) 'linkId': linkId,
+          'scope': scope,
+          'resultType': resultType,
+          'matchField': matchField,
+          'matchOp': matchOp,
+          'matchValue': matchValue,
+          if (position != null) 'position': position,
+        },
+      },
+      options: _auth,
+    ),
+  );
+
+  /// Omit one calendar event from a task rule (a one-off exception).
+  Future<void> omitTaskRuleEvent(
+    String familyId,
+    String memberId,
+    String ruleId,
+    String calendarEventId,
+  ) async {
+    await _dio.post(
+      '${_taskRulesBase(familyId, memberId)}/$ruleId/exceptions',
+      data: {'calendarEventId': calendarEventId},
+      options: _auth,
+    );
+  }
+
+  /// Put an omitted event back under its task rule.
+  Future<void> restoreTaskRuleEvent(
+    String familyId,
+    String memberId,
+    String ruleId,
+    String calendarEventId,
+  ) async {
+    await _dio.delete(
+      '${_taskRulesBase(familyId, memberId)}/$ruleId/exceptions/$calendarEventId',
+      options: _auth,
+    );
+  }
+
   /// Reorder the rules visible in one calendar's pipeline (new order of visible ids).
   Future<void> reorderTaskRules(
     String familyId,

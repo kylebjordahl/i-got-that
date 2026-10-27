@@ -225,6 +225,13 @@
       "when": 1792157016161,
       "tag": "0031_nebulous_shotgun",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "6",
+      "when": 1793114724928,
+      "tag": "0032_tricky_carnage",
+      "breakpoints": true
     }
   ]
 }

@@ -636,23 +636,30 @@ export function taskRulesForCalendar(
 /**
  * Resolve what an event on a given calendar should generate: the first matching
  * rule in that calendar's applicable subset, else the calendar's default.
+ * `omittedRuleIds` are rules this one event has been excepted from — they're
+ * skipped, so the event falls through as if they didn't match it.
  */
 export function resolveTaskResult(
   occ: OccurrenceLike,
   rules: TaskRuleLike[],
   calendarLinkId: string | null,
   fallback: TaskDefault,
-): TaskResolution {
-  const applicable = taskRulesForCalendar(rules, calendarLinkId);
+  omittedRuleIds?: ReadonlySet<string>,
+): TaskResolution & { ruleId: string | null } {
+  const applicable = taskRulesForCalendar(rules, calendarLinkId).filter(
+    (r) => !omittedRuleIds?.has(r.id),
+  );
   const match = firstMatch(occ, applicable);
   if (match) {
     return {
+      ruleId: match.id,
       resultType: match.resultType,
       dropoffWindowMin: match.dropoffWindowMin ?? fallback.dropoffWindowMin,
       pickupWindowMin: match.pickupWindowMin ?? fallback.pickupWindowMin,
     };
   }
   return {
+    ruleId: null,
     resultType: fallback.resultType,
     dropoffWindowMin: fallback.dropoffWindowMin,
     pickupWindowMin: fallback.pickupWindowMin,
