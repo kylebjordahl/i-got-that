@@ -841,25 +841,15 @@ export type UpdateTaskRuleInput = z.infer<typeof UpdateTaskRuleInput>;
 
 /**
  * The window a rule's match list covers — by default the past and next 30 days
- * (`from`/`to` are ISO instants; `to` exclusive). Capped so a request can't ask
- * for a member's whole history.
+ * (`from`/`to` are ISO instants; `to` exclusive). Either bound may be left to
+ * its default; the RESOLVED window is what's capped (`resolveMatchWindow` in
+ * the API), so a request can't ask for a member's whole history with one bound.
  */
 export const RULE_MATCH_WINDOW_MAX_DAYS = 120;
-export const RuleMatchWindowInput = z
-  .object({
-    from: z.string().datetime({ offset: true }).optional(),
-    to: z.string().datetime({ offset: true }).optional(),
-  })
-  .refine((v) => !v.from || !v.to || Date.parse(v.from) < Date.parse(v.to), {
-    message: 'from must be before to',
-  })
-  .refine(
-    (v) =>
-      !v.from ||
-      !v.to ||
-      Date.parse(v.to) - Date.parse(v.from) <= RULE_MATCH_WINDOW_MAX_DAYS * 86_400_000,
-    { message: `window is at most ${RULE_MATCH_WINDOW_MAX_DAYS} days` },
-  );
+export const RuleMatchWindowInput = z.object({
+  from: z.string().datetime({ offset: true }).optional(),
+  to: z.string().datetime({ offset: true }).optional(),
+});
 export type RuleMatchWindowInput = z.infer<typeof RuleMatchWindowInput>;
 
 /**

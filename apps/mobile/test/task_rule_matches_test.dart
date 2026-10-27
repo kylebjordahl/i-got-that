@@ -293,6 +293,36 @@ void main() {
     expect(find.text('Include again'), findsNothing);
   });
 
+  testWidgets('says so when the member\'s task generation is paused', (
+    tester,
+  ) async {
+    final paused = Member(
+      id: 'theo',
+      relationName: 'Theo',
+      isCaretaker: false,
+      isAdmin: false,
+      requiresCaretaker: true,
+      generatesFamilyTasks: false,
+    );
+    await _pump(
+      tester,
+      _FakeApi(matches: matches),
+      TaskRuleMatchesScreen(
+        member: paused,
+        rule: _trips,
+        ruleSet: _ruleSet,
+        calendarLabels: const {'school': 'School', null: 'Unified'},
+      ),
+    );
+    expect(
+      find.text(
+        'Theo’s task generation is paused, so none of these generate tasks '
+        'right now.',
+      ),
+      findsOneWidget,
+    );
+  });
+
   testWidgets('the rule editor previews what the pattern would catch', (
     tester,
   ) async {

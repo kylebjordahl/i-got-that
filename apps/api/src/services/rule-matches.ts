@@ -24,7 +24,7 @@ import {
   type TaskRuleLike,
   taskRulesForCalendar,
 } from '@igt/classification';
-import type { TaskRuleResultType } from '@igt/domain';
+import { RULE_MATCH_WINDOW_MAX_DAYS, type TaskRuleResultType } from '@igt/domain';
 import { selectChunked } from '../lib/d1.js';
 import { taskRuleOmissions } from './task-gen.js';
 import { type TaskWithOwners, withOwners } from './task-owners.js';
@@ -36,6 +36,25 @@ export function defaultMatchWindow(now = new Date()): { from: Date; to: Date } {
     from: new Date(today.getTime() - 30 * DAY_MS),
     to: new Date(today.getTime() + 31 * DAY_MS),
   };
+}
+
+/**
+ * The window a request asks for, with either bound defaulted, checked after the
+ * defaults apply: ordered, and at most `RULE_MATCH_WINDOW_MAX_DAYS` long.
+ * Null when it isn't — the route answers 400.
+ */
+export function resolveMatchWindow(
+  from?: string,
+  to?: string,
+  now = new Date(),
+): { from: Date; to: Date } | null {
+  const fallback = defaultMatchWindow(now);
+  const window = {
+    from: from ? new Date(from) : fallback.from,
+    to: to ? new Date(to) : fallback.to,
+  };
+  const span = window.to.getTime() - window.from.getTime();
+  return span > 0 && span <= RULE_MATCH_WINDOW_MAX_DAYS * DAY_MS ? window : null;
 }
 
 /**

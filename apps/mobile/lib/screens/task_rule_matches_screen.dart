@@ -100,7 +100,7 @@ class TaskRuleMatchesScreen extends ConsumerWidget {
             decidedBy: _decidedByLabel(m),
             members: ref.watch(membersProvider).valueOrNull ?? const [],
             onToggleOmit: isAdmin && !m.shadowed && !m.converted
-                ? () => _toggleOmit(context, ref, m)
+                ? () => _toggleOmit(context, m)
                 : null,
           ),
           const SizedBox(height: 10),
@@ -112,6 +112,14 @@ class TaskRuleMatchesScreen extends ConsumerWidget {
     return ListView(
       padding: const EdgeInsets.fromLTRB(22, 0, 22, 150),
       children: [
+        if (!member.generatesFamilyTasks) ...[
+          Text(
+            '${member.relationName}’s task generation is paused, so none of '
+            'these generate tasks right now.',
+            style: font(kBodyFont, 12.5, 600, color: AppColors.amber),
+          ),
+          const SizedBox(height: 10),
+        ],
         Text(
           matches.isEmpty
               ? 'Nothing in the past or next 30 days matches this rule.'
@@ -138,21 +146,20 @@ class TaskRuleMatchesScreen extends ConsumerWidget {
     return other == null ? 'another rule' : '“${other.matcher}”';
   }
 
-  Future<void> _toggleOmit(
-    BuildContext context,
-    WidgetRef ref,
-    TaskRuleMatch m,
-  ) async {
+  Future<void> _toggleOmit(BuildContext context, TaskRuleMatch m) async {
+    // Read up front: the screen (and its ref) may be gone by the time the
+    // request returns, and the change still needs its refresh.
     final messenger = ScaffoldMessenger.of(context);
+    final container = ProviderScope.containerOf(context, listen: false);
     try {
-      final familyId = await ref.read(familyProvider.future);
-      final api = ref.read(apiClientProvider);
+      final familyId = await container.read(familyProvider.future);
+      final api = container.read(apiClientProvider);
       if (m.omitted) {
         await api.restoreTaskRuleEvent(familyId, member.id, rule.id, m.eventId);
       } else {
         await api.omitTaskRuleEvent(familyId, member.id, rule.id, m.eventId);
       }
-      ref
+      container
         ..invalidate(taskRuleMatchesProvider(_key))
         ..invalidate(unownedTasksProvider)
         ..invalidate(allTasksProvider)
