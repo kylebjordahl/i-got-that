@@ -222,10 +222,20 @@ Web client below):
      (`com.googleusercontent.apps.…`, on the credential's detail page) for the
      Flutter config below.
 3. Enable the **Google Calendar API** and add the `openid`, `email`, `profile`,
-   `.../auth/calendar.events`, and `.../auth/calendar.readonly` scopes to the
-   consent screen (shared by both client types — no per-client scope config).
-   If the consent screen is still in "Testing" publish status, add your test
-   Google accounts as test users.
+   `.../auth/calendar.events`, `.../auth/calendar.readonly`, and
+   `.../auth/calendar.freebusy` scopes to the consent screen (shared by both
+   client types — no per-client scope config). If the consent screen is still
+   in "Testing" publish status, add your test Google accounts as test users.
+4. On the consent screen's **branding** page, set the app links to the pages
+   this Worker serves publicly (no session), and list the apex domain
+   (`kylebjordahl.com`) as an authorized domain:
+   - Application home page: `<PUBLIC_ORIGIN>/` (`lib/home.ts`)
+   - Privacy policy: `<PUBLIC_ORIGIN>/legal/privacy`
+   - Terms of service: `<PUBLIC_ORIGIN>/legal/terms`
+
+   Their text is `apps/api/legal/*.md` (see `apps/api/legal/README.md`).
+   Publishing the app out of "Testing" sends it through Google's verification,
+   which reviews those pages.
 
 **This API:**
 ```bash

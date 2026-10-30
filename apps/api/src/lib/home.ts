@@ -39,19 +39,27 @@ pickup, the recital someone needs to attend.</p>
 <li><strong>One calendar per person</strong>Subscribe to school and team calendars and connect your own. IGT combines
 them into a unified calendar for each family member, applying the rules you set (no school on a
 holiday, a late start on Wednesdays).</li>
-<li><strong>Tasks that need an owner</strong>Each event becomes a drop-off, pickup, or attendance task. A caretaker
-claims it with a tap, or your assignment rules hand it out automatically.</li>
+<li><strong>Tasks that need an owner</strong>Events that need covering become drop-off, pickup, or attendance tasks,
+following the task rules you set. A caretaker claims one with a tap, or your assignment rules hand it
+out automatically.</li>
 <li><strong>Back on your own calendar</strong>What you've claimed is written to the calendar you already use, such as
-Google Calendar or iCloud, with travel time, so your day shows the full picture.</li>
+Google Calendar or iCloud (with travel time on Apple calendars), so your day shows the full picture.
+Plans you add there yourself count too.</li>
 <li><strong>Nothing silently dropped</strong>When a feed changes in a way IGT can't place, or two plans collide, it
 asks instead of guessing, and reminds whoever needs to decide.</li>
 </ul>
 
 <h2>How IGT uses Google Calendar</h2>
-<p>You can sign in with Google and connect Google Calendar. If you do, IGT reads events from the
-calendars you choose as inputs, lists your calendars so you can pick them, reads free/busy time from
-calendars you mark as busy-only, and creates, updates, and removes the events IGT manages on the one
-calendar you choose as a target. IGT doesn't sell your data or use it for advertising, and its
+<p>You can sign in with Google and connect Google Calendar. Signing in uses your Google account's
+email address and account identifier to identify you. Connecting Google Calendar lets IGT:</p>
+<ul>
+<li>list your calendars, so you can pick which ones IGT uses;</li>
+<li>read events from the calendars you choose as inputs;</li>
+<li>read only the busy times from calendars you mark as busy-only;</li>
+<li>create, update, and remove the events IGT manages on the one calendar you choose as a target, and
+read the events you add to that calendar yourself so they're taken into account.</li>
+</ul>
+<p>IGT doesn't sell your data or use it for advertising, and its
 use of information received from Google APIs adheres to the
 <a href="https://developers.google.com/terms/api-services-user-data-policy">Google API Services User Data Policy</a>,
 including the Limited Use requirements. The <a href="/legal/privacy">Privacy Policy</a> has the details.</p>
@@ -61,5 +69,15 @@ including the Limited Use requirements. The <a href="/legal/privacy">Privacy Pol
 <a href="mailto:privacy@notio.dev">privacy@notio.dev</a><br>
 I Got That is operated by Notio LLC.
 </footer>`,
+  });
+}
+
+/** The homepage as a response (shared by handler.fetch and the local-dev `/` route). */
+export function homeResponse(): Response {
+  return new Response(homePage(), {
+    headers: {
+      'Content-Type': 'text/html; charset=UTF-8',
+      'Cache-Control': 'public, max-age=300',
+    },
   });
 }

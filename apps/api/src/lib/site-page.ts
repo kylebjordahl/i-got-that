@@ -1,18 +1,28 @@
 /**
  * The shell for the worker's few server-rendered public pages (the homepage
  * and the legal documents): one readable column, light/dark from the system.
- * `title` is used as-is; `body` is trusted HTML (escape anything else first).
+ * `title` and `description` are text (escaped here); `body` and `css` are
+ * trusted markup — escape anything interpolated into them with [escapeHtml].
  */
+export function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 export function sitePage(opts: { title: string; body: string; description?: string; css?: string }): string {
   const description = opts.description
-    ? `\n<meta name="description" content="${opts.description.replace(/"/g, '&quot;')}">`
+    ? `\n<meta name="description" content="${escapeHtml(opts.description)}">`
     : '';
   return `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">${description}
-<title>${opts.title.replace(/</g, '&lt;')}</title>
+<title>${escapeHtml(opts.title)}</title>
 <style>
   :root { color-scheme: light dark; --bg: #fff; --fg: #1d1a22; --muted: #5d5866; --accent: #6b4fd8; --card: #f4f1f9; }
   @media (prefers-color-scheme: dark) { :root { --bg: #15121b; --fg: #ece8f2; --muted: #a59fb0; --accent: #a996ff; --card: #211c2a; } }

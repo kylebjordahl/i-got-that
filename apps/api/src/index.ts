@@ -2,7 +2,7 @@ import { eq, families, familyMembers, getDb } from '@igt/db';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import type { Bindings, HonoEnv } from './env.js';
-import { homePage } from './lib/home.js';
+import { homeResponse } from './lib/home.js';
 import { isLegalDoc, legalPage } from './lib/legal.js';
 import { kekStatus, kekUsable } from './lib/secrets.js';
 import { authMiddleware } from './middleware/auth.js';
@@ -105,13 +105,12 @@ app.get('/.well-known/apple-app-site-association', (c) => {
 
 /**
  * Public homepage: what IGT does, with links to the app and the legal pages.
- * Served at the apex `/` (see handler.fetch). Google's OAuth verification
- * reviews it, so it has to stay public.
+ * Google's OAuth verification reviews it, so it has to stay public. Deployed,
+ * handler.fetch serves it at the apex `/` itself, so `/api/` (which strips to
+ * this same `/`) stays a JSON 404 instead of a second copy of the page; this
+ * route is what local dev sees, where the API is served at the root.
  */
-app.get('/', (c) => {
-  c.header('Cache-Control', 'public, max-age=300');
-  return c.html(homePage());
-});
+app.get('/', (c) => (c.env.ASSETS ? c.json({ error: 'not_found' }, 404) : homeResponse()));
 
 /**
  * Public Privacy Policy / Terms of Service, rendered from `apps/api/legal/`
@@ -124,6 +123,11 @@ app.get('/legal/:doc', (c) => {
   if (!isLegalDoc(doc)) return c.json({ error: 'not_found' }, 404);
   c.header('Cache-Control', 'public, max-age=300');
   return c.html(legalPage(doc));
+});
+// A trailing slash is the near-miss a reviewer typing the URL hits.
+app.get('/legal/:doc/', (c) => {
+  const doc = c.req.param('doc');
+  return isLegalDoc(doc) ? c.redirect(`/legal/${doc}`, 301) : c.json({ error: 'not_found' }, 404);
 });
 
 // --- Auth + identity -----------------------------------------------------
@@ -189,7 +193,7 @@ async function serveWebApp(request: Request, assets: Fetcher): Promise<Response>
  *   /api/*  → the API (the prefix is stripped; routes live at the root)
  *   /app/*  → the Flutter web client (static assets, SPA fallback)
  *   /legal/* → the Privacy Policy / Terms of Service pages (the Hono app, unprefixed)
- *   /       → the public homepage (the Hono app), which links on to /app/
+ *   /       → the public homepage (lib/home.ts), which links on to /app/
  * Without ASSETS (local dev / tests) the API is served directly at the root, so
  * the existing test paths and `wrangler dev` are unchanged.
  */
@@ -205,8 +209,10 @@ const handler = {
     if (path === '/.well-known/apple-app-site-association') {
       return app.fetch(request, env, ctx);
     }
-    // Same for the public homepage and legal pages, which live at the apex too.
-    if (path === '/' || path.startsWith('/legal/')) {
+    // The public homepage, at the apex only (see the `/` route).
+    if (path === '/') return homeResponse();
+    // The public legal pages live at the apex too.
+    if (path.startsWith('/legal/')) {
       return app.fetch(request, env, ctx);
     }
     if (path === '/api' || path.startsWith('/api/')) {
