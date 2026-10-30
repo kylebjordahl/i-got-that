@@ -13,6 +13,9 @@
     // other behaviour change a date bump would bring in.
     "compatibility_flags": ["nodejs_compat", "cache_option_enabled"],
     "observability": { "enabled": true },
+    // Bundle `apps/api/legal/*.md` (Privacy Policy, Terms of Service) as
+    // strings — lib/legal.ts imports them and serves them at /legal/*.
+    "rules": [{ "type": "Text", "globs": ["**/*.md"], "fallthrough": true }],
     // Raise the per-invocation CPU ceiling from the 30 s default to the Workers
     // Paid maximum (5 min). The cron no longer runs the families itself: it
     // enqueues one `family-pipeline` message per family (scheduled.ts), and the

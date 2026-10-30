@@ -1,10 +1,12 @@
 import 'package:dio/dio.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../state/auth.dart';
 import '../../theme/app_colors.dart';
 import '../../theme/app_text.dart';
+import '../../util/legal_links.dart';
 import '../onboarding_scaffold.dart';
 
 /// 1a — the pre-configuration welcome / sign-in. The app's unauthed entry
@@ -25,6 +27,18 @@ class _WelcomeStepState extends ConsumerState<WelcomeStep> {
 
   /// "Check your email" after a magic link was mailed rather than signed in.
   String? _notice;
+
+  final _termsTap = TapGestureRecognizer()
+    ..onTap = () => openLegalPage('terms');
+  final _privacyTap = TapGestureRecognizer()
+    ..onTap = () => openLegalPage('privacy');
+
+  @override
+  void dispose() {
+    _termsTap.dispose();
+    _privacyTap.dispose();
+    super.dispose();
+  }
 
   Future<void> _run(Future<void> Function() action) async {
     setState(() {
@@ -232,6 +246,7 @@ class _WelcomeStepState extends ConsumerState<WelcomeStep> {
                         children: [
                           TextSpan(
                             text: 'Terms',
+                            recognizer: _termsTap,
                             style: font(
                               kBodyFont,
                               11.5,
@@ -242,6 +257,7 @@ class _WelcomeStepState extends ConsumerState<WelcomeStep> {
                           const TextSpan(text: ' & '),
                           TextSpan(
                             text: 'Privacy Policy',
+                            recognizer: _privacyTap,
                             style: font(
                               kBodyFont,
                               11.5,
