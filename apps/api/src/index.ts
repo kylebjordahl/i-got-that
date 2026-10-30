@@ -2,6 +2,7 @@ import { eq, families, familyMembers, getDb } from '@igt/db';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import type { Bindings, HonoEnv } from './env.js';
+import { isLegalDoc, legalPage } from './lib/legal.js';
 import { kekStatus, kekUsable } from './lib/secrets.js';
 import { authMiddleware } from './middleware/auth.js';
 import { requestTelemetry } from './middleware/telemetry.js';
@@ -101,6 +102,24 @@ app.get('/.well-known/apple-app-site-association', (c) => {
   });
 });
 
+/**
+ * Public Privacy Policy / Terms of Service, rendered from `apps/api/legal/`
+ * Markdown (see lib/legal.ts). Served at the apex `/legal/…` (see
+ * handler.fetch), not under `/api`: these URLs go on the Google OAuth consent
+ * screen and the store listings, and need no session.
+ */
+app.get('/legal/:doc', (c) => {
+  const doc = c.req.param('doc');
+  if (!isLegalDoc(doc)) return c.json({ error: 'not_found' }, 404);
+  c.header('Cache-Control', 'public, max-age=300');
+  return c.html(legalPage(doc));
+});
+// A trailing slash is the near-miss a reviewer typing the URL hits.
+app.get('/legal/:doc/', (c) => {
+  const doc = c.req.param('doc');
+  return isLegalDoc(doc) ? c.redirect(`/legal/${doc}`, 301) : c.json({ error: 'not_found' }, 404);
+});
+
 // --- Auth + identity -----------------------------------------------------
 
 app.route('/auth', authRoutes);
@@ -163,6 +182,7 @@ async function serveWebApp(request: Request, assets: Fetcher): Promise<Response>
  * Single-origin layout for deployed envs (when the ASSETS binding is present):
  *   /api/*  → the API (the prefix is stripped; routes live at the root)
  *   /app/*  → the Flutter web client (static assets, SPA fallback)
+ *   /legal/* → the Privacy Policy / Terms of Service pages (the Hono app, unprefixed)
  *   /       → redirect to /app/
  * Without ASSETS (local dev / tests) the API is served directly at the root, so
  * the existing test paths and `wrangler dev` are unchanged.
@@ -177,6 +197,10 @@ const handler = {
     // iOS fetches the AASA at the apex, with no `/api` prefix — hand it to the
     // Hono app unchanged so the well-known route resolves.
     if (path === '/.well-known/apple-app-site-association') {
+      return app.fetch(request, env, ctx);
+    }
+    // Same for the public legal pages, which live at the apex too.
+    if (path.startsWith('/legal/')) {
       return app.fetch(request, env, ctx);
     }
     if (path === '/api' || path.startsWith('/api/')) {

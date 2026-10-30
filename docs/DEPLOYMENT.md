@@ -314,6 +314,7 @@ Staging is configured to host everything on **one** subdomain
 | --- | --- |
 | `/api/*` | the API (the Worker strips the `/api` prefix) |
 | `/app/*` | the Flutter **web client** (static assets, with SPA deep-link fallback) |
+| `/legal/privacy`, `/legal/terms` | the Privacy Policy / Terms of Service, rendered from `apps/api/legal/*.md` (public; the Google OAuth consent screen links them) |
 | `/` (and anything else) | redirect → `/app/` |
 
 This is wired in `apps/api/wrangler.jsonc` under `env.staging`:
