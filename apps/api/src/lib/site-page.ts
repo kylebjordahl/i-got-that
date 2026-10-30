@@ -1,9 +1,4 @@
-/**
- * The shell for the worker's few server-rendered public pages (the homepage
- * and the legal documents): one readable column, light/dark from the system.
- * `title` and `description` are text (escaped here); `body` and `css` are
- * trusted markup — escape anything interpolated into them with [escapeHtml].
- */
+/** Escape text for an HTML element body or a quoted attribute value. */
 export function escapeHtml(s: string): string {
   return s
     .replace(/&/g, '&amp;')
@@ -13,6 +8,12 @@ export function escapeHtml(s: string): string {
     .replace(/'/g, '&#39;');
 }
 
+/**
+ * The shell for the worker's few server-rendered public pages (the homepage
+ * and the legal documents): one readable column, light/dark from the system.
+ * `title` and `description` are text (escaped here); `body` and `css` are
+ * trusted markup — escape anything interpolated into them with [escapeHtml].
+ */
 export function sitePage(opts: { title: string; body: string; description?: string; css?: string }): string {
   const description = opts.description
     ? `\n<meta name="description" content="${escapeHtml(opts.description)}">`

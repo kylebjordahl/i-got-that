@@ -210,7 +210,9 @@ const handler = {
       return app.fetch(request, env, ctx);
     }
     // The public homepage, at the apex only (see the `/` route).
-    if (path === '/') return homeResponse();
+    if (path === '/' && (request.method === 'GET' || request.method === 'HEAD')) {
+      return homeResponse();
+    }
     // The public legal pages live at the apex too.
     if (path.startsWith('/legal/')) {
       return app.fetch(request, env, ctx);
