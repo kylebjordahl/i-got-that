@@ -27,27 +27,53 @@ function escapeHtml(s: string): string {
     .replace(/"/g, '&quot;');
 }
 
-/** Only absolute http(s)/mailto links and same-site paths become anchors. */
+/** Only absolute http(s)/mailto links and same-site paths become anchors
+ *  (not `//host` or `/\host`, which browsers resolve off-site). */
 function safeHref(url: string): string | null {
-  return /^(https?:\/\/|mailto:|\/)/i.test(url) ? url : null;
+  return /^(https?:\/\/|mailto:|\/(?![/\\]))/i.test(url) ? url : null;
 }
 
-/** Inline spans: `code`, **bold**, *italic*, [text](url). Escapes first. */
+/** `**bold**` then `*italic*`, on already-escaped text. The markers must hug
+ *  their text, so `5 * 3 * 2` stays arithmetic. */
+function emphasis(html: string): string {
+  return html
+    .replace(/\*\*(?=\S)(.+?)(?<=\S)\*\*/g, '<strong>$1</strong>')
+    .replace(/(?<!\*)\*(?=[^\s*])([^*]+?)(?<=[^\s*])\*(?!\*)/g, '<em>$1</em>');
+}
+
+/** Private-use marker around a held-out span's index; never in our text. */
+const HELD = '';
+
+/**
+ * Inline spans: `code`, [text](url), **bold**, *italic*. Code spans and links
+ * are set aside first, so emphasis never reaches inside code or a URL (only a
+ * link's label), then everything is escaped and the held spans put back.
+ */
 function inline(text: string): string {
-  return escapeHtml(text)
-    .replace(/`([^`]+)`/g, '<code>$1</code>')
-    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-    .replace(/\*([^*]+)\*/g, '<em>$1</em>')
-    .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (whole, label: string, url: string) => {
-      const href = safeHref(url.replace(/&amp;/g, '&'));
-      return href ? `<a href="${escapeHtml(href)}">${label}</a>` : whole;
+  const held: string[] = [];
+  const hold = (html: string) => `${HELD}${held.push(html) - 1}${HELD}`;
+  const marked = text
+    .replace(/`([^`]+)`/g, (_, code: string) => hold(`<code>${escapeHtml(code)}</code>`))
+    .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (whole: string, label: string, url: string) => {
+      const href = safeHref(url);
+      return hold(
+        href
+          ? `<a href="${escapeHtml(href)}">${emphasis(escapeHtml(label))}</a>`
+          : escapeHtml(whole),
+      );
     });
+  return emphasis(escapeHtml(marked)).replace(
+    new RegExp(`${HELD}(\\d+)${HELD}`, 'g'),
+    (_, i: string) => held[Number(i)]!,
+  );
 }
 
 /**
  * Render the small Markdown subset the legal documents use: `#`–`###`
  * headings, paragraphs (consecutive lines join), `-` / `1.` lists (an
- * indented line continues the item above it), and the inline spans above.
+ * indented line continues the item above it; a list needs a blank line
+ * before it, so a wrapped "…January 1,\n2026. We…" stays one paragraph), and
+ * the inline spans above.
  * Not a general Markdown renderer — the input is our own committed text.
  */
 export function renderMarkdown(md: string): string {
@@ -79,8 +105,7 @@ export function renderMarkdown(md: string): string {
       flushList();
       const level = heading[1]!.length;
       out.push(`<h${level}>${inline(heading[2]!)}</h${level}>`);
-    } else if (bullet) {
-      flushPara();
+    } else if (bullet && !para.length) {
       const tag = bullet[1] ? 'ul' : 'ol';
       if (list && list.tag !== tag) flushList();
       list ??= { tag, items: [] };
@@ -99,8 +124,10 @@ export function renderMarkdown(md: string): string {
 
 /** A standalone, readable HTML page for one legal document. */
 export function legalPage(doc: LegalDoc): string {
-  const body = renderMarkdown(LEGAL_DOCS[doc]);
-  const title = /^#\s+(.*)$/m.exec(LEGAL_DOCS[doc])?.[1] ?? 'Legal';
+  const md = LEGAL_DOCS[doc].replace(/\r\n/g, '\n');
+  const body = renderMarkdown(md);
+  // Plain text for <title>: drop the inline markers the heading may carry.
+  const title = (/^#\s+(.*)$/m.exec(md)?.[1] ?? 'Legal').replace(/[*`]/g, '').trim();
   return `<!doctype html>
 <html lang="en">
 <head>
