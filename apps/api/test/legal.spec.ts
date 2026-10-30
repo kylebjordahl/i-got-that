@@ -87,6 +87,21 @@ describe('renderMarkdown', () => {
     );
   });
 
+  it('starts a list straight after a paragraph line', () => {
+    expect(renderMarkdown('We collect:\n- your email\n- your name')).toBe(
+      '<p>We collect:</p>\n<ul><li>your email</li><li>your name</li></ul>',
+    );
+    expect(renderMarkdown('Steps:\n1. first\n2. second')).toBe(
+      '<p>Steps:</p>\n<ol><li>first</li><li>second</li></ol>',
+    );
+  });
+
+  it('keeps a code span inside a link label', () => {
+    expect(renderMarkdown('[the `code` label](https://e.com)')).toBe(
+      '<p><a href="https://e.com">the <code>code</code> label</a></p>',
+    );
+  });
+
   it('never applies emphasis inside code spans or link URLs', () => {
     expect(renderMarkdown('[x](https://ex.com/a*b*c) and `**raw**`')).toBe(
       '<p><a href="https://ex.com/a*b*c">x</a> and <code>**raw**</code></p>',

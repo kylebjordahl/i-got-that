@@ -62,18 +62,21 @@ function inline(text: string): string {
           : escapeHtml(whole),
       );
     });
-  return emphasis(escapeHtml(marked)).replace(
-    new RegExp(`${HELD}(\\d+)${HELD}`, 'g'),
-    (_, i: string) => held[Number(i)]!,
-  );
+  // A link's label can itself hold a code span, so restore until none remain.
+  const placeholder = new RegExp(`${HELD}(\\d+)${HELD}`, 'g');
+  let html = emphasis(escapeHtml(marked));
+  while (placeholder.test(html)) {
+    html = html.replace(placeholder, (_, i: string) => held[Number(i)]!);
+  }
+  return html;
 }
 
 /**
  * Render the small Markdown subset the legal documents use: `#`–`###`
  * headings, paragraphs (consecutive lines join), `-` / `1.` lists (an
- * indented line continues the item above it; a list needs a blank line
- * before it, so a wrapped "…January 1,\n2026. We…" stays one paragraph), and
- * the inline spans above.
+ * indented line continues the item above it; as in CommonMark, only a `-`
+ * item or one numbered `1.` can interrupt a paragraph, so a wrapped
+ * "…January 1,\n2026. We…" stays one paragraph), and the inline spans above.
  * Not a general Markdown renderer — the input is our own committed text.
  */
 export function renderMarkdown(md: string): string {
@@ -105,7 +108,8 @@ export function renderMarkdown(md: string): string {
       flushList();
       const level = heading[1]!.length;
       out.push(`<h${level}>${inline(heading[2]!)}</h${level}>`);
-    } else if (bullet && !para.length) {
+    } else if (bullet && (!para.length || bullet[1] || bullet[2] === '1')) {
+      flushPara();
       const tag = bullet[1] ? 'ul' : 'ol';
       if (list && list.tag !== tag) flushList();
       list ??= { tag, items: [] };
