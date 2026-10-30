@@ -74,7 +74,7 @@ How Google user data is used and shared:
 
 IGT's use and transfer to any other app of information received from Google APIs will adhere to the [Google API Services User Data Policy](https://developers.google.com/terms/api-services-user-data-policy), including the Limited Use requirements.
 
-You can disconnect a Google account in the app at any time. When you do, or when you delete your IGT account, we ask Google to revoke the refresh token we hold for that account (which also ends any access tokens issued from it) and delete our copy. Disconnecting pauses the calendars read through that account. Events already imported stay in your family's schedule until you remove those calendars or the family, and events IGT already wrote to that account's calendars stay there. If you signed in with Google without connecting a calendar, or if revocation fails, you can remove IGT's access from your [Google Account permissions page](https://myaccount.google.com/permissions).
+You can disconnect a Google account in the app at any time. When you do, or when you delete your IGT account, we ask Google to revoke the refresh token we hold for that account (which also ends any access tokens issued from it) and delete our copy. Disconnecting pauses the calendars read through that account. Events already imported stay in your family's schedule until you remove those calendars or the family, and events IGT already wrote to that account's calendars stay there. If you signed in with Google without connecting a calendar, removed Google as a sign-in method, or if revocation fails, you can remove IGT's access from your [Google Account permissions page](https://myaccount.google.com/permissions).
 
 ## How information is shared
 
