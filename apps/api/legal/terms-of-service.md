@@ -4,6 +4,8 @@ Last updated: October 30, 2026
 
 These Terms of Service ("Terms") are an agreement between you and Notio LLC ("we", "us") and cover your use of I Got That ("IGT", the "Service"), including the IGT apps and website. By creating an account or using the Service, you agree to these Terms and to our [Privacy Policy](/legal/privacy). If you do not agree, do not use the Service.
 
+**These Terms include a binding arbitration agreement and a class-action waiver (Section 15), which affect how disputes are resolved. You can opt out of arbitration within 30 days.**
+
 ## 1. Who can use IGT
 
 You must be at least 18 years old and able to form a binding contract to create an account. If you add information about other people, you confirm that you have the right to do so. This includes your children or other family members, the people you invite, and the email addresses you enter. For a child, that means you are their parent or legal guardian, or are acting with a parent's or guardian's permission.
@@ -77,7 +79,25 @@ You agree to defend and indemnify Notio LLC against claims, damages, and costs, 
 
 ## 15. Governing law and disputes
 
-These Terms are governed by the laws of the State of Oregon, USA, without regard to its conflict-of-laws rules. Any dispute relating to these Terms or the Service will be resolved exclusively in the state or federal courts located in Oregon. You and Notio LLC consent to the personal jurisdiction of those courts. Before filing a claim, each party agrees to try to resolve the dispute informally by contacting the other for at least 30 days.
+**Please read this section carefully. It requires you and Notio LLC to resolve most disputes through individual arbitration rather than in court, and it waives class actions and jury trials. You can opt out as described below.**
+
+**Governing law.** These Terms are governed by the Federal Arbitration Act and, apart from that, by the laws of the State of Oregon, USA, without regard to its conflict-of-laws rules.
+
+**Informal resolution first.** Before starting arbitration or a court case, the party with the claim must send the other a written notice describing the dispute and the relief sought. Notices to us go to [privacy@notio.dev](mailto:privacy@notio.dev); notices to you go to the email address on your account. Both parties then have 60 days to try to resolve the dispute informally.
+
+**Arbitration.** If the dispute is not resolved within those 60 days, you and Notio LLC agree that any dispute, claim, or controversy arising out of or relating to these Terms or the Service ("Dispute") will be resolved by final and binding arbitration. This includes Disputes about the scope or enforceability of this section. The arbitration will be administered by the American Arbitration Association ("AAA") under its Consumer Arbitration Rules, which are available at [adr.org](https://www.adr.org). A single arbitrator will conduct it. You may choose whether the hearing is held by video, by telephone, on written submissions only, or in person in the county where you live. Payment of filing and arbitrator fees follows the AAA's Consumer Arbitration Rules. The arbitrator may award the same individual relief a court could, but only to the individual party seeking it.
+
+**Exceptions.** Either party may instead bring an individual claim in small claims court if it qualifies. Either party may also go to court to stop actual or threatened infringement or misuse of its intellectual property, or unauthorized access to the Service.
+
+**No class actions.** You and Notio LLC may bring claims against each other only individually, and not as a plaintiff or class member in any purported class, collective, consolidated, or representative proceeding. The arbitrator may not consolidate more than one person's claims. If this class-action waiver is found unenforceable for a particular claim, that claim (and only that claim) must be severed and decided in court, after all arbitrable claims are resolved.
+
+**Jury trial waiver.** If a Dispute proceeds in court rather than arbitration, you and Notio LLC waive any right to a jury trial.
+
+**Opting out.** You can reject this arbitration agreement by emailing [privacy@notio.dev](mailto:privacy@notio.dev) within 30 days after you first accept these Terms. Your email must include your name, the email address on your account, and a clear statement that you are opting out of arbitration. Opting out does not affect any other part of these Terms.
+
+**Courts.** Any Dispute that is not arbitrated, and any action to enforce or vacate an arbitration award, will be heard exclusively in the state or federal courts located in Oregon. You and Notio LLC consent to the personal jurisdiction of those courts.
+
+**Changes to this section.** If we change this section, the change will not apply to a Dispute that one party has already given notice of. You may reject a material change by emailing us within 30 days after it is posted, in which case the version you last agreed to continues to apply.
 
 ## 16. General
 
