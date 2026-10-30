@@ -229,6 +229,7 @@ Web client below):
 4. On the consent screen's **branding** page, set the app links to the pages
    this Worker serves publicly (no session), and list the apex domain
    (`kylebjordahl.com`) as an authorized domain:
+   - Application home page: `<PUBLIC_ORIGIN>/` (`lib/home.ts`)
    - Privacy policy: `<PUBLIC_ORIGIN>/legal/privacy`
    - Terms of service: `<PUBLIC_ORIGIN>/legal/terms`
 
