@@ -2,6 +2,7 @@ import { eq, families, familyMembers, getDb } from '@igt/db';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import type { Bindings, HonoEnv } from './env.js';
+import { homePage } from './lib/home.js';
 import { isLegalDoc, legalPage } from './lib/legal.js';
 import { kekStatus, kekUsable } from './lib/secrets.js';
 import { authMiddleware } from './middleware/auth.js';
@@ -103,6 +104,16 @@ app.get('/.well-known/apple-app-site-association', (c) => {
 });
 
 /**
+ * Public homepage: what IGT does, with links to the app and the legal pages.
+ * Served at the apex `/` (see handler.fetch). Google's OAuth verification
+ * reviews it, so it has to stay public.
+ */
+app.get('/', (c) => {
+  c.header('Cache-Control', 'public, max-age=300');
+  return c.html(homePage());
+});
+
+/**
  * Public Privacy Policy / Terms of Service, rendered from `apps/api/legal/`
  * Markdown (see lib/legal.ts). Served at the apex `/legal/…` (see
  * handler.fetch), not under `/api`: these URLs go on the Google OAuth consent
@@ -178,7 +189,7 @@ async function serveWebApp(request: Request, assets: Fetcher): Promise<Response>
  *   /api/*  → the API (the prefix is stripped; routes live at the root)
  *   /app/*  → the Flutter web client (static assets, SPA fallback)
  *   /legal/* → the Privacy Policy / Terms of Service pages (the Hono app, unprefixed)
- *   /       → redirect to /app/
+ *   /       → the public homepage (the Hono app), which links on to /app/
  * Without ASSETS (local dev / tests) the API is served directly at the root, so
  * the existing test paths and `wrangler dev` are unchanged.
  */
@@ -194,8 +205,8 @@ const handler = {
     if (path === '/.well-known/apple-app-site-association') {
       return app.fetch(request, env, ctx);
     }
-    // Same for the public legal pages, which live at the apex too.
-    if (path.startsWith('/legal/')) {
+    // Same for the public homepage and legal pages, which live at the apex too.
+    if (path === '/' || path.startsWith('/legal/')) {
       return app.fetch(request, env, ctx);
     }
     if (path === '/api' || path.startsWith('/api/')) {
@@ -205,7 +216,7 @@ const handler = {
     if (path.startsWith('/app/')) {
       return serveWebApp(request, env.ASSETS);
     }
-    // Bare domain, `/app` (no trailing slash), and anything else → the web app.
+    // `/app` (no trailing slash) and anything else → the web app.
     url.pathname = '/app/';
     url.search = '';
     return Response.redirect(url.toString(), 302);

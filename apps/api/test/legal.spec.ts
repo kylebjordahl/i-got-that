@@ -79,3 +79,23 @@ describe('renderMarkdown', () => {
     expect(html).not.toContain('href="javascript');
   });
 });
+
+describe('homepage', () => {
+  it('serves a public homepage at the apex that links to the app and both legal pages', async () => {
+    const assets = { fetch: async () => new Response('app shell') } as unknown as Fetcher;
+    const res = await call('/', { ...env, ASSETS: assets });
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toMatch(/^text\/html/);
+    const html = await res.text();
+    expect(html).toContain('href="/app/"');
+    expect(html).toContain('href="/legal/privacy"');
+    expect(html).toContain('href="/legal/terms"');
+  });
+
+  it('still sends other unknown paths to the web app', async () => {
+    const assets = { fetch: async () => new Response('app shell') } as unknown as Fetcher;
+    const res = await call('/somewhere', { ...env, ASSETS: assets });
+    expect(res.status).toBe(302);
+    expect(res.headers.get('location')).toBe('https://api.test/app/');
+  });
+});

@@ -509,7 +509,8 @@ paths in particular).
   `/app/*` (Flutter web via the `ASSETS` binding), `/legal/privacy` +
   `/legal/terms` (the Privacy Policy / Terms of Service, rendered from
   `apps/api/legal/*.md` — public, no session; they're on the Google OAuth
-  consent screen), and `/` → `/app/`. Gated on the `ASSETS` binding so
+  consent screen), and `/` → a public homepage (`lib/home.ts`, which Google's
+  OAuth verification reviews) linking on to `/app/`. Gated on the `ASSETS` binding so
   local/dev/tests serve the API at the root.
 - **Permissions** are enforced server-side: a member's calendar target draws
   only from the **caller's own** connected accounts, and a member linked to a

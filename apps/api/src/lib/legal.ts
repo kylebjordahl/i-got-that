@@ -1,5 +1,6 @@
 import privacyPolicy from '../../legal/privacy-policy.md';
 import termsOfService from '../../legal/terms-of-service.md';
+import { sitePage } from './site-page.js';
 
 /**
  * The public legal pages (`/legal/privacy`, `/legal/terms`). The text lives in
@@ -99,33 +100,11 @@ export function renderMarkdown(md: string): string {
 
 /** A standalone, readable HTML page for one legal document. */
 export function legalPage(doc: LegalDoc): string {
-  const body = renderMarkdown(LEGAL_DOCS[doc]);
-  const title = /^#\s+(.*)$/m.exec(LEGAL_DOCS[doc])?.[1] ?? 'Legal';
-  return `<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>${escapeHtml(title)} · I Got That</title>
-<style>
-  :root { color-scheme: light dark; --bg: #fff; --fg: #1d1a22; --muted: #5d5866; --accent: #6b4fd8; }
-  @media (prefers-color-scheme: dark) { :root { --bg: #15121b; --fg: #ece8f2; --muted: #a59fb0; --accent: #a996ff; } }
-  body { margin: 0; background: var(--bg); color: var(--fg);
-    font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
-  main { max-width: 720px; margin: 0 auto; padding: 32px 16px 64px; }
-  h1 { font-size: 1.9rem; line-height: 1.2; }
-  h2 { font-size: 1.3rem; margin-top: 2em; }
-  h3 { font-size: 1.05rem; margin-top: 1.5em; }
-  a { color: var(--accent); }
-  code { font-size: 0.9em; }
-  nav { font-size: 0.9rem; color: var(--muted); }
-</style>
-</head>
-<body>
-<main>
-<nav><a href="/legal/privacy">Privacy Policy</a> · <a href="/legal/terms">Terms of Service</a></nav>
-${body}
-</main>
-</body>
-</html>`;
+  const md = LEGAL_DOCS[doc];
+  const title = /^#\s+(.*)$/m.exec(md)?.[1] ?? 'Legal';
+  return sitePage({
+    title: `${title} · I Got That`,
+    body: `<nav><a href="/">I Got That</a> · <a href="/legal/privacy">Privacy Policy</a> · <a href="/legal/terms">Terms of Service</a></nav>
+${renderMarkdown(md)}`,
+  });
 }
