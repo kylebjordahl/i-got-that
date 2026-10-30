@@ -55,7 +55,7 @@ If you send us suggestions or feedback, we may use them without any obligation t
 
 The Service, including its software, design, and trademarks, belongs to Notio LLC. These Terms give you a personal, non-exclusive, non-transferable, revocable license to use the Service for your family's own coordination, subject to these Terms.
 
-We may change, add, or remove features, and we may suspend or stop the Service. If we plan to shut down the Service, we will try to give you reasonable notice so that you can export or remove your information.
+We may change, add, or remove features, and we may suspend or stop the Service. If we plan to shut down the Service, we will try to give you reasonable notice so that you can remove your information or request a copy by email.
 
 ## 10. Fees
 
@@ -63,7 +63,7 @@ IGT is currently free. If we introduce paid features, we will tell you the price
 
 ## 11. Ending your use
 
-You can stop using IGT and delete your account at any time from the app. We may suspend or end your access if you violate these Terms, if your use creates risk or legal exposure for us or for others, or if we are required to by law. Where reasonable, we will tell you why. Sections 3, 7 (as to backups), and 12 through 16 continue to apply after your access ends.
+You can stop using IGT and delete your account at any time from the app. We may suspend or end your access if you violate these Terms, if your use creates risk or legal exposure for us or for others, or if we are required to by law. Where reasonable, we will tell you why. Sections 3, 7 (as to backups), 8, 9 (as to ownership), and 12 through 16 continue to apply after your access ends.
 
 ## 12. Disclaimers
 
@@ -85,7 +85,7 @@ You agree to defend and indemnify Notio LLC against claims, damages, and costs, 
 
 **Informal resolution first.** Before starting arbitration or a court case, the party with the claim must send the other a written notice describing the dispute and the relief sought. Notices to us go to [privacy@notio.dev](mailto:privacy@notio.dev); notices to you go to the email address on your account. Both parties then have 60 days to try to resolve the dispute informally.
 
-**Arbitration.** If the dispute is not resolved within those 60 days, you and Notio LLC agree that any dispute, claim, or controversy arising out of or relating to these Terms or the Service ("Dispute") will be resolved by final and binding arbitration. This includes Disputes about the scope or enforceability of this section. The arbitration will be administered by the American Arbitration Association ("AAA") under its Consumer Arbitration Rules, which are available at [adr.org](https://www.adr.org). A single arbitrator will conduct it. You may choose whether the hearing is held by video, by telephone, on written submissions only, or in person in the county where you live. Payment of filing and arbitrator fees follows the AAA's Consumer Arbitration Rules. The arbitrator may award the same individual relief a court could, but only to the individual party seeking it.
+**Arbitration.** If the dispute is not resolved within those 60 days, you and Notio LLC agree that any dispute, claim, or controversy arising out of or relating to these Terms or the Service ("Dispute") will be resolved by final and binding arbitration. This includes Disputes about the scope or enforceability of this section, except that a court decides whether the "No class actions" paragraph is enforceable. The arbitration will be administered by the American Arbitration Association ("AAA") under its Consumer Arbitration Rules, which are available at [adr.org](https://www.adr.org). A single arbitrator will conduct it. You may choose whether the hearing is held by video, by telephone, on written submissions only, or in person in the county where you live. Payment of filing and arbitrator fees follows the AAA's Consumer Arbitration Rules. The arbitrator may award the same individual relief a court could, but only to the individual party seeking it.
 
 **Exceptions.** Either party may instead bring an individual claim in small claims court if it qualifies. Either party may also go to court to stop actual or threatened infringement or misuse of its intellectual property, or unauthorized access to the Service.
 
