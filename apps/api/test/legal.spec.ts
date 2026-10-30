@@ -29,6 +29,14 @@ describe('legal pages', () => {
     const html = await res.text();
     expect(html).toContain(`<title>${title} · I Got That</title>`);
     expect(html).toContain(`<h1>${title}</h1>`);
+    expect(res.headers.get('cache-control')).toBe('public, max-age=300');
+  });
+
+  it('redirects a trailing slash to the canonical URL', async () => {
+    const res = await call('/legal/privacy/');
+    expect(res.status).toBe(301);
+    expect(res.headers.get('location')).toBe('/legal/privacy');
+    expect((await call('/legal/cookies/')).status).toBe(404);
   });
 
   it('404s an unknown document', async () => {
@@ -71,6 +79,31 @@ describe('renderMarkdown', () => {
         '<ol><li>first</li><li>second</li></ol>',
       ].join('\n'),
     );
+  });
+
+  it('keeps a wrapped line that starts with a number in its paragraph', () => {
+    expect(renderMarkdown('effective January 1,\n2026. We may change it.')).toBe(
+      '<p>effective January 1, 2026. We may change it.</p>',
+    );
+  });
+
+  it('never applies emphasis inside code spans or link URLs', () => {
+    expect(renderMarkdown('[x](https://ex.com/a*b*c) and `**raw**`')).toBe(
+      '<p><a href="https://ex.com/a*b*c">x</a> and <code>**raw**</code></p>',
+    );
+    expect(renderMarkdown('[**bold** label](/legal/terms)')).toBe(
+      '<p><a href="/legal/terms"><strong>bold</strong> label</a></p>',
+    );
+  });
+
+  it('nests italic in bold and leaves loose asterisks alone', () => {
+    expect(renderMarkdown('**bold *nested* x** and 5 * 3 * 2')).toBe(
+      '<p><strong>bold <em>nested</em> x</strong> and 5 * 3 * 2</p>',
+    );
+  });
+
+  it('refuses protocol-relative links', () => {
+    expect(renderMarkdown('[a](//evil.com) [b](/\\evil.com)')).not.toContain('href');
   });
 
   it('escapes HTML and refuses script links', () => {

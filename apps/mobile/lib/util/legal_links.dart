@@ -9,6 +9,16 @@ import '../state/auth.dart';
 String legalUrl(String doc, {String base = apiBaseUrl}) =>
     '${base.replaceFirst(RegExp(r'/api/?$'), '')}/legal/$doc';
 
-/// Opens a legal page in the browser (a new tab on web).
-Future<bool> openLegalPage(String doc) =>
-    launchUrl(Uri.parse(legalUrl(doc)), mode: LaunchMode.externalApplication);
+/// Opens a legal page in the browser (a new tab on web). False when nothing
+/// could open it — `launchUrl` throws rather than returning false for some
+/// failures (no handler for the URL), and a tap handler has nowhere to catch.
+Future<bool> openLegalPage(String doc) async {
+  try {
+    return await launchUrl(
+      Uri.parse(legalUrl(doc)),
+      mode: LaunchMode.externalApplication,
+    );
+  } catch (_) {
+    return false;
+  }
+}

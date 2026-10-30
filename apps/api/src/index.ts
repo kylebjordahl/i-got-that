@@ -114,6 +114,11 @@ app.get('/legal/:doc', (c) => {
   c.header('Cache-Control', 'public, max-age=300');
   return c.html(legalPage(doc));
 });
+// A trailing slash is the near-miss a reviewer typing the URL hits.
+app.get('/legal/:doc/', (c) => {
+  const doc = c.req.param('doc');
+  return isLegalDoc(doc) ? c.redirect(`/legal/${doc}`, 301) : c.json({ error: 'not_found' }, 404);
+});
 
 // --- Auth + identity -----------------------------------------------------
 
