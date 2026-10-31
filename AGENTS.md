@@ -504,13 +504,16 @@ paths in particular).
   Email that's a random relay alias (`hp26rvm9sd`). The name people recognise
   is the family member's `relationName` (what the family calls them, set in
   the app); use that, as the email-output verification mail does.
-- **Deployed staging is single-origin**: one Worker on
-  `staging.igt.kylebjordahl.com` serving `/api/*` (API, prefix stripped),
-  `/app/*` (Flutter web via the `ASSETS` binding), `/legal/privacy` +
-  `/legal/terms` (the Privacy Policy / Terms of Service, rendered from
-  `apps/api/legal/*.md` — public, no session; they're on the Google OAuth
-  consent screen), and `/` → a public homepage (`lib/home.ts`, which Google's
-  OAuth verification reviews) linking on to `/app/`. Gated on the `ASSETS` binding so
+- **Deployed envs route on the host** (`hostRole` in `apps/api/src/index.ts`):
+  one Worker per env serves the app host (`PUBLIC_ORIGIN`, e.g. `app.igt.fyi`:
+  `/api/*` with the prefix stripped, the Flutter web client at `/` via the
+  `ASSETS` binding), the site host (`SITE_ORIGIN`, e.g. `www.igt.fyi`: the
+  public homepage `lib/home.ts`, which Google's OAuth verification reviews, and
+  `/legal/privacy` + `/legal/terms` rendered from `apps/api/legal/*.md` —
+  public, no session; they're on the Google OAuth consent screen), and any
+  other routed host as a legacy alias (`igt.kylebjordahl.com`: `/api` for
+  installed app builds that still call it — **never drop its route** — and a
+  301 to the new hosts for everything else). Gated on the `ASSETS` binding so
   local/dev/tests serve the API at the root.
 - **Permissions** are enforced server-side: a member's calendar target draws
   only from the **caller's own** connected accounts, and a member linked to a

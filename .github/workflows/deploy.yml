@@ -36,11 +36,14 @@ on:
         required: true
       CLOUDFLARE_ACCOUNT_ID:
         required: true
-      # Zone backing the custom domain (same zone for staging + production —
-      # see docs/DEPLOYMENT.md §7/§9), needed by the zone-scoped rate-limiting
-      # ruleset in infra/terraform/main.tf. Required: that resource is
-      # unconditional, so every apply needs it.
+      # Zones backing the custom domains (each shared by staging + production
+      # — see docs/DEPLOYMENT.md §7/§9), needed by the zone-scoped
+      # rate-limiting rulesets in infra/terraform/main.tf: the legacy
+      # kylebjordahl.com zone and igt.fyi. Required: they're Terraform
+      # variables with no default, so every apply needs them.
       CLOUDFLARE_ZONE_ID:
+        required: true
+      CLOUDFLARE_IGT_FYI_ZONE_ID:
         required: true
       AWS_ACCESS_KEY_ID:
         required: true
@@ -195,9 +198,9 @@ jobs:
           ref: ${{ inputs.ref }}
       - uses: ./.github/actions/pnpm-install
 
-      # Build the Flutter web client and stage it under apps/api/public/app so
-      # the Worker serves it (same origin) at /app. API base is the relative
-      # /api on that origin. The built bundle is cached and keyed on the mobile
+      # Build the Flutter web client and stage it as apps/api/public so the
+      # Worker serves it at the app host's root (PUBLIC_ORIGIN). API base is the
+      # relative /api on that origin. The built bundle is cached and keyed on the mobile
       # sources *and the environment* (APP_ENV is baked into the bundle — it
       # drives the staging-only beta ribbon — so the two envs must never share a
       # cache entry): a backend/infra-only deploy restores it and skips the
@@ -210,9 +213,9 @@ jobs:
         id: web-client-cache
         uses: actions/cache@v6
         with:
-          path: apps/api/public/app
+          path: apps/api/public
           key: >-
-            web-client-${{ inputs.environment }}-${{ hashFiles('apps/mobile/lib/**',
+            web-client-root-${{ inputs.environment }}-${{ hashFiles('apps/mobile/lib/**',
             'apps/mobile/web/**', 'apps/mobile/pubspec.yaml', 'apps/mobile/pubspec.lock') }}
       - uses: subosito/flutter-action@v2
         if: steps.web-client-cache.outputs.cache-hit != 'true'
@@ -225,27 +228,26 @@ jobs:
         run: |
           flutter create . --platforms=web --project-name caretaker_app
           flutter pub get
-          flutter build web --base-href /app/ --dart-define=API_BASE_URL=/api \
+          flutter build web --base-href / --dart-define=API_BASE_URL=/api \
             --dart-define=APP_ENV=${{ inputs.environment }} \
             --build-name=${{ needs.version.outputs.build_name }} \
             --build-number=${{ github.run_number }}
       - name: Stage web assets
         if: steps.web-client-cache.outputs.cache-hit != 'true'
         run: |
-          rm -rf apps/api/public/app
-          mkdir -p apps/api/public
-          cp -r apps/mobile/build/web apps/api/public/app
+          rm -rf apps/api/public
+          cp -r apps/mobile/build/web apps/api/public
       # Runs whether the bundle was rebuilt or restored from cache — the Worker
       # must never deploy without its web assets.
       - name: Verify web assets present
         run: |
-          if [ ! -f apps/api/public/app/index.html ]; then
-            echo "::error::Web assets missing: apps/api/public/app/index.html not found." \
+          if [ ! -f apps/api/public/index.html ]; then
+            echo "::error::Web assets missing: apps/api/public/index.html not found." \
                  "Neither the cache restore nor the Flutter build produced the web" \
                  "client — the Worker would deploy without it. Failing early."
             exit 1
           fi
-          echo "Serving $(find apps/api/public/app -type f | wc -l) web asset file(s)."
+          echo "Serving $(find apps/api/public -type f | wc -l) web asset file(s)."
 
       # Runs unconditionally, even on a cache hit: `flutter build web` bakes
       # the marketing version + build number into this one small JSON file
@@ -256,7 +258,7 @@ jobs:
       # compiled bundle itself is stale/reused.
       - name: Stamp web client version
         run: |
-          cat > apps/api/public/app/version.json <<JSON
+          cat > apps/api/public/version.json <<JSON
           {"app_name":"caretaker_app","package_name":"caretaker_app","version":"${{ needs.version.outputs.build_name }}","build_number":"${{ github.run_number }}"}
           JSON
 
@@ -267,6 +269,7 @@ jobs:
           TF_VAR_cloudflare_api_token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           TF_VAR_cloudflare_account_id: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           TF_VAR_cloudflare_zone_id: ${{ secrets.CLOUDFLARE_ZONE_ID }}
+          TF_VAR_cloudflare_igt_fyi_zone_id: ${{ secrets.CLOUDFLARE_IGT_FYI_ZONE_ID }}
           TF_VAR_environment: ${{ inputs.environment }}
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
@@ -452,7 +455,7 @@ jobs:
       # staging -> "staging" flavor / com.kylebjordahl.igt.staging
       # production -> "prod" flavor / com.kylebjordahl.igt
       FLAVOR: ${{ inputs.environment == 'production' && 'prod' || 'staging' }}
-      API_BASE_URL: ${{ inputs.environment == 'production' && 'https://igt.kylebjordahl.com/api' || 'https://staging.igt.kylebjordahl.com/api' }}
+      API_BASE_URL: ${{ inputs.environment == 'production' && 'https://app.igt.fyi/api' || 'https://app.staging.igt.fyi/api' }}
       # The Web OAuth client id (not secret — same value as GOOGLE_OAUTH_CLIENT_ID
       # in apps/api/wrangler.jsonc for this env), passed to google_sign_in as
       # serverClientId so native Sign in with Google also returns a
@@ -607,7 +610,7 @@ jobs:
       # flavor / com.kylebjordahl.igt. The applicationId suffix comes from the
       # flavor itself (android/app/build.gradle.kts), not from here.
       FLAVOR: ${{ inputs.environment == 'production' && 'prod' || 'staging' }}
-      API_BASE_URL: ${{ inputs.environment == 'production' && 'https://igt.kylebjordahl.com/api' || 'https://staging.igt.kylebjordahl.com/api' }}
+      API_BASE_URL: ${{ inputs.environment == 'production' && 'https://app.igt.fyi/api' || 'https://app.staging.igt.fyi/api' }}
       # The Web OAuth client id for this env — the value google_sign_in passes
       # as serverClientId, and (on Android) the `aud` the Worker checks the id
       # token against. Not secret; same string as GOOGLE_OAUTH_CLIENT_ID in

@@ -107,16 +107,8 @@ resource "cloudflare_queue" "delivery_dlq" {
 # the first and 400s ("exceeded maximum number of zone rulesets for phase
 # http_ratelimit", code 20217). Only staging's state manages the resource
 # (it's the one already applied/live); production intentionally skips it.
-resource "cloudflare_ruleset" "rate_limiting" {
-  count = var.environment == "staging" ? 1 : 0
-
-  zone_id     = var.cloudflare_zone_id
-  name        = "${var.name_prefix}-rate-limiting-${local.suffix}"
-  description = "Edge rate limit backstop for auth endpoints (issue #142)."
-  kind        = "zone"
-  phase       = "http_ratelimit"
-
-  rules = [
+locals {
+  auth_rate_limit_rules = [
     {
       description = "Auth endpoints: ~6 requests/min/IP"
       expression  = "(http.request.method eq \"POST\" and starts_with(http.request.uri.path, \"/api/auth/\"))"
@@ -143,4 +135,32 @@ resource "cloudflare_ruleset" "rate_limiting" {
       }
     }
   ]
+}
+
+resource "cloudflare_ruleset" "rate_limiting" {
+  count = var.environment == "staging" ? 1 : 0
+
+  zone_id     = var.cloudflare_zone_id
+  name        = "${var.name_prefix}-rate-limiting-${local.suffix}"
+  description = "Edge rate limit backstop for auth endpoints (issue #142)."
+  kind        = "zone"
+  phase       = "http_ratelimit"
+
+  rules = local.auth_rate_limit_rules
+}
+
+# The same backstop on the igt.fyi zone, which hosts the app + site hostnames
+# (app.igt.fyi, app.staging.igt.fyi, …) since the domain move. The ruleset
+# above stays: the legacy kylebjordahl.com hostnames still serve /api to older
+# app builds. Same singleton reasoning: one zone, both environments' hostnames,
+# so only staging's state manages it.
+resource "cloudflare_ruleset" "rate_limiting_igt_fyi" {
+  count = var.environment == "staging" ? 1 : 0
+
+  zone_id     = var.cloudflare_igt_fyi_zone_id
+  name        = "${var.name_prefix}-rate-limiting-igt-fyi-${local.suffix}"
+  description = "Edge rate limit backstop for auth endpoints (issue #142)."
+  kind        = "zone"
+  phase       = "http_ratelimit"
+  rules       = local.auth_rate_limit_rules
 }

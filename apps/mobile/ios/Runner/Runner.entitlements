@@ -15,6 +15,10 @@
 	<string>$(APS_ENVIRONMENT)</string>
 	<key>com.apple.developer.associated-domains</key>
 	<array>
+		<string>applinks:app.staging.igt.fyi</string>
+		<string>applinks:app.igt.fyi</string>
+		<!-- Legacy hosts: links already sent from them (`/app/#invite=…`)
+		     still open the app. -->
 		<string>applinks:staging.igt.kylebjordahl.com</string>
 		<string>applinks:igt.kylebjordahl.com</string>
 	</array>

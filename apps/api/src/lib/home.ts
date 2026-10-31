@@ -1,13 +1,14 @@
 import { sitePage } from './site-page.js';
 
 /**
- * The public homepage at the bare domain. Google's OAuth verification needs a
- * homepage on the app's domain that says what the app does and links to the
- * privacy policy, which a redirect into the sign-in-walled web app isn't, so
- * `/` serves this and links on to `/app/`. Keep it in step with the Privacy
- * Policy when what the app does with Google Calendar changes.
+ * The public homepage at the root of the marketing site (SITE_ORIGIN). Google's
+ * OAuth verification needs a homepage on the app's domain that says what the
+ * app does and links to the privacy policy, which the sign-in-walled web app
+ * isn't, so the site serves this and links on to the app at [appOrigin] (the
+ * app host, PUBLIC_ORIGIN; empty ⇒ same-origin). Keep it in step with the
+ * Privacy Policy when what the app does with Google Calendar changes.
  */
-export function homePage(): string {
+export function homePage(appOrigin = ''): string {
   return sitePage({
     title: 'I Got That: family logistics, handled',
     description:
@@ -24,10 +25,10 @@ export function homePage(): string {
   .features strong { display: block; }
   footer { margin-top: 48px; border-top: 1px solid var(--card); padding-top: 16px; }`,
     body: `<section class="hero">
-<img src="/app/assets/assets/images/app_icon.png" alt="" onerror="this.remove()">
+<img src="${appOrigin}/assets/assets/images/app_icon.png" alt="" onerror="this.remove()">
 <h1>I Got That</h1>
 <p class="lede">One shared calendar for the whole family. Every handoff owned, nothing dropped.</p>
-<a class="cta" href="/app/">Open I Got That</a>
+<a class="cta" href="${appOrigin}/">Open I Got That</a>
 </section>
 
 <h2>What it does</h2>
@@ -73,8 +74,8 @@ I Got That is operated by Notio LLC.
 }
 
 /** The homepage as a response (shared by handler.fetch and the local-dev `/` route). */
-export function homeResponse(): Response {
-  return new Response(homePage(), {
+export function homeResponse(appOrigin = ''): Response {
+  return new Response(homePage(appOrigin), {
     headers: {
       'Content-Type': 'text/html; charset=UTF-8',
       'Cache-Control': 'public, max-age=300',

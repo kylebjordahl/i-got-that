@@ -170,7 +170,7 @@ describe('Sign in with Google — redirect flow', () => {
       { redirect: 'manual', headers: { cookie } },
     );
     expect(res.status).toBe(302);
-    expect(res.headers.get('location')).toContain('/app/#session=');
+    expect(res.headers.get('location')).toContain('/#session=');
     expect(res.headers.get('set-cookie')).toContain('igt_session=');
 
     const db = getDb(env.DB);
@@ -206,7 +206,7 @@ describe('Sign in with Google — redirect flow', () => {
       { redirect: 'manual', headers: { cookie } },
     );
     expect(res.status).toBe(302);
-    expect(res.headers.get('location')).toContain('/app/#connected=google');
+    expect(res.headers.get('location')).toContain('/#connected=google');
 
     const db = getDb(env.DB);
     const idRows = await db
@@ -246,7 +246,7 @@ describe('Sign in with Google — redirect flow', () => {
       redirect: 'manual',
       headers: { cookie },
     });
-    expect(res.headers.get('location')).toContain('/app/#connected=google');
+    expect(res.headers.get('location')).toContain('/#connected=google');
     const legacy = (
       await db.select().from(externalAccounts).where(eq(externalAccounts.id, legacyId))
     )[0]!;

@@ -7,6 +7,7 @@ import {
 } from '@igt/domain';
 import { Hono } from 'hono';
 import type { HonoEnv } from '../env.js';
+import { appLinkBase } from '../lib/hosts.js';
 import {
   authMiddleware,
   requireAdmin,
@@ -238,9 +239,10 @@ familyRoutes.post(
     // The token rides in the URL FRAGMENT, not a query param — fragments never
     // leave the browser (no Referer header, not logged server-side), unlike a
     // `?invite=` query string.
-    const url = c.env.PUBLIC_ORIGIN
-      ? `${c.env.PUBLIC_ORIGIN}/app/#invite=${invite.token}`
-      : null;
+    // On a request from an older app build (an alias host) the link stays on
+    // that host so the build still opens it — see lib/hosts.ts#appLinkBase.
+    const base = appLinkBase(c.env, c.req.url);
+    const url = base ? `${base}#invite=${invite.token}` : null;
     return c.json(
       { id: invite.id, token: invite.token, expiresAt: invite.expiresAt, url },
       201,
