@@ -174,7 +174,7 @@ function appleWebConfig(
   return {
     clientId: env.APPLE_WEB_CLIENT_ID,
     redirectUri: new URL(APPLE_CALLBACK_PATH, env.PUBLIC_ORIGIN).toString(),
-    appBase: new URL('/app/', env.PUBLIC_ORIGIN),
+    appBase: new URL('/', env.PUBLIC_ORIGIN),
     cookieSigningKey: env.COOKIE_SIGNING_KEY,
   };
 }
@@ -193,7 +193,7 @@ function googleWebConfig(
   if (!googleOAuthConfigured(env) || !env.PUBLIC_ORIGIN || !env.COOKIE_SIGNING_KEY) return null;
   return {
     redirectUri: new URL(GOOGLE_CALLBACK_PATH, env.PUBLIC_ORIGIN).toString(),
-    appBase: new URL('/app/', env.PUBLIC_ORIGIN),
+    appBase: new URL('/', env.PUBLIC_ORIGIN),
     cookieSigningKey: env.COOKIE_SIGNING_KEY,
   };
 }
@@ -321,8 +321,8 @@ authRoutes.get('/apple/start', async (c) => {
  * Web Sign in with Apple — step 2. Apple form-POSTs the identity token here. We
  * validate the `state` against the cookie, verify the token (audience + the
  * round-tripped `nonce`), issue a session, and hand it to the SPA via the URL
- * fragment (`/app/#session=…`) — fragments aren't sent to servers or logged.
- * Failures redirect to `/app/#auth_error=…` so the client can surface them.
+ * fragment (`/#session=…`) — fragments aren't sent to servers or logged.
+ * Failures redirect to `/#auth_error=…` so the client can surface them.
  */
 authRoutes.post('/apple/callback', async (c) => {
   const web = appleWebConfig(c.env);
@@ -331,7 +331,7 @@ authRoutes.post('/apple/callback', async (c) => {
     return c.json({ error: 'apple_web_not_configured' }, 501);
   }
   const back = (fragment: string) => {
-    // The SPA lives at `/app/` on PUBLIC_ORIGIN; hand it the result via fragment.
+    // The SPA is served at the root of PUBLIC_ORIGIN; hand it the result via fragment.
     const to = new URL(web.appBase);
     to.hash = fragment;
     return c.redirect(to.toString(), 302);
@@ -486,10 +486,10 @@ authRoutes.get('/google/start', async (c) => {
  * echoed `state`). We validate `state` against the cookie, exchange the code for
  * tokens (incl. an id_token identifying the user and a refresh token), find or
  * create the user, auto-connect their Google Calendar, issue a session, and hand
- * it to the SPA via the URL fragment (`/app/#session=…`). In link mode we thread
+ * it to the SPA via the URL fragment (`/#session=…`). In link mode we thread
  * the identity onto the signed-in user (best-effort — a calendar still connects
  * even if that Google login already belongs to someone else) and return
- * `#connected=google`. Failures redirect to `/app/#auth_error=…`.
+ * `#connected=google`. Failures redirect to `/#auth_error=…`.
  */
 authRoutes.get('/google/callback', async (c) => {
   const web = googleWebConfig(c.env);

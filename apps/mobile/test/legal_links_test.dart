@@ -4,8 +4,8 @@ import 'package:caretaker_app/util/legal_links.dart';
 void main() {
   test('legal pages live at the apex, not under the /api prefix', () {
     expect(
-      legalUrl('privacy', base: 'https://igt.kylebjordahl.com/api'),
-      'https://igt.kylebjordahl.com/legal/privacy',
+      legalUrl('privacy', base: 'https://app.igt.fyi/api'),
+      'https://app.igt.fyi/legal/privacy',
     );
     expect(legalUrl('terms', base: '/api'), '/legal/terms');
     expect(

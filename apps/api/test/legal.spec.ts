@@ -44,9 +44,20 @@ describe('legal pages', () => {
     expect((await call('/legal/constructor')).status).toBe(404);
   });
 
-  it('is served at the apex, not under /api, in the deployed single-origin layout', async () => {
+  it('is served at the site root, not under /api, in the deployed layout', async () => {
     const assets = { fetch: async () => new Response('app shell') } as unknown as Fetcher;
-    const res = await call('/legal/privacy', { ...env, ASSETS: assets });
+    const ctx = createExecutionContext();
+    const res = await handler.fetch(
+      new Request('https://www.igt.test/legal/privacy'),
+      {
+        ...env,
+        ASSETS: assets,
+        PUBLIC_ORIGIN: 'https://app.igt.test',
+        SITE_ORIGIN: 'https://www.igt.test',
+      } as typeof env,
+      ctx,
+    );
+    await waitOnExecutionContext(ctx);
     expect(res.status).toBe(200);
     expect(await res.text()).toContain('<h1>Privacy Policy</h1>');
   });

@@ -239,7 +239,7 @@ familyRoutes.post(
     // leave the browser (no Referer header, not logged server-side), unlike a
     // `?invite=` query string.
     const url = c.env.PUBLIC_ORIGIN
-      ? `${c.env.PUBLIC_ORIGIN}/app/#invite=${invite.token}`
+      ? `${c.env.PUBLIC_ORIGIN}/#invite=${invite.token}`
       : null;
     return c.json(
       { id: invite.id, token: invite.token, expiresAt: invite.expiresAt, url },

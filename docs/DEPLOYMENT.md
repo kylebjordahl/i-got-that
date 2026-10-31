@@ -155,7 +155,7 @@ echo "<another>"    | pnpm wrangler secret put KEK_V1 --env production
 ```
 
 Then confirm it took by opening
-<https://staging.igt.kylebjordahl.com/api/health> in a browser — expect
+<https://app.staging.igt.fyi/api/health> in a browser — expect
 `"secretsKek":"ok"`.
 
 A `wrangler secret` takes precedence over the same-named `vars` entry at
@@ -305,40 +305,48 @@ at it:
    distinct `KekVersionNotConfiguredError` (logged by
    `resolveAccountCredential`) rather than silently failing.
 
-### 7. Single-subdomain layout (one Worker serves API + web + redirect)
+### 7. Host layout (one Worker serves the app, the site, and the legacy host)
 
-Staging is configured to host everything on **one** subdomain
-(`staging.igt.kylebjordahl.com`), served by the API Worker:
+Each environment's one Worker serves several hostnames and picks what to serve
+from the request's host (`hostRole` in `apps/api/src/index.ts`):
 
-| Path | Serves |
-| --- | --- |
-| `/api/*` | the API (the Worker strips the `/api` prefix) |
-| `/app/*` | the Flutter **web client** (static assets, with SPA deep-link fallback) |
-| `/` | the public homepage (`lib/home.ts`) — what IGT does, links to `/app/` and the legal pages; Google's OAuth verification reviews it |
-| `/legal/privacy`, `/legal/terms` | the Privacy Policy / Terms of Service, rendered from `apps/api/legal/*.md` (public; the Google OAuth consent screen links them) |
-| anything else | redirect → `/app/` |
+| Host | Staging | Production | Serves |
+| --- | --- | --- | --- |
+| app (`PUBLIC_ORIGIN`) | `app.staging.igt.fyi` | `app.igt.fyi` | `/api/*` → the API (prefix stripped); `/.well-known/apple-app-site-association`; everything else → the Flutter **web client** at the root (SPA fallback). `/legal/*` and the old `/app/*` prefix 301 away. |
+| site (`SITE_ORIGIN`) | `www.staging.igt.fyi` | `www.igt.fyi` | `/` → the public homepage (`lib/home.ts`; Google's OAuth verification reviews it); `/legal/privacy`, `/legal/terms` → the Privacy Policy / Terms of Service from `apps/api/legal/*.md`. Anything else 301s to the app host. |
+| alias (any other routed host) | `staging.igt.kylebjordahl.com` | `igt.kylebjordahl.com`, `igt.fyi` | `/api/*` and the AASA, as before — **installed app builds before the domain move call this host's `/api`, so never remove its route**. `/` and `/legal/*` 301 to the site; everything else (incl. `/app/…`) 301s to the same path on the app host, so already-sent invite and sign-in links (`/app/#invite=…`) still land, with the fragment carried across by the browser. |
 
-This is wired in `apps/api/wrangler.jsonc` under `env.staging`:
-- a **custom-domain route** (`staging.igt.kylebjordahl.com`), and
-- an **`assets`** binding (`directory: ./public`, `binding: ASSETS`). CI runs
-  `flutter build web --base-href /app/ --dart-define=API_BASE_URL=/api` and
-  stages it into `apps/api/public/app/` before `wrangler deploy`, so the web
-  client calls the API on the **same origin** at `/api`.
+This is wired in `apps/api/wrangler.jsonc` per env:
+- **custom-domain routes** for every host above, and `PUBLIC_ORIGIN` /
+  `SITE_ORIGIN` naming the app and site hosts;
+- an **`assets`** binding (`directory: ./public`, `binding: ASSETS`,
+  `run_worker_first: true` — so the host routing sees every request; without it
+  `www.…/index.html` would serve the web app). CI runs
+  `flutter build web --base-href / --dart-define=API_BASE_URL=/api` and stages
+  it as `apps/api/public/` before `wrangler deploy`, so the web client calls
+  the API on the **same origin** at `/api`.
 
 The routing is gated on the `ASSETS` binding, so local `wrangler dev` and the
 tests (no binding) still serve the API directly at the root.
 
 **Prerequisites:**
-1. The parent zone (`kylebjordahl.com`, or a delegated `igt.kylebjordahl.com`)
-   must be on **Cloudflare** — `custom_domain: true` provisions the
-   `staging.igt.kylebjordahl.com` DNS record + TLS cert automatically.
-2. The API token needs **Zone · DNS · Edit** + **Zone · Workers Routes · Edit**
-   on that zone (in addition to the account scopes in §1).
-3. **Native (iOS) clients** aren't same-origin — build them with
-   `--dart-define=API_BASE_URL=https://staging.igt.kylebjordahl.com/api`.
+1. Both zones (`igt.fyi` and the legacy `kylebjordahl.com`) must be on
+   **Cloudflare** in this account — `custom_domain: true` provisions each
+   hostname's DNS record + TLS cert automatically (deeper names like
+   `app.staging.igt.fyi` included — the custom domain gets its own
+   certificate), and a deploy naming a host in a zone the account doesn't have
+   fails. Delete any existing DNS record for those hostnames first (a
+   registrar's parking CNAME, say): a custom domain can't be created over one.
+2. The API token needs **Zone · DNS · Edit**, **Zone · Workers Routes · Edit**
+   and **Zone · Zone WAF · Edit** on both zones (in addition to the account
+   scopes in §1).
+3. **Native clients** aren't same-origin — they're built with
+   `--dart-define=API_BASE_URL=https://app.igt.fyi/api` (staging:
+   `https://app.staging.igt.fyi/api`; see `deploy.yml`).
 
-Production mirrors this on `igt.kylebjordahl.com` (`routes` + `assets` blocks
-under `env.production`) — same prerequisites apply to that zone.
+Web sessions are a host-only cookie, so a browser that was signed in on the
+legacy host signs in once more on the app host. Native sessions are bearer
+tokens and don't care which host they're sent to.
 
 **Telling the two apart:** every client build (web and iOS) also gets
 `--dart-define=APP_ENV=staging|production`. Staging draws a small amber "BETA"
@@ -512,17 +520,20 @@ auth rejection would (`{"error":"too_many_requests"}`), not Cloudflare's
 default HTML block page.
 
 Unlike the D1/Queue resources above, this rule is **zone-scoped**, so it
-needs the zone backing your custom domain (§7) — set `cloudflare_zone_id` in
-your `*.tfvars` for a local apply (find it on the zone's Overview page in the
+needs the zones backing the custom domains (§7) — set `cloudflare_zone_id`
+(the legacy `kylebjordahl.com` zone) and `cloudflare_igt_fyi_zone_id` (the
+`igt.fyi` zone; its own ruleset, `rate_limiting_igt_fyi`) in your `*.tfvars`
+for a local apply (find it on the zone's Overview page in the
 dashboard) and make sure the API token has the **Zone · Zone WAF · Edit**
 permission from §1. If you haven't set up a custom domain yet, this resource
 has nothing to attach to — hold off on `terraform apply` for it until §7 is
 done.
 
-**CI needs this too, as a repo secret**: `deploy.yml` passes it to Terraform
-as `TF_VAR_cloudflare_zone_id: ${{ secrets.CLOUDFLARE_ZONE_ID }}`. Since
-staging and production share one parent zone (§7), a single repo-level
-`CLOUDFLARE_ZONE_ID` secret covers both — set it once (Settings → Secrets and
+**CI needs these too, as repo secrets**: `deploy.yml` passes them to Terraform
+as `TF_VAR_cloudflare_zone_id: ${{ secrets.CLOUDFLARE_ZONE_ID }}` and
+`TF_VAR_cloudflare_igt_fyi_zone_id: ${{ secrets.CLOUDFLARE_IGT_FYI_ZONE_ID }}`.
+Since staging and production share each zone (§7), one repo-level secret per
+zone covers both environments — set them once (Settings → Secrets and
 variables → Actions). The `cloudflare_zone_id` variable has no default, and
 the `terraform apply` step runs with `-input=false`, so a missing secret now
 fails the "Terraform apply" step immediately with a clear "no value for
@@ -818,7 +829,12 @@ binding is accepted before them.
    Terraform. Verification usually takes 5–15 minutes.
 3. **Check the senders** match that domain: `ORGANIZER_EMAIL` is
    `noreply.staging@igt.kylebjordahl.com` (staging) and
-   `noreply@igt.kylebjordahl.com` (production). `PUBLIC_ORIGIN` must be set too:
+   `noreply@igt.kylebjordahl.com` (production). These deliberately stayed on
+   the legacy domain through the move to `igt.fyi`: every invite already sent
+   names that address as ORGANIZER, and whether calendar clients still apply
+   updates and cancellations from a different organizer is untested. Move it
+   only after checking that on staging (an invite sent before the switch,
+   updated after) in Gmail, iCloud and Outlook. `PUBLIC_ORIGIN` must be set too:
    verification and unsubscribe links are built from it.
 4. **Deploy staging** and try it: add an email output for your own address,
    confirm the link, claim a task, and check the invite arrives with SPF/DKIM
@@ -861,9 +877,11 @@ blocks new confirmation requests to it. The page it lands on offers an undo.
 ## Verifying a deploy
 
 ```bash
-curl https://staging.igt.kylebjordahl.com/api/health   # → { ok: true, ... }
-curl -sI https://staging.igt.kylebjordahl.com/         # → 302 to /app/
-open https://staging.igt.kylebjordahl.com/app/         # the web client
+curl https://app.staging.igt.fyi/api/health             # → { ok: true, ... }
+open https://app.staging.igt.fyi/                       # the web client
+curl -sI https://www.staging.igt.fyi/                   # → 200, the homepage
+curl https://staging.igt.kylebjordahl.com/api/health    # legacy host: still the API
+curl -sI https://staging.igt.kylebjordahl.com/app/      # → 301 to app.staging.igt.fyi/
 cd apps/api && pnpm wrangler tail --env staging        # live logs
 ```
 

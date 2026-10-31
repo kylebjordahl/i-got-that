@@ -83,12 +83,15 @@ app.get('/health/db', async (c) => {
 });
 
 /**
- * Apple App Site Association — lets iOS associate this domain with the app so
- * invite links (`/app/#invite=…`) open the app via Universal Links instead of
- * Safari. Served at the apex `/.well-known/…` path (see handler.fetch), never
- * under `/api`. Empty APPLE_APP_ID_PREFIX ⇒ 404 (feature off); query strings
- * and fragments aren't matched by iOS, so `/app/*` covers the invite and the
- * app filters on `#invite=` itself.
+ * Apple App Site Association — lets iOS associate a domain with the app so
+ * invite and magic links (`<PUBLIC_ORIGIN>/#invite=…`) open the app via
+ * Universal Links instead of Safari. Served at the root `/.well-known/…` path
+ * (see handler.fetch), never under `/api`. Empty APPLE_APP_ID_PREFIX ⇒ 404
+ * (feature off). iOS matches paths only (not queries or fragments), and the app
+ * filters on the fragment itself. On the app host that means every path but the
+ * API (emailed unsubscribe / verify links must open in the browser) and the
+ * legal redirects. A legacy host keeps the old `/app/*` match, so links already
+ * sent from it still open the app in builds that list that domain.
  */
 app.get('/.well-known/apple-app-site-association', (c) => {
   const appIDs = (c.env.APPLE_APP_ID_PREFIX ?? '')
@@ -96,17 +99,21 @@ app.get('/.well-known/apple-app-site-association', (c) => {
     .map((s) => s.trim())
     .filter(Boolean);
   if (appIDs.length === 0) return c.json({ error: 'not_configured' }, 404);
-  return c.json({
-    applinks: {
-      details: [{ appIDs, components: [{ '/': '/app/*', comment: 'invite + web app' }] }],
-    },
-  });
+  const components =
+    hostRole(new URL(c.req.url).host, c.env) === 'alias'
+      ? [{ '/': '/app/*', comment: 'invite + web app (legacy host)' }]
+      : [
+          { '/': '/api/*', exclude: true, comment: 'API + emailed links' },
+          { '/': '/legal/*', exclude: true, comment: 'redirects to the site' },
+          { '/': '/*', comment: 'invite + web app' },
+        ];
+  return c.json({ applinks: { details: [{ appIDs, components }] } });
 });
 
 /**
  * Public homepage: what IGT does, with links to the app and the legal pages.
  * Google's OAuth verification reviews it, so it has to stay public. Deployed,
- * handler.fetch serves it at the apex `/` itself, so `/api/` (which strips to
+ * handler.fetch serves it at the site host's `/` itself, so `/api/` (which strips to
  * this same `/`) stays a JSON 404 instead of a second copy of the page; this
  * route is what local dev sees, where the API is served at the root.
  */
@@ -114,7 +121,7 @@ app.get('/', (c) => (c.env.ASSETS ? c.json({ error: 'not_found' }, 404) : homeRe
 
 /**
  * Public Privacy Policy / Terms of Service, rendered from `apps/api/legal/`
- * Markdown (see lib/legal.ts). Served at the apex `/legal/…` (see
+ * Markdown (see lib/legal.ts). Served at the site host's `/legal/…` (see
  * handler.fetch), not under `/api`: these URLs go on the Google OAuth consent
  * screen and the store listings, and need no session.
  */
@@ -184,16 +191,52 @@ async function serveWebApp(request: Request, assets: Fetcher): Promise<Response>
   const res = await assets.fetch(request);
   if (res.status !== 404) return res;
   const url = new URL(request.url);
-  url.pathname = '/app/index.html';
+  url.pathname = '/';
   return assets.fetch(new Request(url.toString(), request));
 }
 
 /**
- * Single-origin layout for deployed envs (when the ASSETS binding is present):
- *   /api/*  → the API (the prefix is stripped; routes live at the root)
- *   /app/*  → the Flutter web client (static assets, SPA fallback)
- *   /legal/* → the Privacy Policy / Terms of Service pages (the Hono app, unprefixed)
- *   /       → the public homepage (lib/home.ts), which links on to /app/
+ * Which of the deployment's faces a request's host gets:
+ *   app   — PUBLIC_ORIGIN: the API under /api, the web client at the root
+ *   site  — SITE_ORIGIN: the public homepage + legal pages
+ *   alias — any other host routed here (the legacy `igt.kylebjordahl.com`, the
+ *           `igt.fyi` apex): /api for app builds that still point at it, and a
+ *           301 to the app or the site for everything else
+ * With PUBLIC_ORIGIN unset (local dev / tests) every host is the app host.
+ */
+type HostRole = 'app' | 'site' | 'alias';
+
+function hostRole(host: string, env: Bindings): HostRole {
+  if (!env.PUBLIC_ORIGIN || host === new URL(env.PUBLIC_ORIGIN).host) return 'app';
+  if (env.SITE_ORIGIN && host === new URL(env.SITE_ORIGIN).host) return 'site';
+  return 'alias';
+}
+
+/** A permanent redirect to [path] on [origin], keeping the query string. */
+function moved(origin: string, path: string, search: string): Response {
+  const to = new URL(path, origin);
+  to.search = search;
+  return Response.redirect(to.toString(), 301);
+}
+
+/** `/app` and `/app/…` (the web client's old prefix) → the same path at the root. */
+function stripAppPrefix(path: string): string | null {
+  if (path === '/app' || path === '/app/') return '/';
+  return path.startsWith('/app/') ? path.slice('/app'.length) : null;
+}
+
+/** Hand `/api/…` to the API with the prefix stripped (its routes live at the root). */
+function callApi(request: Request, url: URL, env: Bindings, ctx: ExecutionContext) {
+  url.pathname = url.pathname.slice('/api'.length) || '/';
+  return app.fetch(new Request(url.toString(), request), env, ctx);
+}
+
+const isApiPath = (path: string) => path === '/api' || path.startsWith('/api/');
+
+/**
+ * Deployed envs (the ASSETS binding present) route on the request's host — see
+ * hostRole. The asset binding runs Worker-first (`run_worker_first` in
+ * wrangler.jsonc), so even a path that names a static file goes through here.
  * Without ASSETS (local dev / tests) the API is served directly at the root, so
  * the existing test paths and `wrangler dev` are unchanged.
  */
@@ -203,31 +246,42 @@ const handler = {
 
     const url = new URL(request.url);
     const path = url.pathname;
+    const appOrigin = env.PUBLIC_ORIGIN ?? url.origin;
+    const role = hostRole(url.host, env);
 
-    // iOS fetches the AASA at the apex, with no `/api` prefix — hand it to the
-    // Hono app unchanged so the well-known route resolves.
+    if (role === 'site') {
+      // The public homepage, at the site root only (see the `/` route).
+      if (path === '/' && (request.method === 'GET' || request.method === 'HEAD')) {
+        return homeResponse(appOrigin);
+      }
+      if (path.startsWith('/legal/')) return app.fetch(request, env, ctx);
+      // Anything else (an old `/app/…` link, `/api/…`) belongs on the app host.
+      return moved(appOrigin, stripAppPrefix(path) ?? path, url.search);
+    }
+
+    // iOS fetches the AASA at the root, with no `/api` prefix — hand it to the
+    // Hono app unchanged so the well-known route resolves (per host; see there).
     if (path === '/.well-known/apple-app-site-association') {
       return app.fetch(request, env, ctx);
     }
-    // The public homepage, at the apex only (see the `/` route).
-    if (path === '/' && (request.method === 'GET' || request.method === 'HEAD')) {
-      return homeResponse();
+    if (isApiPath(path)) return callApi(request, url, env, ctx);
+
+    const siteOrigin = env.SITE_ORIGIN;
+    if (role === 'alias') {
+      if (siteOrigin && (path === '/' || path.startsWith('/legal/'))) {
+        return moved(siteOrigin, path, url.search);
+      }
+      // The browser carries the fragment (`#invite=…`, `#magic=…`) across.
+      return moved(appOrigin, stripAppPrefix(path) ?? path, url.search);
     }
-    // The public legal pages live at the apex too.
+
+    // The app host.
     if (path.startsWith('/legal/')) {
-      return app.fetch(request, env, ctx);
+      return siteOrigin ? moved(siteOrigin, path, url.search) : app.fetch(request, env, ctx);
     }
-    if (path === '/api' || path.startsWith('/api/')) {
-      url.pathname = path.slice('/api'.length) || '/';
-      return app.fetch(new Request(url.toString(), request), env, ctx);
-    }
-    if (path.startsWith('/app/')) {
-      return serveWebApp(request, env.ASSETS);
-    }
-    // `/app` (no trailing slash) and anything else → the web app.
-    url.pathname = '/app/';
-    url.search = '';
-    return Response.redirect(url.toString(), 302);
+    const unprefixed = stripAppPrefix(path);
+    if (unprefixed) return moved(appOrigin, unprefixed, url.search);
+    return serveWebApp(request, env.ASSETS);
   },
   scheduled,
   queue: deliveryQueueConsumer,

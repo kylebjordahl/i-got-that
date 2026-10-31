@@ -8,12 +8,22 @@ export interface Bindings {
     ENVIRONMENT: string;
     /**
      * Public-facing origin this deployment is served on (scheme + host, no path),
-     * e.g. `https://staging.igt.kylebjordahl.com`. The single-origin layout serves
-     * the API under `/api` and the web client under `/app` here. Used to build
-     * absolute URLs the outside world sees — notably the Apple web Return URL.
-     * Unset (local dev / tests) ⇒ features that need an absolute public URL are off.
+     * e.g. `https://app.igt.fyi`. This is the app host: it serves the API under
+     * `/api` and the web client at the root. Used to build absolute URLs the
+     * outside world sees — notably the OAuth return URLs and emailed links.
+     * Unset (local dev / tests) ⇒ features that need an absolute public URL are
+     * off, and every host is treated as the app host (see index.ts#hostRole).
      */
     PUBLIC_ORIGIN?: string;
+    /**
+     * Origin of the public marketing site (scheme + host), e.g.
+     * `https://www.igt.fyi`: the homepage and the `/legal/*` pages. The same
+     * Worker serves it, routing on the request's host. Any other host routed to
+     * the Worker (the legacy `igt.kylebjordahl.com`, the `igt.fyi` apex) keeps
+     * serving `/api` for old app builds and redirects everything else here or to
+     * PUBLIC_ORIGIN. Unset ⇒ the app host serves the legal pages itself.
+     */
+    SITE_ORIGIN?: string;
     /**
      * The original, unversioned key-encryption key — base64 of 32 random bytes.
      * Superseded by `KEK_V<n>` below, and read now only as the **version-1
@@ -92,7 +102,7 @@ export interface Bindings {
      */
     DELIVERY_QUEUE?: Queue<DeliveryJob>;
     /**
-     * Static-assets binding serving the Flutter web client under /app. Present
+     * Static-assets binding serving the Flutter web client at the app host's root. Present
      * only in deployed envs that host the web client on the same origin.
      */
     ASSETS?: Fetcher;

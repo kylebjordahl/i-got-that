@@ -29,7 +29,7 @@ enum PushAuthorization {
 /// `ios/Runner/AppDelegate.swift` (mirroring the `igt/geocoding` channel).
 ///
 /// Every method is a no-op returning a "not supported" answer off iOS: the same
-/// codebase builds the web client the Worker serves at `/app` and the Android
+/// codebase builds the web client the Worker serves at the app host's root and the Android
 /// app, and on neither is there a channel on the other end.
 class PushService {
   const PushService();

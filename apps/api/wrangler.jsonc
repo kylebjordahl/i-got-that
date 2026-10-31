@@ -143,7 +143,11 @@
             // to ship an env with neither. See docs/DEPLOYMENT.md § 6.
             "vars": {
                 "ENVIRONMENT": "staging",
-                "PUBLIC_ORIGIN": "https://staging.igt.kylebjordahl.com",
+                // The app host (API at /api, web client at /) and the marketing site
+                // (homepage + /legal). Any other route below is a legacy alias — see
+                // apps/api/src/index.ts#hostRole.
+                "PUBLIC_ORIGIN": "https://app.staging.igt.fyi",
+                "SITE_ORIGIN": "https://www.staging.igt.fyi",
                 "ORGANIZER_EMAIL": "noreply.staging@igt.kylebjordahl.com",
                 // Allowed Apple `aud`s: the native iOS bundle id + the web Services ID.
                 "APPLE_CLIENT_IDS": "com.kylebjordahl.igt.staging,com.kylebjordahl.igt.web.staging",
@@ -165,21 +169,25 @@
                 // telemetry); without them /ops/requests reports "not configured".
                 "OPS_ANALYTICS_DATASET": "igt_ops_staging",
             },
-            // The whole subdomain routes to this Worker (custom_domain provisions DNS
-            // + cert; the parent zone must be on Cloudflare). The Worker serves the
-            // API at /api, the web client at /app, and redirects / → /app.
+            // Each host routes to this Worker (custom_domain provisions DNS + cert;
+            // the zone must be on Cloudflare). The Worker picks what to serve from
+            // the host: PUBLIC_ORIGIN is the app, SITE_ORIGIN the site. The legacy
+            // host stays forever: installed app builds call its /api, and links
+            // already sent point at it (everything but /api 301s to the new hosts).
             "routes": [
-                {
-                    "pattern": "staging.igt.kylebjordahl.com",
-                    "custom_domain": true,
-                },
+                { "pattern": "app.staging.igt.fyi", "custom_domain": true },
+                { "pattern": "www.staging.igt.fyi", "custom_domain": true },
+                { "pattern": "staging.igt.kylebjordahl.com", "custom_domain": true },
             ],
-            // Flutter web build (CI runs `flutter build web --base-href /app/` into
-            // ./public/app). The Worker serves it via the ASSETS binding under /app.
+            // Flutter web build (CI runs `flutter build web --base-href /` into
+            // ./public). The Worker serves it via the ASSETS binding at the app
+            // host's root. Worker-first, so the host routing in index.ts sees every
+            // request — otherwise www.…/index.html would serve the web app.
             "assets": {
                 "directory": "./public",
                 "binding": "ASSETS",
                 "not_found_handling": "none",
+                "run_worker_first": true,
             },
             "d1_databases": [
                 {
@@ -224,8 +232,11 @@
             // refuses to ship an env with neither. See docs/DEPLOYMENT.md § 6.
             "vars": {
                 "ENVIRONMENT": "production",
-                // Set to the production custom domain once provisioned (Terraform).
-                "PUBLIC_ORIGIN": "https://igt.kylebjordahl.com",
+                // The app host (API at /api, web client at /) and the marketing site
+                // (homepage + /legal). Any other route below is a legacy alias — see
+                // apps/api/src/index.ts#hostRole.
+                "PUBLIC_ORIGIN": "https://app.igt.fyi",
+                "SITE_ORIGIN": "https://www.igt.fyi",
                 "ORGANIZER_EMAIL": "noreply@igt.kylebjordahl.com",
                 // Allowed Apple `aud`s: the native iOS bundle id + the web Services ID.
                 "APPLE_CLIENT_IDS": "com.kylebjordahl.igt,com.kylebjordahl.igt.web",
@@ -247,20 +258,24 @@
                 // telemetry); without them /ops/requests reports "not configured".
                 "OPS_ANALYTICS_DATASET": "igt_ops_prod",
             },
-            // Single-origin layout, mirroring staging (see §7 of docs/DEPLOYMENT.md):
-            // custom_domain provisions DNS + cert on the parent Cloudflare zone.
+            // Mirrors staging (see §7 of docs/DEPLOYMENT.md), plus the igt.fyi apex
+            // as an alias that 301s to www. The legacy host stays forever (old app
+            // builds call its /api).
             "routes": [
-                {
-                    "pattern": "igt.kylebjordahl.com",
-                    "custom_domain": true,
-                },
+                { "pattern": "app.igt.fyi", "custom_domain": true },
+                { "pattern": "www.igt.fyi", "custom_domain": true },
+                { "pattern": "igt.fyi", "custom_domain": true },
+                { "pattern": "igt.kylebjordahl.com", "custom_domain": true },
             ],
-            // Flutter web build (CI runs `flutter build web --base-href /app/` into
-            // ./public/app). The Worker serves it via the ASSETS binding under /app.
+            // Flutter web build (CI runs `flutter build web --base-href /` into
+            // ./public). The Worker serves it via the ASSETS binding at the app
+            // host's root. Worker-first, so the host routing in index.ts sees every
+            // request — otherwise www.…/index.html would serve the web app.
             "assets": {
                 "directory": "./public",
                 "binding": "ASSETS",
                 "not_found_handling": "none",
+                "run_worker_first": true,
             },
             "d1_databases": [
                 {
