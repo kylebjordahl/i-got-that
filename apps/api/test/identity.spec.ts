@@ -1031,7 +1031,7 @@ describe('member-claim invites', () => {
     const uncleId = ((await memberRes.json()) as { member: { id: string } }).member.id;
 
     // Same DB (env.DB), but issue the invite through an env that has a public
-    // origin set — the response should carry the composed `/app/#invite=` link
+    // origin set — the response should carry the composed `/#invite=` link
     // (the token rides in the URL fragment so it never hits Referer/server logs).
     const ctx = createExecutionContext();
     const res = await app.fetch(
@@ -1042,7 +1042,7 @@ describe('member-claim invites', () => {
     await waitOnExecutionContext(ctx);
     expect(res.status).toBe(201);
     const { token, url } = (await res.json()) as { token: string; url: string };
-    expect(url).toBe(`https://staging.igt.example/app/#invite=${token}`);
+    expect(url).toBe(`https://staging.igt.example/#invite=${token}`);
   });
 
   it('stores only a token hash (never the raw token) and enforces the 48h TTL', async () => {
@@ -1210,7 +1210,7 @@ describe('apple-app-site-association (iOS Universal Links)', () => {
     expect(res.status).toBe(404);
   });
 
-  it('serves the configured appIDs matching /app/*', async () => {
+  it('serves the configured appIDs matching every app-host path but the API', async () => {
     const configured = {
       ...env,
       APPLE_APP_ID_PREFIX: 'ABCDE12345.com.kylebjordahl.igt, ABCDE12345.com.kylebjordahl.igt.staging',
@@ -1222,17 +1222,34 @@ describe('apple-app-site-association (iOS Universal Links)', () => {
         details: [
           {
             appIDs: ['ABCDE12345.com.kylebjordahl.igt', 'ABCDE12345.com.kylebjordahl.igt.staging'],
-            components: [{ '/': '/app/*', comment: 'invite + web app' }],
+            components: [
+              { '/': '/api/*', exclude: true, comment: 'API + emailed links' },
+              { '/': '/legal/*', exclude: true, comment: 'redirects to the site' },
+              { '/': '/*', comment: 'invite + web app' },
+            ],
           },
         ],
       },
     });
   });
 
-  it('reaches the app (not the /app redirect) at the apex when ASSETS is bound', async () => {
+  it('keeps the old /app/* match on a legacy host', async () => {
+    const legacy = {
+      ...env,
+      APPLE_APP_ID_PREFIX: 'ABCDE12345.com.kylebjordahl.igt',
+      PUBLIC_ORIGIN: 'https://app.igt.example',
+    };
+    const res = await fetchWith('/.well-known/apple-app-site-association', legacy);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { applinks: { details: { components: unknown }[] } };
+    expect(body.applinks.details[0]!.components).toEqual([
+      { '/': '/app/*', comment: 'invite + web app (legacy host)' },
+    ]);
+  });
+
+  it('reaches the app (not the web client) at the root when ASSETS is bound', async () => {
     // With an ASSETS binding present the single-origin handler kicks in; the
-    // apex .well-known path must route to the API, not the bare-domain → /app/
-    // redirect. A stub ASSETS Fetcher stands in for the deployed web client.
+    // root .well-known path must route to the API, not the web client. A stub ASSETS Fetcher stands in for the deployed web client.
     const singleOrigin = {
       ...env,
       APPLE_APP_ID_PREFIX: 'ABCDE12345.com.kylebjordahl.igt',
@@ -1245,7 +1262,7 @@ describe('apple-app-site-association (iOS Universal Links)', () => {
       ctx,
     );
     await waitOnExecutionContext(ctx);
-    expect(res.status).toBe(200); // 302 would mean it fell through to the redirect
+    expect(res.status).toBe(200); // 404 would mean it fell through to the assets stub
     expect((await res.json()) as { applinks: unknown }).toHaveProperty('applinks');
   });
 });

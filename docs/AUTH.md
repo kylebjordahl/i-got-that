@@ -212,7 +212,7 @@ Web client below):
    for the web redirect flow *and* to redeem native's `serverAuthCode` (see
    below):
    - Add the **Authorized redirect URI** `<PUBLIC_ORIGIN>/api/auth/google/callback`
-     (e.g. `https://staging.igt.kylebjordahl.com/api/auth/google/callback`).
+     (e.g. `https://app.staging.igt.fyi/api/auth/google/callback`).
 2. **iOS** client, one per flavor (native login needs its own client — a Web
    client can't be used as the native `aud`):
    - `Create Credentials → OAuth client ID → iOS`, Bundle ID
@@ -227,11 +227,15 @@ Web client below):
    client types — no per-client scope config). If the consent screen is still
    in "Testing" publish status, add your test Google accounts as test users.
 4. On the consent screen's **branding** page, set the app links to the pages
-   this Worker serves publicly (no session), and list the apex domain
-   (`kylebjordahl.com`) as an authorized domain:
-   - Application home page: `<PUBLIC_ORIGIN>/` (`lib/home.ts`)
-   - Privacy policy: `<PUBLIC_ORIGIN>/legal/privacy`
-   - Terms of service: `<PUBLIC_ORIGIN>/legal/terms`
+   this Worker serves publicly (no session) on the site host, and list the
+   apex domain (`igt.fyi`, verified in Google Search Console) as an authorized
+   domain:
+   - Application home page: `<SITE_ORIGIN>/` (`lib/home.ts`)
+   - Privacy policy: `<SITE_ORIGIN>/legal/privacy`
+   - Terms of service: `<SITE_ORIGIN>/legal/terms`
+
+   Keep `kylebjordahl.com` listed and its redirect URIs registered while
+   anything could still start a flow there.
 
    Their text is `apps/api/legal/*.md` (see `apps/api/legal/README.md`).
    Publishing the app out of "Testing" sends it through Google's verification,
@@ -242,9 +246,9 @@ Web client below):
 cd apps/api
 #   GOOGLE_OAUTH_CLIENT_ID  = <the Web client id>   (var in wrangler.jsonc per env)
 pnpm wrangler secret put GOOGLE_OAUTH_CLIENT_SECRET --env staging
-#   PUBLIC_ORIGIN           = https://staging.igt.kylebjordahl.com
+#   PUBLIC_ORIGIN           = https://app.staging.igt.fyi
 #   → derived redirect URI to register in the Cloud Console:
-#     https://staging.igt.kylebjordahl.com/api/auth/google/callback
+#     https://app.staging.igt.fyi/api/auth/google/callback
 #   GOOGLE_NATIVE_CLIENT_IDS = <this env's iOS client id AND its Web client id,
 #     comma-separated>  (var in wrangler.jsonc per env — see the native app ids
 #     table below). Both, because the two platforms mint against different
@@ -329,7 +333,7 @@ The **Return URL** — the value you asked about — is this API's own callback:
 <PUBLIC_ORIGIN>/api/auth/apple/callback
 ```
 
-(e.g. `https://staging.igt.kylebjordahl.com/api/auth/apple/callback`). Register
+(e.g. `https://app.staging.igt.fyi/api/auth/apple/callback`). Register
 this exact URL on the web **Services ID**. It's derived from the `PUBLIC_ORIGIN`
 env var (below) — you don't configure the Return URL separately. The flow:
 
@@ -346,10 +350,10 @@ env var (below) — you don't configure the Return URL separately. The flow:
    cookie rides along on this cross-site POST.
 3. The callback checks `state` against the cookie (login-CSRF guard), verifies the
    `id_token` (incl. the round-tripped `nonce`), issues a session, and
-   302-redirects the browser to **`/app/#session=<token>`**. The token is in the
+   302-redirects the browser to **`/#session=<token>`** on `PUBLIC_ORIGIN`. The token is in the
    URL **fragment** (never sent to a server / logged); the Flutter SPA reads it on
    load (`lib/util/web_auth.dart`), stores it, and strips the fragment.
-   Failures redirect to `/app/#auth_error=<code>` instead.
+   Failures redirect to `/#auth_error=<code>` instead.
 
 The Return URL isn't its own config value — it's derived from **`PUBLIC_ORIGIN`**
 (the public scheme+host this deployment is served on) as
@@ -377,10 +381,10 @@ cd apps/api
 echo "com.yourco.caretaker,com.yourco.caretaker.web" \
   | pnpm wrangler secret put APPLE_CLIENT_IDS --env staging
 # Web redirect flow (edit these in wrangler.jsonc per env):
-#   PUBLIC_ORIGIN       = https://staging.igt.kylebjordahl.com
+#   PUBLIC_ORIGIN       = https://app.staging.igt.fyi
 #   APPLE_WEB_CLIENT_ID = com.yourco.caretaker.web   # must also be in APPLE_CLIENT_IDS
 #   → derived Return URL to register at Apple:
-#     https://staging.igt.kylebjordahl.com/api/auth/apple/callback
+#     https://app.staging.igt.fyi/api/auth/apple/callback
 ```
 
 **Flutter client (not yet wired):**
@@ -541,7 +545,11 @@ uses a small server-side bounce instead of a manual copy/paste:
 - **Google Cloud Console**: add `<PUBLIC_ORIGIN>/api/auth/google/native-callback`
   as an additional **Authorized redirect URI** on the Web client, for both
   staging and production (alongside the Sign-in-with-Google callback already
-  registered there).
+  registered there). The app builds this URI from its compiled-in
+  `API_BASE_URL`, so builds from before the move to `igt.fyi` still send
+  `https://igt.kylebjordahl.com/api/auth/google/native-callback` (staging:
+  `https://staging.igt.kylebjordahl.com/…`). Keep those registered, next to the
+  `app.igt.fyi` ones, for as long as such builds are in use.
 - **This API**: set `GOOGLE_NATIVE_OAUTH_CALLBACK_SCHEME` per env (a plain var
   in `wrangler.jsonc`) to the custom scheme registered in that flavor's
   `Info.plist`/xcconfig and Android manifest (see below). Unset ⇒
@@ -633,7 +641,7 @@ The iOS app declares the domains in `ios/Runner/Runner.entitlements`
 
 1. Set `APPLE_APP_ID_PREFIX` per env (your 10-char Apple **Team ID** +
    bundle id). Verify it's live:
-   `curl https://staging.igt.kylebjordahl.com/.well-known/apple-app-site-association`.
+   `curl https://app.staging.igt.fyi/.well-known/apple-app-site-association`.
 2. Enable the **Associated Domains** capability on each App ID in the Apple
    Developer portal, and regenerate provisioning profiles so the entitlement
    ships in the build.

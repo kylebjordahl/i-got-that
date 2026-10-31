@@ -46,7 +46,7 @@ export class DevMailer implements Mailer {
  * `#magic=` signs in (or, opened while signed in, attaches the address);
  * `#link-email=` only attaches, and the API refuses it for sign-in. The app
  * consumes either and strips it. iOS opens the same URL in the app
- * (Universal Links cover `/app/*`).
+ * (Universal Links cover the app host).
  */
 export function magicLinkUrl(
   publicOrigin: string,
@@ -54,7 +54,7 @@ export function magicLinkUrl(
   purpose: MagicLinkPurpose = 'sign_in',
 ): string {
   const key = purpose === 'link' ? 'link-email' : 'magic';
-  return `${publicOrigin.replace(/\/$/, '')}/app/#${key}=${token}`;
+  return `${publicOrigin.replace(/\/$/, '')}/#${key}=${token}`;
 }
 
 export class OutboxMailer implements Mailer {
