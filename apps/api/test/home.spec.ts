@@ -119,6 +119,16 @@ describe('host routing', () => {
     }
   });
 
+  it('sends /legal itself to the site homepage from every host, never the web app', async () => {
+    for (const host of ['https://app.igt.test', 'https://www.igt.test', 'https://igt.kylebjordahl.test']) {
+      for (const path of ['/legal', '/legal/', '/legal?x=1']) {
+        const res = await call(`${host}${path}`);
+        expect(res.status).toBe(301);
+        expect(res.headers.get('location')).toBe('https://www.igt.test/');
+      }
+    }
+  });
+
   it('never redirects off our hosts, whatever the path', async () => {
     for (const url of [
       'https://igt.kylebjordahl.test//evil.com/x',

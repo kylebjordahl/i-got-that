@@ -240,6 +240,12 @@ const handler = {
     const appOrigin = env.PUBLIC_ORIGIN ?? url.origin;
     const role = hostRole(url.host, env);
 
+    // `/legal` itself has no page: send it to the site's homepage, which links
+    // to both documents, on every host — never to the web app.
+    if (path === '/legal' || path === '/legal/') {
+      return env.SITE_ORIGIN ? moved(env.SITE_ORIGIN, '/', '') : app.fetch(request, env, ctx);
+    }
+
     if (role === 'site') {
       // The public homepage, at the site root only (see the `/` route).
       if (path === '/' && (request.method === 'GET' || request.method === 'HEAD')) {
