@@ -22,6 +22,7 @@ import {
   revokeGoogleToken,
 } from '../lib/google-oauth.js';
 import { emailEnabled } from '../lib/email.js';
+import { appLinkBase } from '../lib/hosts.js';
 import { getMailer } from '../lib/mailer.js';
 import { clearSessionCookie, sessionToken, setSessionCookie } from '../lib/session-cookie.js';
 import { authMiddleware } from '../middleware/auth.js';
@@ -91,7 +92,7 @@ authRoutes.post('/magic-link/request', async (c) => {
     }
     throw err;
   }
-  await getMailer(c.env).sendMagicLink({
+  await getMailer(c.env, appLinkBase(c.env, c.req.url)).sendMagicLink({
     to: parsed.data.email,
     token: rawToken,
     purpose: parsed.data.purpose,

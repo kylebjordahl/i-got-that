@@ -1033,16 +1033,23 @@ describe('member-claim invites', () => {
     // Same DB (env.DB), but issue the invite through an env that has a public
     // origin set — the response should carry the composed `/#invite=` link
     // (the token rides in the URL fragment so it never hits Referer/server logs).
-    const ctx = createExecutionContext();
-    const res = await app.fetch(
-      new Request(`https://api.test/families/${familyId}/members/${uncleId}/invite`, authed(alice.token)),
-      { ...env, PUBLIC_ORIGIN: 'https://staging.igt.example' },
-      ctx,
-    );
-    await waitOnExecutionContext(ctx);
-    expect(res.status).toBe(201);
-    const { token, url } = (await res.json()) as { token: string; url: string };
-    expect(url).toBe(`https://staging.igt.example/#invite=${token}`);
+    const issue = async (host: string) => {
+      const ctx = createExecutionContext();
+      const res = await app.fetch(
+        new Request(`${host}/families/${familyId}/members/${uncleId}/invite`, authed(alice.token)),
+        { ...env, PUBLIC_ORIGIN: 'https://staging.igt.example' },
+        ctx,
+      );
+      await waitOnExecutionContext(ctx);
+      expect(res.status).toBe(201);
+      return (await res.json()) as { token: string; url: string };
+    };
+    const onApp = await issue('https://staging.igt.example');
+    expect(onApp.url).toBe(`https://staging.igt.example/#invite=${onApp.token}`);
+    // From an older app build (a legacy alias host): stay on that host's
+    // /app/, the only path that build claims for Universal Links.
+    const onLegacy = await issue('https://staging.igt.legacy.example');
+    expect(onLegacy.url).toBe(`https://staging.igt.legacy.example/app/#invite=${onLegacy.token}`);
   });
 
   it('stores only a token hash (never the raw token) and enforces the 48h TTL', async () => {
@@ -1223,6 +1230,7 @@ describe('apple-app-site-association (iOS Universal Links)', () => {
           {
             appIDs: ['ABCDE12345.com.kylebjordahl.igt', 'ABCDE12345.com.kylebjordahl.igt.staging'],
             components: [
+              { '/': '/api', exclude: true, comment: 'API + emailed links' },
               { '/': '/api/*', exclude: true, comment: 'API + emailed links' },
               { '/': '/legal/*', exclude: true, comment: 'redirects to the site' },
               { '/': '/*', comment: 'invite + web app' },

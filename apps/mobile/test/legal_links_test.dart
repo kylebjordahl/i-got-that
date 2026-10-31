@@ -2,7 +2,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:caretaker_app/util/legal_links.dart';
 
 void main() {
-  test('legal pages live at the apex, not under the /api prefix', () {
+  test('legal pages live at the root, not under the /api prefix', () {
     expect(
       legalUrl('privacy', base: 'https://app.igt.fyi/api'),
       'https://app.igt.fyi/legal/privacy',

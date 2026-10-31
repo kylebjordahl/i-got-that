@@ -3,6 +3,7 @@ import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import type { Bindings, HonoEnv } from './env.js';
 import { homeResponse } from './lib/home.js';
+import { hostRole } from './lib/hosts.js';
 import { isLegalDoc, legalPage } from './lib/legal.js';
 import { kekStatus, kekUsable } from './lib/secrets.js';
 import { authMiddleware } from './middleware/auth.js';
@@ -103,6 +104,7 @@ app.get('/.well-known/apple-app-site-association', (c) => {
     hostRole(new URL(c.req.url).host, c.env) === 'alias'
       ? [{ '/': '/app/*', comment: 'invite + web app (legacy host)' }]
       : [
+          { '/': '/api', exclude: true, comment: 'API + emailed links' },
           { '/': '/api/*', exclude: true, comment: 'API + emailed links' },
           { '/': '/legal/*', exclude: true, comment: 'redirects to the site' },
           { '/': '/*', comment: 'invite + web app' },
@@ -196,27 +198,15 @@ async function serveWebApp(request: Request, assets: Fetcher): Promise<Response>
 }
 
 /**
- * Which of the deployment's faces a request's host gets:
- *   app   — PUBLIC_ORIGIN: the API under /api, the web client at the root
- *   site  — SITE_ORIGIN: the public homepage + legal pages
- *   alias — any other host routed here (the legacy `igt.kylebjordahl.com`, the
- *           `igt.fyi` apex): /api for app builds that still point at it, and a
- *           301 to the app or the site for everything else
- * With PUBLIC_ORIGIN unset (local dev / tests) every host is the app host.
+ * A redirect (permanent unless [status] says otherwise) to [path] on [origin],
+ * keeping the query string. The path is set on the origin, never resolved
+ * against it: `new URL('//evil.com', origin)` would leave our host.
  */
-type HostRole = 'app' | 'site' | 'alias';
-
-function hostRole(host: string, env: Bindings): HostRole {
-  if (!env.PUBLIC_ORIGIN || host === new URL(env.PUBLIC_ORIGIN).host) return 'app';
-  if (env.SITE_ORIGIN && host === new URL(env.SITE_ORIGIN).host) return 'site';
-  return 'alias';
-}
-
-/** A permanent redirect to [path] on [origin], keeping the query string. */
-function moved(origin: string, path: string, search: string): Response {
-  const to = new URL(path, origin);
+function moved(origin: string, path: string, search: string, status = 301): Response {
+  const to = new URL(origin);
+  to.pathname = path;
   to.search = search;
-  return Response.redirect(to.toString(), 301);
+  return Response.redirect(to.toString(), status);
 }
 
 /** `/app` and `/app/…` (the web client's old prefix) → the same path at the root. */
@@ -232,6 +222,7 @@ function callApi(request: Request, url: URL, env: Bindings, ctx: ExecutionContex
 }
 
 const isApiPath = (path: string) => path === '/api' || path.startsWith('/api/');
+const WEB_AUTH_START = /^\/api\/auth\/(apple|google)\/start$/;
 
 /**
  * Deployed envs (the ASSETS binding present) route on the request's host — see
@@ -263,6 +254,12 @@ const handler = {
     // Hono app unchanged so the well-known route resolves (per host; see there).
     if (path === '/.well-known/apple-app-site-association') {
       return app.fetch(request, env, ctx);
+    }
+    // A web sign-in started on an alias host (a stale tab) would set its
+    // host-only state cookie there, then come back to PUBLIC_ORIGIN without
+    // it. Start it on the app host instead.
+    if (role === 'alias' && request.method === 'GET' && WEB_AUTH_START.test(path)) {
+      return moved(appOrigin, path, url.search, 302);
     }
     if (isApiPath(path)) return callApi(request, url, env, ctx);
 

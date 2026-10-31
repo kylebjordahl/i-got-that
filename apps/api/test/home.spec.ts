@@ -5,6 +5,7 @@ import {
 } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 import handler from '../src/index.js';
+import { appLinkBase } from '../src/lib/hosts.js';
 
 /** Stands in for the deployed web client: echoes the asset path it was asked for. */
 const assets = {
@@ -118,6 +119,20 @@ describe('host routing', () => {
     }
   });
 
+  it('never redirects off our hosts, whatever the path', async () => {
+    for (const url of [
+      'https://igt.kylebjordahl.test//evil.com/x',
+      'https://igt.kylebjordahl.test/app//evil.com',
+      'https://www.igt.test//evil.com',
+      'https://app.igt.test/app//evil.com',
+      'https://app.igt.test/legal//evil.com',
+    ]) {
+      const res = await call(url);
+      expect(res.status).toBe(301);
+      expect(new URL(res.headers.get('location')!).host).toMatch(/^(app|www)\.igt\.test$/);
+    }
+  });
+
   describe('a legacy host', () => {
     const legacy = 'https://igt.kylebjordahl.test';
 
@@ -125,6 +140,12 @@ describe('host routing', () => {
       const res = await call(`${legacy}/api/health`);
       expect(res.status).toBe(200);
       expect(await res.json()).toMatchObject({ service: 'igt-api' });
+    });
+
+    it('starts a web sign-in on the app host, where its callback lands', async () => {
+      const res = await call(`${legacy}/api/auth/google/start?link=1`);
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location')).toBe('https://app.igt.test/api/auth/google/start?link=1');
     });
 
     it('moves the homepage and legal pages to the site', async () => {
@@ -147,5 +168,25 @@ describe('host routing', () => {
         expect(res.headers.get('location')).toBe(`https://app.igt.test${to}`);
       }
     });
+  });
+});
+
+describe('appLinkBase', () => {
+  const hosts = { PUBLIC_ORIGIN: 'https://app.igt.test', SITE_ORIGIN: 'https://www.igt.test' };
+
+  it('points links at the web client on the app host', () => {
+    expect(appLinkBase(hosts, 'https://app.igt.test/auth/magic-link/request')).toBe(
+      'https://app.igt.test/',
+    );
+  });
+
+  it("keeps a legacy host's /app/ for requests from older app builds", () => {
+    expect(appLinkBase(hosts, 'https://igt.kylebjordahl.test/auth/magic-link/request')).toBe(
+      'https://igt.kylebjordahl.test/app/',
+    );
+  });
+
+  it('is null without a public origin', () => {
+    expect(appLinkBase({}, 'https://api.test/x')).toBeNull();
   });
 });
