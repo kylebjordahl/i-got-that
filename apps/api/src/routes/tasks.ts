@@ -4,12 +4,14 @@ import {
   calendarEvents,
   conflicts,
   eq,
+  familyMemberFeeds,
   familyMembers,
   feeds,
   getDb,
   gte,
   inArray,
   isNull,
+  linkDayOverrides,
   linkRules,
   lt,
   pendingDecisions,
@@ -22,6 +24,7 @@ import {
   ConvertTaskInput,
   ResolveConflictInput,
   ResolvePendingDecisionInput,
+  SetBaselineDayHoursInput,
   SetEventTravelTimeInput,
   SetTaskDurationInput,
   UnassignTaskInput,
@@ -29,11 +32,15 @@ import {
 import {
   estimateTravelMinutes,
   eventLocalDay,
+  localDay,
+  parseBaselineKey,
   ruleMatches,
   transitionWindow,
+  utcDayString,
+  wallTimeOf,
   wallTimeToUtc,
 } from '@igt/classification';
-import { Hono } from 'hono';
+import { type Context, Hono } from 'hono';
 import type { HonoEnv } from '../env.js';
 import { requireFamilyMember } from '../middleware/auth.js';
 import { ownersOf, removeClaimEvent, syncClaimEvents } from '../services/claim.js';
@@ -41,7 +48,7 @@ import { hydrateConflicts, scheduleStamp } from '../services/conflicts.js';
 import { enqueueReconcile, getProductionRegistry, syncFamilyMirror } from '../services/mirror.js';
 import { type PipelineContext, resynthesizeFeed, runPipeline } from '../services/pipeline.js';
 import { buildKekKeySet } from '../lib/secrets.js';
-import { hashCalendarEvent } from '../services/synthesis.js';
+import { hashCalendarEvent, synthesisWindow } from '../services/synthesis.js';
 import { buildMemberTasks, eventsSkippedByTaskRules } from '../services/task-gen.js';
 import { ownerRowsFor, setTaskOwners, withOwners } from '../services/task-owners.js';
 
@@ -935,6 +942,7 @@ taskRoutes.get('/calendar-events', async (c) => {
     .orderBy(asc(calendarEvents.dtstart));
 
   const skipped = await eventsSkippedByTaskRules(db, rows);
+  const baselineDays = await baselineDaysFor(db, familyId, rows);
 
   // Why an event can't carry claimable tasks, so a client showing one with none
   // can say which of these it is rather than just "nothing to claim". Null ⇒ it
@@ -948,9 +956,75 @@ taskRoutes.get('/calendar-events', async (c) => {
         generatesFamilyTasks,
         skippedByRule: skipped.has(e.id),
       }),
+      baselineDay: baselineDays.get(e.id) ?? null,
     })),
   });
 });
+
+/**
+ * The earliest baseline day a person can still change in `tz`: one synthesis
+ * still shapes (it walks days from the window's start date) that hasn't
+ * already passed where the school is — east of UTC the local date runs ahead
+ * of the window's, so its start date can be yesterday there.
+ */
+function firstAdjustableDay(tz: string): string {
+  const windowDay = utcDayString(synthesisWindow().start.getTime());
+  const localToday = utcDayString(localDay(new Date(), tz).getTime());
+  return localToday > windowDay ? localToday : windowDay;
+}
+
+/**
+ * What a client needs to offer "change this day's hours" on the baseline days
+ * among `rows`, by event id: the day's date, its hours as they stand (wall
+ * clock in the feed's timezone — what `PUT .../day-hours` takes back, so a
+ * device in another zone still edits the school's own times), and whether
+ * they're a one-off. Only an unsplit `bl:` day that hasn't passed qualifies:
+ * `rows` never holds a masked day, and the `cf:` segments cut from one get
+ * nothing, since changing a split day would reopen its conflict.
+ */
+async function baselineDaysFor(
+  db: ReturnType<typeof getDb>,
+  familyId: string,
+  rows: { id: string; synthKey: string; dtstart: Date; dtend: Date | null }[],
+): Promise<Map<string, { date: string; dayStart: string; dayEnd: string; adjusted: boolean }>> {
+  const out = new Map<string, { date: string; dayStart: string; dayEnd: string; adjusted: boolean }>();
+  const days = rows.flatMap((row) => {
+    const day = parseBaselineKey(row.synthKey);
+    return day && row.dtend ? [{ row, dtend: row.dtend, ...day }] : [];
+  });
+  if (days.length === 0) return out;
+
+  // Family-bounded (its links, and overrides swept once their day has passed).
+  const tzByLink = new Map(
+    (
+      await db
+        .select({ id: familyMemberFeeds.id, timezone: feeds.timezone })
+        .from(familyMemberFeeds)
+        .innerJoin(feeds, eq(feeds.id, familyMemberFeeds.feedId))
+        .where(eq(familyMemberFeeds.familyId, familyId))
+    ).map((l) => [l.id, l.timezone ?? 'UTC']),
+  );
+  const overridden = new Set(
+    (
+      await db
+        .select({ linkId: linkDayOverrides.linkId, date: linkDayOverrides.date })
+        .from(linkDayOverrides)
+        .where(eq(linkDayOverrides.familyId, familyId))
+    ).map((o) => `${o.linkId}:${o.date}`),
+  );
+
+  for (const { row, dtend, linkId, date } of days) {
+    const tz = tzByLink.get(linkId);
+    if (!tz || date < firstAdjustableDay(tz)) continue;
+    out.set(row.id, {
+      date,
+      dayStart: wallTimeOf(row.dtstart, tz),
+      dayEnd: wallTimeOf(dtend, tz),
+      adjusted: overridden.has(`${linkId}:${date}`),
+    });
+  }
+  return out;
+}
 
 /**
  * Why an event is incapable of carrying claimable tasks — the same exclusions
@@ -1108,6 +1182,108 @@ taskRoutes.post('/calendar-events/:eventId/travel-time', async (c) => {
     await db.select().from(calendarEvents).where(eq(calendarEvents.id, event.id)).limit(1)
   )[0]!;
   return c.json({ event: { id: updated.id, travelTimeOverrideMin: updated.travelTimeOverrideMin } });
+});
+
+/**
+ * The baseline day an event-scoped day-hours call addresses, with the checks
+ * both verbs share: the caller is a caretaker or an admin (a dependent with a
+ * login doesn't get to rewrite their own school day), the event is this
+ * family's unsplit `bl:` day on an exception feed, and that day hasn't passed
+ * where the school is.
+ *
+ * A day a resolved conflict has split (its row masked, `cf:` segments standing
+ * in) is refused: new hours move the day, the conflict service reopens any
+ * decided conflict whose events moved, and undoing the split releases a claim
+ * whose segment boundary no longer exists — so "change the hours" would quietly
+ * cost the family its conflict decision and its pickup. Reopen or dismiss the
+ * conflict first.
+ */
+async function loadBaselineDay(
+  c: Context<HonoEnv>,
+  db: ReturnType<typeof getDb>,
+  eventId: string,
+) {
+  const me = c.get('member');
+  if (!me.isCaretaker && !me.isAdmin) return { error: 'forbidden', status: 403 } as const;
+  const event = (
+    await db
+      .select({ synthKey: calendarEvents.synthKey, maskedAt: calendarEvents.maskedAt })
+      .from(calendarEvents)
+      .where(and(eq(calendarEvents.id, eventId), eq(calendarEvents.familyId, me.familyId)))
+      .limit(1)
+  )[0];
+  if (!event) return { error: 'not_found', status: 404 } as const;
+  if (event.synthKey.startsWith('cf:bl:') || (event.maskedAt != null && event.synthKey.startsWith('bl:'))) {
+    return { error: 'day_split_by_conflict', status: 409 } as const;
+  }
+  const day = parseBaselineKey(event.synthKey);
+  if (!day) return { error: 'not_a_baseline_day', status: 409 } as const;
+  const row = (
+    await db
+      .select({ feed: feeds })
+      .from(familyMemberFeeds)
+      .innerJoin(feeds, eq(feeds.id, familyMemberFeeds.feedId))
+      .where(
+        and(eq(familyMemberFeeds.id, day.linkId), eq(familyMemberFeeds.familyId, me.familyId)),
+      )
+      .limit(1)
+  )[0];
+  if (!row || row.feed.mode !== 'exception') {
+    return { error: 'not_a_baseline_day', status: 409 } as const;
+  }
+  if (day.date < firstAdjustableDay(row.feed.timezone ?? 'UTC')) {
+    return { error: 'day_in_past', status: 409 } as const;
+  }
+  return { familyId: me.familyId, linkId: day.linkId, date: day.date, feed: row.feed } as const;
+}
+
+/**
+ * Set one baseline day's hours, for that date only — "Tuesday I'm picking her
+ * up at 1:00" — without a calendar event (and the conflict it would raise)
+ * just to move the day's end. Takes the day's own event (not a split day's —
+ * see `loadBaselineDay`). The hours are wall clock in the feed's timezone and
+ * replace whatever the day
+ * would run (a `modify_day` rule, a dated change); setting them again replaces
+ * them. The feed resynthesizes at once: the `bl:` event keeps its key, so its
+ * drop-off/pickup are healed onto the new times — a claim stays claimed.
+ */
+taskRoutes.put('/calendar-events/:eventId/day-hours', async (c) => {
+  const parsed = SetBaselineDayHoursInput.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) return c.json({ error: 'invalid', issues: parsed.error.issues }, 400);
+  const { dayStart, dayEnd } = parsed.data;
+  // HH:MM strings compare correctly as text.
+  if (dayEnd <= dayStart) return c.json({ error: 'day_end_before_start' }, 400);
+
+  const db = getDb(c.env.DB);
+  const day = await loadBaselineDay(c, db, c.req.param('eventId'));
+  if ('error' in day) return c.json({ error: day.error }, day.status);
+
+  const override = (
+    await db
+      .insert(linkDayOverrides)
+      .values({ familyId: day.familyId, linkId: day.linkId, date: day.date, dayStart, dayEnd })
+      .onConflictDoUpdate({
+        target: [linkDayOverrides.linkId, linkDayOverrides.date],
+        set: { dayStart, dayEnd },
+      })
+      .returning()
+  )[0]!;
+  await resynthesizeFeed(c, db, day.feed);
+  return c.json({ override });
+});
+
+/** Put one baseline day back on its usual hours (drop its one-off). */
+taskRoutes.delete('/calendar-events/:eventId/day-hours', async (c) => {
+  const db = getDb(c.env.DB);
+  const day = await loadBaselineDay(c, db, c.req.param('eventId'));
+  if ('error' in day) return c.json({ error: day.error }, day.status);
+
+  const deleted = await db
+    .delete(linkDayOverrides)
+    .where(and(eq(linkDayOverrides.linkId, day.linkId), eq(linkDayOverrides.date, day.date)))
+    .returning({ id: linkDayOverrides.id });
+  if (deleted.length > 0) await resynthesizeFeed(c, db, day.feed);
+  return c.json({ ok: true, removed: deleted.length > 0 });
 });
 
 /**
