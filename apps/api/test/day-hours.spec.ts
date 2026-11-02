@@ -2,6 +2,7 @@ import { env } from 'cloudflare:test';
 import {
   and,
   calendarEvents,
+  conflicts,
   eq,
   familyMemberFeeds,
   feeds,
@@ -10,10 +11,20 @@ import {
   tasks,
 } from '@igt/db';
 import { describe, expect, it } from 'vitest';
+import { reconcileMemberConflicts } from '../src/services/conflicts.js';
 import { synthesizeFeed } from '../src/services/synthesis.js';
 import { buildMemberTasks } from '../src/services/task-gen.js';
 import { setTaskOwners } from '../src/services/task-owners.js';
-import { bearer, call, linkMember, login, pinClockTo, put, setupFamily } from './helpers.js';
+import {
+  authed,
+  bearer,
+  call,
+  linkMember,
+  login,
+  pinClockTo,
+  put,
+  setupFamily,
+} from './helpers.js';
 
 /**
  * One baseline day's hours set by hand — "Tuesday I'm picking her up at 1:00"
@@ -25,8 +36,12 @@ pinClockTo('2026-07-06T12:00:00Z');
 
 type Db = ReturnType<typeof getDb>;
 
-/** A school feed in Chicago (CDT, UTC-5): Mon–Fri 08:30–15:00. */
-async function fixture(email: string, mode: 'exception' | 'standard' = 'exception') {
+/** A school feed (Chicago, CDT = UTC-5, unless told otherwise): Mon–Fri 08:30–15:00. */
+async function fixture(
+  email: string,
+  mode: 'exception' | 'standard' = 'exception',
+  timezone = 'America/Chicago',
+) {
   const fam = await setupFamily(email);
   const db = getDb(env.DB);
   const feed = (
@@ -37,7 +52,7 @@ async function fixture(email: string, mode: 'exception' | 'standard' = 'exceptio
         mode,
         url: 'https://feed.example.com/cal.ics',
         sourceCalendarName: 'Lincoln Elementary',
-        timezone: 'America/Chicago',
+        timezone,
         // Already synced, so the routes' resynthesis doesn't try an ingest.
         lastSyncedAt: new Date(),
       })
@@ -173,44 +188,84 @@ describe('day hours: one baseline day, set by hand', () => {
     expect(await again.json()).toEqual({ ok: true, removed: false });
   });
 
-  it("takes a split day's segment, and lists the whole day's hours on it", async () => {
+  it('refuses a day a resolved conflict has split, leaving the decision and its claim alone', async () => {
     const f = await fixture('day-hours-split@example.com');
     const tue = (await dayRow(f.db, f.link.id, '2026-07-07'))!;
-    // Stand in for a resolved conflict: the full day masked, a segment cut from it.
-    await f.db.update(calendarEvents).set({ maskedAt: new Date() }).where(eq(calendarEvents.id, tue.id));
-    const segment = (
+    // A dentist appointment mid-morning (10:00–11:00 CDT), resolved with the
+    // plain split: the day is masked and cut into two segments around it.
+    await f.db.insert(calendarEvents).values({
+      familyId: f.familyId,
+      familyMemberId: f.childId,
+      provenance: 'human',
+      synthKey: 'ext:dentist:',
+      externalUid: 'dentist',
+      dtstart: new Date('2026-07-07T15:00:00Z'),
+      dtend: new Date('2026-07-07T16:00:00Z'),
+      summary: 'Dentist',
+      contentHash: 'dentist',
+    });
+    await reconcileMemberConflicts(f.db, f.childId);
+    const [conflict] = await f.db
+      .select()
+      .from(conflicts)
+      .where(eq(conflicts.familyMemberId, f.childId));
+    expect(
+      (await call(`/families/${f.familyId}/conflicts/${conflict!.id}/resolve`, authed(f.admin.token, {})))
+        .status,
+    ).toBe(200);
+
+    const segments = await f.db
+      .select()
+      .from(calendarEvents)
+      .where(and(eq(calendarEvents.familyMemberId, f.childId), eq(calendarEvents.linkId, f.link.id)));
+    const afternoon = segments.find((e) => e.synthKey === `cf:${tue.synthKey}:1`)!;
+    expect(afternoon.dtend!.toISOString()).toBe('2026-07-07T20:00:00.000Z');
+    const pickup = (
       await f.db
-        .insert(calendarEvents)
-        .values({
-          familyId: f.familyId,
-          familyMemberId: f.childId,
-          provenance: 'synthesized',
-          synthKey: `cf:${tue.synthKey}:1`,
-          linkId: f.link.id,
-          dtstart: new Date('2026-07-07T17:00:00Z'),
-          dtend: tue.dtend,
-          summary: tue.summary,
-          contentHash: 'segment',
-        })
-        .returning()
+        .select()
+        .from(tasks)
+        .where(and(eq(tasks.calendarEventId, afternoon.id), eq(tasks.type, 'pickup')))
     )[0]!;
+    await setTaskOwners(f.db, pickup, [f.adminMemberId], { manual: true });
+
+    // Neither the segments nor the masked day offer the hours…
+    const listed = await listedDays(f);
+    expect(listed.get(afternoon.id)).toBeNull();
+    expect(listed.has(tue.id)).toBe(false); // masked rows aren't listed at all
+    // …and neither takes them.
+    for (const id of [afternoon.id, tue.id]) {
+      const res = await call(hoursUrl(f, id), put(f.admin.token, { dayStart: '08:30', dayEnd: '13:00' }));
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({ error: 'day_split_by_conflict' });
+      expect((await call(hoursUrl(f, id), del(f.admin.token))).status).toBe(409);
+    }
+
+    expect(await f.db.select().from(linkDayOverrides).where(eq(linkDayOverrides.linkId, f.link.id))).toEqual([]);
+    expect((await f.db.select().from(conflicts).where(eq(conflicts.id, conflict!.id)))[0]!.status).toBe(
+      'resolved',
+    );
+    const kept = (await f.db.select().from(tasks).where(eq(tasks.id, pickup.id)))[0]!;
+    expect(kept.status).toBe('owned');
+    expect(kept.calendarEventId).toBe(afternoon.id);
+  });
+
+  it("goes by the school's own date: east of UTC, yesterday is past even inside the window", async () => {
+    // 2026-07-06T12:00Z is already Tue 00:00 in Auckland (NZST, UTC+12), while
+    // the synthesis window still starts on Mon Jul 6.
+    const f = await fixture('day-hours-auckland@example.com', 'exception', 'Pacific/Auckland');
+    const mon = (await dayRow(f.db, f.link.id, '2026-07-06'))!;
+    const tue = (await dayRow(f.db, f.link.id, '2026-07-07'))!;
 
     const listed = await listedDays(f);
-    expect(listed.has(tue.id)).toBe(false); // masked rows aren't listed
-    expect(listed.get(segment.id)).toEqual({
-      date: '2026-07-07',
-      dayStart: '08:30',
-      dayEnd: '15:00',
-      adjusted: false,
-    });
+    expect(listed.get(mon.id)).toBeNull();
+    expect(listed.get(tue.id)).toMatchObject({ date: '2026-07-07', dayStart: '08:30', dayEnd: '15:00' });
 
-    const res = await call(hoursUrl(f, segment.id), put(f.admin.token, { dayStart: '08:30', dayEnd: '13:00' }));
-    expect(res.status).toBe(200);
-    const [override] = await f.db.select().from(linkDayOverrides).where(eq(linkDayOverrides.linkId, f.link.id));
-    expect(override).toMatchObject({ date: '2026-07-07', dayEnd: '13:00' });
-    expect((await dayRow(f.db, f.link.id, '2026-07-07'))!.dtend!.toISOString()).toBe(
-      '2026-07-07T18:00:00.000Z',
-    );
+    const past = await call(hoursUrl(f, mon.id), put(f.admin.token, { dayStart: '08:30', dayEnd: '13:00' }));
+    expect(past.status).toBe(409);
+    expect(await past.json()).toEqual({ error: 'day_in_past' });
+    expect(
+      (await call(hoursUrl(f, tue.id), put(f.admin.token, { dayStart: '08:30', dayEnd: '13:00' }))).status,
+    ).toBe(200);
   });
 
   it('validates hours, and refuses non-baseline events, past days, dependents and other families', async () => {

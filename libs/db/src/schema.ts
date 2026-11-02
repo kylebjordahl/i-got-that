@@ -398,7 +398,7 @@ export const linkBaselineChanges = sqliteTable(
  * day (there's no day left to adjust). Exception links only. The day itself
  * stays the link's `bl:` event, so its tasks are healed onto the new hours
  * rather than recreated. Synthesis deletes rows whose date has left the
- * window (`sweepPastDayOverrides`), so this only ever holds today and later.
+ * window (`loadDayOverrides`), so this only ever holds today and later.
  */
 export const linkDayOverrides = sqliteTable(
   'link_day_overrides',

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  baselineKey,
   coveredLocalDays,
   detectConflicts,
   estimateTravelMinutes,
@@ -8,6 +9,7 @@ import {
   generateTaskIntents,
   intervalsOverlap,
   localDay,
+  parseBaselineKey,
   resolveTaskResult,
   ruleMatches,
   subtractIntervals,
@@ -587,6 +589,24 @@ describe('synthesizeException — one-off day overrides', () => {
     const tue = events.find((e) => e.synthKey === 'bl:link-1:2026-07-07');
     // 13:00 PDT.
     expect(tue?.dtend?.toISOString()).toBe('2026-07-07T20:00:00.000Z');
+  });
+});
+
+describe('baseline keys', () => {
+  it('round-trip, and nothing else parses as one', () => {
+    expect(parseBaselineKey(baselineKey('link-1', '2026-07-07'))).toEqual({
+      linkId: 'link-1',
+      date: '2026-07-07',
+    });
+    for (const key of [
+      'cf:bl:link-1:2026-07-07:0',
+      'ev:link-1:occ-1',
+      'bl:link-1',
+      'bl:link-1:2026-07-07:0',
+      'pd:dec-1',
+    ]) {
+      expect(parseBaselineKey(key), key).toBeNull();
+    }
   });
 });
 

@@ -1,4 +1,5 @@
 import 'package:caretaker_app/api/client.dart';
+import 'package:dio/dio.dart';
 import 'package:caretaker_app/models.dart';
 import 'package:caretaker_app/screens/home_screen.dart';
 import 'package:caretaker_app/screens/task_actions_sheet.dart';
@@ -99,6 +100,10 @@ class _RecordingApiClient extends ApiClient {
   ({String eventId, String dayStart, String dayEnd})? lastDayHours;
   String? lastDayHoursReset;
 
+  /// When set, setBaselineDayHours fails the way the API refuses: a 409 with
+  /// this `error` code.
+  String? dayHoursRefusal;
+
   @override
   Future<void> setBaselineDayHours(
     String familyId,
@@ -106,6 +111,17 @@ class _RecordingApiClient extends ApiClient {
     required String dayStart,
     required String dayEnd,
   }) async {
+    if (dayHoursRefusal case final code?) {
+      final request = RequestOptions(path: '/day-hours');
+      throw DioException(
+        requestOptions: request,
+        response: Response(
+          requestOptions: request,
+          statusCode: 409,
+          data: {'error': code},
+        ),
+      );
+    }
     lastDayHours = (eventId: eventId, dayStart: dayStart, dayEnd: dayEnd);
   }
 
@@ -616,13 +632,17 @@ void main() {
 
     /// Opens the pickup's sheet from its Home row — or, with [direct], straight
     /// off a button, for someone Home lists no tasks to.
+    var conflictLoads = 0;
+
     Future<_RecordingApiClient> openSheet(
       WidgetTester tester, {
       required Member me,
       bool adjusted = false,
       bool direct = false,
+      String? refusal,
     }) async {
-      final api = _RecordingApiClient();
+      final api = _RecordingApiClient()..dayHoursRefusal = refusal;
+      conflictLoads = 0;
       await tester.pumpWidget(
         ProviderScope(
           overrides: [
@@ -638,7 +658,10 @@ void main() {
             unownedTasksProvider.overrideWith((ref) async => const []),
             allTasksProvider.overrideWith((ref) async => [pickup]),
             pendingDecisionsProvider.overrideWith((ref) async => const []),
-            conflictsProvider.overrideWith((ref) async => const []),
+            conflictsProvider.overrideWith((ref) async {
+              conflictLoads++;
+              return const <Conflict>[];
+            }),
             calendarEventsProvider.overrideWith(
               (ref) async => [schoolDay(adjusted: adjusted)],
             ),
@@ -708,6 +731,7 @@ void main() {
       expect(find.text('3:00 PM'), findsOneWidget);
       expect(find.text('Back to the usual hours'), findsNothing);
 
+      final loadsBefore = conflictLoads;
       await pickEnd(tester, hour: '1', minute: '00', period: 'PM');
       expect(api.lastDayHours, (
         eventId: 'bl-tue',
@@ -716,6 +740,21 @@ void main() {
       ));
       // The sheet closes once it's sent.
       expect(find.text('THIS DAY’S HOURS'), findsNothing);
+      expect(find.text('Hours changed for this day'), findsOneWidget);
+      // Moving the day can start or clear a conflict, so those are re-read.
+      expect(conflictLoads, greaterThan(loadsBefore));
+    });
+
+    testWidgets('a refusal says what it means, not the raw error', (
+      tester,
+    ) async {
+      await openSheet(
+        tester,
+        me: _m('dad', 'Dad', caretaker: true, admin: true),
+        refusal: 'day_in_past',
+      );
+      await pickEnd(tester, hour: '1', minute: '00', period: 'PM');
+      expect(find.text('That day is already over.'), findsOneWidget);
     });
 
     testWidgets('an end before the start is refused before it is sent', (

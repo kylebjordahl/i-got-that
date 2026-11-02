@@ -26,10 +26,11 @@ exception event covers, or `add_event` to put the feed event on the calendar
 which on a **routed** feed claims the event for that link's member). One
 baseline day's hours can also be set by hand for that date alone
 (`link_day_overrides`, `PUT/DELETE /calendar-events/:id/day-hours` on the `bl:`
-day or a `cf:` segment of it): it beats `modify_day` and dated
-`link_baseline_changes`, can't revive a `cancel_day`, keeps the `bl:` key so
-tasks/claims are healed rather than recreated, and synthesis sweeps it once
-the day has left the window;
+day): it beats `modify_day` and dated `link_baseline_changes`, can't revive a
+`cancel_day`, keeps the `bl:` key so tasks/claims are healed rather than
+recreated, and synthesis sweeps it once the day has left the window. A day a
+resolved conflict has split is refused — moving it would reopen the conflict
+and release claims on its segments;
 `task_rules` are the per-member TYPING pipeline (`transition` vs `attendance`
 vs `none` — no tasks, the event stays on the calendar — + drop-off/pickup windows, scoped `this_calendar`/`all_calendars`, with a
 terminal default per calendar on the link + member). Task type is resolved at

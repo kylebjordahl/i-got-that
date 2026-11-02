@@ -1,5 +1,7 @@
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../api/client.dart';
 import '../models.dart';
 import '../state/auth.dart';
 import '../state/family.dart';
@@ -257,9 +259,8 @@ Future<void> showTaskActions(
                       day: day,
                       onSet: (dayStart, dayEnd) {
                         Navigator.of(sheetCtx).pop();
-                        _run(
+                        _runDayHours(
                           context,
-                          ref,
                           (api, fid) => api.setBaselineDayHours(
                             fid,
                             sourceEvent!.id,
@@ -271,9 +272,8 @@ Future<void> showTaskActions(
                       },
                       onReset: () {
                         Navigator.of(sheetCtx).pop();
-                        _run(
+                        _runDayHours(
                           context,
-                          ref,
                           (api, fid) =>
                               api.resetBaselineDayHours(fid, sourceEvent!.id),
                           'Back to the usual hours',
@@ -656,9 +656,8 @@ Future<void> showEventDetails(
                 day: day,
                 onSet: (dayStart, dayEnd) {
                   Navigator.of(sheetCtx).pop();
-                  _run(
+                  _runDayHours(
                     context,
-                    ref,
                     (api, fid) => api.setBaselineDayHours(
                       fid,
                       event.id,
@@ -670,9 +669,8 @@ Future<void> showEventDetails(
                 },
                 onReset: () {
                   Navigator.of(sheetCtx).pop();
-                  _run(
+                  _runDayHours(
                     context,
-                    ref,
                     (api, fid) => api.resetBaselineDayHours(fid, event.id),
                     'Back to the usual hours',
                   );
@@ -932,6 +930,45 @@ Future<bool> _run(
       );
     }
     return false;
+  }
+}
+
+/// Set or reset a baseline day's hours ([action]), then refresh what that can
+/// change: the day's tasks and events, and — since the day moved — any conflict
+/// it's in (new, cleared or reopened) and the absence notice that hangs off one.
+/// The server's refusals read as what they mean rather than a raw error.
+Future<void> _runDayHours(
+  BuildContext context,
+  Future<void> Function(ApiClient api, String familyId) action,
+  String success,
+) async {
+  // Read up front: a Home row can unmount once its task moves, taking `ref`.
+  final container = ProviderScope.containerOf(context, listen: false);
+  String message;
+  try {
+    final familyId = await container.read(familyProvider.future);
+    await action(container.read(apiClientProvider), familyId);
+    container
+      ..invalidate(unownedTasksProvider)
+      ..invalidate(allTasksProvider)
+      ..invalidate(calendarEventsProvider)
+      ..invalidate(conflictsProvider)
+      ..invalidate(absenceNoticesProvider);
+    message = success;
+  } catch (e) {
+    final body = e is DioException ? e.response?.data : null;
+    message = switch (body is Map ? body['error'] : null) {
+      'day_in_past' => 'That day is already over.',
+      'day_split_by_conflict' =>
+        'This day is split around a conflict — reopen or dismiss that first.',
+      'day_end_before_start' => 'The day has to end after it starts.',
+      _ => 'Failed: $e',
+    };
+  }
+  if (context.mounted) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message), margin: snackBarMarginAboveNav(context)),
+    );
   }
 }
 

@@ -110,6 +110,21 @@ export function eventLocalDay(e: { dtstart: Date; allDay: boolean }, tz: string)
   return e.allDay ? startOfUtcDay(e.dtstart) : localDay(e.dtstart, tz);
 }
 
+/** A baseline day's synthKey: `bl:<linkId>:<YYYY-MM-DD>` (the feed-local date). */
+export function baselineKey(linkId: string, date: string): string {
+  return `bl:${linkId}:${date}`;
+}
+
+/**
+ * The link and local date a `bl:` baseline-day key names; null for any other
+ * key (a `cf:` segment cut from a day included). Link ids are UUIDs, so they
+ * hold no colon.
+ */
+export function parseBaselineKey(key: string): { linkId: string; date: string } | null {
+  const m = /^bl:([^:]+):(\d{4}-\d{2}-\d{2})$/.exec(key);
+  return m ? { linkId: m[1]!, date: m[2]! } : null;
+}
+
 /** `YYYY-MM-DD` for a UTC-day key (used in `bl:` synthKeys). */
 export function utcDayString(dayMs: number): string {
   return new Date(dayMs).toISOString().slice(0, 10);
@@ -605,7 +620,7 @@ export function synthesizeException(
       );
 
       events.push({
-        synthKey: `bl:${link.id}:${dayKey}`,
+        synthKey: baselineKey(link.id, dayKey),
         sourceEventId: null,
         matchedRuleId: winner?.rule.id ?? null,
         dtstart,
