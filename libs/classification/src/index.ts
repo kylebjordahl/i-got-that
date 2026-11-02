@@ -81,6 +81,13 @@ export function wallTimeToUtc(
   return new Date(guess - tzOffsetMs(tz, guess));
 }
 
+/** The wall-clock `HH:MM` that `instant` reads in `tz` — `wallTimeToUtc`'s inverse. */
+export function wallTimeOf(instant: Date, tz: string): string {
+  return new Date(instant.getTime() + tzOffsetMs(tz, instant.getTime()))
+    .toISOString()
+    .slice(11, 16);
+}
+
 /**
  * The calendar date `instant` falls on in `tz`, as this engine's representation
  * of a local date: that date's UTC midnight. Baseline days, all-day events and
@@ -257,6 +264,20 @@ export interface LinkConfigLike {
    * `dayStart`/`dayEnd` above. Order doesn't matter.
    */
   baselineChanges?: BaselineChangeLike[];
+  /**
+   * One-off hours for single baseline days (exception feeds), at most one per
+   * date. The most specific thing that shapes a day: it beats a `modify_day`
+   * rule and `baselineChanges` on its date. A `cancel_day` still cancels.
+   */
+  dayOverrides?: DayOverrideLike[];
+}
+
+/** One baseline day's hand-set hours (a `link_day_overrides` row). */
+export interface DayOverrideLike {
+  /** The baseline day's local date, `YYYY-MM-DD` (its `bl:` key's date). */
+  date: string;
+  dayStart: string;
+  dayEnd: string;
 }
 
 /** A dated change to a link's baseline hours (a `link_baseline_changes` row). */
@@ -490,7 +511,9 @@ export function synthesizeBusy(
  * + day start/end, or the dated `baselineChanges` in force that day), feed
  * events apply schedule overrides. Per covered day the winning (lowest-position)
  * rule decides: `cancel_day` drops the day's baseline event, `modify_day`
- * patches its hours, `ignore` keeps the baseline. An
+ * patches its hours, `ignore` keeps the baseline. A hand-set `dayOverrides`
+ * entry for the date replaces whichever hours that leaves (but can't bring
+ * back a cancelled day). An
  * occurrence matching NO rule becomes a pending decision — the baseline still
  * stands until a human resolves it.
  *
@@ -544,6 +567,8 @@ export function synthesizeException(
     }
   }
 
+  const dayOverrides = new Map((link.dayOverrides ?? []).map((o) => [o.date, o]));
+
   if (link.weekdayMask != null) {
     const windowStart = startOfUtcDay(window.start);
     for (
@@ -565,8 +590,19 @@ export function synthesizeException(
           : null;
       const dayKey = utcDayString(day.getTime());
       const hours = baselineHoursOn(link, dayKey);
-      const dtstart = wallTimeToUtc(day, modify?.dayStart ?? hours.dayStart, 8, tz);
-      const dtend = wallTimeToUtc(day, modify?.dayEnd ?? hours.dayEnd, 15, tz);
+      const override = dayOverrides.get(dayKey);
+      const dtstart = wallTimeToUtc(
+        day,
+        override?.dayStart ?? modify?.dayStart ?? hours.dayStart,
+        8,
+        tz,
+      );
+      const dtend = wallTimeToUtc(
+        day,
+        override?.dayEnd ?? modify?.dayEnd ?? hours.dayEnd,
+        15,
+        tz,
+      );
 
       events.push({
         synthKey: `bl:${link.id}:${dayKey}`,

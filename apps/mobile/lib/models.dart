@@ -981,6 +981,7 @@ class CalendarEventItem {
     this.travelTimeOverrideMin,
     this.taskId,
     this.taskIneligibleReason,
+    this.baselineDay,
   });
 
   final String id;
@@ -1013,6 +1014,12 @@ class CalendarEventItem {
   /// matches it). Null ⇒ eligible, so having no tasks is a dismissal or a stale
   /// build, which [ApiClient.rebuildEventTasks] undoes.
   final String? taskIneligibleReason;
+
+  /// Set when this event is an upcoming baseline day (a school feed's normal
+  /// day), or a segment cut from one: its hours can be changed for that date
+  /// alone ([ApiClient.setBaselineDayHours]). Null for anything else, and for
+  /// days already past.
+  final BaselineDay? baselineDay;
 
   bool get isClaimedTask => provenance == 'claimed_task';
   bool get isHuman => provenance == 'human';
@@ -1066,8 +1073,40 @@ class CalendarEventItem {
       travelTimeOverrideMin: j['travelTimeOverrideMin'] as int?,
       taskId: j['taskId'] as String?,
       taskIneligibleReason: j['taskIneligibleReason'] as String?,
+      baselineDay: j['baselineDay'] is Map<String, dynamic>
+          ? BaselineDay.fromJson(j['baselineDay'] as Map<String, dynamic>)
+          : null,
     );
   }
+}
+
+/// The baseline day a calendar event is (see [CalendarEventItem.baselineDay]).
+///
+/// [dayStart] / [dayEnd] are the day's hours as they stand, as `"HH:MM"` wall
+/// clock in the *feed's* timezone — the form the API takes back — so editing
+/// them never depends on the device's zone.
+class BaselineDay {
+  BaselineDay({
+    required this.date,
+    required this.dayStart,
+    required this.dayEnd,
+    required this.adjusted,
+  });
+
+  /// The day's local date, `YYYY-MM-DD`.
+  final String date;
+  final String dayStart;
+  final String dayEnd;
+
+  /// Whether these hours were set by hand for this one day.
+  final bool adjusted;
+
+  factory BaselineDay.fromJson(Map<String, dynamic> j) => BaselineDay(
+    date: j['date'] as String,
+    dayStart: j['dayStart'] as String,
+    dayEnd: j['dayEnd'] as String,
+    adjusted: j['adjusted'] as bool? ?? false,
+  );
 }
 
 /// An unmatched exception-feed event awaiting a human decision.

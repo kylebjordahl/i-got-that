@@ -291,6 +291,35 @@ void main() {
     });
   });
 
+  test("reads a baseline day's hours, and their absence", () {
+    final day = CalendarEventItem.fromJson({
+      'id': 'e1',
+      'familyMemberId': 'm1',
+      'provenance': 'synthesized',
+      'dtstart': '2026-07-07T13:30:00.000Z',
+      'dtend': '2026-07-07T18:00:00.000Z',
+      'baselineDay': {
+        'date': '2026-07-07',
+        'dayStart': '08:30',
+        'dayEnd': '13:00',
+        'adjusted': true,
+      },
+    });
+    expect(day.baselineDay?.date, '2026-07-07');
+    expect(day.baselineDay?.dayStart, '08:30');
+    expect(day.baselineDay?.dayEnd, '13:00');
+    expect(day.baselineDay?.adjusted, isTrue);
+
+    final other = CalendarEventItem.fromJson({
+      'id': 'e2',
+      'familyMemberId': 'm1',
+      'provenance': 'synthesized',
+      'dtstart': '2026-07-07T22:00:00.000Z',
+      'baselineDay': null,
+    });
+    expect(other.baselineDay, isNull);
+  });
+
   group('travel time', () {
     test("reads an event's explicit override, and its absence", () {
       final overridden = CalendarEventItem.fromJson({

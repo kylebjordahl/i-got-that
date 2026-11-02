@@ -1,10 +1,12 @@
 import 'package:caretaker_app/api/client.dart';
 import 'package:caretaker_app/models.dart';
 import 'package:caretaker_app/screens/home_screen.dart';
+import 'package:caretaker_app/screens/task_actions_sheet.dart';
 import 'package:caretaker_app/state/auth.dart';
 import 'package:caretaker_app/state/family.dart';
 import 'package:caretaker_app/theme/app_theme.dart';
 import 'package:caretaker_app/widgets/task_row.dart';
+import 'package:caretaker_app/widgets/time_fields.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -92,6 +94,24 @@ class _RecordingApiClient extends ApiClient {
     int? travelMinutes,
   ) async {
     lastTravelTime = (eventId: eventId, minutes: travelMinutes);
+  }
+
+  ({String eventId, String dayStart, String dayEnd})? lastDayHours;
+  String? lastDayHoursReset;
+
+  @override
+  Future<void> setBaselineDayHours(
+    String familyId,
+    String eventId, {
+    required String dayStart,
+    required String dayEnd,
+  }) async {
+    lastDayHours = (eventId: eventId, dayStart: dayStart, dayEnd: dayEnd);
+  }
+
+  @override
+  Future<void> resetBaselineDayHours(String familyId, String eventId) async {
+    lastDayHoursReset = eventId;
   }
 }
 
@@ -563,6 +583,181 @@ void main() {
       expect(api.lastAssign?.memberIds, ['dad', 'mom']);
     },
   );
+
+  group("a school day's hours can be changed for that day alone", () {
+    // Theo's school day, with its pickup: what Home lists and the sheet opens.
+    final start = DateTime.now().add(const Duration(hours: 1));
+    final pickup = TaskItem(
+      id: 't-pickup',
+      familyMemberId: 'theo',
+      type: 'pickup',
+      start: start.add(const Duration(hours: 6)),
+      status: 'owned',
+      ownerMemberIds: const ['dad'],
+      createdVia: 'generated',
+      calendarEventId: 'bl-tue',
+    );
+    CalendarEventItem schoolDay({required bool adjusted}) => CalendarEventItem(
+      id: 'bl-tue',
+      familyMemberId: 'theo',
+      provenance: 'synthesized',
+      start: start,
+      end: start.add(const Duration(hours: 6)),
+      allDay: false,
+      summary: 'Lincoln Elementary',
+      linkId: 'link-1',
+      baselineDay: BaselineDay(
+        date: '2026-11-03',
+        dayStart: '08:30',
+        dayEnd: adjusted ? '13:00' : '15:00',
+        adjusted: adjusted,
+      ),
+    );
+
+    /// Opens the pickup's sheet from its Home row — or, with [direct], straight
+    /// off a button, for someone Home lists no tasks to.
+    Future<_RecordingApiClient> openSheet(
+      WidgetTester tester, {
+      required Member me,
+      bool adjusted = false,
+      bool direct = false,
+    }) async {
+      final api = _RecordingApiClient();
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            apiClientProvider.overrideWithValue(api),
+            familyProvider.overrideWith((ref) async => 'fam-1'),
+            membersProvider.overrideWith(
+              (ref) async => [
+                _m('dad', 'Dad', caretaker: true, admin: true),
+                _m('theo', 'Theo', child: true),
+              ],
+            ),
+            currentMemberProvider.overrideWith((ref) async => me),
+            unownedTasksProvider.overrideWith((ref) async => const []),
+            allTasksProvider.overrideWith((ref) async => [pickup]),
+            pendingDecisionsProvider.overrideWith((ref) async => const []),
+            conflictsProvider.overrideWith((ref) async => const []),
+            calendarEventsProvider.overrideWith(
+              (ref) async => [schoolDay(adjusted: adjusted)],
+            ),
+            threadingThresholdProvider.overrideWith((ref) async => 30),
+          ],
+          child: MaterialApp(
+            theme: buildAppTheme(),
+            themeMode: ThemeMode.dark,
+            home: Scaffold(
+              body: direct
+                  ? Consumer(
+                      builder: (context, ref, _) => TextButton(
+                        onPressed: () => showTaskActions(
+                          context,
+                          ref,
+                          pickup,
+                          sourceEvent: schoolDay(adjusted: adjusted),
+                        ),
+                        child: const Text('open'),
+                      ),
+                    )
+                  : const HomeScreen(),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(direct ? find.text('open') : find.byType(TaskRow));
+      await tester.pumpAndSettle();
+      return api;
+    }
+
+    /// Opens the "Ends" field's (Material) picker and types a time into it.
+    Future<void> pickEnd(
+      WidgetTester tester, {
+      required String hour,
+      required String minute,
+      required String period,
+    }) async {
+      await tester.ensureVisible(find.byType(ClockTimePickerField).last);
+      await tester.tap(find.byType(ClockTimePickerField).last);
+      await tester.pumpAndSettle();
+      await tester.tap(find.byIcon(Icons.keyboard_outlined));
+      await tester.pumpAndSettle();
+      final fields = find.descendant(
+        of: find.byType(Dialog),
+        matching: find.byType(TextField),
+      );
+      await tester.enterText(fields.at(0), hour);
+      await tester.enterText(fields.at(1), minute);
+      await tester.tap(find.text(period));
+      await tester.tap(find.text('OK'));
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('picking an earlier end sets the day, keeping its start', (
+      tester,
+    ) async {
+      final api = await openSheet(
+        tester,
+        me: _m('dad', 'Dad', caretaker: true, admin: true),
+      );
+
+      expect(find.text('THIS DAY’S HOURS'), findsOneWidget);
+      // The day's own hours, as the school keeps them.
+      expect(find.text('8:30 AM'), findsOneWidget);
+      expect(find.text('3:00 PM'), findsOneWidget);
+      expect(find.text('Back to the usual hours'), findsNothing);
+
+      await pickEnd(tester, hour: '1', minute: '00', period: 'PM');
+      expect(api.lastDayHours, (
+        eventId: 'bl-tue',
+        dayStart: '08:30',
+        dayEnd: '13:00',
+      ));
+      // The sheet closes once it's sent.
+      expect(find.text('THIS DAY’S HOURS'), findsNothing);
+    });
+
+    testWidgets('an end before the start is refused before it is sent', (
+      tester,
+    ) async {
+      final api = await openSheet(
+        tester,
+        me: _m('dad', 'Dad', caretaker: true, admin: true),
+      );
+      await pickEnd(tester, hour: '7', minute: '00', period: 'AM');
+      expect(api.lastDayHours, isNull);
+      expect(find.text('The day has to end after it starts.'), findsOneWidget);
+    });
+
+    testWidgets('an adjusted day can go back to its usual hours', (
+      tester,
+    ) async {
+      final api = await openSheet(
+        tester,
+        me: _m('dad', 'Dad', caretaker: true, admin: true),
+        adjusted: true,
+      );
+      expect(find.text('1:00 PM'), findsOneWidget);
+      await tester.ensureVisible(find.text('Back to the usual hours'));
+      await tester.tap(find.text('Back to the usual hours'));
+      await tester.pumpAndSettle();
+      expect(api.lastDayHoursReset, 'bl-tue');
+    });
+
+    testWidgets("a dependent can't change their own school day", (
+      tester,
+    ) async {
+      await openSheet(
+        tester,
+        me: _m('theo', 'Theo', child: true),
+        direct: true,
+      );
+      // The sheet is open — just without the hours.
+      expect(find.text('Mark as not needed'), findsOneWidget);
+      expect(find.text('THIS DAY’S HOURS'), findsNothing);
+    });
+  });
 
   group('marking a whole event not needed offers a "No tasks" rule', () {
     final me = _m('dad', 'Dad', caretaker: true, admin: true);

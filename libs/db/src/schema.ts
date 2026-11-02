@@ -389,6 +389,40 @@ export const linkBaselineChanges = sqliteTable(
   }),
 );
 
+/**
+ * One baseline day's hours, set by hand for that date only — "Tuesday I'm
+ * picking her up at 1:00" — so a one-off doesn't need a calendar event (and the
+ * conflict it would raise) just to move the day's end. It's the most specific
+ * thing that shapes a baseline day, so it beats a `modify_day` rule and the
+ * dated `link_baseline_changes` on its date; a `cancel_day` still cancels the
+ * day (there's no day left to adjust). Exception links only. The day itself
+ * stays the link's `bl:` event, so its tasks are healed onto the new hours
+ * rather than recreated. Synthesis deletes rows whose date has left the
+ * window (`sweepPastDayOverrides`), so this only ever holds today and later.
+ */
+export const linkDayOverrides = sqliteTable(
+  'link_day_overrides',
+  {
+    id: id(),
+    familyId: text('family_id')
+      .notNull()
+      .references(() => families.id, { onDelete: 'cascade' }),
+    linkId: text('link_id')
+      .notNull()
+      .references(() => familyMemberFeeds.id, { onDelete: 'cascade' }),
+    // Local calendar date (YYYY-MM-DD, the feed's timezone) — the `bl:` key's.
+    date: text('date').notNull(),
+    // Wall-clock hours in the feed's timezone, as the link's own are.
+    dayStart: text('day_start').notNull(),
+    dayEnd: text('day_end').notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => ({
+    linkDateUq: uniqueIndex('link_day_overrides_link_date_uq').on(t.linkId, t.date),
+    familyIdx: index('link_day_overrides_family_idx').on(t.familyId),
+  }),
+);
+
 // --- Source events -------------------------------------------------------
 
 export const sourceEvents = sqliteTable(
@@ -1559,6 +1593,7 @@ export const schema = {
   sourceEvents,
   linkRules,
   linkBaselineChanges,
+  linkDayOverrides,
   taskRules,
   taskRuleExceptions,
   assignmentRuleExceptions,

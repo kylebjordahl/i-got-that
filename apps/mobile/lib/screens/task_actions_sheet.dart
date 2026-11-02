@@ -41,6 +41,9 @@ Future<void> showTaskActions(
   final canClaim = me?.isCaretaker ?? false;
   // Any caretaker may reassign; a non-caretaker admin can still route work.
   final canAssign = canClaim || isAdmin;
+  // The same people can move a school day's hours for one day (the API refuses
+  // a dependent with a login).
+  final canEditDayHours = canAssign;
   final child = byId[task.familyMemberId];
   final color = child != null ? personColor(child) : AppColors.textSecondary;
   // Only event-derived tasks are convertible (fully-manual ones have no event).
@@ -247,6 +250,37 @@ Future<void> showTaskActions(
                   if (sourceEvent?.id ?? task.calendarEventId
                       case final eventId?)
                     AbsenceNoticeSection(eventId: eventId),
+                  if (sourceEvent?.baselineDay case final day?
+                      when canEditDayHours) ...[
+                    const SizedBox(height: 20),
+                    _DayHoursSection(
+                      day: day,
+                      onSet: (dayStart, dayEnd) {
+                        Navigator.of(sheetCtx).pop();
+                        _run(
+                          context,
+                          ref,
+                          (api, fid) => api.setBaselineDayHours(
+                            fid,
+                            sourceEvent!.id,
+                            dayStart: dayStart,
+                            dayEnd: dayEnd,
+                          ),
+                          'Hours changed for this day',
+                        );
+                      },
+                      onReset: () {
+                        Navigator.of(sheetCtx).pop();
+                        _run(
+                          context,
+                          ref,
+                          (api, fid) =>
+                              api.resetBaselineDayHours(fid, sourceEvent!.id),
+                          'Back to the usual hours',
+                        );
+                      },
+                    ),
+                  ],
                   if (isFeedTask) ...[
                     const SizedBox(height: 20),
                     Text('TYPE', style: AppText.eyebrow()),
@@ -535,6 +569,8 @@ Future<void> showEventDetails(
   // somewhere to go. A human event already lives on the target calendar with
   // whatever travel time its owner gave it there.
   final canSetTravel = !event.isHuman && hasLocation;
+  final me = ref.read(currentMemberProvider).valueOrNull;
+  final canEditDayHours = (me?.isCaretaker ?? false) || (me?.isAdmin ?? false);
 
   final name = member?.relationName ?? 'This member';
   final dismissed = dismissedTasks.length;
@@ -614,6 +650,35 @@ Future<void> showEventDetails(
                 _DetailRow(icon: Icons.notes_rounded, text: description),
             ],
             AbsenceNoticeSection(eventId: event.id),
+            if (event.baselineDay case final day? when canEditDayHours) ...[
+              const SizedBox(height: 20),
+              _DayHoursSection(
+                day: day,
+                onSet: (dayStart, dayEnd) {
+                  Navigator.of(sheetCtx).pop();
+                  _run(
+                    context,
+                    ref,
+                    (api, fid) => api.setBaselineDayHours(
+                      fid,
+                      event.id,
+                      dayStart: dayStart,
+                      dayEnd: dayEnd,
+                    ),
+                    'Hours changed for this day',
+                  );
+                },
+                onReset: () {
+                  Navigator.of(sheetCtx).pop();
+                  _run(
+                    context,
+                    ref,
+                    (api, fid) => api.resetBaselineDayHours(fid, event.id),
+                    'Back to the usual hours',
+                  );
+                },
+              ),
+            ],
             // Travel time is a property of the trip *out to the target calendar*,
             // so it's offered on the events we mirror — above all a claim, which
             // is somebody's actual journey.
@@ -1014,6 +1079,107 @@ class _DurationField extends StatelessWidget {
           'How long the window runs, measured from the event $_anchorWord.',
           style: AppText.subtitle,
         ),
+      ],
+    );
+  }
+}
+
+/// A baseline day's hours, changeable for that date alone — "Tuesday I'm
+/// picking her up at 1:00" — straight from the day's own event, so nobody has
+/// to make up a calendar event (and settle the conflict it raises) just to move
+/// the end of a school day. The day's drop-off and pick-up move with it, claims
+/// included. Each pick submits at once with the other end as it stands; the
+/// times are the feed's own wall clock ([BaselineDay]).
+class _DayHoursSection extends StatefulWidget {
+  const _DayHoursSection({
+    required this.day,
+    required this.onSet,
+    required this.onReset,
+  });
+
+  final BaselineDay day;
+
+  /// New `"HH:MM"` hours for the day, end after start.
+  final void Function(String dayStart, String dayEnd) onSet;
+
+  /// Back to whatever the day would otherwise run.
+  final VoidCallback onReset;
+
+  @override
+  State<_DayHoursSection> createState() => _DayHoursSectionState();
+}
+
+class _DayHoursSectionState extends State<_DayHoursSection> {
+  String? _error;
+
+  void _submit(TimeOfDay start, TimeOfDay end) {
+    final dayStart = formatClockTime(start);
+    final dayEnd = formatClockTime(end);
+    if (dayStart == widget.day.dayStart && dayEnd == widget.day.dayEnd) return;
+    // "HH:MM" strings compare correctly as text.
+    if (dayEnd.compareTo(dayStart) <= 0) {
+      setState(() => _error = 'The day has to end after it starts.');
+      return;
+    }
+    widget.onSet(dayStart, dayEnd);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final day = widget.day;
+    final start =
+        parseClockTime(day.dayStart) ?? const TimeOfDay(hour: 8, minute: 0);
+    final end =
+        parseClockTime(day.dayEnd) ?? const TimeOfDay(hour: 15, minute: 0);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('THIS DAY’S HOURS', style: AppText.eyebrow()),
+        const SizedBox(height: 10),
+        Row(
+          children: [
+            Expanded(
+              child: ClockTimePickerField(
+                label: 'Starts',
+                value: start,
+                onChanged: (t) => _submit(t, end),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: ClockTimePickerField(
+                label: 'Ends',
+                value: end,
+                onChanged: (t) => _submit(start, t),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 6),
+        Text(
+          day.adjusted
+              ? 'Changed for this day only. Its drop-off and pick-up moved '
+                    'with it.'
+              : 'Change this day only — no calendar event needed. Its '
+                    'drop-off and pick-up move with it.',
+          style: AppText.subtitle,
+        ),
+        if (_error case final error?) ...[
+          const SizedBox(height: 6),
+          Text(error, style: font(kBodyFont, 13, 500, color: AppColors.coral)),
+        ],
+        if (day.adjusted) ...[
+          const SizedBox(height: 10),
+          AppCard(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
+            child: _ActionRow(
+              icon: Icons.restore_rounded,
+              iconColor: AppColors.indigo,
+              label: 'Back to the usual hours',
+              onTap: widget.onReset,
+            ),
+          ),
+        ],
       ],
     );
   }
