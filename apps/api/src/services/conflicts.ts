@@ -382,6 +382,8 @@ export async function reconcileMemberConflicts(
     // to the loser's edge. Every resolution contributes its own cut and they
     // are subtracted together, so decisions on the same day stack: a later
     // conflict can't bring back a half an earlier one dropped.
+    // "Not needed" deliberately beats another resolution's "needed" on the
+    // same side (as absence notices' gap union does).
     const loserStart = loser.dtstart;
     const cuts = resolved.map(({ meta, w }) => ({
       dtstart: meta.beforeNeeded

@@ -940,6 +940,14 @@ describe('conflict detection & masking', () => {
       expect(await segments(s)).toEqual([span([11, 0], [15, 0])]);
     });
 
+    it('a later "not needed before" drops the whole morning, around the earlier cut too', async () => {
+      // Same reading as the sheet's preview and the absence notice: skipping
+      // "before" means arriving at the dentist from the start of the day.
+      const s = await firstResolved('stack-second-before@example.com', {});
+      await secondResolved(s, [13, 0], [14, 0], { beforeNeeded: false });
+      expect(await segments(s)).toEqual([span([14, 0], [15, 0])]);
+    });
+
     it('a second "not needed after" drops only what follows it', async () => {
       const s = await firstResolved('stack-second-after@example.com', {});
       await secondResolved(s, [13, 0], [14, 0], { afterNeeded: false });
