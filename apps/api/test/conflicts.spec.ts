@@ -826,6 +826,127 @@ describe('conflict detection & masking', () => {
     expect(keys).toEqual([docKey]);
   });
 
+  describe('two conflicts on the same day stack', () => {
+    /** The doctor (10–11) conflict, resolved through the route with `first`. */
+    async function firstResolved(email: string, first: Record<string, unknown>) {
+      const f = await fixture(email);
+      const { blKey } = await schoolAndDoctor(f.db, f);
+      await reconcileMemberConflicts(f.db, f.childId);
+      const c1 = (
+        await f.db.select().from(conflicts).where(eq(conflicts.familyMemberId, f.childId))
+      )[0]!;
+      const r1 = await call(
+        `/families/${f.familyId}/conflicts/${c1.id}/resolve`,
+        authed(f.admin.token, first),
+      );
+      expect(r1.status).toBe(200);
+      return { f, blKey, c1 };
+    }
+
+    /** Add a second appointment that day, then resolve its conflict with `second`. */
+    async function secondResolved(
+      s: Awaited<ReturnType<typeof firstResolved>>,
+      from: [number, number],
+      to: [number, number],
+      second: Record<string, unknown> = {},
+    ) {
+      await s.f.db.insert(calendarEvents).values({
+        familyId: s.f.familyId,
+        familyMemberId: s.f.childId,
+        provenance: 'human',
+        synthKey: 'ext:dentist:',
+        externalUid: 'dentist',
+        dtstart: futureAt(3, ...from),
+        dtend: futureAt(3, ...to),
+        summary: 'Dentist',
+        contentHash: 'dentist-hash',
+      });
+      await reconcileMemberConflicts(s.f.db, s.f.childId);
+      const c2 = (
+        await s.f.db
+          .select()
+          .from(conflicts)
+          .where(
+            and(
+              eq(conflicts.familyMemberId, s.f.childId),
+              eq(conflicts.winnerKey, 'ext:dentist:'),
+            ),
+          )
+      )[0]!;
+      const r2 = await call(
+        `/families/${s.f.familyId}/conflicts/${c2.id}/resolve`,
+        authed(s.f.admin.token, second),
+      );
+      expect(r2.status).toBe(200);
+      const first = (
+        await s.f.db.select().from(conflicts).where(eq(conflicts.id, s.c1.id))
+      )[0]!;
+      expect(first.status, 'the first decision stays in force').toBe('resolved');
+    }
+
+    async function segments(s: { f: { db: Db; childId: string }; blKey: string }) {
+      const rows = await s.f.db
+        .select()
+        .from(calendarEvents)
+        .where(eq(calendarEvents.familyMemberId, s.f.childId));
+      return rows
+        .filter((r) => r.synthKey.startsWith(`cf:${s.blKey}:`))
+        .sort((a, b) => a.dtstart.getTime() - b.dtstart.getTime())
+        .map((r) => [r.dtstart.toISOString(), r.dtend!.toISOString()]);
+    }
+    const span = (a: [number, number], b: [number, number]) => [
+      futureAt(3, ...a).toISOString(),
+      futureAt(3, ...b).toISOString(),
+    ];
+
+    it('plain + plain: the day is cut around both appointments', async () => {
+      const s = await firstResolved('stack-plain@example.com', {});
+      await secondResolved(s, [13, 0], [14, 0]);
+      expect(await segments(s)).toEqual([
+        span([8, 30], [10, 0]),
+        span([11, 0], [13, 0]),
+        span([14, 0], [15, 0]),
+      ]);
+    });
+
+    it('keeps the first one\'s travel buffers', async () => {
+      const s = await firstResolved('stack-travel@example.com', {
+        travelBeforeMin: 30,
+        travelAfterMin: 15,
+      });
+      await secondResolved(s, [13, 0], [14, 0]);
+      expect(await segments(s)).toEqual([
+        span([8, 30], [9, 30]),
+        span([11, 15], [13, 0]),
+        span([14, 0], [15, 0]),
+      ]);
+    });
+
+    it('a later conflict does not bring back the afternoon the first one dropped', async () => {
+      // Not going back after the doctor: only the morning survives — and a
+      // dentist visit that afternoon can't resurrect 11–13 or 14–15.
+      const s = await firstResolved('stack-after@example.com', { afterNeeded: false });
+      expect(await segments(s)).toEqual([span([8, 30], [10, 0])]);
+      await secondResolved(s, [13, 0], [14, 0]);
+      expect(await segments(s)).toEqual([span([8, 30], [10, 0])]);
+    });
+
+    it('an earlier conflict does not bring back the morning the first one dropped', async () => {
+      // Skipping the morning before the doctor; an 8:45–9:15 call that morning
+      // must not resurrect 8:30–8:45 or 9:15–10:00.
+      const s = await firstResolved('stack-before@example.com', { beforeNeeded: false });
+      expect(await segments(s)).toEqual([span([11, 0], [15, 0])]);
+      await secondResolved(s, [8, 45], [9, 15]);
+      expect(await segments(s)).toEqual([span([11, 0], [15, 0])]);
+    });
+
+    it('a second "not needed after" drops only what follows it', async () => {
+      const s = await firstResolved('stack-second-after@example.com', {});
+      await secondResolved(s, [13, 0], [14, 0], { afterNeeded: false });
+      expect(await segments(s)).toEqual([span([8, 30], [10, 0]), span([11, 0], [13, 0])]);
+    });
+  });
+
   it('rejects out-of-range travel buffers', async () => {
     const f = await fixture('conflict-badinput@example.com');
     await schoolAndDoctor(f.db, f);

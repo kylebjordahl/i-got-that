@@ -377,40 +377,21 @@ export async function reconcileMemberConflicts(
       );
     if (resolved.length === 0) continue; // every winner vanished — leave the loser whole
     // Widen each cut by its travel buffers so the trimmed halves pull back,
-    // leaving a gap the pick-up / drop-off task lands in.
+    // leaving a gap the pick-up / drop-off task lands in. A side marked "not
+    // needed" (a cancel_day for that side) stretches that resolution's own cut
+    // to the loser's edge. Every resolution contributes its own cut and they
+    // are subtracted together, so decisions on the same day stack: a later
+    // conflict can't bring back a half an earlier one dropped.
+    const loserStart = loser.dtstart;
     const cuts = resolved.map(({ meta, w }) => ({
-      dtstart: new Date(w.dtstart.getTime() - meta.travelBeforeMin * MIN),
-      dtend: new Date((w.dtend as Date).getTime() + meta.travelAfterMin * MIN),
+      dtstart: meta.beforeNeeded
+        ? new Date(w.dtstart.getTime() - meta.travelBeforeMin * MIN)
+        : loserStart,
+      dtend: meta.afterNeeded
+        ? new Date((w.dtend as Date).getTime() + meta.travelAfterMin * MIN)
+        : loserEnd,
     }));
-    let segments = subtractIntervals(
-      { dtstart: loser.dtstart, dtend: loserEnd },
-      cuts,
-    );
-    // Per-side "not needed" drops the leading / trailing half of the loser (a
-    // cancel_day for that side). With multiple winners, "before" is governed by
-    // the earliest winner and "after" by the latest.
-    const earliest = resolved.reduce((a, b) =>
-      b.w.dtstart < a.w.dtstart ? b : a,
-    );
-    const latest = resolved.reduce((a, b) =>
-      (b.w.dtend as Date) > (a.w.dtend as Date) ? b : a,
-    );
-    const first = segments[0];
-    if (
-      !earliest.meta.beforeNeeded &&
-      first &&
-      first.dtstart.getTime() === loser.dtstart.getTime()
-    ) {
-      segments = segments.slice(1);
-    }
-    const last = segments[segments.length - 1];
-    if (
-      !latest.meta.afterNeeded &&
-      last &&
-      last.dtend.getTime() === loserEnd.getTime()
-    ) {
-      segments = segments.slice(0, -1);
-    }
+    const segments = subtractIntervals({ dtstart: loserStart, dtend: loserEnd }, cuts);
     maskedLoserKeys.add(loserKey);
     result.masksApplied++;
     segments.forEach((seg, i) => {
