@@ -1237,6 +1237,33 @@ class ConflictEventRef {
   }
 }
 
+/// What's left of a conflict's loser around its winner (see
+/// [Conflict.loserRemaining]).
+class LoserRemaining {
+  LoserRemaining({
+    required this.start,
+    required this.end,
+    this.keptBefore = false,
+    this.keptAfter = false,
+  });
+
+  final DateTime start;
+  final DateTime end;
+
+  /// Other parts of the loser are still on the calendar that day before /
+  /// after this span — what skipping that half would also drop, since "not
+  /// needed" runs to the event's own edge.
+  final bool keptBefore;
+  final bool keptAfter;
+
+  factory LoserRemaining.fromJson(Map<String, dynamic> j) => LoserRemaining(
+    start: parseTimestamp(j['dtstart']),
+    end: parseTimestamp(j['dtend']),
+    keptBefore: j['keptBefore'] as bool? ?? false,
+    keptAfter: j['keptAfter'] as bool? ?? false,
+  );
+}
+
 /// An agenda overlap on one member's unified calendar — they can't be in two
 /// places at once. The lower-priority [loser] is the one that would be split or
 /// trimmed around the higher-priority [winner] if resolved.
@@ -1248,6 +1275,8 @@ class Conflict {
     required this.winner,
     this.status = 'pending',
     this.suggestedTravelMin,
+    this.loserRemaining,
+    this.loserAlreadyCleared = false,
   });
 
   final String id;
@@ -1265,14 +1294,48 @@ class Conflict {
   /// either end isn't geocoded, in which case the handles start at zero.
   final int? suggestedTravelMin;
 
-  factory Conflict.fromJson(Map<String, dynamic> j) => Conflict(
-    id: j['id'] as String,
-    familyMemberId: j['familyMemberId'] as String,
-    loser: ConflictEventRef.fromJson(j['loser'] as Map<String, dynamic>),
-    winner: ConflictEventRef.fromJson(j['winner'] as Map<String, dynamic>),
-    status: j['status'] as String? ?? 'pending',
-    suggestedTravelMin: j['suggestedTravelMin'] as int?,
-  );
+  /// The part of [loser] still on the calendar around [winner], after every
+  /// *other* resolved conflict on the same event has cut it (an earlier split
+  /// that day may already have trimmed it). Null when the server sent none —
+  /// the loser can't be cut, or an older server — and the sheet falls back to
+  /// [loser]'s own span.
+  final LoserRemaining? loserRemaining;
+
+  /// Other decisions that day already removed every part of [loser] that
+  /// [winner] overlaps, so there is nothing left for this one to split.
+  final bool loserAlreadyCleared;
+
+  /// [loser] at the times the calendar currently has it around [winner]
+  /// ([loserRemaining]), or as listed when the server sent none.
+  ConflictEventRef get currentLoser {
+    final rem = loserRemaining;
+    if (rem == null) return loser;
+    return ConflictEventRef(
+      summary: loser.summary,
+      location: loser.location,
+      allDay: loser.allDay,
+      start: rem.start,
+      end: rem.end,
+    );
+  }
+
+  factory Conflict.fromJson(Map<String, dynamic> j) {
+    final rem = j['loserRemaining'];
+    return Conflict(
+      id: j['id'] as String,
+      familyMemberId: j['familyMemberId'] as String,
+      loser: ConflictEventRef.fromJson(j['loser'] as Map<String, dynamic>),
+      winner: ConflictEventRef.fromJson(j['winner'] as Map<String, dynamic>),
+      status: j['status'] as String? ?? 'pending',
+      suggestedTravelMin: j['suggestedTravelMin'] as int?,
+      loserRemaining: rem is Map<String, dynamic>
+          ? LoserRemaining.fromJson(rem)
+          : null,
+      // Present-but-null is the server saying "already cleared"; absent is
+      // "not computed".
+      loserAlreadyCleared: j.containsKey('loserRemaining') && rem == null,
+    );
+  }
 }
 
 /// A member's designated unified-calendar target (the write-through mirror).

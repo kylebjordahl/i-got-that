@@ -366,5 +366,43 @@ void main() {
         expect(unpinned.suggestedTravelMin, isNull);
       },
     );
+
+    test("reads what's left of a conflict's loser, or that none is", () {
+      Map<String, dynamic> ev(String summary) => {
+        'summary': summary,
+        'allDay': false,
+        'dtstart': '2026-07-06T15:30:00.000Z',
+      };
+      Conflict parse(Map<String, dynamic> extra) => Conflict.fromJson({
+        'id': 'c1',
+        'familyMemberId': 'm1',
+        'loser': ev('School day'),
+        'winner': ev('Doctor'),
+        ...extra,
+      });
+
+      final trimmed = parse({
+        'loserRemaining': {
+          'dtstart': '2026-07-06T18:15:00.000Z',
+          'dtend': '2026-07-06T22:00:00.000Z',
+          'keptBefore': true,
+          'keptAfter': false,
+        },
+      });
+      final at = DateTime.utc(2026, 7, 6, 18, 15);
+      expect(trimmed.loserRemaining!.start.toUtc(), at);
+      expect(trimmed.loserRemaining!.keptBefore, isTrue);
+      expect(trimmed.loserAlreadyCleared, isFalse);
+      expect(trimmed.currentLoser.start.toUtc(), at);
+      expect(trimmed.currentLoser.summary, 'School day');
+
+      final cleared = parse({'loserRemaining': null});
+      expect(cleared.loserRemaining, isNull);
+      expect(cleared.loserAlreadyCleared, isTrue);
+
+      final older = parse({});
+      expect(older.loserAlreadyCleared, isFalse);
+      expect(older.currentLoser, same(older.loser));
+    });
   });
 }
