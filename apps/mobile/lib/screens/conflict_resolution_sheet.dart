@@ -238,12 +238,28 @@ class _ConflictResolutionSheetState
     // starts at the winner (or an all-day / open-ended event that can't be cut
     // on the timeline) collapses to just the two overlapping events.
     final splittable =
+        !_conflict.loserAlreadyCleared &&
         !loser.allDay &&
         !winner.allDay &&
         loser.end != null &&
         winner.end != null;
-    final lStart = loser.start.toLocal();
-    final lEnd = loser.end?.toLocal();
+    // The loser as the calendar has it now around this winner: another split
+    // that day may already have trimmed it, so the halves start/end where the
+    // event currently does, not at its original times.
+    final remaining = _conflict.loserRemaining;
+    final lStart = (remaining?.start ?? loser.start).toLocal();
+    final lEnd = (remaining?.end ?? loser.end)?.toLocal();
+    // Skipping a half drops the event to its edge for the whole day, including
+    // any part another decision kept — say so when that's more than shown.
+    final dropsMoreBefore = remaining?.keptBefore ?? false;
+    final dropsMoreAfter = remaining?.keptAfter ?? false;
+    final loserEndAt = loser.end;
+    final trimmedStart =
+        remaining != null && remaining.start.isAfter(loser.start);
+    final trimmedEnd =
+        remaining != null &&
+        loserEndAt != null &&
+        remaining.end.isBefore(loserEndAt);
     final wStart = winner.start.toLocal();
     final wEnd = winner.end?.toLocal();
 
@@ -351,6 +367,14 @@ class _ConflictResolutionSheetState
                   onDragMinutes: (dy) =>
                       _dragTravel(before: true, dy: dy, max: maxBefore),
                 ),
+                if (!_beforeNeeded && dropsMoreBefore) ...[
+                  const SizedBox(height: 7),
+                  _NoteRow(
+                    'Skipping also drops ${_titleOf(loser)} from '
+                    '${clockShort(loser.start.toLocal())}, including time '
+                    'another split kept.',
+                  ),
+                ],
                 if (_beforeNeeded && travelBefore.round() > 0) ...[
                   const SizedBox(height: 7),
                   _TravelGapBlock(
@@ -386,14 +410,40 @@ class _ConflictResolutionSheetState
                   onDragMinutes: (dy) =>
                       _dragTravel(before: false, dy: dy, max: maxAfter),
                 ),
+                if (!_afterNeeded && dropsMoreAfter) ...[
+                  const SizedBox(height: 7),
+                  _NoteRow(
+                    'Skipping also drops ${_titleOf(loser)} until '
+                    '${clockShort(loser.end!.toLocal())}, including time '
+                    'another split kept.',
+                  ),
+                ],
               ],
               if (!hasBefore && !hasAfter) ...[
                 const SizedBox(height: 3),
-                _NoteRow(
-                  'The visit covers the whole event, so confirming removes '
-                  '${_titleOf(loser)} for the day.',
-                ),
+                if (trimmedStart || trimmedEnd)
+                  _NoteRow(
+                    'The visit covers what\'s left of ${_titleOf(loser)} '
+                    'around it, so confirming removes that part.',
+                  )
+                else
+                  _NoteRow(
+                    'The visit covers the whole event, so confirming removes '
+                    '${_titleOf(loser)} for the day.',
+                  ),
               ],
+            ] else if (_conflict.loserAlreadyCleared) ...[
+              _FixedBlock(
+                title: _titleOf(winner),
+                timeLabel: _rangeLabel(winner),
+                fullWidth: true,
+              ),
+              const SizedBox(height: 7),
+              _NoteRow(
+                'Another split that day already took $memberName out of '
+                '${_titleOf(loser)} for this time, so there is nothing left '
+                'to split.',
+              ),
             ] else ...[
               // Can't cut cleanly on the timeline (all-day / open-ended): just name
               // the two colliding events.

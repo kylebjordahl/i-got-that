@@ -44,7 +44,11 @@ import { type Context, Hono } from 'hono';
 import type { HonoEnv } from '../env.js';
 import { requireFamilyMember } from '../middleware/auth.js';
 import { ownersOf, removeClaimEvent, syncClaimEvents } from '../services/claim.js';
-import { hydrateConflicts, scheduleStamp } from '../services/conflicts.js';
+import {
+  hydrateConflicts,
+  remainingLoserSpans,
+  scheduleStamp,
+} from '../services/conflicts.js';
 import { enqueueReconcile, getProductionRegistry, syncFamilyMirror } from '../services/mirror.js';
 import { type PipelineContext, resynthesizeFeed, runPipeline } from '../services/pipeline.js';
 import { buildKekKeySet } from '../lib/secrets.js';
@@ -714,6 +718,7 @@ taskRoutes.get('/conflicts', async (c) => {
   // Rows whose events have vanished are dropped by the hydrator (they clear on
   // the next reconcile).
   const hydrated = await hydrateConflicts(db, [familyId], rows);
+  const remaining = await remainingLoserSpans(db, familyId, hydrated);
   const out = hydrated.map(({ conflict: r, loser, winner }) => ({
     id: r.id,
     familyMemberId: r.familyMemberId,
@@ -721,6 +726,12 @@ taskRoutes.get('/conflicts', async (c) => {
     createdAt: r.createdAt,
     loser,
     winner,
+    // The loser as the calendar has it around this winner right now: another
+    // resolved conflict on the same day may already have cut it, and the sheet
+    // should draw the halves from what's actually left, not the original span.
+    // Null: those other decisions already removed everything this winner
+    // overlaps. Absent: the loser can't be cut (all-day / open-ended).
+    ...(remaining.has(r.id) ? { loserRemaining: remaining.get(r.id) } : {}),
     // Splitting the loser around the winner means leaving one place and
     // coming back to it, so both buffers are the same trip. Suggested only
     // when both ends are geocoded — the sheet leaves the handles at zero

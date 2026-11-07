@@ -899,6 +899,91 @@ describe('conflict detection & masking', () => {
       futureAt(3, ...b).toISOString(),
     ];
 
+    /** Add the dentist appointment and list the pending conflict it opens. */
+    async function pendingDentist(
+      s: Awaited<ReturnType<typeof firstResolved>>,
+      from: [number, number],
+      to: [number, number],
+    ) {
+      await s.f.db.insert(calendarEvents).values({
+        familyId: s.f.familyId,
+        familyMemberId: s.f.childId,
+        provenance: 'human',
+        synthKey: 'ext:dentist:',
+        externalUid: 'dentist',
+        dtstart: futureAt(3, ...from),
+        dtend: futureAt(3, ...to),
+        summary: 'Dentist',
+        contentHash: 'dentist-hash',
+      });
+      await reconcileMemberConflicts(s.f.db, s.f.childId);
+      const api = await call(`/families/${s.f.familyId}/conflicts`, bearer(s.f.admin.token));
+      const { conflicts: list } = (await api.json()) as {
+        conflicts: {
+          winner: { summary: string };
+          loserRemaining?: {
+            dtstart: string;
+            dtend: string;
+            keptBefore: boolean;
+            keptAfter: boolean;
+          } | null;
+        }[];
+      };
+      expect(list).toHaveLength(1);
+      expect(list[0]!.winner.summary).toBe('Dentist');
+      return list[0]!;
+    }
+
+    it('lists a second conflict with the day as the first split left it', async () => {
+      const s = await firstResolved('stack-remaining@example.com', { travelAfterMin: 15 });
+      const c = await pendingDentist(s, [13, 0], [14, 0]);
+      // Not the original 08:30–15:00: the doctor split already took 10:00–11:15.
+      expect(c.loserRemaining).toEqual({
+        dtstart: futureAt(3, 11, 15).toISOString(),
+        dtend: futureAt(3, 15, 0).toISOString(),
+        // The 08:30–10:00 morning is still there, so skipping the dentist's
+        // "before" half would drop it too.
+        keptBefore: true,
+        keptAfter: false,
+      });
+    });
+
+    it('does not count a part of the day an earlier decision already dropped', async () => {
+      const s = await firstResolved('stack-remaining-skipped@example.com', {
+        beforeNeeded: false,
+      });
+      const c = await pendingDentist(s, [13, 0], [14, 0]);
+      expect(c.loserRemaining).toEqual({
+        dtstart: futureAt(3, 11, 0).toISOString(),
+        dtend: futureAt(3, 15, 0).toISOString(),
+        keptBefore: false,
+        keptAfter: false,
+      });
+    });
+
+    it('lists null when an earlier decision already removed that part of the day', async () => {
+      const s = await firstResolved('stack-remaining-gone@example.com', { afterNeeded: false });
+      const c = await pendingDentist(s, [13, 0], [14, 0]);
+      expect(c.loserRemaining).toBeNull();
+    });
+
+    it('a lone conflict lists its loser\'s own span, ignoring its own resolution', async () => {
+      const s = await firstResolved('stack-remaining-own@example.com', { afterNeeded: false });
+      const api = await call(
+        `/families/${s.f.familyId}/conflicts?status=resolved`,
+        bearer(s.f.admin.token),
+      );
+      const { conflicts: list } = (await api.json()) as {
+        conflicts: { loserRemaining?: unknown }[];
+      };
+      expect(list[0]!.loserRemaining).toEqual({
+        dtstart: futureAt(3, 8, 30).toISOString(),
+        dtend: futureAt(3, 15, 0).toISOString(),
+        keptBefore: false,
+        keptAfter: false,
+      });
+    });
+
     it('plain + plain: the day is cut around both appointments', async () => {
       const s = await firstResolved('stack-plain@example.com', {});
       await secondResolved(s, [13, 0], [14, 0]);

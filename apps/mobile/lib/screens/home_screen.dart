@@ -1075,7 +1075,7 @@ class _ConflictCard extends StatelessWidget {
               const SizedBox(height: 10),
               ConflictEventRow(event: conflict.winner),
               const SizedBox(height: 6),
-              ConflictEventRow(event: conflict.loser),
+              ConflictEventRow(event: conflict.currentLoser),
               const SizedBox(height: 10),
               Row(
                 children: [
