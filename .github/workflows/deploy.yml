@@ -218,6 +218,8 @@ jobs:
         if: steps.web-client-cache.outputs.cache-hit != 'true'
         with:
           channel: stable
+          # Pinned, with .fvmrc: bump all of them together (AGENTS.md).
+          flutter-version: 3.47.9
           cache: true
       - name: Build web client
         if: steps.web-client-cache.outputs.cache-hit != 'true'
@@ -478,6 +480,8 @@ jobs:
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
+          # Pinned, with .fvmrc: bump all of them together (AGENTS.md).
+          flutter-version: 3.47.9
           cache: true
 
       # Regenerates the gitignored ephemeral iOS project files; the committed
@@ -633,6 +637,8 @@ jobs:
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
+          # Pinned, with .fvmrc: bump all of them together (AGENTS.md).
+          flutter-version: 3.47.9
           cache: true
 
       # Regenerates the gitignored ephemeral Android files; the committed
