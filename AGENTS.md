@@ -94,8 +94,10 @@ Backend: Cloudflare Workers + Hono + D1 + Drizzle. Client: Flutter (Riverpod, di
 - **Flutter via `fvm`, pinned to 3.47.9** in `.fvmrc` and in every
   `subosito/flutter-action` step (`ci.yml`, `deploy.yml`) — bump them together,
   on purpose. An unpinned `stable` once broke CI overnight (3.50 fails analyze
-  on the `material.dart` deprecation and needs AGP ≥ 9.1.1). Don't call bare
-  `flutter` for local work.
+  on the material/cupertino import deprecations and needs AGP ≥ 9.1.1). iOS
+  deploys still take `latest-stable` Xcode, so an iOS build failure after a
+  runner image update is a cue to revisit the pin. Don't call bare `flutter`
+  for local work.
   `pubspec.yaml`'s floor is Dart 3.12 / Flutter 3.44 — that floor *is* the
   language version `dart format` reads, so it also selects the formatter's
   style. CI runs `dart format --set-exit-if-changed`, so an unformatted file
