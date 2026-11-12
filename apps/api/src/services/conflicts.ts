@@ -224,6 +224,11 @@ export interface RemainingLoserSpan {
    *  span — what skipping this conflict's half would also drop. */
   keptBefore: boolean;
   keptAfter: boolean;
+  /** Where that kept time starts (before) / ends (after) — not necessarily
+   *  the loser's own edge, since another decision may already have dropped
+   *  the very start or end of it. Null when nothing is kept on that side. */
+  keptFrom: Date | null;
+  keptUntil: Date | null;
 }
 
 /**
@@ -299,11 +304,18 @@ export async function remainingLoserSpans(
     }
     const dtstart = touching[0]!.dtstart;
     const dtend = touching[touching.length - 1]!.dtend;
+    // Segments are disjoint and sorted, so the kept time before this span
+    // starts at the first segment that ends by its start, and the kept time
+    // after ends at the last one that starts at or after its end.
+    const before = segments.filter((seg) => seg.dtend <= dtstart);
+    const after = segments.filter((seg) => seg.dtstart >= dtend);
     out.set(h.conflict.id, {
       dtstart,
       dtend,
-      keptBefore: segments.some((seg) => seg.dtend <= dtstart),
-      keptAfter: segments.some((seg) => seg.dtstart >= dtend),
+      keptBefore: before.length > 0,
+      keptAfter: after.length > 0,
+      keptFrom: before[0]?.dtstart ?? null,
+      keptUntil: after[after.length - 1]?.dtend ?? null,
     });
   }
   return out;
