@@ -1245,6 +1245,8 @@ class LoserRemaining {
     required this.end,
     this.keptBefore = false,
     this.keptAfter = false,
+    this.keptFrom,
+    this.keptUntil,
   });
 
   final DateTime start;
@@ -1256,11 +1258,20 @@ class LoserRemaining {
   final bool keptBefore;
   final bool keptAfter;
 
+  /// Where that kept time starts (before) / ends (after). Not necessarily the
+  /// loser's own edge: another decision may already have dropped the very
+  /// start or end of the day. Null when nothing is kept on that side, or from
+  /// an older server.
+  final DateTime? keptFrom;
+  final DateTime? keptUntil;
+
   factory LoserRemaining.fromJson(Map<String, dynamic> j) => LoserRemaining(
     start: parseTimestamp(j['dtstart']),
     end: parseTimestamp(j['dtend']),
     keptBefore: j['keptBefore'] as bool? ?? false,
     keptAfter: j['keptAfter'] as bool? ?? false,
+    keptFrom: j['keptFrom'] == null ? null : parseTimestamp(j['keptFrom']),
+    keptUntil: j['keptUntil'] == null ? null : parseTimestamp(j['keptUntil']),
   );
 }
 

@@ -926,6 +926,8 @@ describe('conflict detection & masking', () => {
             dtend: string;
             keptBefore: boolean;
             keptAfter: boolean;
+            keptFrom: string | null;
+            keptUntil: string | null;
           } | null;
         }[];
       };
@@ -945,6 +947,8 @@ describe('conflict detection & masking', () => {
         // "before" half would drop it too.
         keptBefore: true,
         keptAfter: false,
+        keptFrom: futureAt(3, 8, 30).toISOString(),
+        keptUntil: null,
       });
     });
 
@@ -958,6 +962,8 @@ describe('conflict detection & masking', () => {
         dtend: futureAt(3, 15, 0).toISOString(),
         keptBefore: false,
         keptAfter: false,
+        keptFrom: null,
+        keptUntil: null,
       });
     });
 
@@ -981,6 +987,8 @@ describe('conflict detection & masking', () => {
         dtend: futureAt(3, 15, 0).toISOString(),
         keptBefore: false,
         keptAfter: false,
+        keptFrom: null,
+        keptUntil: null,
       });
     });
 
@@ -1037,6 +1045,196 @@ describe('conflict detection & masking', () => {
       const s = await firstResolved('stack-second-after@example.com', {});
       await secondResolved(s, [13, 0], [14, 0], { afterNeeded: false });
       expect(await segments(s)).toEqual([span([8, 30], [10, 0]), span([11, 0], [13, 0])]);
+    });
+  });
+
+  describe("what's left of a split day, as GET /conflicts lists it", () => {
+    type Remaining = {
+      dtstart: string;
+      dtend: string;
+      keptBefore: boolean;
+      keptAfter: boolean;
+      keptFrom: string | null;
+      keptUntil: string | null;
+    } | null;
+    const at = (h: number, m = 0) => futureAt(3, h, m).toISOString();
+
+    /** An 08:30–15:00 school day, plus helpers to add / decide appointments. */
+    async function day(email: string) {
+      const f = await fixture(email);
+      const blKey = 'bl:' + f.linkId + ':day';
+      const schoolDay = (memberId: string) =>
+        f.db.insert(calendarEvents).values({
+          familyId: f.familyId,
+          familyMemberId: memberId,
+          provenance: 'synthesized',
+          synthKey: blKey,
+          linkId: f.linkId,
+          dtstart: futureAt(3, 8, 30),
+          dtend: futureAt(3, 15, 0),
+          summary: 'School day',
+          contentHash: 'bl-hash',
+        });
+      await schoolDay(f.childId);
+      const add = async (
+        uid: string,
+        from: [number, number],
+        to: [number, number],
+        memberId = f.childId,
+      ) => {
+        await f.db.insert(calendarEvents).values({
+          familyId: f.familyId,
+          familyMemberId: memberId,
+          provenance: 'human',
+          synthKey: `ext:${uid}:`,
+          externalUid: uid,
+          dtstart: futureAt(3, ...from),
+          dtend: futureAt(3, ...to),
+          summary: uid,
+          contentHash: `${uid}-hash`,
+        });
+        await reconcileMemberConflicts(f.db, memberId);
+      };
+      /** Resolve `uid`'s conflict through the route. */
+      const resolve = async (
+        uid: string,
+        params: Record<string, unknown> = {},
+        memberId = f.childId,
+      ) => {
+        const c = (
+          await f.db
+            .select()
+            .from(conflicts)
+            .where(
+              and(
+                eq(conflicts.familyMemberId, memberId),
+                eq(conflicts.winnerKey, `ext:${uid}:`),
+              ),
+            )
+        )[0]!;
+        const r = await call(
+          `/families/${f.familyId}/conflicts/${c.id}/resolve`,
+          authed(f.admin.token, params),
+        );
+        expect(r.status).toBe(200);
+      };
+      /** The listed `loserRemaining` of `uid`'s conflict (any status). The
+       *  whole family is listed, so every member's decisions are in play. */
+      const remaining = async (uid: string, memberId = f.childId) => {
+        const api = await call(
+          `/families/${f.familyId}/conflicts?status=all`,
+          bearer(f.admin.token),
+        );
+        const { conflicts: list } = (await api.json()) as {
+          conflicts: {
+            familyMemberId: string;
+            winner: { summary: string };
+            loserRemaining?: Remaining;
+          }[];
+        };
+        const c = list.find(
+          (x) => x.familyMemberId === memberId && x.winner.summary === uid,
+        );
+        expect(c, `${uid}'s conflict is listed`).toBeTruthy();
+        return c!.loserRemaining;
+      };
+      return { f, blKey, schoolDay, add, resolve, remaining };
+    }
+
+    it('keptFrom is where the kept morning starts, not the day\'s own start', async () => {
+      const d = await day('kept-from@example.com');
+      // 08:45–09:00 call, skipping school before it (drops 08:30–09:00); a
+      // doctor visit 10–11 split plainly. The kept morning is 09:00–10:00.
+      await d.add('call', [8, 45], [9, 0]);
+      await d.resolve('call', { beforeNeeded: false });
+      await d.add('doctor', [10, 0], [11, 0]);
+      await d.resolve('doctor');
+      await d.add('dentist', [13, 0], [14, 0]);
+      expect(await d.remaining('dentist')).toEqual({
+        dtstart: at(11),
+        dtend: at(15),
+        keptBefore: true,
+        keptAfter: false,
+        keptFrom: at(9),
+        keptUntil: null,
+      });
+    });
+
+    it('keptAfter / keptUntil when the kept time is later in the day', async () => {
+      const d = await day('kept-after@example.com');
+      // Afternoon dentist 13–14 split, with 15 min travel back; then a
+      // morning doctor visit: skipping its "after" would drop 14:15–15:00 too.
+      await d.add('dentist', [13, 0], [14, 0]);
+      await d.resolve('dentist', { travelAfterMin: 15 });
+      await d.add('doctor', [10, 0], [11, 0]);
+      expect(await d.remaining('doctor')).toEqual({
+        dtstart: at(8, 30),
+        dtend: at(13),
+        keptBefore: false,
+        keptAfter: true,
+        keptFrom: null,
+        keptUntil: at(15),
+      });
+    });
+
+    it('spans the segments either side when the winner bridges an earlier cut', async () => {
+      const d = await day('kept-bridge@example.com');
+      await d.add('doctor', [10, 0], [11, 0]);
+      await d.resolve('doctor');
+      // 09:30–12:00 overlaps both 08:30–10:00 and 11:00–15:00.
+      await d.add('dentist', [9, 30], [12, 0]);
+      expect(await d.remaining('dentist')).toEqual({
+        dtstart: at(8, 30),
+        dtend: at(15),
+        keptBefore: false,
+        keptAfter: false,
+        keptFrom: null,
+        keptUntil: null,
+      });
+    });
+
+    it('ignores a resolved conflict whose appointment has since vanished', async () => {
+      const d = await day('kept-vanished@example.com');
+      await d.add('doctor', [10, 0], [11, 0], d.f.childId);
+      await d.resolve('doctor');
+      await d.add('dentist', [13, 0], [14, 0]);
+      // The doctor visit is gone before any reconcile has cleared its row.
+      await d.f.db
+        .delete(calendarEvents)
+        .where(
+          and(
+            eq(calendarEvents.familyMemberId, d.f.childId),
+            eq(calendarEvents.synthKey, 'ext:doctor:'),
+          ),
+        );
+      expect((await d.remaining('dentist'))!).toMatchObject({
+        dtstart: at(8, 30),
+        dtend: at(15),
+        keptBefore: false,
+      });
+    });
+
+    it("never applies another member's decisions on a day with the same key", async () => {
+      const d = await day('kept-sibling@example.com');
+      const sib = await call(
+        `/families/${d.f.familyId}/members`,
+        authed(d.f.admin.token, { relationName: 'sibling', requiresCaretaker: true }),
+      );
+      const { member: sibling } = (await sib.json()) as { member: { id: string } };
+      // The sibling has the same school day (same synth key) and its own split.
+      await d.schoolDay(sibling.id);
+      await d.add('sib-doctor', [10, 0], [11, 0], sibling.id);
+      await d.resolve('sib-doctor', { afterNeeded: false }, sibling.id);
+
+      await d.add('dentist', [13, 0], [14, 0]);
+      expect(await d.remaining('dentist')).toEqual({
+        dtstart: at(8, 30),
+        dtend: at(15),
+        keptBefore: false,
+        keptAfter: false,
+        keptFrom: null,
+        keptUntil: null,
+      });
     });
   });
 

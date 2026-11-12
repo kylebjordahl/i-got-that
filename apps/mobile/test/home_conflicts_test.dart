@@ -552,6 +552,7 @@ void main() {
         start: at(11, 15),
         end: at(15, 0),
         keptBefore: true,
+        keptFrom: at(8, 30),
       ),
     );
     await tester.pumpWidget(appWith(dentist));
@@ -580,6 +581,41 @@ void main() {
     await tester.tap(find.byIcon(Icons.delete_outline_rounded).first);
     await tester.pumpAndSettle();
     expect(find.text(morningNote), findsOneWidget);
+  });
+
+  testWidgets('the skip note names where the kept time ends', (tester) async {
+    tester.view.physicalSize = const Size(600, 1600);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    DateTime at(int h, int m) => DateTime(day.year, day.month, day.day, h, m);
+    // A 1–2 PM split already happened, and a "not needed" at the very end of
+    // the day dropped 2:45–3:00; what's kept after the doctor ends at 2:45.
+    final doctor = Conflict(
+      id: 'c4',
+      familyMemberId: 'theo',
+      loser: conflict.loser,
+      winner: conflict.winner,
+      loserRemaining: LoserRemaining(
+        start: at(8, 30),
+        end: at(13, 0),
+        keptAfter: true,
+        keptUntil: at(14, 45),
+      ),
+    );
+    await tester.pumpWidget(appWith(doctor));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Review & resolve'));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byIcon(Icons.delete_outline_rounded).last);
+    await tester.pumpAndSettle();
+    // Not "until 3:00", the event's own end: that part is already gone.
+    const afternoonNote =
+        'Skipping also drops School day until 2:45, including time another '
+        'split kept.';
+    expect(find.text(afternoonNote), findsOneWidget);
   });
 
   testWidgets('a day another split already cleared has nothing to split', (

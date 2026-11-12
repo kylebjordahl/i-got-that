@@ -253,6 +253,10 @@ class _ConflictResolutionSheetState
     // any part another decision kept — say so when that's more than shown.
     final dropsMoreBefore = remaining?.keptBefore ?? false;
     final dropsMoreAfter = remaining?.keptAfter ?? false;
+    // Where that kept time begins / ends (an older server sends neither, so
+    // fall back to the event's own edges).
+    final keptFrom = remaining?.keptFrom ?? loser.start;
+    final keptUntil = remaining?.keptUntil ?? loser.end;
     final loserEndAt = loser.end;
     final trimmedStart =
         remaining != null && remaining.start.isAfter(loser.start);
@@ -371,7 +375,7 @@ class _ConflictResolutionSheetState
                   const SizedBox(height: 7),
                   _NoteRow(
                     'Skipping also drops ${_titleOf(loser)} from '
-                    '${clockShort(loser.start.toLocal())}, including time '
+                    '${clockShort(keptFrom.toLocal())}, including time '
                     'another split kept.',
                   ),
                 ],
@@ -414,7 +418,7 @@ class _ConflictResolutionSheetState
                   const SizedBox(height: 7),
                   _NoteRow(
                     'Skipping also drops ${_titleOf(loser)} until '
-                    '${clockShort(loser.end!.toLocal())}, including time '
+                    '${clockShort(keptUntil!.toLocal())}, including time '
                     'another split kept.',
                   ),
                 ],

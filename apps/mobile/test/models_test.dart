@@ -387,11 +387,18 @@ void main() {
           'dtend': '2026-07-06T22:00:00.000Z',
           'keptBefore': true,
           'keptAfter': false,
+          'keptFrom': '2026-07-06T16:00:00.000Z',
+          'keptUntil': null,
         },
       });
       final at = DateTime.utc(2026, 7, 6, 18, 15);
       expect(trimmed.loserRemaining!.start.toUtc(), at);
       expect(trimmed.loserRemaining!.keptBefore, isTrue);
+      expect(
+        trimmed.loserRemaining!.keptFrom!.toUtc(),
+        DateTime.utc(2026, 7, 6, 16),
+      );
+      expect(trimmed.loserRemaining!.keptUntil, isNull);
       expect(trimmed.loserAlreadyCleared, isFalse);
       expect(trimmed.currentLoser.start.toUtc(), at);
       expect(trimmed.currentLoser.summary, 'School day');
