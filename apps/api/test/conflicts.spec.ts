@@ -1144,9 +1144,12 @@ describe('conflict detection & masking', () => {
     it('keptFrom is where the kept morning starts, not the day\'s own start', async () => {
       const d = await day('kept-from@example.com');
       // 08:45–09:00 call, skipping school before it (drops 08:30–09:00); a
-      // doctor visit 10–11 split plainly. The kept morning is 09:00–10:00.
+      // 09:30–09:45 break and a doctor visit 10–11, both split plainly. The
+      // kept morning is 09:00–09:30 and 09:45–10:00: it starts at 09:00.
       await d.add('call', [8, 45], [9, 0]);
       await d.resolve('call', { beforeNeeded: false });
+      await d.add('break', [9, 30], [9, 45]);
+      await d.resolve('break');
       await d.add('doctor', [10, 0], [11, 0]);
       await d.resolve('doctor');
       await d.add('dentist', [13, 0], [14, 0]);
@@ -1162,10 +1165,17 @@ describe('conflict detection & masking', () => {
 
     it('keptAfter / keptUntil when the kept time is later in the day', async () => {
       const d = await day('kept-after@example.com');
-      // Afternoon dentist 13–14 split, with 15 min travel back; then a
-      // morning doctor visit: skipping its "after" would drop 14:15–15:00 too.
+      // Afternoon dentist 13–14 split, with 15 min travel back, a 14:25–14:30
+      // call split plainly, and a 14:45 pick-up skipping the rest of the day
+      // (drops 14:45–15:00). Then a morning doctor visit: skipping its
+      // "after" would also drop 11:00–13:00, 14:15–14:25 and 14:30–14:45 —
+      // kept time that ends at 14:45, not at the day's own 15:00.
       await d.add('dentist', [13, 0], [14, 0]);
       await d.resolve('dentist', { travelAfterMin: 15 });
+      await d.add('call', [14, 25], [14, 30]);
+      await d.resolve('call');
+      await d.add('pickup', [14, 45], [15, 0]);
+      await d.resolve('pickup', { afterNeeded: false });
       await d.add('doctor', [10, 0], [11, 0]);
       expect(await d.remaining('doctor')).toEqual({
         dtstart: at(8, 30),
@@ -1173,7 +1183,7 @@ describe('conflict detection & masking', () => {
         keptBefore: false,
         keptAfter: true,
         keptFrom: null,
-        keptUntil: at(15),
+        keptUntil: at(14, 45),
       });
     });
 
@@ -1207,10 +1217,13 @@ describe('conflict detection & masking', () => {
             eq(calendarEvents.synthKey, 'ext:doctor:'),
           ),
         );
-      expect((await d.remaining('dentist'))!).toMatchObject({
+      expect(await d.remaining('dentist')).toEqual({
         dtstart: at(8, 30),
         dtend: at(15),
         keptBefore: false,
+        keptAfter: false,
+        keptFrom: null,
+        keptUntil: null,
       });
     });
 
