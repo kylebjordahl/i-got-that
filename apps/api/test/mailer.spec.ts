@@ -11,9 +11,9 @@ function body(mime: string): string {
 
 describe('magic-link mail', () => {
   it('puts the token in the fragment, where no server logs it', () => {
-    expect(magicLinkUrl('https://igt.test/', 'abc')).toBe('https://igt.test/app/#magic=abc');
+    expect(magicLinkUrl('https://igt.test/', 'abc')).toBe('https://igt.test/#magic=abc');
     expect(magicLinkUrl('https://igt.test', 'abc', 'link')).toBe(
-      'https://igt.test/app/#link-email=abc',
+      'https://igt.test/#link-email=abc',
     );
   });
 
@@ -25,8 +25,8 @@ describe('magic-link mail', () => {
 
     expect(outbox.sent.map((m) => m.to)).toEqual(['a@example.com', 'b@example.com']);
     expect(outbox.sent[0]!.mime).toContain('Subject: Your I Got That sign-in link');
-    expect(body(outbox.sent[0]!.mime)).toContain('https://igt.test/app/#magic=t1');
+    expect(body(outbox.sent[0]!.mime)).toContain('https://igt.test/#magic=t1');
     expect(outbox.sent[1]!.mime).toContain('Subject: Add this email to your I Got That account');
-    expect(body(outbox.sent[1]!.mime)).toContain('https://igt.test/app/#link-email=t2');
+    expect(body(outbox.sent[1]!.mime)).toContain('https://igt.test/#link-email=t2');
   });
 });

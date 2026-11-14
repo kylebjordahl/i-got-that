@@ -2,8 +2,9 @@ import 'package:url_launcher/url_launcher.dart';
 import '../state/auth.dart';
 
 /// A public legal page (`privacy` or `terms`). The API worker serves these at
-/// the apex `/legal/…`, not under `/api`, so the origin is [base] less its
-/// `/api` suffix. On web (`/api`) that leaves a same-origin relative path;
+/// the root `/legal/…`, not under `/api`, so the origin is [base] less its
+/// `/api` suffix. Deployed, the app host 301s that to the marketing site
+/// (SITE_ORIGIN), as the legacy host does for older builds. On web (`/api`) that leaves a same-origin relative path;
 /// locally (`wrangler dev`, no prefix) the worker serves `/legal/…` at its
 /// root, so the URL is unchanged.
 String legalUrl(String doc, {String base = apiBaseUrl}) =>

@@ -18,8 +18,8 @@ final activeInviteTokenProvider = StateProvider<String?>(
   (ref) => inviteTokenFromUrl(),
 );
 
-/// Pull an `invite` token from the web launch URL (`…/app/?invite=TOKEN` or
-/// `…/app/#invite=TOKEN`). Null on native (no meaningful [Uri.base]) — native
+/// Pull an `invite` token from the web launch URL (`…/?invite=TOKEN` or
+/// `…/#invite=TOKEN`). Null on native (no meaningful [Uri.base]) — native
 /// invite links arrive asynchronously via `app_links` (see [inviteTokenFromUri]
 /// and the bootstrap in main.dart).
 String? inviteTokenFromUrl() {

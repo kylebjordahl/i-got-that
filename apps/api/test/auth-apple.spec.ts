@@ -199,7 +199,7 @@ describe('Web Sign in with Apple redirect flow', () => {
     );
     expect(res.status).toBe(302);
     expect(res.headers.get('location')).toBe(
-      'https://app.test/app/#auth_error=user_cancelled_authorize',
+      'https://app.test/#auth_error=user_cancelled_authorize',
     );
   });
 
@@ -214,7 +214,7 @@ describe('Web Sign in with Apple redirect flow', () => {
     );
     expect(res.status).toBe(302);
     expect(res.headers.get('location')).toBe(
-      'https://app.test/app/#auth_error=state_mismatch',
+      'https://app.test/#auth_error=state_mismatch',
     );
   });
 });

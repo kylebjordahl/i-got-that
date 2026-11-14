@@ -82,11 +82,11 @@ String _generateNonce([int length = 32]) {
   ).join();
 }
 
-/// The token from an emailed magic link, or null: `…/app/#magic=TOKEN`
-/// (sign in) or `…/app/#link-email=TOKEN` (add a login method — only ever
+/// The token from an emailed magic link, or null: `…/#magic=TOKEN`
+/// (sign in) or `…/#link-email=TOKEN` (add a login method — only ever
 /// attaches to the signed-in account). Web reads it from the launch fragment
 /// in [AuthController]; native gets the same URL from `app_links` (iOS
-/// Universal Links cover `/app/*`).
+/// Universal Links cover the app host).
 ({String token, bool linkOnly})? magicTokenFromUri(Uri uri) {
   if (uri.fragment.isEmpty) return null;
   final params = Uri.splitQueryString(uri.fragment);
@@ -226,19 +226,19 @@ class AuthController extends StateNotifier<AuthState> {
   }
 
   /// Web: begin Sign in with Apple by navigating to the API's redirect endpoint;
-  /// Apple sends the browser back to `/app/#session=…`, picked up on reload by
+  /// Apple sends the browser back to `/#session=…`, picked up on reload by
   /// [_restore].
   void loginWithApple() => startWebRedirect('$apiBaseUrl/auth/apple/start');
 
   /// Web: link Sign in with Apple to the *current* user (rather than logging in
   /// afresh). The session cookie rides along on the redirect, so the callback
   /// threads Apple onto this account and sends the browser back to
-  /// `/app/#linked=apple`. Native uses [linkWithAppleNative].
+  /// `/#linked=apple`. Native uses [linkWithAppleNative].
   void linkWithApple() =>
       startWebRedirect('$apiBaseUrl/auth/apple/start?link=1');
 
   /// Web: begin Sign in with Google by navigating to the API's redirect
-  /// endpoint. Google sends the browser back to `/app/#session=…` (picked up on
+  /// endpoint. Google sends the browser back to `/#session=…` (picked up on
   /// reload by [_restore]); the same consent grants calendar access, so the
   /// user's Google Calendar is connected automatically as part of logging in.
   void loginWithGoogle() => startWebRedirect('$apiBaseUrl/auth/google/start');
@@ -246,7 +246,7 @@ class AuthController extends StateNotifier<AuthState> {
   /// Web: connect a Google Calendar to the *current* user (regardless of how
   /// they signed in). The `igt_session` cookie rides along on the redirect, so
   /// the callback threads Google onto this account and connects the calendar,
-  /// then sends the browser back to `/app/#connected=google`.
+  /// then sends the browser back to `/#connected=google`.
   void connectGoogleCalendar() =>
       startWebRedirect('$apiBaseUrl/auth/google/start?link=1');
 

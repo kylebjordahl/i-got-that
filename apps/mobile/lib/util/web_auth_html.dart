@@ -8,7 +8,7 @@ import 'dart:html' as html;
 void startWebRedirect(String url) => html.window.location.assign(url);
 
 /// Consume `session` / `auth_error` / `linked` / `connected` / `magic` / `link-email` from
-/// the URL fragment an auth callback redirected us to (`/app/#session=…`,
+/// the URL fragment an auth callback redirected us to (`/#session=…`,
 /// `#linked=apple` / `#connected=google` for the link-a-method / connect-a-
 /// calendar flows, or `#magic=…` / `#link-email=…` from an emailed link), then strip the
 /// fragment so nothing lingers in the address bar or browser history.
