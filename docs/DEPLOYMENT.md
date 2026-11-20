@@ -834,7 +834,9 @@ binding is accepted before them.
    names that address as ORGANIZER, and whether calendar clients still apply
    updates and cancellations from a different organizer is untested. Move it
    only after checking that on staging (an invite sent before the switch,
-   updated after) in Gmail, iCloud and Outlook. `PUBLIC_ORIGIN` must be set too:
+   updated after) in Gmail, iCloud and Outlook. `igt.fyi` is already onboarded as a
+   sending domain (its DNS reports ready), so the switch itself is only the
+   `ORGANIZER_EMAIL` change. `PUBLIC_ORIGIN` must be set too:
    verification and unsubscribe links are built from it.
 4. **Deploy staging** and try it: add an email output for your own address,
    confirm the link, claim a task, and check the invite arrives with SPF/DKIM
