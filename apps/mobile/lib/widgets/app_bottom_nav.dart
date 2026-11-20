@@ -1,11 +1,13 @@
 import 'dart:ui' show ImageFilter;
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+
 import '../screens/family_screen.dart' show showAddMemberSheet;
 import '../state/family.dart';
 import '../state/nav.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_text.dart';
+import 'pressable.dart';
 
 /// Extra bottom clearance a floating SnackBar needs to sit above
 /// [PersistentAppNav] instead of behind it: the nav's own bottom gap (14) plus
@@ -183,41 +185,44 @@ class _NavTab extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Material(
-      color: active ? AppColors.indigo : Colors.transparent,
-      borderRadius: BorderRadius.circular(999),
-      child: InkWell(
-        onTap: onTap,
+    return Pressable(
+      scale: 0.92,
+      child: Material(
+        color: active ? AppColors.indigo : Colors.transparent,
         borderRadius: BorderRadius.circular(999),
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 180),
-          padding: EdgeInsets.symmetric(
-            horizontal: active ? 15 : 12,
-            vertical: 11,
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(
-                icon,
-                size: 20,
-                color: active
-                    ? const Color(0xFF17162B)
-                    : AppColors.textTertiary,
-              ),
-              if (active) ...[
-                const SizedBox(width: 7),
-                Text(
-                  label,
-                  style: font(
-                    kBodyFont,
-                    13,
-                    700,
-                    color: const Color(0xFF17162B),
-                  ),
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(999),
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 180),
+            padding: EdgeInsets.symmetric(
+              horizontal: active ? 15 : 12,
+              vertical: 11,
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  icon,
+                  size: 20,
+                  color: active
+                      ? const Color(0xFF17162B)
+                      : AppColors.textTertiary,
                 ),
+                if (active) ...[
+                  const SizedBox(width: 7),
+                  Text(
+                    label,
+                    style: font(
+                      kBodyFont,
+                      13,
+                      700,
+                      color: const Color(0xFF17162B),
+                    ),
+                  ),
+                ],
               ],
-            ],
+            ),
           ),
         ),
       ),
@@ -231,27 +236,34 @@ class _AddButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Material(
-      color: AppColors.indigo,
-      shape: const CircleBorder(),
-      child: InkWell(
-        onTap: onTap,
-        customBorder: const CircleBorder(),
-        child: DecoratedBox(
-          decoration: BoxDecoration(
-            shape: BoxShape.circle,
-            boxShadow: [
-              BoxShadow(
-                color: AppColors.indigo.withValues(alpha: 0.4),
-                blurRadius: 16,
-                spreadRadius: 1,
+    return Pressable(
+      scale: 0.9,
+      child: Material(
+        color: AppColors.indigo,
+        shape: const CircleBorder(),
+        child: InkWell(
+          onTap: onTap,
+          customBorder: const CircleBorder(),
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              boxShadow: [
+                BoxShadow(
+                  color: AppColors.indigo.withValues(alpha: 0.4),
+                  blurRadius: 16,
+                  spreadRadius: 1,
+                ),
+              ],
+            ),
+            child: const SizedBox(
+              width: 54,
+              height: 54,
+              child: Icon(
+                Icons.add_rounded,
+                color: Color(0xFF17162B),
+                size: 26,
               ),
-            ],
-          ),
-          child: const SizedBox(
-            width: 54,
-            height: 54,
-            child: Icon(Icons.add_rounded, color: Color(0xFF17162B), size: 26),
+            ),
           ),
         ),
       ),

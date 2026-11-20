@@ -1,6 +1,7 @@
 import 'package:material_ui/material_ui.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_text.dart';
+import 'pressable.dart';
 import 'primitives.dart';
 
 /// A Home task row. The left accent bar encodes ownership: a **dashed** neutral
@@ -54,28 +55,35 @@ class TaskRow extends StatelessWidget {
     final borderColor = owned
         ? ownedColor!.withValues(alpha: 0.5)
         : AppColors.borderSubtle;
-    return Opacity(
-      opacity: owned ? 0.96 : 1,
-      child: Material(
-        color: AppColors.card,
-        borderRadius: BorderRadius.circular(18),
-        child: InkWell(
-          onTap: onTap,
-          onLongPress: onLongPress,
+    return Pressable(
+      enabled: onTap != null || onLongPress != null,
+      scale: 0.985,
+      child: Opacity(
+        opacity: owned ? 0.96 : 1,
+        child: Material(
+          color: AppColors.card,
           borderRadius: BorderRadius.circular(18),
-          child: Container(
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(18),
-              border: Border.all(color: borderColor),
-            ),
-            padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
-            child: Row(
-              children: [
-                _iconTile(),
-                const SizedBox(width: 12),
-                Expanded(child: _titleBlock()),
-                if (trailing != null) ...[const SizedBox(width: 10), trailing!],
-              ],
+          child: InkWell(
+            onTap: onTap,
+            onLongPress: onLongPress,
+            borderRadius: BorderRadius.circular(18),
+            child: Container(
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(18),
+                border: Border.all(color: borderColor),
+              ),
+              padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+              child: Row(
+                children: [
+                  _iconTile(),
+                  const SizedBox(width: 12),
+                  Expanded(child: _titleBlock()),
+                  if (trailing != null) ...[
+                    const SizedBox(width: 10),
+                    trailing!,
+                  ],
+                ],
+              ),
             ),
           ),
         ),
