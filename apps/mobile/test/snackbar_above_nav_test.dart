@@ -1,6 +1,6 @@
 import 'package:caretaker_app/theme/app_theme.dart';
 import 'package:caretaker_app/widgets/app_bottom_nav.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 /// Toasts under the signed-in shell must clear the floating nav pill without
