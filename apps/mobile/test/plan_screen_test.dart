@@ -8,7 +8,7 @@ import 'package:caretaker_app/theme/app_theme.dart';
 import 'package:caretaker_app/util/format.dart';
 import 'package:caretaker_app/widgets/app_bottom_nav.dart'
     show kBottomNavClearance;
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 

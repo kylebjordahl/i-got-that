@@ -91,10 +91,12 @@ Backend: Cloudflare Workers + Hono + D1 + Drizzle. Client: Flutter (Riverpod, di
 - `tsconfig.base` sets `declaration:false, noEmit:true` (no build step; packages
   consume each other via `@igt/*` source path-mapping). `.npmrc` uses
   `shamefully-hoist=true`.
-- **Flutter via `fvm`, pinned to 3.47.9** in `.fvmrc` and in every
+- **Flutter via `fvm`, pinned to 3.50.0** in `.fvmrc` and in every
   `subosito/flutter-action` step (`ci.yml`, `deploy.yml`) — bump them together,
-  on purpose. An unpinned `stable` once broke CI overnight (3.50 fails analyze
-  on the material/cupertino import deprecations and needs AGP ≥ 9.1.1). iOS
+  on purpose. An unpinned `stable` once broke CI overnight (3.50 deprecated
+  `package:flutter/material.dart` / `cupertino.dart` and raised the AGP floor
+  to 9.1.1). Import `package:material_ui/material_ui.dart` /
+  `package:cupertino_ui/cupertino_ui.dart`, never the deprecated ones. iOS
   deploys still take `latest-stable` Xcode, so an iOS build failure after a
   runner image update is a cue to revisit the pin. Don't call bare `flutter`
   for local work.
