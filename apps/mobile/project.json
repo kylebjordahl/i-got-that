@@ -8,7 +8,7 @@
     "pub-get": {
       "executor": "nx:run-commands",
       "options": { "command": "fvm flutter pub get", "cwd": "apps/mobile" },
-      "configurations": { "ci": { "command": "flutter pub get" } }
+      "configurations": { "ci": { "command": "flutter pub get --enforce-lockfile" } }
     },
     "analyze": {
       "executor": "nx:run-commands",
