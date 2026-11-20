@@ -319,8 +319,23 @@ class _ConflictResolutionSheetState
     final afterAvail = hasAfter ? afterTo.difference(wEnd!).inMinutes : 0;
     final maxBefore = math.min(_travelMax, beforeAvail).toDouble();
     final maxAfter = math.min(_travelMax, afterAvail).toDouble();
-    final travelBefore = _resolveTravel(_travelBefore, maxBefore);
-    final travelAfter = _resolveTravel(_travelAfter, maxAfter);
+    // Time another split already cut between a half and the winner. Travel
+    // up to it trims nothing (it's drawn as its own "already cut" block), and
+    // a side whose whole travel range fits inside it has no handle at all —
+    // nothing it could move — and sends no travel.
+    final gapBefore = hasBefore ? wStart.difference(beforeTo).inMinutes : 0;
+    final gapAfter = hasAfter ? afterFrom.difference(wEnd!).inMinutes : 0;
+    final canDragBefore = hasBefore && maxBefore > gapBefore;
+    final canDragAfter = hasAfter && maxAfter > gapAfter;
+    final travelBefore = canDragBefore
+        ? _resolveTravel(_travelBefore, maxBefore)
+        : 0.0;
+    final travelAfter = canDragAfter
+        ? _resolveTravel(_travelAfter, maxAfter)
+        : 0.0;
+    // How much of each travel buffer reaches past the gap into its half.
+    final trimBefore = math.max(0.0, travelBefore - gapBefore);
+    final trimAfter = math.max(0.0, travelAfter - gapAfter);
     final pullBack = wStart.subtract(Duration(minutes: travelBefore.round()));
     final beforeEnd = hasBefore && beforeTo.isBefore(pullBack)
         ? beforeTo
@@ -337,7 +352,11 @@ class _ConflictResolutionSheetState
     // minimums: a segment the zoom would draw thinner than its own label keeps
     // the label's height instead of clipping it.
     final winnerMin = splittable ? wEnd!.difference(wStart).inMinutes : 0;
-    final zoom = _zoom(winnerMin, maxBefore + maxAfter);
+    // Only travel that can reach into a half is drawn to scale.
+    final zoom = _zoom(
+      winnerMin,
+      math.max(0.0, maxBefore - gapBefore) + math.max(0.0, maxAfter - gapAfter),
+    );
     final winnerH = winnerMin * zoom;
 
     return SafeArea(
@@ -417,8 +436,10 @@ class _ConflictResolutionSheetState
                   handleLabel: 'Pick-up · ${clockShort(beforeEnd)}',
                   onToggle: () =>
                       setState(() => _beforeNeeded = !_beforeNeeded),
-                  onDragMinutes: (dy) =>
-                      _dragTravel(before: true, dy: dy, max: maxBefore),
+                  onDragMinutes: canDragBefore
+                      ? (dy) =>
+                            _dragTravel(before: true, dy: dy, max: maxBefore)
+                      : null,
                 ),
                 if (!_beforeNeeded && dropsMoreBefore) ...[
                   const SizedBox(height: 7),
@@ -428,11 +449,20 @@ class _ConflictResolutionSheetState
                     'another split kept.',
                   ),
                 ],
-                if (_beforeNeeded && travelBefore.round() > 0) ...[
+                if (_beforeNeeded && trimBefore.round() > 0) ...[
                   const SizedBox(height: 7),
                   _TravelGapBlock(
                     minutes: travelBefore.round(),
-                    height: travelBefore * zoom,
+                    height: trimBefore * zoom,
+                  ),
+                ],
+                if (_beforeNeeded && gapBefore > 0) ...[
+                  const SizedBox(height: 7),
+                  _AlreadyCutBlock(
+                    range: friendlyRange(beforeTo, wStart),
+                    travelInside: trimBefore.round() > 0
+                        ? null
+                        : travelBefore.round(),
                   ),
                 ],
                 const SizedBox(height: 7),
@@ -443,11 +473,20 @@ class _ConflictResolutionSheetState
                 height: winnerH,
               ),
               if (hasAfter) ...[
-                if (_afterNeeded && travelAfter.round() > 0) ...[
+                if (_afterNeeded && gapAfter > 0) ...[
+                  const SizedBox(height: 7),
+                  _AlreadyCutBlock(
+                    range: friendlyRange(wEnd!, afterFrom),
+                    travelInside: trimAfter.round() > 0
+                        ? null
+                        : travelAfter.round(),
+                  ),
+                ],
+                if (_afterNeeded && trimAfter.round() > 0) ...[
                   const SizedBox(height: 7),
                   _TravelGapBlock(
                     minutes: travelAfter.round(),
-                    height: travelAfter * zoom,
+                    height: trimAfter * zoom,
                   ),
                 ],
                 const SizedBox(height: 7),
@@ -460,8 +499,10 @@ class _ConflictResolutionSheetState
                   handleAtBottom: false,
                   handleLabel: 'Drop-off · ${clockShort(afterStart)}',
                   onToggle: () => setState(() => _afterNeeded = !_afterNeeded),
-                  onDragMinutes: (dy) =>
-                      _dragTravel(before: false, dy: dy, max: maxAfter),
+                  onDragMinutes: canDragAfter
+                      ? (dy) =>
+                            _dragTravel(before: false, dy: dy, max: maxAfter)
+                      : null,
                 ),
                 if (!_afterNeeded && dropsMoreAfter) ...[
                   const SizedBox(height: 7),
@@ -746,8 +787,9 @@ class _EditableHalf extends StatelessWidget {
   final VoidCallback onToggle;
 
   /// Called with the vertical drag delta since the previous update (logical px,
-  /// down-positive).
-  final ValueChanged<double> onDragMinutes;
+  /// down-positive). Null when this half's travel can't move anything (it all
+  /// falls inside time another split already cut): no handle is drawn.
+  final ValueChanged<double>? onDragMinutes;
 
   static const double _blockH = 58;
 
@@ -783,7 +825,7 @@ class _EditableHalf extends StatelessWidget {
                 ),
               ),
               // The green drag handle, pinned to the appointment-facing edge.
-              if (needed) ...[
+              if (needed && onDragMinutes != null) ...[
                 Positioned(
                   left: blockW,
                   top: handleY - 0.75,
@@ -803,7 +845,7 @@ class _EditableHalf extends StatelessWidget {
                       _DragHandle.touchPadding,
                   child: _DragHandle(
                     label: handleLabel,
-                    onDragMinutes: onDragMinutes,
+                    onDragMinutes: onDragMinutes!,
                   ),
                 ),
               ],
@@ -1064,6 +1106,48 @@ class _TravelGapBlock extends StatelessWidget {
 }
 
 /// A muted explanatory row inside the preview (e.g. the loser is fully covered).
+/// Time another split already cut between a half and the appointment: the
+/// child is already out of the event then, so travel up to it trims nothing.
+/// [travelInside] (minutes, when > 0) says the current travel buffer fits
+/// inside it. Not to scale — the gap can be hours.
+class _AlreadyCutBlock extends StatelessWidget {
+  const _AlreadyCutBlock({required this.range, this.travelInside});
+  final String range;
+  final int? travelInside;
+
+  @override
+  Widget build(BuildContext context) {
+    final inside = travelInside;
+    return Padding(
+      padding: const EdgeInsets.only(right: _railWidth),
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+        decoration: BoxDecoration(
+          color: AppColors.bg.withValues(alpha: 0.45),
+          borderRadius: BorderRadius.circular(9),
+          border: Border.all(
+            color: AppColors.textMuted.withValues(alpha: 0.35),
+          ),
+        ),
+        child: Column(
+          children: [
+            Text(
+              'Already cut · $range',
+              style: font(kBodyFont, 10, 700, color: AppColors.textTertiary),
+            ),
+            if (inside != null && inside > 0)
+              Text(
+                'Travel time · $inside min fits here',
+                style: font(kBodyFont, 10, 600, color: AppColors.textMuted),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _NoteRow extends StatelessWidget {
   const _NoteRow(this.text);
   final String text;
