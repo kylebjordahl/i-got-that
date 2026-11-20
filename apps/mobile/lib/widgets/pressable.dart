@@ -1,16 +1,28 @@
-import 'package:flutter/material.dart';
+import 'dart:async';
+
+import 'package:flutter/gestures.dart';
+import 'package:material_ui/material_ui.dart';
+
+/// Pointers already claimed by an inner [Pressable], so a `Pressable` around a
+/// card doesn't also dip when the finger lands on a button inside it.
+/// Pointer events reach the deepest listener first, so the inner one claims.
+final _claimed = <int>{};
 
 /// Press feedback: shrinks [child] slightly while a finger is down on it and
 /// springs back on release, so a tap visibly "lands".
 ///
-/// It listens with a raw [Listener] instead of a gesture recognizer, so it
-/// never competes with the child's own `InkWell` / `GestureDetector` (or a
-/// scroll view) in the gesture arena — wrap a tappable and it just works.
+/// It listens to raw pointer events, so it never competes with the child's own
+/// `InkWell` / `GestureDetector` for the tap. To behave like an `InkWell`
+/// highlight anyway:
+/// - the dip waits [kPressTimeout], so a scroll that starts on the item never
+///   dips it (moving past [kTouchSlop] before then cancels it);
+/// - a tap that ends sooner still shows the dip, for at least [_minHold];
+/// - the innermost `Pressable` under the finger wins, ancestors stay put;
+/// - pass `enabled: false` for a non-tappable child, and nothing ever scales
+///   when the OS asks for reduced motion.
 ///
-/// - Pass `enabled: false` for a non-tappable child; it renders unchanged.
-/// - A tap shorter than [_minHold] still shows the full dip before releasing.
-/// - Dragging past [_slop] (a scroll, a swipe) releases the press.
-/// - Does nothing when the OS asks for reduced motion.
+/// The tree is the same whether or not it is active, so toggling `enabled`
+/// (a button going busy) never rebuilds the child's state.
 class Pressable extends StatefulWidget {
   const Pressable({
     super.key,
@@ -32,50 +44,103 @@ class Pressable extends StatefulWidget {
 
 class _PressableState extends State<Pressable> {
   static const _minHold = Duration(milliseconds: 80);
-  static const _slop = 18.0;
 
   bool _down = false;
+  bool _releaseWhenHeld = false;
+  int? _pointer;
   Offset _origin = Offset.zero;
-  DateTime _downAt = DateTime.fromMillisecondsSinceEpoch(0);
+  Timer? _delay; // waiting out kPressTimeout before the dip starts
+  Timer? _hold; // the dip's minimum on-screen time
 
-  void _press(PointerDownEvent e) {
+  bool get _active =>
+      widget.enabled && !MediaQuery.disableAnimationsOf(context);
+
+  void _onDown(PointerDownEvent e) {
+    if (!_active || !_claimed.add(e.pointer)) return;
+    _pointer = e.pointer;
     _origin = e.position;
-    _downAt = DateTime.now();
-    if (!_down) setState(() => _down = true);
+    _delay = Timer(kPressTimeout, _show);
   }
 
-  void _release() {
-    if (!_down) return;
-    final held = DateTime.now().difference(_downAt);
-    if (held >= _minHold) {
-      setState(() => _down = false);
-      return;
-    }
-    final downAt = _downAt;
-    Future<void>.delayed(_minHold - held, () {
-      // A newer press started in the meantime — leave it alone.
-      if (mounted && _down && _downAt == downAt) setState(() => _down = false);
+  void _show() {
+    _delay = null;
+    if (!mounted) return;
+    setState(() => _down = true);
+    _releaseWhenHeld = false;
+    _hold = Timer(_minHold, () {
+      _hold = null;
+      if (_releaseWhenHeld && mounted) setState(() => _down = false);
     });
   }
 
-  void _move(PointerMoveEvent e) {
-    if (_down && (e.position - _origin).distance > _slop) _release();
+  void _release() {
+    if (_hold != null) {
+      _releaseWhenHeld = true;
+    } else if (_down) {
+      setState(() => _down = false);
+    }
+  }
+
+  /// The finger came up: a tap that beat the press timeout still gets its dip.
+  void _onUp(PointerUpEvent e) {
+    if (e.pointer != _pointer) return;
+    final quick = _delay != null;
+    _end();
+    if (quick) _show();
+    _release();
+  }
+
+  /// The finger moved off (a scroll) or the gesture was cancelled.
+  void _abandon() {
+    if (_pointer == null) return;
+    _end();
+    _release();
+  }
+
+  void _end() {
+    _delay?.cancel();
+    _delay = null;
+    _claimed.remove(_pointer);
+    _pointer = null;
+  }
+
+  @override
+  void didUpdateWidget(Pressable old) {
+    super.didUpdateWidget(old);
+    if (!widget.enabled) {
+      _end();
+      _hold?.cancel();
+      _hold = null;
+      _down = false;
+    }
+  }
+
+  @override
+  void dispose() {
+    _end();
+    _hold?.cancel();
+    super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    if (!widget.enabled || MediaQuery.disableAnimationsOf(context)) {
-      return widget.child;
-    }
+    final pressed = _down && _active;
     return Listener(
-      onPointerDown: _press,
-      onPointerMove: _move,
-      onPointerUp: (_) => _release(),
-      onPointerCancel: (_) => _release(),
+      onPointerDown: _onDown,
+      onPointerMove: (e) {
+        if (e.pointer == _pointer &&
+            (e.position - _origin).distance > kTouchSlop) {
+          _abandon();
+        }
+      },
+      onPointerUp: _onUp,
+      onPointerCancel: (e) {
+        if (e.pointer == _pointer) _abandon();
+      },
       child: AnimatedScale(
-        scale: _down ? widget.scale : 1,
-        duration: Duration(milliseconds: _down ? 90 : 200),
-        curve: _down ? Curves.easeOut : Curves.easeOutBack,
+        scale: pressed ? widget.scale : 1,
+        duration: Duration(milliseconds: pressed ? 90 : 200),
+        curve: pressed ? Curves.easeOut : Curves.easeOutBack,
         child: widget.child,
       ),
     );

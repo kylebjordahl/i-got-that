@@ -1,5 +1,4 @@
-import 'package:flutter/material.dart';
-
+import 'package:material_ui/material_ui.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_text.dart';
 import 'pressable.dart';
@@ -20,10 +19,10 @@ class DayChip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Pressable(
-        scale: 0.94,
+    return Pressable(
+      scale: 0.94,
+      child: GestureDetector(
+        onTap: onTap,
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 160),
           padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 9),

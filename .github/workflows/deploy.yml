@@ -202,7 +202,8 @@ jobs:
       # drives the staging-only beta ribbon — so the two envs must never share a
       # cache entry): a backend/infra-only deploy restores it and skips the
       # Flutter SDK download + web build (the slowest part of the deploy). Only
-      # a change under apps/mobile busts the cache and triggers a rebuild. The
+      # a change under apps/mobile (or a Flutter bump, via the pinned version in
+      # .fvmrc) busts the cache and triggers a rebuild. The
       # marketing version and build number are *not* part of the cache key —
       # see "Stamp web client version" below, which re-embeds this run's
       # values on every deploy regardless of cache hit/miss.
@@ -213,13 +214,14 @@ jobs:
           path: apps/api/public/app
           key: >-
             web-client-${{ inputs.environment }}-${{ hashFiles('apps/mobile/lib/**',
-            'apps/mobile/web/**', 'apps/mobile/pubspec.yaml', 'apps/mobile/pubspec.lock') }}
+            'apps/mobile/web/**', 'apps/mobile/pubspec.yaml', 'apps/mobile/pubspec.lock',
+            '.fvmrc') }}
       - uses: subosito/flutter-action@v2
         if: steps.web-client-cache.outputs.cache-hit != 'true'
         with:
           channel: stable
           # Pinned, with .fvmrc: bump all of them together (AGENTS.md).
-          flutter-version: 3.47.9
+          flutter-version: 3.50.0
           cache: true
       - name: Build web client
         if: steps.web-client-cache.outputs.cache-hit != 'true'
@@ -481,7 +483,7 @@ jobs:
         with:
           channel: stable
           # Pinned, with .fvmrc: bump all of them together (AGENTS.md).
-          flutter-version: 3.47.9
+          flutter-version: 3.50.0
           cache: true
 
       # Regenerates the gitignored ephemeral iOS project files; the committed
@@ -638,7 +640,7 @@ jobs:
         with:
           channel: stable
           # Pinned, with .fvmrc: bump all of them together (AGENTS.md).
-          flutter-version: 3.47.9
+          flutter-version: 3.50.0
           cache: true
 
       # Regenerates the gitignored ephemeral Android files; the committed

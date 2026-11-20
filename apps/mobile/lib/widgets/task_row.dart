@@ -1,5 +1,4 @@
-import 'package:flutter/material.dart';
-
+import 'package:material_ui/material_ui.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_text.dart';
 import 'pressable.dart';
@@ -59,8 +58,7 @@ class TaskRow extends StatelessWidget {
     return Pressable(
       enabled: onTap != null || onLongPress != null,
       scale: 0.985,
-      child: AnimatedOpacity(
-        duration: const Duration(milliseconds: 200),
+      child: Opacity(
         opacity: owned ? 0.96 : 1,
         child: Material(
           color: AppColors.card,

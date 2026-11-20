@@ -1,5 +1,4 @@
-import 'package:flutter/material.dart';
-
+import 'package:material_ui/material_ui.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_text.dart';
 import 'pressable.dart';
@@ -331,10 +330,10 @@ class TaskFilterChip extends StatelessWidget {
       fg = AppColors.textSecondary;
       border = AppColors.border;
     }
-    return GestureDetector(
-      onTap: onTap,
-      child: Pressable(
-        scale: 0.94,
+    return Pressable(
+      scale: 0.94,
+      child: GestureDetector(
+        onTap: onTap,
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 160),
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),

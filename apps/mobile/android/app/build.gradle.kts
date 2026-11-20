@@ -80,7 +80,7 @@ android {
         // two iOS bundle ids do.
         applicationId = "com.kylebjordahl.igt"
 
-        // Flutter 3.47's own template default. Above flutter_secure_storage's
+        // Flutter's own template default (3.47 and 3.50). Above flutter_secure_storage's
         // floor of 23, and the combination the plugin ecosystem tests against.
         minSdk = 24
 

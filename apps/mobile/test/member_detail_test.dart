@@ -7,7 +7,7 @@ import 'package:caretaker_app/theme/app_theme.dart';
 import 'package:caretaker_app/widgets/conflict_card.dart';
 import 'package:caretaker_app/widgets/location_picker.dart';
 import 'package:caretaker_app/widgets/primitives.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
