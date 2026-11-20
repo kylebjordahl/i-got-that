@@ -12,6 +12,7 @@ import '../util/format.dart';
 import '../widgets/primitives.dart';
 import '../widgets/settings.dart';
 import '../widgets/time_fields.dart';
+import '../widgets/pressable.dart';
 import 'task_rule_matches_screen.dart';
 
 /// Task rules (6k) — pick an active calendar (a source feed, or the member's
@@ -354,20 +355,22 @@ class _RuleCard extends StatelessWidget {
           ),
           Align(
             alignment: Alignment.centerLeft,
-            child: TextButton.icon(
-              onPressed: onShowMatches,
-              style: TextButton.styleFrom(
-                padding: EdgeInsets.zero,
-                visualDensity: VisualDensity.compact,
-              ),
-              icon: const Icon(
-                Icons.manage_search_rounded,
-                size: 18,
-                color: AppColors.purple,
-              ),
-              label: Text(
-                'See what it catches',
-                style: font(kBodyFont, 12.5, 700, color: AppColors.purple),
+            child: Pressable(
+              child: TextButton.icon(
+                onPressed: onShowMatches,
+                style: TextButton.styleFrom(
+                  padding: EdgeInsets.zero,
+                  visualDensity: VisualDensity.compact,
+                ),
+                icon: const Icon(
+                  Icons.manage_search_rounded,
+                  size: 18,
+                  color: AppColors.purple,
+                ),
+                label: Text(
+                  'See what it catches',
+                  style: font(kBodyFont, 12.5, 700, color: AppColors.purple),
+                ),
               ),
             ),
           ),

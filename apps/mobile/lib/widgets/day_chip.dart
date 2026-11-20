@@ -1,6 +1,7 @@
 import 'package:material_ui/material_ui.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_text.dart';
+import 'pressable.dart';
 
 /// A pill toggle for one weekday. Shared by the assignment-rule editor and the
 /// notification-schedule editor, which both drive a Mon=bit0 weekday mask.
@@ -18,24 +19,30 @@ class DayChip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 9),
-        decoration: BoxDecoration(
-          color: selected ? AppColors.amber : AppColors.bg,
-          borderRadius: BorderRadius.circular(999),
-          border: Border.all(
-            color: selected ? AppColors.amber : AppColors.border,
+    return Pressable(
+      scale: 0.94,
+      child: GestureDetector(
+        onTap: onTap,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 160),
+          padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 9),
+          decoration: BoxDecoration(
+            color: selected ? AppColors.amber : AppColors.bg,
+            borderRadius: BorderRadius.circular(999),
+            border: Border.all(
+              color: selected ? AppColors.amber : AppColors.border,
+            ),
           ),
-        ),
-        child: Text(
-          label,
-          style: font(
-            kBodyFont,
-            13,
-            600,
-            color: selected ? const Color(0xFF2A1E05) : AppColors.textSecondary,
+          child: Text(
+            label,
+            style: font(
+              kBodyFont,
+              13,
+              600,
+              color: selected
+                  ? const Color(0xFF2A1E05)
+                  : AppColors.textSecondary,
+            ),
           ),
         ),
       ),
