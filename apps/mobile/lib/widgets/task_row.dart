@@ -67,8 +67,7 @@ class TaskRow extends StatelessWidget {
             onTap: onTap,
             onLongPress: onLongPress,
             borderRadius: BorderRadius.circular(18),
-            child: AnimatedContainer(
-              duration: const Duration(milliseconds: 200),
+            child: Container(
               decoration: BoxDecoration(
                 borderRadius: BorderRadius.circular(18),
                 border: Border.all(color: borderColor),

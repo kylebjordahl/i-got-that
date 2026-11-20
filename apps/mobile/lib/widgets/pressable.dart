@@ -56,7 +56,8 @@ class _PressableState extends State<Pressable> {
       widget.enabled && !MediaQuery.disableAnimationsOf(context);
 
   void _onDown(PointerDownEvent e) {
-    if (!_active || !_claimed.add(e.pointer)) return;
+    // One finger at a time: a second touch on the same item is ignored.
+    if (_pointer != null || !_active || !_claimed.add(e.pointer)) return;
     _pointer = e.pointer;
     _origin = e.position;
     _delay = Timer(kPressTimeout, _show);
@@ -67,8 +68,10 @@ class _PressableState extends State<Pressable> {
     if (!mounted) return;
     setState(() => _down = true);
     _releaseWhenHeld = false;
-    _hold = Timer(_minHold, () {
-      _hold = null;
+    _hold?.cancel();
+    late final Timer hold;
+    hold = _hold = Timer(_minHold, () {
+      if (identical(_hold, hold)) _hold = null;
       if (_releaseWhenHeld && mounted) setState(() => _down = false);
     });
   }

@@ -113,4 +113,28 @@ void main() {
     await t.pumpWidget(_host(enabled: false));
     expect(t.element(find.byKey(_target)), same(before));
   });
+
+  testWidgets('a second finger does not leave the item stuck pressed', (
+    t,
+  ) async {
+    await t.pumpWidget(_host());
+    final c = t.getCenter(find.byKey(_target));
+    final a = await t.startGesture(c);
+    await t.pump(const Duration(milliseconds: 20));
+    final b = await t.startGesture(c + const Offset(10, 0));
+    await b.up();
+    await t.pump(const Duration(milliseconds: 150));
+    await a.up();
+    await t.pump(const Duration(milliseconds: 300));
+    expect(_scale(t), 1);
+  });
+
+  testWidgets('a quick double tap leaves no timer behind', (t) async {
+    await t.pumpWidget(_host());
+    await t.tap(find.byKey(_target));
+    await t.pump(const Duration(milliseconds: 20));
+    await t.tap(find.byKey(_target));
+    await t.pump(const Duration(milliseconds: 20));
+    await t.pumpWidget(const SizedBox());
+  });
 }
