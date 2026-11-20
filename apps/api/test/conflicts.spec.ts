@@ -1138,7 +1138,29 @@ describe('conflict detection & masking', () => {
         expect(c, `${uid}'s conflict is listed`).toBeTruthy();
         return c!.loserRemaining;
       };
-      return { f, blKey, schoolDay, add, resolve, remaining };
+      /** The listed `loserSides` of `uid`'s conflict (any status). */
+      const sides = async (uid: string) => {
+        const api = await call(
+          `/families/${f.familyId}/conflicts?status=all`,
+          bearer(f.admin.token),
+        );
+        const { conflicts: list } = (await api.json()) as {
+          conflicts: { winner: { summary: string }; loserSides?: unknown }[];
+        };
+        return list.find((x) => x.winner.summary === uid)!.loserSides;
+      };
+      /** The child's split segments of the school day, as [start, end] ISO pairs. */
+      const segments = async () =>
+        (
+          await f.db
+            .select()
+            .from(calendarEvents)
+            .where(eq(calendarEvents.familyMemberId, f.childId))
+        )
+          .filter((r) => r.synthKey.startsWith(`cf:${blKey}:`))
+          .sort((a, b) => a.dtstart.getTime() - b.dtstart.getTime())
+          .map((r) => [r.dtstart.toISOString(), r.dtend!.toISOString()]);
+      return { f, blKey, schoolDay, add, resolve, remaining, sides, segments };
     }
 
     it('keptFrom is where the kept morning starts, not the day\'s own start', async () => {
@@ -1246,6 +1268,64 @@ describe('conflict detection & masking', () => {
         keptBefore: false,
         keptAfter: false,
         keptFrom: null,
+        keptUntil: null,
+      });
+    });
+
+    describe('an appointment inside time another split already cut (#304)', () => {
+      /** Doctor 10–12 resolved with 30 min travel back (cuts 10:00–12:30);
+       *  then a 12:00–12:20 call, wholly inside that cut. */
+      async function insideCut(email: string) {
+        const d = await day(email);
+        await d.add('doctor', [10, 0], [12, 0]);
+        await d.resolve('doctor', { travelAfterMin: 30 });
+        await d.add('call', [12, 0], [12, 20]);
+        return d;
+      }
+
+      it('still lists the kept time either side for its controls', async () => {
+        const d = await insideCut('inside-cut-sides@example.com');
+        // Nothing remaining overlaps the call…
+        expect(await d.remaining('call')).toBeNull();
+        // …but the morning before it and the afternoon after it are kept.
+        expect(await d.sides('call')).toEqual({
+          before: { dtstart: at(8, 30), dtend: at(10) },
+          after: { dtstart: at(12, 30), dtend: at(15) },
+          keptFrom: null,
+          keptUntil: null,
+        });
+      });
+
+      it('travel after it pulls the afternoon back once it reaches past the cut', async () => {
+        const d = await insideCut('inside-cut-travel@example.com');
+        // 12:20 + 20 min = 12:40, past the doctor's 12:30.
+        await d.resolve('call', { travelAfterMin: 20 });
+        expect(await d.segments()).toEqual([
+          [at(8, 30), at(10)],
+          [at(12, 40), at(15)],
+        ]);
+      });
+
+      it('"not needed after" it drops the afternoon', async () => {
+        const d = await insideCut('inside-cut-after@example.com');
+        await d.resolve('call', { afterNeeded: false });
+        expect(await d.segments()).toEqual([[at(8, 30), at(10)]]);
+      });
+    });
+
+    it('sides name the nearest kept half and how far the kept time beyond it reaches', async () => {
+      const d = await day('sides-touching@example.com');
+      // 09:00–09:15 break and a doctor visit 10–11, both split plainly.
+      await d.add('break', [9, 0], [9, 15]);
+      await d.resolve('break');
+      await d.add('doctor', [10, 0], [11, 0]);
+      await d.resolve('doctor');
+      await d.add('dentist', [13, 0], [14, 0]);
+      expect(await d.sides('dentist')).toEqual({
+        before: { dtstart: at(11), dtend: at(13) },
+        after: { dtstart: at(14), dtend: at(15) },
+        // Skipping the dentist's "before" also drops 08:30–09:00 and 09:15–10:00.
+        keptFrom: at(8, 30),
         keptUntil: null,
       });
     });

@@ -1237,6 +1237,39 @@ class ConflictEventRef {
   }
 }
 
+/// The kept time of a conflict's loser on each side of its winner (see
+/// [Conflict.loserSides]).
+class LoserSides {
+  LoserSides({this.before, this.after, this.keptFrom, this.keptUntil});
+
+  /// The kept time before the winner, clipped to end by its start; null when
+  /// nothing of the loser is kept before it.
+  final ({DateTime start, DateTime end})? before;
+
+  /// The kept time after the winner, clipped to start at its end.
+  final ({DateTime start, DateTime end})? after;
+
+  /// Where the kept time beyond [before] / [after] starts / ends — what
+  /// skipping that side would also drop. Null when there is none.
+  final DateTime? keptFrom;
+  final DateTime? keptUntil;
+
+  static ({DateTime start, DateTime end})? _span(Object? j) {
+    if (j is! Map<String, dynamic>) return null;
+    return (
+      start: parseTimestamp(j['dtstart']),
+      end: parseTimestamp(j['dtend']),
+    );
+  }
+
+  factory LoserSides.fromJson(Map<String, dynamic> j) => LoserSides(
+    before: _span(j['before']),
+    after: _span(j['after']),
+    keptFrom: j['keptFrom'] == null ? null : parseTimestamp(j['keptFrom']),
+    keptUntil: j['keptUntil'] == null ? null : parseTimestamp(j['keptUntil']),
+  );
+}
+
 /// What's left of a conflict's loser around its winner (see
 /// [Conflict.loserRemaining]).
 class LoserRemaining {
@@ -1288,6 +1321,7 @@ class Conflict {
     this.suggestedTravelMin,
     this.loserRemaining,
     this.loserAlreadyCleared = false,
+    this.loserSides,
   });
 
   final String id;
@@ -1315,6 +1349,13 @@ class Conflict {
   /// Other decisions that day already removed every part of [loser] that
   /// [winner] overlaps, so there is nothing left for this one to split.
   final bool loserAlreadyCleared;
+
+  /// The kept time of [loser] either side of [winner] that resolving this
+  /// conflict can still trim (travel) or drop ("not needed") — sent even when
+  /// [loserAlreadyCleared], since an appointment inside time another split
+  /// already cut can still pull back the kept time around it. Null from an
+  /// older server, or when the loser can't be cut.
+  final LoserSides? loserSides;
 
   /// [loser] at the times the calendar currently has it around [winner]
   /// ([loserRemaining]), or as listed when the server sent none.
@@ -1345,6 +1386,9 @@ class Conflict {
       // Present-but-null is the server saying "already cleared"; absent is
       // "not computed".
       loserAlreadyCleared: j.containsKey('loserRemaining') && rem == null,
+      loserSides: j['loserSides'] is Map<String, dynamic>
+          ? LoserSides.fromJson(j['loserSides'] as Map<String, dynamic>)
+          : null,
     );
   }
 }
