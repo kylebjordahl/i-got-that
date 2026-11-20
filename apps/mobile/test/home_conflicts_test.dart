@@ -788,6 +788,75 @@ void main() {
     },
   );
 
+  testWidgets('a side that cannot drag still sends its suggested travel', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(600, 1600);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    DateTime at(int h, int m) => DateTime(day.year, day.month, day.day, h, m);
+    // The 12:00–12:20 call again, now with a 20 min suggested trip.
+    final call = Conflict(
+      id: 'c7',
+      familyMemberId: 'theo',
+      loser: conflict.loser,
+      winner: ConflictEventRef(
+        summary: 'Call',
+        allDay: false,
+        start: at(12, 0),
+        end: at(12, 20),
+      ),
+      suggestedTravelMin: 20,
+      loserAlreadyCleared: true,
+      loserSides: LoserSides(
+        before: (start: at(8, 30), end: at(10, 0)),
+        after: (start: at(12, 30), end: at(15, 0)),
+      ),
+    );
+    final api = _RecordingApiClient();
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          apiClientProvider.overrideWithValue(api),
+          familyProvider.overrideWith((ref) async => 'fam-1'),
+          membersProvider.overrideWith((ref) async => [me, theo]),
+          currentMemberProvider.overrideWith((ref) async => me),
+          unownedTasksProvider.overrideWith((ref) async => [task]),
+          allTasksProvider.overrideWith((ref) async => [task]),
+          pendingDecisionsProvider.overrideWith((ref) async => const []),
+          conflictsProvider.overrideWith((ref) async => [call]),
+          calendarEventsProvider.overrideWith((ref) async => const []),
+          threadingThresholdProvider.overrideWith((ref) async => 30),
+        ],
+        child: MaterialApp(
+          theme: buildAppTheme(),
+          themeMode: ThemeMode.dark,
+          home: const Scaffold(body: HomeScreen()),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Review & resolve'));
+    await tester.pumpAndSettle();
+
+    // The morning (2 h away) has no handle, and its 20 min fits in the cut;
+    // the afternoon's 20 min reaches 10 past its cut, to 12:40.
+    expect(find.textContaining('Pick-up ·'), findsNothing);
+    expect(find.text('Travel time · 20 min fits here'), findsOneWidget);
+    expect(find.text('Drop-off · 12:40'), findsOneWidget);
+
+    await tester.tap(find.text('Confirm split'));
+    await tester.pumpAndSettle();
+    expect(api.lastResolve, {
+      'travelBeforeMin': 20,
+      'travelAfterMin': 20,
+      'beforeNeeded': true,
+      'afterNeeded': true,
+    });
+  });
+
   testWidgets('a day another split already cleared has nothing to split', (
     tester,
   ) async {

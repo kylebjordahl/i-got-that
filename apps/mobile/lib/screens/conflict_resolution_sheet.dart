@@ -322,17 +322,16 @@ class _ConflictResolutionSheetState
     // Time another split already cut between a half and the winner. Travel
     // up to it trims nothing (it's drawn as its own "already cut" block), and
     // a side whose whole travel range fits inside it has no handle at all —
-    // nothing it could move — and sends no travel.
+    // nothing it could move. That side still sends its suggested travel (it
+    // can't be dragged, so it is the seed): it cuts nothing now, but keeps
+    // the decision sensible if the other split is later undone and the gap
+    // goes away.
     final gapBefore = hasBefore ? wStart.difference(beforeTo).inMinutes : 0;
     final gapAfter = hasAfter ? afterFrom.difference(wEnd!).inMinutes : 0;
     final canDragBefore = hasBefore && maxBefore > gapBefore;
     final canDragAfter = hasAfter && maxAfter > gapAfter;
-    final travelBefore = canDragBefore
-        ? _resolveTravel(_travelBefore, maxBefore)
-        : 0.0;
-    final travelAfter = canDragAfter
-        ? _resolveTravel(_travelAfter, maxAfter)
-        : 0.0;
+    final travelBefore = _resolveTravel(_travelBefore, maxBefore);
+    final travelAfter = _resolveTravel(_travelAfter, maxAfter);
     // How much of each travel buffer reaches past the gap into its half.
     final trimBefore = math.max(0.0, travelBefore - gapBefore);
     final trimAfter = math.max(0.0, travelAfter - gapAfter);
