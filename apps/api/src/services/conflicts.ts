@@ -216,6 +216,33 @@ export function resolutionCut(
   };
 }
 
+/**
+ * The loser's nearest kept time on each side of this conflict's winner — the
+ * halves a resolution of it can still trim with travel or drop as "not
+ * needed" — plus where the kept time beyond each half reaches (what skipping
+ * that side would also drop). Unlike `RemainingLoserSpan` it exists even when
+ * no remaining segment overlaps the winner: an appointment that falls inside
+ * time another split already cut can still pull back, or drop, the kept time
+ * either side of it.
+ */
+export interface LoserSides {
+  /** The kept time before the winner, clipped to end by its start; null when
+   *  nothing of the loser is kept before it. */
+  before: { dtstart: Date; dtend: Date } | null;
+  /** The kept time after the winner, clipped to start at its end. */
+  after: { dtstart: Date; dtend: Date } | null;
+  /** Where the kept time beyond `before` / `after` starts / ends; null when
+   *  there is none. */
+  keptFrom: Date | null;
+  keptUntil: Date | null;
+}
+
+/** See `remainingLoserSpans`. */
+export interface LoserContext {
+  remaining: RemainingLoserSpan | null;
+  sides: LoserSides;
+}
+
 /** See `remainingLoserSpans`. */
 export interface RemainingLoserSpan {
   dtstart: Date;
@@ -246,8 +273,8 @@ export async function remainingLoserSpans(
   db: Db,
   familyId: string,
   hydrated: HydratedConflict[],
-): Promise<Map<string, RemainingLoserSpan | null>> {
-  const out = new Map<string, RemainingLoserSpan | null>();
+): Promise<Map<string, LoserContext>> {
+  const out = new Map<string, LoserContext>();
   const cuttable = hydrated.filter(
     (h) => !h.loser.allDay && h.loser.dtend != null && h.winner.dtend != null,
   );
@@ -295,11 +322,35 @@ export async function remainingLoserSpans(
         ),
       ),
     );
+    // The halves: the last kept segment that starts before the winner (cut
+    // off at the winner's start) and the first that ends after it (cut off at
+    // its end). Segments are disjoint and sorted, so everything before / after
+    // those is the further kept time a "not needed" side would also drop.
+    let bi = -1;
+    segments.forEach((seg, i) => {
+      if (seg.dtstart < winner.dtstart) bi = i;
+    });
+    const ai = segments.findIndex((seg) => seg.dtend > winner.dtend);
+    const beforeSeg = bi >= 0 ? segments[bi]! : null;
+    const afterSeg = ai >= 0 ? segments[ai]! : null;
+    const sides: LoserSides = {
+      before: beforeSeg && {
+        dtstart: beforeSeg.dtstart,
+        dtend: beforeSeg.dtend < winner.dtstart ? beforeSeg.dtend : winner.dtstart,
+      },
+      after: afterSeg && {
+        dtstart: afterSeg.dtstart > winner.dtend ? afterSeg.dtstart : winner.dtend,
+        dtend: afterSeg.dtend,
+      },
+      keptFrom: bi > 0 ? segments[0]!.dtstart : null,
+      keptUntil: ai >= 0 && ai < segments.length - 1 ? segments[segments.length - 1]!.dtend : null,
+    };
+
     const touching = segments.filter(
       (seg) => seg.dtstart < winner.dtend && seg.dtend > winner.dtstart,
     );
     if (touching.length === 0) {
-      out.set(h.conflict.id, null);
+      out.set(h.conflict.id, { remaining: null, sides });
       continue;
     }
     const dtstart = touching[0]!.dtstart;
@@ -310,12 +361,15 @@ export async function remainingLoserSpans(
     const before = segments.filter((seg) => seg.dtend <= dtstart);
     const after = segments.filter((seg) => seg.dtstart >= dtend);
     out.set(h.conflict.id, {
-      dtstart,
-      dtend,
-      keptBefore: before.length > 0,
-      keptAfter: after.length > 0,
-      keptFrom: before[0]?.dtstart ?? null,
-      keptUntil: after[after.length - 1]?.dtend ?? null,
+      remaining: {
+        dtstart,
+        dtend,
+        keptBefore: before.length > 0,
+        keptAfter: after.length > 0,
+        keptFrom: before[0]?.dtstart ?? null,
+        keptUntil: after[after.length - 1]?.dtend ?? null,
+      },
+      sides,
     });
   }
   return out;
