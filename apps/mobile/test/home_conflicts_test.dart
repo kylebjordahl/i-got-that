@@ -618,6 +618,85 @@ void main() {
     expect(find.text(afternoonNote), findsOneWidget);
   });
 
+  testWidgets(
+    'an appointment inside time another split cut keeps its controls',
+    (tester) async {
+      tester.view.physicalSize = const Size(600, 1600);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      DateTime at(int h, int m) => DateTime(day.year, day.month, day.day, h, m);
+      // A doctor split already cut 10:00–12:30; this 12:00–12:20 call sits
+      // wholly inside it, with the morning and afternoon kept either side.
+      final call = Conflict(
+        id: 'c5',
+        familyMemberId: 'theo',
+        loser: conflict.loser,
+        winner: ConflictEventRef(
+          summary: 'Call',
+          allDay: false,
+          start: at(12, 0),
+          end: at(12, 20),
+        ),
+        loserAlreadyCleared: true,
+        loserSides: LoserSides(
+          before: (start: at(8, 30), end: at(10, 0)),
+          after: (start: at(12, 30), end: at(15, 0)),
+        ),
+      );
+      final api = _RecordingApiClient();
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            apiClientProvider.overrideWithValue(api),
+            familyProvider.overrideWith((ref) async => 'fam-1'),
+            membersProvider.overrideWith((ref) async => [me, theo]),
+            currentMemberProvider.overrideWith((ref) async => me),
+            unownedTasksProvider.overrideWith((ref) async => [task]),
+            allTasksProvider.overrideWith((ref) async => [task]),
+            pendingDecisionsProvider.overrideWith((ref) async => const []),
+            conflictsProvider.overrideWith((ref) async => [call]),
+            calendarEventsProvider.overrideWith((ref) async => const []),
+            threadingThresholdProvider.overrideWith((ref) async => 30),
+          ],
+          child: MaterialApp(
+            theme: buildAppTheme(),
+            themeMode: ThemeMode.dark,
+            home: const Scaffold(body: HomeScreen()),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Review & resolve'));
+      await tester.pumpAndSettle();
+
+      Finder inSheet(String text) => find.descendant(
+        of: find.byType(BottomSheet),
+        matching: find.text(text),
+      );
+      // Not "nothing left to split": both kept halves are offered.
+      expect(find.textContaining('nothing left to split'), findsNothing);
+      expect(inSheet('8:30 – 10:00 AM'), findsOneWidget);
+      expect(inSheet('12:30 – 3:00 PM'), findsOneWidget);
+      // The drop-off stays where the kept afternoon starts until travel
+      // reaches past the already-cut 12:20–12:30.
+      expect(find.text('Drop-off · 12:30'), findsOneWidget);
+
+      // Skipping the afternoon is sent as "not needed after".
+      await tester.tap(find.byIcon(Icons.delete_outline_rounded).last);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Confirm split'));
+      await tester.pumpAndSettle();
+      expect(api.lastResolve, {
+        'travelBeforeMin': 0,
+        'travelAfterMin': 0,
+        'beforeNeeded': true,
+        'afterNeeded': false,
+      });
+    },
+  );
+
   testWidgets('a day another split already cleared has nothing to split', (
     tester,
   ) async {

@@ -237,8 +237,18 @@ class _ConflictResolutionSheetState
     // segment only renders when it has real positive duration — a loser that
     // starts at the winner (or an all-day / open-ended event that can't be cut
     // on the timeline) collapses to just the two overlapping events.
+    // The kept time either side that this resolution can still trim or drop
+    // (newer servers). With it, a winner inside time another split already
+    // cut still gets its controls; only nothing kept on either side is
+    // "nothing left to split".
+    final sides = _conflict.loserSides;
+    final alreadyCleared = sides != null
+        ? sides.before == null &&
+              sides.after == null &&
+              _conflict.loserAlreadyCleared
+        : _conflict.loserAlreadyCleared;
     final splittable =
-        !_conflict.loserAlreadyCleared &&
+        !alreadyCleared &&
         !loser.allDay &&
         !winner.allDay &&
         loser.end != null &&
@@ -251,12 +261,16 @@ class _ConflictResolutionSheetState
     final lEnd = (remaining?.end ?? loser.end)?.toLocal();
     // Skipping a half drops the event to its edge for the whole day, including
     // any part another decision kept — say so when that's more than shown.
-    final dropsMoreBefore = remaining?.keptBefore ?? false;
-    final dropsMoreAfter = remaining?.keptAfter ?? false;
+    final dropsMoreBefore = sides != null
+        ? sides.keptFrom != null
+        : remaining?.keptBefore ?? false;
+    final dropsMoreAfter = sides != null
+        ? sides.keptUntil != null
+        : remaining?.keptAfter ?? false;
     // Where that kept time begins / ends (an older server sends neither, so
     // fall back to the event's own edges).
-    final keptFrom = remaining?.keptFrom ?? loser.start;
-    final keptUntil = remaining?.keptUntil ?? loser.end;
+    final keptFrom = sides?.keptFrom ?? remaining?.keptFrom ?? loser.start;
+    final keptUntil = sides?.keptUntil ?? remaining?.keptUntil ?? loser.end;
     final loserEndAt = loser.end;
     final trimmedStart =
         remaining != null && remaining.start.isAfter(loser.start);
@@ -267,19 +281,54 @@ class _ConflictResolutionSheetState
     final wStart = winner.start.toLocal();
     final wEnd = winner.end?.toLocal();
 
-    final hasBefore = splittable && wStart.isAfter(lStart);
-    final hasAfter = splittable && lEnd!.isAfter(wEnd!);
+    // The two halves: from the server's sides when it sends them (a half can
+    // then end short of the winner — the gap is time another split already
+    // cut), else the loser's current span either side of the winner.
+    final DateTime? beforeFrom;
+    final DateTime? beforeTo;
+    final DateTime? afterFrom;
+    final DateTime? afterTo;
+    if (sides != null) {
+      beforeFrom = sides.before?.start.toLocal();
+      beforeTo = sides.before?.end.toLocal();
+      afterFrom = sides.after?.start.toLocal();
+      afterTo = sides.after?.end.toLocal();
+    } else {
+      beforeFrom = lStart;
+      beforeTo = wStart;
+      afterFrom = wEnd;
+      afterTo = lEnd;
+    }
 
-    // How much slack each half has for a travel buffer (can't eat past its own
-    // length), and the resulting live-adjusted half boundaries.
-    final beforeAvail = hasBefore ? wStart.difference(lStart).inMinutes : 0;
-    final afterAvail = hasAfter ? lEnd.difference(wEnd).inMinutes : 0;
+    final hasBefore =
+        splittable &&
+        beforeFrom != null &&
+        beforeTo != null &&
+        beforeTo.isAfter(beforeFrom);
+    final hasAfter =
+        splittable &&
+        afterFrom != null &&
+        afterTo != null &&
+        afterTo.isAfter(afterFrom);
+
+    // How much slack each half has for a travel buffer — measured from the
+    // winner, so it can't eat past the half's far end — and the resulting
+    // live-adjusted half boundaries. Travel only trims a half once it reaches
+    // past any gap another split already cut.
+    final beforeAvail = hasBefore ? wStart.difference(beforeFrom).inMinutes : 0;
+    final afterAvail = hasAfter ? afterTo.difference(wEnd!).inMinutes : 0;
     final maxBefore = math.min(_travelMax, beforeAvail).toDouble();
     final maxAfter = math.min(_travelMax, afterAvail).toDouble();
     final travelBefore = _resolveTravel(_travelBefore, maxBefore);
     final travelAfter = _resolveTravel(_travelAfter, maxAfter);
-    final beforeEnd = wStart.subtract(Duration(minutes: travelBefore.round()));
-    final afterStart = wEnd?.add(Duration(minutes: travelAfter.round()));
+    final pullBack = wStart.subtract(Duration(minutes: travelBefore.round()));
+    final beforeEnd = hasBefore && beforeTo.isBefore(pullBack)
+        ? beforeTo
+        : pullBack;
+    final pushOn = wEnd?.add(Duration(minutes: travelAfter.round()));
+    final afterStart = hasAfter && pushOn != null && afterFrom.isAfter(pushOn)
+        ? afterFrom
+        : pushOn;
 
     // The to-scale part of the window: one zoom shared by the appointment and
     // both travel gaps, so their heights read as their durations. The two halves
@@ -360,7 +409,7 @@ class _ConflictResolutionSheetState
               if (hasBefore) ...[
                 _EditableHalf(
                   title: _titleOf(loser),
-                  timeLabel: friendlyRange(lStart, beforeEnd),
+                  timeLabel: friendlyRange(beforeFrom, beforeEnd),
                   notNeededLabel: '$memberName skips the first half',
                   accent: _memberColor,
                   needed: _beforeNeeded,
@@ -404,7 +453,7 @@ class _ConflictResolutionSheetState
                 const SizedBox(height: 7),
                 _EditableHalf(
                   title: _titleOf(loser),
-                  timeLabel: friendlyRange(afterStart!, lEnd),
+                  timeLabel: friendlyRange(afterStart!, afterTo),
                   notNeededLabel: '$memberName skips the second half',
                   accent: _memberColor,
                   needed: _afterNeeded,
@@ -436,7 +485,7 @@ class _ConflictResolutionSheetState
                     '${_titleOf(loser)} for the day.',
                   ),
               ],
-            ] else if (_conflict.loserAlreadyCleared) ...[
+            ] else if (alreadyCleared) ...[
               _FixedBlock(
                 title: _titleOf(winner),
                 timeLabel: _rangeLabel(winner),
