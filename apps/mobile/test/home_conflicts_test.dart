@@ -529,6 +529,43 @@ void main() {
     expect(haptics.length, ticks);
   });
 
+  // The handle straddles its half's appointment-facing edge; the part outside
+  // the half used to be dead to touch (a Stack only hit-tests its own bounds).
+  Future<void> openSheet(WidgetTester tester) async {
+    tester.view.physicalSize = const Size(600, 1600);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.pumpWidget(app());
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Review & resolve'));
+    await tester.pumpAndSettle();
+  }
+
+  testWidgets('the drop-off handle drags from above the second half', (
+    tester,
+  ) async {
+    await openSheet(tester);
+    // The handle is centred on the after-half's top edge, so the label's centre
+    // is that edge; 8px above it is outside the half but still on the pill.
+    final label = tester.getRect(find.text('Drop-off · 11:00'));
+    final grip = Offset(label.left + 2, label.center.dy - 8);
+    await tester.dragFrom(grip, const Offset(0, 22));
+    await tester.pumpAndSettle();
+    expect(find.text('Travel time · 5 min'), findsOneWidget);
+  });
+
+  testWidgets('the pick-up handle drags from below the first half', (
+    tester,
+  ) async {
+    await openSheet(tester);
+    final label = tester.getRect(find.text('Pick-up · 10:00'));
+    final grip = Offset(label.left + 2, label.center.dy + 8);
+    await tester.dragFrom(grip, const Offset(0, -22));
+    await tester.pumpAndSettle();
+    expect(find.text('Travel time · 5 min'), findsOneWidget);
+  });
+
   testWidgets('a split day shows its current times', (tester) async {
     tester.view.physicalSize = const Size(600, 1600);
     tester.view.devicePixelRatio = 1.0;
