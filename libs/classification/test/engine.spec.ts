@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  baselineKey,
   coveredLocalDays,
   detectConflicts,
   estimateTravelMinutes,
@@ -8,6 +9,7 @@ import {
   generateTaskIntents,
   intervalsOverlap,
   localDay,
+  parseBaselineKey,
   resolveTaskResult,
   ruleMatches,
   subtractIntervals,
@@ -531,6 +533,80 @@ describe('synthesizeException — dated baseline changes', () => {
     // 14:45 / 17:00 PDT.
     expect(tue?.dtend?.toISOString()).toBe('2026-07-07T21:45:00.000Z');
     expect(wed?.dtend?.toISOString()).toBe('2026-07-09T00:00:00.000Z');
+  });
+});
+
+describe('synthesizeException — one-off day overrides', () => {
+  const ends = (events: { synthKey: string; dtend: Date | null }[]) =>
+    Object.fromEntries(events.map((e) => [e.synthKey.slice(-10), e.dtend?.toISOString().slice(11, 16)]));
+  const earlyTue = { date: '2026-07-07', dayStart: '08:00', dayEnd: '13:00' };
+
+  it("sets that one day's hours under its usual bl: key and leaves the rest alone", () => {
+    const { events } = synthesizeException({ ...schoolLink, dayOverrides: [earlyTue] }, [], [], week, 'UTC');
+    expect(ends(events)).toEqual({
+      '2026-07-06': '14:45',
+      '2026-07-07': '13:00',
+      '2026-07-08': '14:45',
+      '2026-07-09': '14:45',
+      '2026-07-10': '14:45',
+    });
+    const tue = events.find((e) => e.synthKey === 'bl:link-1:2026-07-07');
+    expect(tue?.dtstart.toISOString()).toBe('2026-07-07T08:00:00.000Z');
+    expect(tue?.location).toBe(schoolLink.location);
+  });
+
+  it('beats a modify_day rule and a dated baseline change on its date', () => {
+    const halfDay = override({ matchValue: 'Half Day', outcome: 'modify_day', params: { dayEnd: '12:00' } });
+    const tueHalf = occ({ summary: 'Half Day', allDay: true, dtstart: new Date('2026-07-07T00:00:00Z'), dtend: new Date('2026-07-08T00:00:00Z') });
+    const { events } = synthesizeException(
+      {
+        ...schoolLink,
+        baselineChanges: [{ effectiveFrom: '2026-07-07', dayStart: '08:30', dayEnd: '17:00' }],
+        dayOverrides: [{ date: '2026-07-07', dayStart: '08:30', dayEnd: '13:30' }],
+      },
+      [tueHalf],
+      [halfDay],
+      week,
+      'UTC',
+    );
+    expect(ends(events)).toMatchObject({ '2026-07-06': '14:45', '2026-07-07': '13:30', '2026-07-08': '17:00' });
+  });
+
+  it("can't bring back a cancelled day, and does nothing on a non-school day", () => {
+    const closure = occ({ summary: 'No School', allDay: true, dtstart: new Date('2026-07-07T00:00:00Z'), dtend: new Date('2026-07-08T00:00:00Z') });
+    const { events } = synthesizeException(
+      { ...schoolLink, dayOverrides: [earlyTue, { date: '2026-07-11', dayStart: '09:00', dayEnd: '12:00' }] },
+      [closure],
+      [noSchool],
+      { start: week.start, end: new Date('2026-07-13T00:00:00Z') },
+      'UTC',
+    );
+    expect(Object.keys(ends(events))).toEqual(['2026-07-06', '2026-07-08', '2026-07-09', '2026-07-10']);
+  });
+
+  it('reads its hours in the feed timezone', () => {
+    const { events } = synthesizeException({ ...schoolLink, dayOverrides: [earlyTue] }, [], [], week, 'America/Los_Angeles');
+    const tue = events.find((e) => e.synthKey === 'bl:link-1:2026-07-07');
+    // 13:00 PDT.
+    expect(tue?.dtend?.toISOString()).toBe('2026-07-07T20:00:00.000Z');
+  });
+});
+
+describe('baseline keys', () => {
+  it('round-trip, and nothing else parses as one', () => {
+    expect(parseBaselineKey(baselineKey('link-1', '2026-07-07'))).toEqual({
+      linkId: 'link-1',
+      date: '2026-07-07',
+    });
+    for (const key of [
+      'cf:bl:link-1:2026-07-07:0',
+      'ev:link-1:occ-1',
+      'bl:link-1',
+      'bl:link-1:2026-07-07:0',
+      'pd:dec-1',
+    ]) {
+      expect(parseBaselineKey(key), key).toBeNull();
+    }
   });
 });
 

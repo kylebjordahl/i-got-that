@@ -528,4 +528,112 @@ void main() {
     expect(find.text('Travel time · 5 min'), findsOneWidget);
     expect(haptics.length, ticks);
   });
+
+  testWidgets('a split day shows its current times', (tester) async {
+    tester.view.physicalSize = const Size(600, 1600);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    DateTime at(int h, int m) => DateTime(day.year, day.month, day.day, h, m);
+    // The doctor split (10:00–11:15 with travel) already took the middle out
+    // of the school day; this is the dentist's conflict at 1–2 PM.
+    final dentist = Conflict(
+      id: 'c2',
+      familyMemberId: 'theo',
+      loser: conflict.loser,
+      winner: ConflictEventRef(
+        summary: 'Dentist',
+        allDay: false,
+        start: at(13, 0),
+        end: at(14, 0),
+      ),
+      loserRemaining: LoserRemaining(
+        start: at(11, 15),
+        end: at(15, 0),
+        keptBefore: true,
+        keptFrom: at(8, 30),
+      ),
+    );
+    await tester.pumpWidget(appWith(dentist));
+    await tester.pumpAndSettle();
+
+    // The card names the school day as it is now, not 8:30 AM – 3:00 PM.
+    expect(find.text('11:15 AM – 3:00 PM'), findsOneWidget);
+    expect(find.text('8:30 AM – 3:00 PM'), findsNothing);
+
+    await tester.tap(find.text('Review & resolve'));
+    await tester.pumpAndSettle();
+    Finder inSheet(String text) => find.descendant(
+      of: find.byType(BottomSheet),
+      matching: find.text(text),
+    );
+    // The first half starts where the doctor split left the day.
+    expect(inSheet('11:15 AM – 1:00 PM'), findsOneWidget);
+    expect(inSheet('8:30 AM – 1:00 PM'), findsNothing);
+    expect(inSheet('2:00 – 3:00 PM'), findsOneWidget);
+
+    // Skipping that half drops the kept morning too, so the sheet says so.
+    const morningNote =
+        'Skipping also drops School day from 8:30, including time another '
+        'split kept.';
+    expect(find.text(morningNote), findsNothing);
+    await tester.tap(find.byIcon(Icons.delete_outline_rounded).first);
+    await tester.pumpAndSettle();
+    expect(find.text(morningNote), findsOneWidget);
+  });
+
+  testWidgets('the skip note names where the kept time ends', (tester) async {
+    tester.view.physicalSize = const Size(600, 1600);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    DateTime at(int h, int m) => DateTime(day.year, day.month, day.day, h, m);
+    // A 1–2 PM split already happened, and a "not needed" at the very end of
+    // the day dropped 2:45–3:00; what's kept after the doctor ends at 2:45.
+    final doctor = Conflict(
+      id: 'c4',
+      familyMemberId: 'theo',
+      loser: conflict.loser,
+      winner: conflict.winner,
+      loserRemaining: LoserRemaining(
+        start: at(8, 30),
+        end: at(13, 0),
+        keptAfter: true,
+        keptUntil: at(14, 45),
+      ),
+    );
+    await tester.pumpWidget(appWith(doctor));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Review & resolve'));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byIcon(Icons.delete_outline_rounded).last);
+    await tester.pumpAndSettle();
+    // Not "until 3:00", the event's own end: that part is already gone.
+    const afternoonNote =
+        'Skipping also drops School day until 2:45, including time another '
+        'split kept.';
+    expect(find.text(afternoonNote), findsOneWidget);
+  });
+
+  testWidgets('a day another split already cleared has nothing to split', (
+    tester,
+  ) async {
+    final cleared = Conflict(
+      id: 'c3',
+      familyMemberId: 'theo',
+      loser: conflict.loser,
+      winner: conflict.winner,
+      loserAlreadyCleared: true,
+    );
+    await tester.pumpWidget(appWith(cleared));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Review & resolve'));
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('nothing left to split'), findsOneWidget);
+    expect(find.byIcon(Icons.delete_outline_rounded), findsNothing);
+  });
 }

@@ -6,6 +6,7 @@ import 'package:caretaker_app/models.dart';
 import 'package:caretaker_app/screens/assignment_rule_matches_screen.dart';
 import 'package:caretaker_app/screens/assignment_rules_screen.dart';
 import 'package:caretaker_app/screens/email_outputs_section.dart';
+import 'package:caretaker_app/screens/home_screen.dart';
 import 'package:caretaker_app/screens/member_detail_screen.dart';
 import 'package:caretaker_app/screens/me_screen.dart';
 import 'package:caretaker_app/screens/notification_schedule_screen.dart';
@@ -16,6 +17,7 @@ import 'package:caretaker_app/state/auth.dart';
 import 'package:caretaker_app/state/family.dart';
 import 'package:caretaker_app/state/notifications.dart';
 import 'package:caretaker_app/theme/app_theme.dart';
+import 'package:caretaker_app/widgets/task_row.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
@@ -149,6 +151,86 @@ void main() {
     await tester.tap(find.text('Add rule'));
     await tester.pumpAndSettle();
     await capture(tester, key, '02-assignment-rule-sheet');
+  });
+
+  testWidgets("render a school day's hours on its sheet", (tester) async {
+    if (outDir == null) return; // no-op unless explicitly requested
+    await loadFonts();
+    tester.view.devicePixelRatio = 1.0;
+    tester.view.physicalSize = const Size(400, 860);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final now = DateTime.now();
+    final start = DateTime(now.year, now.month, now.day + 1, 8, 30);
+    for (final adjusted in [false, true]) {
+      final end = DateTime(
+        start.year,
+        start.month,
+        start.day,
+        adjusted ? 13 : 15,
+      );
+      final day = CalendarEventItem(
+        id: 'bl-1',
+        familyMemberId: 'ada',
+        provenance: 'synthesized',
+        start: start,
+        end: end,
+        allDay: false,
+        summary: 'Lincoln Elementary',
+        location: '1200 Oak St',
+        linkId: 'l1',
+        baselineDay: BaselineDay(
+          date: '2026-11-03',
+          dayStart: '08:30',
+          dayEnd: adjusted ? '13:00' : '15:00',
+          adjusted: adjusted,
+        ),
+      );
+      final pickup = TaskItem(
+        id: 't1',
+        familyMemberId: 'ada',
+        type: 'pickup',
+        start: end,
+        status: 'owned',
+        ownerMemberIds: const ['mom'],
+        createdVia: 'generated',
+        calendarEventId: 'bl-1',
+      );
+      final key = GlobalKey();
+      await tester.pumpWidget(
+        ProviderScope(
+          key: UniqueKey(),
+          overrides: [
+            ...overrides(),
+            currentMemberProvider.overrideWith((ref) async => members.first),
+            unownedTasksProvider.overrideWith((ref) async => const []),
+            allTasksProvider.overrideWith((ref) async => [pickup]),
+            pendingDecisionsProvider.overrideWith((ref) async => const []),
+            conflictsProvider.overrideWith((ref) async => const []),
+            calendarEventsProvider.overrideWith((ref) async => [day]),
+            threadingThresholdProvider.overrideWith((ref) async => 30),
+          ],
+          child: RepaintBoundary(
+            key: key,
+            child: MaterialApp(
+              debugShowCheckedModeBanner: false,
+              theme: buildAppTheme(),
+              themeMode: ThemeMode.dark,
+              home: const Scaffold(body: HomeScreen()),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.byType(TaskRow));
+      await tester.pumpAndSettle();
+      await capture(
+        tester,
+        key,
+        adjusted ? '09-day-hours-adjusted' : '08-day-hours',
+      );
+    }
   });
 
   testWidgets('render notification settings screens', (tester) async {

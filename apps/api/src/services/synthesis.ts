@@ -9,6 +9,7 @@ import {
   inArray,
   isNull,
   linkBaselineChanges,
+  linkDayOverrides,
   lte,
   linkRules,
   lt,
@@ -452,6 +453,34 @@ async function foldEffectiveBaselineChanges(
 }
 
 /**
+ * The links' one-off day hours (`link_day_overrides`) still ahead, deleting
+ * any whose date has left the window on the way. Synthesis never looks behind
+ * the window, so those can't shape a day again — the day's event already on
+ * the calendar is the history — and sweeping them keeps the table to today and
+ * later. The delete only goes out when there's something to sweep, so an
+ * ordinary run costs one read.
+ */
+async function loadDayOverrides(
+  db: Db,
+  links: LinkRow[],
+  today: string,
+): Promise<(typeof linkDayOverrides.$inferSelect)[]> {
+  const linkIds = links.map((l) => l.id);
+  const rows = await db
+    .select()
+    .from(linkDayOverrides)
+    .where(inArray(linkDayOverrides.linkId, linkIds));
+  if (rows.some((r) => r.date < today)) {
+    await db
+      .delete(linkDayOverrides)
+      .where(
+        and(inArray(linkDayOverrides.linkId, linkIds), lt(linkDayOverrides.date, today)),
+      );
+  }
+  return rows.filter((r) => r.date >= today);
+}
+
+/**
  * Module A — synthesis (SCHEDULE only). Runs each active link of a feed through
  * the pure engine and reconciles the member's unified calendar to the desired
  * set: upserts by (member, synthKey) with contentHash skip, deletes this link's
@@ -486,7 +515,8 @@ export async function synthesizeFeed(
       and(eq(familyMemberFeeds.feedId, feed.id), eq(familyMemberFeeds.active, true)),
     );
   if (links.length === 0) return result;
-  await foldEffectiveBaselineChanges(db, links, utcDayString(window.start.getTime()));
+  const today = utcDayString(window.start.getTime());
+  await foldEffectiveBaselineChanges(db, links, today);
 
   // Occurrences overlapping the window (a span that started before the window
   // still counts for the days it reaches into it). Dismissed events are ignored.
@@ -535,6 +565,9 @@ export async function synthesizeFeed(
             ),
           )
       : [];
+  // So do the one-off hours set on single baseline days.
+  const allDayOverrides =
+    feed.mode === 'exception' ? await loadDayOverrides(db, links, today) : [];
 
   // Routed feeds are decided feed-wide before the per-link pass: every link's
   // `keep` pipeline sees the same occurrences, and an occurrence no link keeps
@@ -563,6 +596,7 @@ export async function synthesizeFeed(
       locationGeo: link.locationGeo,
       baselineSummary: baselineSummaryFor(feed),
       baselineChanges: allBaselineChanges.filter((b) => b.linkId === link.id),
+      dayOverrides: allDayOverrides.filter((o) => o.linkId === link.id),
     };
 
     const engineResult: EngineResult = routing

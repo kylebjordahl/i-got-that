@@ -565,6 +565,18 @@ export const UpdateBaselineChangeInput = CreateBaselineChangeInput.partial();
 export type UpdateBaselineChangeInput = z.infer<typeof UpdateBaselineChangeInput>;
 
 /**
+ * One baseline day's hours, for that date only — "Tuesday I'm picking her up at
+ * 1:00" — set from the day's own event (`PUT /calendar-events/:id/day-hours`).
+ * Wall-clock in the feed's timezone, like the link's hours, and they replace
+ * whatever the day would otherwise run (a `modify_day` rule, a dated change).
+ */
+export const SetBaselineDayHoursInput = z.object({
+  dayStart: TimeOfDay,
+  dayEnd: TimeOfDay,
+});
+export type SetBaselineDayHoursInput = z.infer<typeof SetBaselineDayHoursInput>;
+
+/**
  * Reorder one member's feed links by priority — every link id of that member
  * exactly once, in the new order (index 0 = highest priority). Priority breaks
  * ties when feed-derived events overlap on that member's unified calendar: the

@@ -43,6 +43,8 @@ jobs:
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
+          # Pinned, with .fvmrc: bump all of them together (AGENTS.md).
+          flutter-version: 3.47.9
           # Cache the Flutter SDK between runs (the download is the slow part).
           cache: true
       # Fills in the gitignored ephemeral parts of the committed platform
@@ -77,6 +79,8 @@ jobs:
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
+          # Pinned, with .fvmrc: bump all of them together (AGENTS.md).
+          flutter-version: 3.47.9
           cache: true
       - name: Regenerate ephemeral Android project files
         working-directory: apps/mobile

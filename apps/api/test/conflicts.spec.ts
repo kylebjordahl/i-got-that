@@ -826,6 +826,431 @@ describe('conflict detection & masking', () => {
     expect(keys).toEqual([docKey]);
   });
 
+  describe('two conflicts on the same day stack', () => {
+    /** The doctor (10–11) conflict, resolved through the route with `first`. */
+    async function firstResolved(email: string, first: Record<string, unknown>) {
+      const f = await fixture(email);
+      const { blKey } = await schoolAndDoctor(f.db, f);
+      await reconcileMemberConflicts(f.db, f.childId);
+      const c1 = (
+        await f.db.select().from(conflicts).where(eq(conflicts.familyMemberId, f.childId))
+      )[0]!;
+      const r1 = await call(
+        `/families/${f.familyId}/conflicts/${c1.id}/resolve`,
+        authed(f.admin.token, first),
+      );
+      expect(r1.status).toBe(200);
+      return { f, blKey, c1 };
+    }
+
+    /** Add a second appointment that day, then resolve its conflict with `second`. */
+    async function secondResolved(
+      s: Awaited<ReturnType<typeof firstResolved>>,
+      from: [number, number],
+      to: [number, number],
+      second: Record<string, unknown> = {},
+    ) {
+      await s.f.db.insert(calendarEvents).values({
+        familyId: s.f.familyId,
+        familyMemberId: s.f.childId,
+        provenance: 'human',
+        synthKey: 'ext:dentist:',
+        externalUid: 'dentist',
+        dtstart: futureAt(3, ...from),
+        dtend: futureAt(3, ...to),
+        summary: 'Dentist',
+        contentHash: 'dentist-hash',
+      });
+      await reconcileMemberConflicts(s.f.db, s.f.childId);
+      const c2 = (
+        await s.f.db
+          .select()
+          .from(conflicts)
+          .where(
+            and(
+              eq(conflicts.familyMemberId, s.f.childId),
+              eq(conflicts.winnerKey, 'ext:dentist:'),
+            ),
+          )
+      )[0]!;
+      const r2 = await call(
+        `/families/${s.f.familyId}/conflicts/${c2.id}/resolve`,
+        authed(s.f.admin.token, second),
+      );
+      expect(r2.status).toBe(200);
+      const first = (
+        await s.f.db.select().from(conflicts).where(eq(conflicts.id, s.c1.id))
+      )[0]!;
+      expect(first.status, 'the first decision stays in force').toBe('resolved');
+    }
+
+    async function segments(s: { f: { db: Db; childId: string }; blKey: string }) {
+      const rows = await s.f.db
+        .select()
+        .from(calendarEvents)
+        .where(eq(calendarEvents.familyMemberId, s.f.childId));
+      return rows
+        .filter((r) => r.synthKey.startsWith(`cf:${s.blKey}:`))
+        .sort((a, b) => a.dtstart.getTime() - b.dtstart.getTime())
+        .map((r) => [r.dtstart.toISOString(), r.dtend!.toISOString()]);
+    }
+    const span = (a: [number, number], b: [number, number]) => [
+      futureAt(3, ...a).toISOString(),
+      futureAt(3, ...b).toISOString(),
+    ];
+
+    /** Add the dentist appointment and list the pending conflict it opens. */
+    async function pendingDentist(
+      s: Awaited<ReturnType<typeof firstResolved>>,
+      from: [number, number],
+      to: [number, number],
+    ) {
+      await s.f.db.insert(calendarEvents).values({
+        familyId: s.f.familyId,
+        familyMemberId: s.f.childId,
+        provenance: 'human',
+        synthKey: 'ext:dentist:',
+        externalUid: 'dentist',
+        dtstart: futureAt(3, ...from),
+        dtend: futureAt(3, ...to),
+        summary: 'Dentist',
+        contentHash: 'dentist-hash',
+      });
+      await reconcileMemberConflicts(s.f.db, s.f.childId);
+      const api = await call(`/families/${s.f.familyId}/conflicts`, bearer(s.f.admin.token));
+      const { conflicts: list } = (await api.json()) as {
+        conflicts: {
+          winner: { summary: string };
+          loserRemaining?: {
+            dtstart: string;
+            dtend: string;
+            keptBefore: boolean;
+            keptAfter: boolean;
+            keptFrom: string | null;
+            keptUntil: string | null;
+          } | null;
+        }[];
+      };
+      expect(list).toHaveLength(1);
+      expect(list[0]!.winner.summary).toBe('Dentist');
+      return list[0]!;
+    }
+
+    it('lists a second conflict with the day as the first split left it', async () => {
+      const s = await firstResolved('stack-remaining@example.com', { travelAfterMin: 15 });
+      const c = await pendingDentist(s, [13, 0], [14, 0]);
+      // Not the original 08:30–15:00: the doctor split already took 10:00–11:15.
+      expect(c.loserRemaining).toEqual({
+        dtstart: futureAt(3, 11, 15).toISOString(),
+        dtend: futureAt(3, 15, 0).toISOString(),
+        // The 08:30–10:00 morning is still there, so skipping the dentist's
+        // "before" half would drop it too.
+        keptBefore: true,
+        keptAfter: false,
+        keptFrom: futureAt(3, 8, 30).toISOString(),
+        keptUntil: null,
+      });
+    });
+
+    it('does not count a part of the day an earlier decision already dropped', async () => {
+      const s = await firstResolved('stack-remaining-skipped@example.com', {
+        beforeNeeded: false,
+      });
+      const c = await pendingDentist(s, [13, 0], [14, 0]);
+      expect(c.loserRemaining).toEqual({
+        dtstart: futureAt(3, 11, 0).toISOString(),
+        dtend: futureAt(3, 15, 0).toISOString(),
+        keptBefore: false,
+        keptAfter: false,
+        keptFrom: null,
+        keptUntil: null,
+      });
+    });
+
+    it('lists null when an earlier decision already removed that part of the day', async () => {
+      const s = await firstResolved('stack-remaining-gone@example.com', { afterNeeded: false });
+      const c = await pendingDentist(s, [13, 0], [14, 0]);
+      expect(c.loserRemaining).toBeNull();
+    });
+
+    it('a lone conflict lists its loser\'s own span, ignoring its own resolution', async () => {
+      const s = await firstResolved('stack-remaining-own@example.com', { afterNeeded: false });
+      const api = await call(
+        `/families/${s.f.familyId}/conflicts?status=resolved`,
+        bearer(s.f.admin.token),
+      );
+      const { conflicts: list } = (await api.json()) as {
+        conflicts: { loserRemaining?: unknown }[];
+      };
+      expect(list[0]!.loserRemaining).toEqual({
+        dtstart: futureAt(3, 8, 30).toISOString(),
+        dtend: futureAt(3, 15, 0).toISOString(),
+        keptBefore: false,
+        keptAfter: false,
+        keptFrom: null,
+        keptUntil: null,
+      });
+    });
+
+    it('plain + plain: the day is cut around both appointments', async () => {
+      const s = await firstResolved('stack-plain@example.com', {});
+      await secondResolved(s, [13, 0], [14, 0]);
+      expect(await segments(s)).toEqual([
+        span([8, 30], [10, 0]),
+        span([11, 0], [13, 0]),
+        span([14, 0], [15, 0]),
+      ]);
+    });
+
+    it('keeps the first one\'s travel buffers', async () => {
+      const s = await firstResolved('stack-travel@example.com', {
+        travelBeforeMin: 30,
+        travelAfterMin: 15,
+      });
+      await secondResolved(s, [13, 0], [14, 0]);
+      expect(await segments(s)).toEqual([
+        span([8, 30], [9, 30]),
+        span([11, 15], [13, 0]),
+        span([14, 0], [15, 0]),
+      ]);
+    });
+
+    it('a later conflict does not bring back the afternoon the first one dropped', async () => {
+      // Not going back after the doctor: only the morning survives — and a
+      // dentist visit that afternoon can't resurrect 11–13 or 14–15.
+      const s = await firstResolved('stack-after@example.com', { afterNeeded: false });
+      expect(await segments(s)).toEqual([span([8, 30], [10, 0])]);
+      await secondResolved(s, [13, 0], [14, 0]);
+      expect(await segments(s)).toEqual([span([8, 30], [10, 0])]);
+    });
+
+    it('an earlier conflict does not bring back the morning the first one dropped', async () => {
+      // Skipping the morning before the doctor; an 8:45–9:15 call that morning
+      // must not resurrect 8:30–8:45 or 9:15–10:00.
+      const s = await firstResolved('stack-before@example.com', { beforeNeeded: false });
+      expect(await segments(s)).toEqual([span([11, 0], [15, 0])]);
+      await secondResolved(s, [8, 45], [9, 15]);
+      expect(await segments(s)).toEqual([span([11, 0], [15, 0])]);
+    });
+
+    it('a later "not needed before" drops the whole morning, around the earlier cut too', async () => {
+      // Same reading as the sheet's preview and the absence notice: skipping
+      // "before" means arriving at the dentist from the start of the day.
+      const s = await firstResolved('stack-second-before@example.com', {});
+      await secondResolved(s, [13, 0], [14, 0], { beforeNeeded: false });
+      expect(await segments(s)).toEqual([span([14, 0], [15, 0])]);
+    });
+
+    it('a second "not needed after" drops only what follows it', async () => {
+      const s = await firstResolved('stack-second-after@example.com', {});
+      await secondResolved(s, [13, 0], [14, 0], { afterNeeded: false });
+      expect(await segments(s)).toEqual([span([8, 30], [10, 0]), span([11, 0], [13, 0])]);
+    });
+  });
+
+  describe("what's left of a split day, as GET /conflicts lists it", () => {
+    type Remaining = {
+      dtstart: string;
+      dtend: string;
+      keptBefore: boolean;
+      keptAfter: boolean;
+      keptFrom: string | null;
+      keptUntil: string | null;
+    } | null;
+    const at = (h: number, m = 0) => futureAt(3, h, m).toISOString();
+
+    /** An 08:30–15:00 school day, plus helpers to add / decide appointments. */
+    async function day(email: string) {
+      const f = await fixture(email);
+      const blKey = 'bl:' + f.linkId + ':day';
+      const schoolDay = (memberId: string) =>
+        f.db.insert(calendarEvents).values({
+          familyId: f.familyId,
+          familyMemberId: memberId,
+          provenance: 'synthesized',
+          synthKey: blKey,
+          linkId: f.linkId,
+          dtstart: futureAt(3, 8, 30),
+          dtend: futureAt(3, 15, 0),
+          summary: 'School day',
+          contentHash: 'bl-hash',
+        });
+      await schoolDay(f.childId);
+      const add = async (
+        uid: string,
+        from: [number, number],
+        to: [number, number],
+        memberId = f.childId,
+      ) => {
+        await f.db.insert(calendarEvents).values({
+          familyId: f.familyId,
+          familyMemberId: memberId,
+          provenance: 'human',
+          synthKey: `ext:${uid}:`,
+          externalUid: uid,
+          dtstart: futureAt(3, ...from),
+          dtend: futureAt(3, ...to),
+          summary: uid,
+          contentHash: `${uid}-hash`,
+        });
+        await reconcileMemberConflicts(f.db, memberId);
+      };
+      /** Resolve `uid`'s conflict through the route. */
+      const resolve = async (
+        uid: string,
+        params: Record<string, unknown> = {},
+        memberId = f.childId,
+      ) => {
+        const c = (
+          await f.db
+            .select()
+            .from(conflicts)
+            .where(
+              and(
+                eq(conflicts.familyMemberId, memberId),
+                eq(conflicts.winnerKey, `ext:${uid}:`),
+              ),
+            )
+        )[0]!;
+        const r = await call(
+          `/families/${f.familyId}/conflicts/${c.id}/resolve`,
+          authed(f.admin.token, params),
+        );
+        expect(r.status).toBe(200);
+      };
+      /** The listed `loserRemaining` of `uid`'s conflict (any status). The
+       *  whole family is listed, so every member's decisions are in play. */
+      const remaining = async (uid: string, memberId = f.childId) => {
+        const api = await call(
+          `/families/${f.familyId}/conflicts?status=all`,
+          bearer(f.admin.token),
+        );
+        const { conflicts: list } = (await api.json()) as {
+          conflicts: {
+            familyMemberId: string;
+            winner: { summary: string };
+            loserRemaining?: Remaining;
+          }[];
+        };
+        const c = list.find(
+          (x) => x.familyMemberId === memberId && x.winner.summary === uid,
+        );
+        expect(c, `${uid}'s conflict is listed`).toBeTruthy();
+        return c!.loserRemaining;
+      };
+      return { f, blKey, schoolDay, add, resolve, remaining };
+    }
+
+    it('keptFrom is where the kept morning starts, not the day\'s own start', async () => {
+      const d = await day('kept-from@example.com');
+      // 08:45–09:00 call, skipping school before it (drops 08:30–09:00); a
+      // 09:30–09:45 break and a doctor visit 10–11, both split plainly. The
+      // kept morning is 09:00–09:30 and 09:45–10:00: it starts at 09:00.
+      await d.add('call', [8, 45], [9, 0]);
+      await d.resolve('call', { beforeNeeded: false });
+      await d.add('break', [9, 30], [9, 45]);
+      await d.resolve('break');
+      await d.add('doctor', [10, 0], [11, 0]);
+      await d.resolve('doctor');
+      await d.add('dentist', [13, 0], [14, 0]);
+      expect(await d.remaining('dentist')).toEqual({
+        dtstart: at(11),
+        dtend: at(15),
+        keptBefore: true,
+        keptAfter: false,
+        keptFrom: at(9),
+        keptUntil: null,
+      });
+    });
+
+    it('keptAfter / keptUntil when the kept time is later in the day', async () => {
+      const d = await day('kept-after@example.com');
+      // Afternoon dentist 13–14 split, with 15 min travel back, a 14:25–14:30
+      // call split plainly, and a 14:45 pick-up skipping the rest of the day
+      // (drops 14:45–15:00). Then a morning doctor visit: skipping its
+      // "after" would also drop 11:00–13:00, 14:15–14:25 and 14:30–14:45 —
+      // kept time that ends at 14:45, not at the day's own 15:00.
+      await d.add('dentist', [13, 0], [14, 0]);
+      await d.resolve('dentist', { travelAfterMin: 15 });
+      await d.add('call', [14, 25], [14, 30]);
+      await d.resolve('call');
+      await d.add('pickup', [14, 45], [15, 0]);
+      await d.resolve('pickup', { afterNeeded: false });
+      await d.add('doctor', [10, 0], [11, 0]);
+      expect(await d.remaining('doctor')).toEqual({
+        dtstart: at(8, 30),
+        dtend: at(13),
+        keptBefore: false,
+        keptAfter: true,
+        keptFrom: null,
+        keptUntil: at(14, 45),
+      });
+    });
+
+    it('spans the segments either side when the winner bridges an earlier cut', async () => {
+      const d = await day('kept-bridge@example.com');
+      await d.add('doctor', [10, 0], [11, 0]);
+      await d.resolve('doctor');
+      // 09:30–12:00 overlaps both 08:30–10:00 and 11:00–15:00.
+      await d.add('dentist', [9, 30], [12, 0]);
+      expect(await d.remaining('dentist')).toEqual({
+        dtstart: at(8, 30),
+        dtend: at(15),
+        keptBefore: false,
+        keptAfter: false,
+        keptFrom: null,
+        keptUntil: null,
+      });
+    });
+
+    it('ignores a resolved conflict whose appointment has since vanished', async () => {
+      const d = await day('kept-vanished@example.com');
+      await d.add('doctor', [10, 0], [11, 0], d.f.childId);
+      await d.resolve('doctor');
+      await d.add('dentist', [13, 0], [14, 0]);
+      // The doctor visit is gone before any reconcile has cleared its row.
+      await d.f.db
+        .delete(calendarEvents)
+        .where(
+          and(
+            eq(calendarEvents.familyMemberId, d.f.childId),
+            eq(calendarEvents.synthKey, 'ext:doctor:'),
+          ),
+        );
+      expect(await d.remaining('dentist')).toEqual({
+        dtstart: at(8, 30),
+        dtend: at(15),
+        keptBefore: false,
+        keptAfter: false,
+        keptFrom: null,
+        keptUntil: null,
+      });
+    });
+
+    it("never applies another member's decisions on a day with the same key", async () => {
+      const d = await day('kept-sibling@example.com');
+      const sib = await call(
+        `/families/${d.f.familyId}/members`,
+        authed(d.f.admin.token, { relationName: 'sibling', requiresCaretaker: true }),
+      );
+      const { member: sibling } = (await sib.json()) as { member: { id: string } };
+      // The sibling has the same school day (same synth key) and its own split.
+      await d.schoolDay(sibling.id);
+      await d.add('sib-doctor', [10, 0], [11, 0], sibling.id);
+      await d.resolve('sib-doctor', { afterNeeded: false }, sibling.id);
+
+      await d.add('dentist', [13, 0], [14, 0]);
+      expect(await d.remaining('dentist')).toEqual({
+        dtstart: at(8, 30),
+        dtend: at(15),
+        keptBefore: false,
+        keptAfter: false,
+        keptFrom: null,
+        keptUntil: null,
+      });
+    });
+  });
+
   it('rejects out-of-range travel buffers', async () => {
     const f = await fixture('conflict-badinput@example.com');
     await schoolAndDoctor(f.db, f);

@@ -12,7 +12,7 @@ import {
   gte,
   inArray,
 } from '@igt/db';
-import { tzOffsetMs } from '@igt/classification';
+import { parseBaselineKey, tzOffsetMs } from '@igt/classification';
 import type { AbsenceNotice, AbsenceNoticeState } from '@igt/domain';
 import { selectChunked } from '../lib/d1.js';
 import { hydrateConflicts, type HydratedConflict } from './conflicts.js';
@@ -254,10 +254,9 @@ export interface LoadOptions {
   composerName?: string;
 }
 
-/** `bl:<linkId>:<date>` → linkId. Link ids are UUIDs, so they contain no colon. */
+/** `bl:<linkId>:<date>` → linkId. */
 function linkIdOfBaselineKey(key: string): string | null {
-  const parts = key.split(':');
-  return parts.length >= 3 && parts[0] === 'bl' ? parts[1]! : null;
+  return parseBaselineKey(key)?.linkId ?? null;
 }
 
 /**

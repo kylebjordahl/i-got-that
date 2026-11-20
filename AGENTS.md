@@ -23,7 +23,14 @@ calendar_events (synthesized|claimed) → MIRROR → the member's one target cal
 SCHEDULE overrides (`cancel_day`/`modify_day`/`ignore` on the baseline day an
 exception event covers, or `add_event` to put the feed event on the calendar
 *beside* an untouched baseline day — a school's community dinner; plus `keep`,
-which on a **routed** feed claims the event for that link's member);
+which on a **routed** feed claims the event for that link's member). One
+baseline day's hours can also be set by hand for that date alone
+(`link_day_overrides`, `PUT/DELETE /calendar-events/:id/day-hours` on the `bl:`
+day): it beats `modify_day` and dated `link_baseline_changes`, can't revive a
+`cancel_day`, keeps the `bl:` key so tasks/claims are healed rather than
+recreated, and synthesis sweeps it once the day has left the window. A day a
+resolved conflict has split is refused — moving it would reopen the conflict
+and release claims on its segments;
 `task_rules` are the per-member TYPING pipeline (`transition` vs `attendance`
 vs `none` — no tasks, the event stays on the calendar — + drop-off/pickup windows, scoped `this_calendar`/`all_calendars`, with a
 terminal default per calendar on the link + member). Task type is resolved at
@@ -84,7 +91,13 @@ Backend: Cloudflare Workers + Hono + D1 + Drizzle. Client: Flutter (Riverpod, di
 - `tsconfig.base` sets `declaration:false, noEmit:true` (no build step; packages
   consume each other via `@igt/*` source path-mapping). `.npmrc` uses
   `shamefully-hoist=true`.
-- **Flutter via `fvm`** (Flutter 3.44.x). Don't call bare `flutter` for local work.
+- **Flutter via `fvm`, pinned to 3.47.9** in `.fvmrc` and in every
+  `subosito/flutter-action` step (`ci.yml`, `deploy.yml`) — bump them together,
+  on purpose. An unpinned `stable` once broke CI overnight (3.50 fails analyze
+  on the material/cupertino import deprecations and needs AGP ≥ 9.1.1). iOS
+  deploys still take `latest-stable` Xcode, so an iOS build failure after a
+  runner image update is a cue to revisit the pin. Don't call bare `flutter`
+  for local work.
   `pubspec.yaml`'s floor is Dart 3.12 / Flutter 3.44 — that floor *is* the
   language version `dart format` reads, so it also selects the formatter's
   style. CI runs `dart format --set-exit-if-changed`, so an unformatted file

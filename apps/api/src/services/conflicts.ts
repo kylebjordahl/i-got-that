@@ -181,6 +181,146 @@ export async function hydrateConflicts(
   return out;
 }
 
+const MIN = 60_000;
+
+/** What a resolved conflict carries about how its loser is cut. */
+export interface ResolutionParams {
+  travelBeforeMin: number;
+  travelAfterMin: number;
+  beforeNeeded: boolean;
+  afterNeeded: boolean;
+}
+
+/**
+ * The span one resolved conflict removes from its loser. The winner is widened
+ * by its travel buffers so the trimmed halves pull back, leaving a gap the
+ * pick-up / drop-off task lands in. A side marked "not needed" (a cancel_day
+ * for that side) stretches the cut to the loser's edge. A loser's segments are
+ * its span less every resolution's cut, so decisions on the same day stack: a
+ * later conflict can't bring back a half an earlier one dropped, and "not
+ * needed" deliberately beats another resolution's "needed" on the same side
+ * (as absence notices' gap union does).
+ */
+export function resolutionCut(
+  loser: { dtstart: Date; dtend: Date },
+  winner: { dtstart: Date; dtend: Date },
+  p: ResolutionParams,
+): { dtstart: Date; dtend: Date } {
+  return {
+    dtstart: p.beforeNeeded
+      ? new Date(winner.dtstart.getTime() - p.travelBeforeMin * MIN)
+      : loser.dtstart,
+    dtend: p.afterNeeded
+      ? new Date(winner.dtend.getTime() + p.travelAfterMin * MIN)
+      : loser.dtend,
+  };
+}
+
+/** See `remainingLoserSpans`. */
+export interface RemainingLoserSpan {
+  dtstart: Date;
+  dtend: Date;
+  /** Other parts of the loser are still on the calendar before / after this
+   *  span — what skipping this conflict's half would also drop. */
+  keptBefore: boolean;
+  keptAfter: boolean;
+  /** Where that kept time starts (before) / ends (after) — not necessarily
+   *  the loser's own edge, since another decision may already have dropped
+   *  the very start or end of it. Null when nothing is kept on that side. */
+  keptFrom: Date | null;
+  keptUntil: Date | null;
+}
+
+/**
+ * For each conflict, the part of its loser still on the calendar around its
+ * winner once every OTHER resolved conflict on the same loser has cut it —
+ * what a resolution sheet should show as the event's current times, since an
+ * earlier split that day may already have trimmed it. Keyed by conflict id:
+ * `{ dtstart, dtend }` spans the remaining segment(s) the winner overlaps
+ * (with whether other segments survive either side);
+ * `null` means other decisions already removed every part it overlaps. A
+ * conflict whose loser can't be cut (all-day, open-ended) or whose winner has
+ * no end is absent — there is nothing to trim.
+ */
+export async function remainingLoserSpans(
+  db: Db,
+  familyId: string,
+  hydrated: HydratedConflict[],
+): Promise<Map<string, RemainingLoserSpan | null>> {
+  const out = new Map<string, RemainingLoserSpan | null>();
+  const cuttable = hydrated.filter(
+    (h) => !h.loser.allDay && h.loser.dtend != null && h.winner.dtend != null,
+  );
+  if (cuttable.length === 0) return out;
+
+  // Every resolved decision on the same losers, whatever the request listed.
+  const memberIds = [...new Set(cuttable.map((h) => h.conflict.familyMemberId))];
+  const loserKeys = [...new Set(cuttable.map((h) => h.conflict.loserKey))];
+  const resolvedRows = await selectChunked(
+    loserKeys,
+    (chunk) =>
+      db
+        .select()
+        .from(conflicts)
+        .where(
+          and(
+            eq(conflicts.familyId, familyId),
+            eq(conflicts.status, 'resolved'),
+            inArray(conflicts.familyMemberId, memberIds),
+            inArray(conflicts.loserKey, chunk),
+          ),
+        ),
+    2 + memberIds.length,
+  );
+  const resolved = await hydrateConflicts(db, [familyId], resolvedRows);
+  const byLoser = new Map<string, HydratedConflict[]>();
+  for (const r of resolved) {
+    const k = `${r.conflict.familyMemberId}|${r.conflict.loserKey}`;
+    byLoser.set(k, [...(byLoser.get(k) ?? []), r]);
+  }
+
+  for (const h of cuttable) {
+    const loser = { dtstart: h.loser.dtstart, dtend: h.loser.dtend as Date };
+    const winner = { dtstart: h.winner.dtstart, dtend: h.winner.dtend as Date };
+    const others = (
+      byLoser.get(`${h.conflict.familyMemberId}|${h.conflict.loserKey}`) ?? []
+    ).filter((r) => r.conflict.id !== h.conflict.id && r.winner.dtend != null);
+    const segments = subtractIntervals(
+      loser,
+      others.map((r) =>
+        resolutionCut(
+          loser,
+          { dtstart: r.winner.dtstart, dtend: r.winner.dtend as Date },
+          r.conflict,
+        ),
+      ),
+    );
+    const touching = segments.filter(
+      (seg) => seg.dtstart < winner.dtend && seg.dtend > winner.dtstart,
+    );
+    if (touching.length === 0) {
+      out.set(h.conflict.id, null);
+      continue;
+    }
+    const dtstart = touching[0]!.dtstart;
+    const dtend = touching[touching.length - 1]!.dtend;
+    // Segments are disjoint and sorted, so the kept time before this span
+    // starts at the first segment that ends by its start, and the kept time
+    // after ends at the last one that starts at or after its end.
+    const before = segments.filter((seg) => seg.dtend <= dtstart);
+    const after = segments.filter((seg) => seg.dtstart >= dtend);
+    out.set(h.conflict.id, {
+      dtstart,
+      dtend,
+      keptBefore: before.length > 0,
+      keptAfter: after.length > 0,
+      keptFrom: before[0]?.dtstart ?? null,
+      keptUntil: after[after.length - 1]?.dtend ?? null,
+    });
+  }
+  return out;
+}
+
 /**
  * Detect and reconcile overlaps on one member's unified calendar, then apply the
  * splits for any the admin has resolved. Runs after synthesis + read-back and
@@ -361,7 +501,6 @@ export async function reconcileMemberConflicts(
     resolvedByLoser.set(c.loserKey, list);
   }
 
-  const MIN = 60_000;
   const desiredCf = new Map<string, typeof calendarEvents.$inferInsert>();
   const maskedLoserKeys = new Set<string>();
   for (const [loserKey, cutsMeta] of resolvedByLoser) {
@@ -376,41 +515,13 @@ export async function reconcileMemberConflicts(
           !!x.w && x.w.dtend != null,
       );
     if (resolved.length === 0) continue; // every winner vanished — leave the loser whole
-    // Widen each cut by its travel buffers so the trimmed halves pull back,
-    // leaving a gap the pick-up / drop-off task lands in.
-    const cuts = resolved.map(({ meta, w }) => ({
-      dtstart: new Date(w.dtstart.getTime() - meta.travelBeforeMin * MIN),
-      dtend: new Date((w.dtend as Date).getTime() + meta.travelAfterMin * MIN),
-    }));
-    let segments = subtractIntervals(
-      { dtstart: loser.dtstart, dtend: loserEnd },
-      cuts,
+    // Every resolution contributes its own cut (see `resolutionCut`) and they
+    // are subtracted together, so decisions on the same day stack.
+    const span = { dtstart: loser.dtstart, dtend: loserEnd };
+    const cuts = resolved.map(({ meta, w }) =>
+      resolutionCut(span, { dtstart: w.dtstart, dtend: w.dtend as Date }, meta),
     );
-    // Per-side "not needed" drops the leading / trailing half of the loser (a
-    // cancel_day for that side). With multiple winners, "before" is governed by
-    // the earliest winner and "after" by the latest.
-    const earliest = resolved.reduce((a, b) =>
-      b.w.dtstart < a.w.dtstart ? b : a,
-    );
-    const latest = resolved.reduce((a, b) =>
-      (b.w.dtend as Date) > (a.w.dtend as Date) ? b : a,
-    );
-    const first = segments[0];
-    if (
-      !earliest.meta.beforeNeeded &&
-      first &&
-      first.dtstart.getTime() === loser.dtstart.getTime()
-    ) {
-      segments = segments.slice(1);
-    }
-    const last = segments[segments.length - 1];
-    if (
-      !latest.meta.afterNeeded &&
-      last &&
-      last.dtend.getTime() === loserEnd.getTime()
-    ) {
-      segments = segments.slice(0, -1);
-    }
+    const segments = subtractIntervals(span, cuts);
     maskedLoserKeys.add(loserKey);
     result.masksApplied++;
     segments.forEach((seg, i) => {

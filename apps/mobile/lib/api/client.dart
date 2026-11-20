@@ -851,6 +851,31 @@ class ApiClient {
     );
   }
 
+  /// Set one baseline day's hours for that date only — an early pickup on a
+  /// school day, without a calendar event to conflict with. `"HH:MM"` in the
+  /// feed's timezone ([BaselineDay]); replaces any earlier one-off for the day.
+  /// [eventId] is the day's event, or a segment cut from it.
+  Future<void> setBaselineDayHours(
+    String familyId,
+    String eventId, {
+    required String dayStart,
+    required String dayEnd,
+  }) async {
+    await _dio.put(
+      '/families/$familyId/calendar-events/$eventId/day-hours',
+      data: {'dayStart': dayStart, 'dayEnd': dayEnd},
+      options: _auth,
+    );
+  }
+
+  /// Put a baseline day back on its usual hours (drop its one-off).
+  Future<void> resetBaselineDayHours(String familyId, String eventId) async {
+    await _dio.delete(
+      '/families/$familyId/calendar-events/$eventId/day-hours',
+      options: _auth,
+    );
+  }
+
   /// Convert a feed-generated task into a chosen set of types (attendance /
   /// pickup / dropoff). The event's tasks for that dependent become exactly
   /// these types.

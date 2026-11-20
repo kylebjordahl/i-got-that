@@ -291,6 +291,35 @@ void main() {
     });
   });
 
+  test("reads a baseline day's hours, and their absence", () {
+    final day = CalendarEventItem.fromJson({
+      'id': 'e1',
+      'familyMemberId': 'm1',
+      'provenance': 'synthesized',
+      'dtstart': '2026-07-07T13:30:00.000Z',
+      'dtend': '2026-07-07T18:00:00.000Z',
+      'baselineDay': {
+        'date': '2026-07-07',
+        'dayStart': '08:30',
+        'dayEnd': '13:00',
+        'adjusted': true,
+      },
+    });
+    expect(day.baselineDay?.date, '2026-07-07');
+    expect(day.baselineDay?.dayStart, '08:30');
+    expect(day.baselineDay?.dayEnd, '13:00');
+    expect(day.baselineDay?.adjusted, isTrue);
+
+    final other = CalendarEventItem.fromJson({
+      'id': 'e2',
+      'familyMemberId': 'm1',
+      'provenance': 'synthesized',
+      'dtstart': '2026-07-07T22:00:00.000Z',
+      'baselineDay': null,
+    });
+    expect(other.baselineDay, isNull);
+  });
+
   group('travel time', () {
     test("reads an event's explicit override, and its absence", () {
       final overridden = CalendarEventItem.fromJson({
@@ -337,5 +366,50 @@ void main() {
         expect(unpinned.suggestedTravelMin, isNull);
       },
     );
+
+    test("reads what's left of a conflict's loser, or that none is", () {
+      Map<String, dynamic> ev(String summary) => {
+        'summary': summary,
+        'allDay': false,
+        'dtstart': '2026-07-06T15:30:00.000Z',
+      };
+      Conflict parse(Map<String, dynamic> extra) => Conflict.fromJson({
+        'id': 'c1',
+        'familyMemberId': 'm1',
+        'loser': ev('School day'),
+        'winner': ev('Doctor'),
+        ...extra,
+      });
+
+      final trimmed = parse({
+        'loserRemaining': {
+          'dtstart': '2026-07-06T18:15:00.000Z',
+          'dtend': '2026-07-06T22:00:00.000Z',
+          'keptBefore': true,
+          'keptAfter': false,
+          'keptFrom': '2026-07-06T16:00:00.000Z',
+          'keptUntil': null,
+        },
+      });
+      final at = DateTime.utc(2026, 7, 6, 18, 15);
+      expect(trimmed.loserRemaining!.start.toUtc(), at);
+      expect(trimmed.loserRemaining!.keptBefore, isTrue);
+      expect(
+        trimmed.loserRemaining!.keptFrom!.toUtc(),
+        DateTime.utc(2026, 7, 6, 16),
+      );
+      expect(trimmed.loserRemaining!.keptUntil, isNull);
+      expect(trimmed.loserAlreadyCleared, isFalse);
+      expect(trimmed.currentLoser.start.toUtc(), at);
+      expect(trimmed.currentLoser.summary, 'School day');
+
+      final cleared = parse({'loserRemaining': null});
+      expect(cleared.loserRemaining, isNull);
+      expect(cleared.loserAlreadyCleared, isTrue);
+
+      final older = parse({});
+      expect(older.loserAlreadyCleared, isFalse);
+      expect(older.currentLoser, same(older.loser));
+    });
   });
 }
