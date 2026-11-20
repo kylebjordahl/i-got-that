@@ -1105,7 +1105,6 @@ class _TravelGapBlock extends StatelessWidget {
   }
 }
 
-/// A muted explanatory row inside the preview (e.g. the loser is fully covered).
 /// Time another split already cut between a half and the appointment: the
 /// child is already out of the event then, so travel up to it trims nothing.
 /// [travelInside] (minutes, when > 0) says the current travel buffer fits
@@ -1148,6 +1147,7 @@ class _AlreadyCutBlock extends StatelessWidget {
   }
 }
 
+/// A muted explanatory row inside the preview (e.g. the loser is fully covered).
 class _NoteRow extends StatelessWidget {
   const _NoteRow(this.text);
   final String text;
