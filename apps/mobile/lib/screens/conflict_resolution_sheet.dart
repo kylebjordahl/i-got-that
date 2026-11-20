@@ -1,6 +1,7 @@
 import 'dart:math' as math;
 
 import 'package:flutter/gestures.dart';
+import 'package:flutter/rendering.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -702,26 +703,36 @@ class _EditableHalf extends StatelessWidget {
 
   static const double _blockH = 58;
 
+  /// How far the handle (pill plus touch padding) reaches past the half's edge.
+  static const double _overhang =
+      _DragHandle.height / 2 + _DragHandle.touchPadding;
+
   @override
   Widget build(BuildContext context) {
     // The block fills the row; the drag handle straddles the appointment-facing
     // edge, painting into the rail beside the neighbouring segment (Stack clip is
     // off), so the visible block-to-segment gaps stay tight and even.
-    final handleY = handleAtBottom ? _blockH : 0.0;
+    // The Stack is laid out [_overhang] taller on both sides than the half
+    // ([_OverhangHitBox] then reports the half's own height, so layout is
+    // unchanged) — Flutter only hit-tests inside a box's bounds, so the part of
+    // the handle (and its touch padding) outside the half needs the Stack to
+    // contain it. Everything below is positioned in the Stack's own coordinates.
+    final handleY = _overhang + (handleAtBottom ? _blockH : 0.0);
 
-    return LayoutBuilder(
-      builder: (context, c) {
-        final blockW = c.maxWidth - _railWidth;
-        final controlLeft = blockW + _connectorWidth;
-        return SizedBox(
-          height: _blockH,
-          child: Stack(
+    return _OverhangHitBox(
+      height: _blockH,
+      overhang: _overhang,
+      child: LayoutBuilder(
+        builder: (context, c) {
+          final blockW = c.maxWidth - _railWidth;
+          final controlLeft = blockW + _connectorWidth;
+          return Stack(
             clipBehavior: Clip.none,
             children: [
               // The (narrower) event block, with the trash / restore control.
               Positioned(
                 left: 0,
-                top: 0,
+                top: _overhang,
                 width: blockW,
                 height: _blockH,
                 child: _SegmentBlock(
@@ -759,10 +770,77 @@ class _EditableHalf extends StatelessWidget {
                 ),
               ],
             ],
-          ),
-        );
-      },
+          );
+        },
+      ),
     );
+  }
+}
+
+/// Lays [child] out [overhang] taller than [height] on both sides but reports
+/// just [height], so surrounding layout is unaffected, while hit-testing the
+/// whole child — a plain Stack only responds within its own bounds.
+class _OverhangHitBox extends SingleChildRenderObjectWidget {
+  const _OverhangHitBox({
+    required this.height,
+    required this.overhang,
+    required super.child,
+  });
+  final double height;
+  final double overhang;
+
+  @override
+  RenderObject createRenderObject(BuildContext context) =>
+      _RenderOverhangHitBox(height, overhang);
+
+  @override
+  void updateRenderObject(
+    BuildContext context,
+    _RenderOverhangHitBox renderObject,
+  ) {
+    renderObject
+      ..height = height
+      ..overhang = overhang;
+  }
+}
+
+class _RenderOverhangHitBox extends RenderShiftedBox {
+  _RenderOverhangHitBox(this._height, this._overhang) : super(null);
+
+  double _height;
+  double _overhang;
+
+  set height(double v) {
+    if (v == _height) return;
+    _height = v;
+    markNeedsLayout();
+  }
+
+  set overhang(double v) {
+    if (v == _overhang) return;
+    _overhang = v;
+    markNeedsLayout();
+  }
+
+  @override
+  void performLayout() {
+    final w = constraints.maxWidth;
+    child!.layout(
+      BoxConstraints.tightFor(width: w, height: _height + 2 * _overhang),
+      parentUsesSize: false,
+    );
+    (child!.parentData! as BoxParentData).offset = Offset(0, -_overhang);
+    size = constraints.constrain(Size(w, _height));
+  }
+
+  @override
+  bool hitTest(BoxHitTestResult result, {required Offset position}) {
+    // Skip the usual "inside my own size" gate; the child does its own.
+    if (hitTestChildren(result, position: position)) {
+      result.add(BoxHitTestEntry(this, position));
+      return true;
+    }
+    return false;
   }
 }
 
