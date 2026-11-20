@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
+
 import '../theme/app_colors.dart';
 import '../theme/app_text.dart';
+import 'pressable.dart';
 
 /// A colored circle with a single initial — the app-wide person avatar.
 class PersonAvatar extends StatelessWidget {
@@ -157,18 +159,22 @@ class AppCard extends StatelessWidget {
       border: border ?? Border.all(color: AppColors.border),
     );
     final content = Padding(padding: padding, child: child);
-    return DecoratedBox(
-      decoration: decoration,
-      child: onTap == null
-          ? content
-          : Material(
-              color: Colors.transparent,
-              child: InkWell(
-                onTap: onTap,
-                borderRadius: BorderRadius.circular(radius),
-                child: content,
+    return Pressable(
+      enabled: onTap != null,
+      scale: 0.985,
+      child: DecoratedBox(
+        decoration: decoration,
+        child: onTap == null
+            ? content
+            : Material(
+                color: Colors.transparent,
+                child: InkWell(
+                  onTap: onTap,
+                  borderRadius: BorderRadius.circular(radius),
+                  child: content,
+                ),
               ),
-            ),
+      ),
     );
   }
 }
@@ -268,16 +274,26 @@ class RefreshFeedsButton extends StatelessWidget {
             color: AppColors.textSecondary,
           );
 
-    return Material(
-      color: AppColors.card,
-      shape: const CircleBorder(side: BorderSide(color: AppColors.border)),
-      child: InkWell(
-        onTap: busy ? null : onTap,
-        customBorder: const CircleBorder(),
-        child: SizedBox(
-          width: size,
-          height: size,
-          child: Center(child: iconOrSpinner),
+    return Pressable(
+      enabled: !busy && onTap != null,
+      scale: 0.92,
+      child: Material(
+        color: AppColors.card,
+        shape: const CircleBorder(side: BorderSide(color: AppColors.border)),
+        child: InkWell(
+          onTap: busy ? null : onTap,
+          customBorder: const CircleBorder(),
+          child: SizedBox(
+            width: size,
+            height: size,
+            child: AnimatedSwitcher(
+              duration: const Duration(milliseconds: 180),
+              child: KeyedSubtree(
+                key: ValueKey(busy),
+                child: Center(child: iconOrSpinner),
+              ),
+            ),
+          ),
         ),
       ),
     );
@@ -317,29 +333,33 @@ class TaskFilterChip extends StatelessWidget {
     }
     return GestureDetector(
       onTap: onTap,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
-        decoration: BoxDecoration(
-          color: bg,
-          borderRadius: BorderRadius.circular(999),
-          border: Border.all(color: border),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            if (person && selected) ...[
-              Container(
-                width: 7,
-                height: 7,
-                decoration: BoxDecoration(
-                  color: accent,
-                  shape: BoxShape.circle,
+      child: Pressable(
+        scale: 0.94,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 160),
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+          decoration: BoxDecoration(
+            color: bg,
+            borderRadius: BorderRadius.circular(999),
+            border: Border.all(color: border),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (person && selected) ...[
+                Container(
+                  width: 7,
+                  height: 7,
+                  decoration: BoxDecoration(
+                    color: accent,
+                    shape: BoxShape.circle,
+                  ),
                 ),
-              ),
-              const SizedBox(width: 7),
+                const SizedBox(width: 7),
+              ],
+              Text(label, style: font(kBodyFont, 13, 600, color: fg)),
             ],
-            Text(label, style: font(kBodyFont, 13, 600, color: fg)),
-          ],
+          ),
         ),
       ),
     );
@@ -356,40 +376,43 @@ class FiltersButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     const onIndigo = Color(0xFF17162B);
-    return Material(
-      color: AppColors.indigo,
-      borderRadius: BorderRadius.circular(999),
-      child: InkWell(
-        onTap: onTap,
+    return Pressable(
+      scale: 0.95,
+      child: Material(
+        color: AppColors.indigo,
         borderRadius: BorderRadius.circular(999),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Icon(Icons.tune_rounded, size: 17, color: onIndigo),
-              const SizedBox(width: 7),
-              Text(
-                'Filters',
-                style: font(kBodyFont, 13.5, 700, color: onIndigo),
-              ),
-              if (count > 0) ...[
-                const SizedBox(width: 8),
-                Container(
-                  width: 18,
-                  height: 18,
-                  alignment: Alignment.center,
-                  decoration: const BoxDecoration(
-                    color: Color(0x33000000),
-                    shape: BoxShape.circle,
-                  ),
-                  child: Text(
-                    '$count',
-                    style: font(kBodyFont, 11, 800, color: onIndigo),
-                  ),
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(999),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.tune_rounded, size: 17, color: onIndigo),
+                const SizedBox(width: 7),
+                Text(
+                  'Filters',
+                  style: font(kBodyFont, 13.5, 700, color: onIndigo),
                 ),
+                if (count > 0) ...[
+                  const SizedBox(width: 8),
+                  Container(
+                    width: 18,
+                    height: 18,
+                    alignment: Alignment.center,
+                    decoration: const BoxDecoration(
+                      color: Color(0x33000000),
+                      shape: BoxShape.circle,
+                    ),
+                    child: Text(
+                      '$count',
+                      style: font(kBodyFont, 11, 800, color: onIndigo),
+                    ),
+                  ),
+                ],
               ],
-            ],
+            ),
           ),
         ),
       ),
@@ -436,33 +459,37 @@ class PillButton extends StatelessWidget {
       ),
       PillVariant.indigo => (AppColors.indigo, const Color(0xFF17162B), null),
     };
-    return Material(
-      color: bg,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(999),
-        side: border == null ? BorderSide.none : BorderSide(color: border),
-      ),
-      child: InkWell(
-        onTap: onPressed,
-        borderRadius: BorderRadius.circular(999),
-        child: Padding(
-          padding: EdgeInsets.symmetric(
-            horizontal: compact ? 11 : (dense ? 14 : 16),
-            vertical: compact ? 5 : (dense ? 8 : 9),
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              if (icon != null) ...[
-                Icon(icon, size: 16, color: fg),
-                const SizedBox(width: 6),
+    return Pressable(
+      enabled: onPressed != null,
+      scale: 0.95,
+      child: Material(
+        color: bg,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(999),
+          side: border == null ? BorderSide.none : BorderSide(color: border),
+        ),
+        child: InkWell(
+          onTap: onPressed,
+          borderRadius: BorderRadius.circular(999),
+          child: Padding(
+            padding: EdgeInsets.symmetric(
+              horizontal: compact ? 11 : (dense ? 14 : 16),
+              vertical: compact ? 5 : (dense ? 8 : 9),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                if (icon != null) ...[
+                  Icon(icon, size: 16, color: fg),
+                  const SizedBox(width: 6),
+                ],
+                Text(
+                  label,
+                  style: font(kBodyFont, compact ? 11.5 : 13, 700, color: fg),
+                ),
               ],
-              Text(
-                label,
-                style: font(kBodyFont, compact ? 11.5 : 13, 700, color: fg),
-              ),
-            ],
+            ),
           ),
         ),
       ),

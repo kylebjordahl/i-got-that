@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
+
 import '../theme/app_colors.dart';
 import '../theme/app_text.dart';
+import 'pressable.dart';
 import 'primitives.dart';
 
 /// A tappable settings row: tinted icon tile, title + optional subtitle, and a
@@ -39,39 +41,43 @@ class SettingRow extends StatelessWidget {
                 color: AppColors.textMuted,
               )
             : null);
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(16),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 6),
-        child: Row(
-          children: [
-            IconTile(icon: icon, color: iconColor),
-            const SizedBox(width: 14),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    title,
-                    style: AppText.sectionItemTitle,
-                    maxLines: singleLine ? 1 : null,
-                    overflow: singleLine ? TextOverflow.ellipsis : null,
-                  ),
-                  if (subtitle != null) ...[
-                    const SizedBox(height: 2),
+    return Pressable(
+      enabled: onTap != null,
+      scale: 0.985,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(16),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 6),
+          child: Row(
+            children: [
+              IconTile(icon: icon, color: iconColor),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
                     Text(
-                      subtitle!,
-                      style: AppText.subtitle,
+                      title,
+                      style: AppText.sectionItemTitle,
                       maxLines: singleLine ? 1 : null,
                       overflow: singleLine ? TextOverflow.ellipsis : null,
                     ),
+                    if (subtitle != null) ...[
+                      const SizedBox(height: 2),
+                      Text(
+                        subtitle!,
+                        style: AppText.subtitle,
+                        maxLines: singleLine ? 1 : null,
+                        overflow: singleLine ? TextOverflow.ellipsis : null,
+                      ),
+                    ],
                   ],
-                ],
+                ),
               ),
-            ),
-            if (trailer != null) ...[const SizedBox(width: 8), trailer],
-          ],
+              if (trailer != null) ...[const SizedBox(width: 8), trailer],
+            ],
+          ),
         ),
       ),
     );
@@ -190,21 +196,24 @@ class _RoundIconButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Material(
-      color: AppColors.card,
-      borderRadius: BorderRadius.circular(13),
-      child: InkWell(
-        onTap: onTap,
+    return Pressable(
+      scale: 0.92,
+      child: Material(
+        color: AppColors.card,
         borderRadius: BorderRadius.circular(13),
-        child: Container(
-          width: 40,
-          height: 40,
-          alignment: Alignment.center,
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(13),
-            border: Border.all(color: AppColors.border),
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(13),
+          child: Container(
+            width: 40,
+            height: 40,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(13),
+              border: Border.all(color: AppColors.border),
+            ),
+            child: Icon(icon, size: 20, color: AppColors.textSecondary),
           ),
-          child: Icon(icon, size: 20, color: AppColors.textSecondary),
         ),
       ),
     );
