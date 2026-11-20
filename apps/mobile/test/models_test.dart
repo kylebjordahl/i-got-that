@@ -403,6 +403,26 @@ void main() {
       expect(trimmed.currentLoser.start.toUtc(), at);
       expect(trimmed.currentLoser.summary, 'School day');
 
+      final inside = parse({
+        'loserRemaining': null,
+        'loserSides': {
+          'before': {
+            'dtstart': '2026-07-06T15:30:00.000Z',
+            'dtend': '2026-07-06T17:00:00.000Z',
+          },
+          'after': null,
+          'keptFrom': null,
+          'keptUntil': null,
+        },
+      });
+      expect(inside.loserAlreadyCleared, isTrue);
+      expect(
+        inside.loserSides!.before!.end.toUtc(),
+        DateTime.utc(2026, 7, 6, 17),
+      );
+      expect(inside.loserSides!.after, isNull);
+      expect(trimmed.loserSides, isNull);
+
       final cleared = parse({'loserRemaining': null});
       expect(cleared.loserRemaining, isNull);
       expect(cleared.loserAlreadyCleared, isTrue);

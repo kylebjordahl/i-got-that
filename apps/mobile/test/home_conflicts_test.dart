@@ -618,6 +618,245 @@ void main() {
     expect(find.text(afternoonNote), findsOneWidget);
   });
 
+  testWidgets(
+    'an appointment inside time another split cut keeps its controls',
+    (tester) async {
+      tester.view.physicalSize = const Size(600, 1600);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      DateTime at(int h, int m) => DateTime(day.year, day.month, day.day, h, m);
+      // A doctor split already cut 10:00–12:30; this 12:00–12:20 call sits
+      // wholly inside it, with the morning and afternoon kept either side.
+      final call = Conflict(
+        id: 'c5',
+        familyMemberId: 'theo',
+        loser: conflict.loser,
+        winner: ConflictEventRef(
+          summary: 'Call',
+          allDay: false,
+          start: at(12, 0),
+          end: at(12, 20),
+        ),
+        loserAlreadyCleared: true,
+        loserSides: LoserSides(
+          before: (start: at(8, 30), end: at(10, 0)),
+          after: (start: at(12, 30), end: at(15, 0)),
+        ),
+      );
+      final api = _RecordingApiClient();
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            apiClientProvider.overrideWithValue(api),
+            familyProvider.overrideWith((ref) async => 'fam-1'),
+            membersProvider.overrideWith((ref) async => [me, theo]),
+            currentMemberProvider.overrideWith((ref) async => me),
+            unownedTasksProvider.overrideWith((ref) async => [task]),
+            allTasksProvider.overrideWith((ref) async => [task]),
+            pendingDecisionsProvider.overrideWith((ref) async => const []),
+            conflictsProvider.overrideWith((ref) async => [call]),
+            calendarEventsProvider.overrideWith((ref) async => const []),
+            threadingThresholdProvider.overrideWith((ref) async => 30),
+          ],
+          child: MaterialApp(
+            theme: buildAppTheme(),
+            themeMode: ThemeMode.dark,
+            home: const Scaffold(body: HomeScreen()),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Review & resolve'));
+      await tester.pumpAndSettle();
+
+      Finder inSheet(String text) => find.descendant(
+        of: find.byType(BottomSheet),
+        matching: find.text(text),
+      );
+      // Not "nothing left to split": both kept halves are offered.
+      expect(find.textContaining('nothing left to split'), findsNothing);
+      expect(inSheet('8:30 – 10:00 AM'), findsOneWidget);
+      expect(inSheet('12:30 – 3:00 PM'), findsOneWidget);
+      // The drop-off stays where the kept afternoon starts until travel
+      // reaches past the already-cut 12:20–12:30.
+      expect(find.text('Drop-off · 12:30'), findsOneWidget);
+
+      // Skipping the afternoon is sent as "not needed after".
+      await tester.tap(find.byIcon(Icons.delete_outline_rounded).last);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Confirm split'));
+      await tester.pumpAndSettle();
+      expect(api.lastResolve, {
+        'travelBeforeMin': 0,
+        'travelAfterMin': 0,
+        'beforeNeeded': true,
+        'afterNeeded': false,
+      });
+    },
+  );
+
+  testWidgets(
+    'travel inside time already cut moves nothing until it reaches past it',
+    (tester) async {
+      tester.view.physicalSize = const Size(600, 1600);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      DateTime at(int h, int m) => DateTime(day.year, day.month, day.day, h, m);
+      // Same 12:00–12:20 call inside a doctor split that cut 10:00–12:30.
+      final call = Conflict(
+        id: 'c6',
+        familyMemberId: 'theo',
+        loser: conflict.loser,
+        winner: ConflictEventRef(
+          summary: 'Call',
+          allDay: false,
+          start: at(12, 0),
+          end: at(12, 20),
+        ),
+        loserAlreadyCleared: true,
+        loserSides: LoserSides(
+          before: (start: at(8, 30), end: at(10, 0)),
+          after: (start: at(12, 30), end: at(15, 0)),
+        ),
+      );
+      final api = _RecordingApiClient();
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            apiClientProvider.overrideWithValue(api),
+            familyProvider.overrideWith((ref) async => 'fam-1'),
+            membersProvider.overrideWith((ref) async => [me, theo]),
+            currentMemberProvider.overrideWith((ref) async => me),
+            unownedTasksProvider.overrideWith((ref) async => [task]),
+            allTasksProvider.overrideWith((ref) async => [task]),
+            pendingDecisionsProvider.overrideWith((ref) async => const []),
+            conflictsProvider.overrideWith((ref) async => [call]),
+            calendarEventsProvider.overrideWith((ref) async => const []),
+            threadingThresholdProvider.overrideWith((ref) async => 30),
+          ],
+          child: MaterialApp(
+            theme: buildAppTheme(),
+            themeMode: ThemeMode.dark,
+            home: const Scaffold(body: HomeScreen()),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Review & resolve'));
+      await tester.pumpAndSettle();
+
+      // The 2 h already cut before the call is more than any travel buffer, so
+      // the morning half has no pick-up handle; both cuts are drawn as such.
+      expect(find.textContaining('Pick-up ·'), findsNothing);
+      expect(find.text('Already cut · 10:00 AM – 12:00 PM'), findsOneWidget);
+      expect(find.text('Already cut · 12:20 – 12:30 PM'), findsOneWidget);
+
+      // The drop-off handle straddles the half's top edge, and only its lower
+      // part is inside the half's hit area — grab the label from below.
+      Future<void> dragHandle(String label, double dy) async {
+        final grip =
+            tester.getBottomLeft(find.text(label)) + const Offset(2, -3);
+        await tester.dragFrom(grip, Offset(0, dy));
+        await tester.pumpAndSettle();
+      }
+
+      // 5 min of travel back fits inside the 10 already cut: nothing moves.
+      await dragHandle('Drop-off · 12:30', 22);
+      expect(find.text('Drop-off · 12:30'), findsOneWidget);
+      expect(find.text('Travel time · 5 min fits here'), findsOneWidget);
+      expect(find.textContaining('Travel time · 5 min'), findsOneWidget);
+
+      // 20 min reaches 10 past it: the drop-off moves to 12:40.
+      await dragHandle('Drop-off · 12:30', 45);
+      expect(find.text('Drop-off · 12:40'), findsOneWidget);
+      expect(find.text('Travel time · 20 min'), findsOneWidget);
+      expect(find.textContaining('fits here'), findsNothing);
+
+      await tester.tap(find.text('Confirm split'));
+      await tester.pumpAndSettle();
+      // Travel is still sent from the call's end, and none for the morning.
+      expect(api.lastResolve, {
+        'travelBeforeMin': 0,
+        'travelAfterMin': 20,
+        'beforeNeeded': true,
+        'afterNeeded': true,
+      });
+    },
+  );
+
+  testWidgets('a side that cannot drag still sends its suggested travel', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(600, 1600);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    DateTime at(int h, int m) => DateTime(day.year, day.month, day.day, h, m);
+    // The 12:00–12:20 call again, now with a 20 min suggested trip.
+    final call = Conflict(
+      id: 'c7',
+      familyMemberId: 'theo',
+      loser: conflict.loser,
+      winner: ConflictEventRef(
+        summary: 'Call',
+        allDay: false,
+        start: at(12, 0),
+        end: at(12, 20),
+      ),
+      suggestedTravelMin: 20,
+      loserAlreadyCleared: true,
+      loserSides: LoserSides(
+        before: (start: at(8, 30), end: at(10, 0)),
+        after: (start: at(12, 30), end: at(15, 0)),
+      ),
+    );
+    final api = _RecordingApiClient();
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          apiClientProvider.overrideWithValue(api),
+          familyProvider.overrideWith((ref) async => 'fam-1'),
+          membersProvider.overrideWith((ref) async => [me, theo]),
+          currentMemberProvider.overrideWith((ref) async => me),
+          unownedTasksProvider.overrideWith((ref) async => [task]),
+          allTasksProvider.overrideWith((ref) async => [task]),
+          pendingDecisionsProvider.overrideWith((ref) async => const []),
+          conflictsProvider.overrideWith((ref) async => [call]),
+          calendarEventsProvider.overrideWith((ref) async => const []),
+          threadingThresholdProvider.overrideWith((ref) async => 30),
+        ],
+        child: MaterialApp(
+          theme: buildAppTheme(),
+          themeMode: ThemeMode.dark,
+          home: const Scaffold(body: HomeScreen()),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Review & resolve'));
+    await tester.pumpAndSettle();
+
+    // The morning (2 h away) has no handle, and its 20 min fits in the cut;
+    // the afternoon's 20 min reaches 10 past its cut, to 12:40.
+    expect(find.textContaining('Pick-up ·'), findsNothing);
+    expect(find.text('Travel time · 20 min fits here'), findsOneWidget);
+    expect(find.text('Drop-off · 12:40'), findsOneWidget);
+
+    await tester.tap(find.text('Confirm split'));
+    await tester.pumpAndSettle();
+    expect(api.lastResolve, {
+      'travelBeforeMin': 20,
+      'travelAfterMin': 20,
+      'beforeNeeded': true,
+      'afterNeeded': true,
+    });
+  });
+
   testWidgets('a day another split already cleared has nothing to split', (
     tester,
   ) async {

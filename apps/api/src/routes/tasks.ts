@@ -731,7 +731,12 @@ taskRoutes.get('/conflicts', async (c) => {
     // should draw the halves from what's actually left, not the original span.
     // Null: those other decisions already removed everything this winner
     // overlaps. Absent: the loser can't be cut (all-day / open-ended).
-    ...(remaining.has(r.id) ? { loserRemaining: remaining.get(r.id) } : {}),
+    ...(remaining.has(r.id) ? { loserRemaining: remaining.get(r.id)!.remaining } : {}),
+    // The kept time either side of the winner that resolving this conflict
+    // can still trim or drop — present even when `loserRemaining` is null
+    // (the winner falls inside time another split already cut), so the sheet
+    // can still offer travel and "not needed" there.
+    ...(remaining.has(r.id) ? { loserSides: remaining.get(r.id)!.sides } : {}),
     // Splitting the loser around the winner means leaving one place and
     // coming back to it, so both buffers are the same trip. Suggested only
     // when both ends are geocoded — the sheet leaves the handles at zero
