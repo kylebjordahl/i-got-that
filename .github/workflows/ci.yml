@@ -49,7 +49,12 @@ jobs:
           cache: true
       # Fills in the gitignored ephemeral parts of the committed platform
       # runners (ios/, android/, web/); the committed flavor config survives.
-      - run: flutter create . --platforms=ios,android,web --project-name caretaker_app
+      # Flutter >= 3.44's `flutter create` also rewrites pubspec.lock (and
+      # .metadata) with an unpinned resolution, so put the committed ones back
+      # and let `pub-get` below enforce the lock (AGENTS.md, #311).
+      - run: |
+          flutter create . --platforms=ios,android,web --project-name caretaker_app
+          git checkout -- pubspec.lock .metadata
         working-directory: apps/mobile
       # Drive Flutter through Nx with the `ci` configuration (plain `flutter`,
       # no fvm), selected abstractly by language tag. `format` runs after
@@ -86,7 +91,9 @@ jobs:
         working-directory: apps/mobile
         run: |
           flutter create . --platforms=android --project-name caretaker_app
-          flutter pub get
+          # `create` rewrites the lock unpinned (#311): restore the committed one.
+          git checkout -- pubspec.lock .metadata
+          flutter pub get --enforce-lockfile
       # Both flavors: they differ in applicationId and manifest placeholders,
       # so a merge failure can hit one and not the other.
       - name: Build debug APK (staging)
