@@ -228,7 +228,9 @@ jobs:
         working-directory: apps/mobile
         run: |
           flutter create . --platforms=web --project-name caretaker_app
-          flutter pub get
+          # `create` rewrites the lock unpinned (#311): restore the committed one.
+          git checkout -- pubspec.lock .metadata
+          flutter pub get --enforce-lockfile
           flutter build web --base-href /app/ --dart-define=API_BASE_URL=/api \
             --dart-define=APP_ENV=${{ inputs.environment }} \
             --build-name=${{ needs.version.outputs.build_name }} \
@@ -492,7 +494,9 @@ jobs:
         working-directory: apps/mobile
         run: |
           flutter create . --platforms=ios --project-name caretaker_app
-          flutter pub get
+          # `create` rewrites the lock unpinned (#311): restore the committed one.
+          git checkout -- pubspec.lock .metadata
+          flutter pub get --enforce-lockfile
 
       - name: Import distribution signing certificate
         uses: apple-actions/import-codesign-certs@v7
@@ -650,7 +654,9 @@ jobs:
         working-directory: apps/mobile
         run: |
           flutter create . --platforms=android --project-name caretaker_app
-          flutter pub get
+          # `create` rewrites the lock unpinned (#311): restore the committed one.
+          git checkout -- pubspec.lock .metadata
+          flutter pub get --enforce-lockfile
 
       # Both the keystore and key.properties land under android/ — which is
       # what `rootProject.file(...)` in app/build.gradle.kts resolves against

@@ -104,6 +104,14 @@ Backend: Cloudflare Workers + Hono + D1 + Drizzle. Client: Flutter (Riverpod, di
   language version `dart format` reads, so it also selects the formatter's
   style. CI runs `dart format --set-exit-if-changed`, so an unformatted file
   fails the build; run `fvm dart format lib test` before committing.
+- **`flutter create .` rewrites `pubspec.lock` and `.metadata`** (Flutter >=
+  3.44, flutter#175352): the lock is regenerated with only SDK-pinned packages,
+  so the next `pub get` upgrades everything else. Right after any `flutter
+  create .` run `git checkout -- pubspec.lock .metadata` in `apps/mobile`, and
+  resolve with `flutter pub get --enforce-lockfile` (it fails instead of
+  silently re-resolving). CI and deploy do exactly this; the committed lock is
+  what ships, and it feeds the web-client cache key in `deploy.yml`. To change
+  dependencies on purpose, run plain `pub get`/`pub upgrade` and commit the lock.
 - **`defaultTargetPlatform` is `TargetPlatform.android` under `flutter test`.**
   So a widget test gets the *Android* branch of any platform check unless it
   asks otherwise — which is the right way round now that Android is a target,
