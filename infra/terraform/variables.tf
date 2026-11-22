@@ -26,5 +26,10 @@ variable "name_prefix" {
 
 variable "cloudflare_zone_id" {
   type        = string
-  description = "Zone ID for the domain the API is served from (the zone backing the custom domain in wrangler.jsonc, e.g. igt.kylebjordahl.com / staging.igt.kylebjordahl.com — see docs/DEPLOYMENT.md §7). Rate limiting rules are zone-scoped, unlike the account-scoped resources above."
+  description = "Zone ID for the legacy domain the API was first served from (kylebjordahl.com, backing igt.kylebjordahl.com / staging.igt.kylebjordahl.com — see docs/DEPLOYMENT.md §7). Those hostnames still serve /api to older app builds. Rate limiting rules are zone-scoped, unlike the account-scoped resources above."
+}
+
+variable "cloudflare_igt_fyi_zone_id" {
+  type        = string
+  description = "Zone ID for igt.fyi, backing the app + site hostnames (app.igt.fyi, www.igt.fyi, app.staging.igt.fyi, … — see docs/DEPLOYMENT.md §7)."
 }

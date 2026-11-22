@@ -46,26 +46,27 @@ export class DevMailer implements Mailer {
  * `#magic=` signs in (or, opened while signed in, attaches the address);
  * `#link-email=` only attaches, and the API refuses it for sign-in. The app
  * consumes either and strips it. iOS opens the same URL in the app
- * (Universal Links cover `/app/*`).
+ * (Universal Links cover the app host).
  */
 export function magicLinkUrl(
-  publicOrigin: string,
+  appBase: string,
   token: string,
   purpose: MagicLinkPurpose = 'sign_in',
 ): string {
   const key = purpose === 'link' ? 'link-email' : 'magic';
-  return `${publicOrigin.replace(/\/$/, '')}/app/#${key}=${token}`;
+  return `${appBase.replace(/\/?$/, '/')}#${key}=${token}`;
 }
 
 export class OutboxMailer implements Mailer {
   constructor(
     private readonly outbox: Outbox,
-    private readonly publicOrigin: string,
+    /** Where the link opens the app (see lib/hosts.ts#appLinkBase). */
+    private readonly appBase: string,
   ) {}
 
   async sendMagicLink(message: MagicLinkMessage): Promise<void> {
     const linking = message.purpose === 'link';
-    const link = magicLinkUrl(this.publicOrigin, message.token, message.purpose);
+    const link = magicLinkUrl(this.appBase, message.token, message.purpose);
     await this.outbox.send(
       buildTextEmailMime({
         from: this.outbox.from,
@@ -88,12 +89,17 @@ export class OutboxMailer implements Mailer {
   }
 }
 
-/** Choose a mailer for the environment. */
+/**
+ * Choose a mailer for the environment. [appBase] is where the link opens the
+ * app — pass `appLinkBase(env, request.url)` so a request from an older app
+ * build gets a link that build opens; the web client at PUBLIC_ORIGIN otherwise.
+ */
 export function getMailer(
   env: Pick<Bindings, 'ALLOW_DEV_TOKENS' | 'EMAIL' | 'ORGANIZER_EMAIL' | 'PUBLIC_ORIGIN'>,
+  appBase?: string | null,
 ): Mailer {
   if (emailEnabled(env) && env.PUBLIC_ORIGIN) {
-    return new OutboxMailer(getOutbox(env), env.PUBLIC_ORIGIN);
+    return new OutboxMailer(getOutbox(env), appBase ?? env.PUBLIC_ORIGIN);
   }
   return new DevMailer(env.ALLOW_DEV_TOKENS === 'true');
 }
